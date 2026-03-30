@@ -1,0 +1,107 @@
+*lazyvcs.txt*          Native live VCS diff windows for Neovim          *lazyvcs.nvim*
+
+==============================================================================
+CONTENTS                                                   *lazyvcs-contents*
+
+1. Introduction ................................................ |lazyvcs-intro|
+2. Commands .................................................. |lazyvcs-commands|
+3. Mappings .................................................. |lazyvcs-mappings|
+4. Configuration ........................................ |lazyvcs-configuration|
+5. Notes ......................................................... |lazyvcs-notes|
+
+==============================================================================
+INTRODUCTION                                                   *lazyvcs-intro*
+
+lazyvcs.nvim opens a VS Code style live diff view using native Neovim windows.
+The current file stays editable on the left, and a scratch buffer containing
+the VCS base stays on the right. Both windows use |:diffthis| and |:diffupdate|.
+
+Git support compares the buffer to the index with `git show :path`. This matches
+gitsigns' default unstaged-change model. SVN support compares the buffer to
+`svn cat -r BASE path`.
+
+==============================================================================
+COMMANDS                                                     *lazyvcs-commands*
+
+                                                           *:LazyVcsDiffOpen*
+:LazyVcsDiffOpen      Open the live diff view for the current file.
+
+                                                          *:LazyVcsDiffClose*
+:LazyVcsDiffClose     Close the live diff session for the current file.
+
+                                                         *:LazyVcsDiffToggle*
+:LazyVcsDiffToggle    Toggle the live diff session for the current file.
+
+                                                         *:LazyVcsDiffRefresh*
+:LazyVcsDiffRefresh   Refresh the current live diff view manually.
+
+                                                          *:LazyVcsRevertHunk*
+:LazyVcsRevertHunk    Revert the hunk under the cursor.
+
+                                                            *:LazyVcsNextHunk*
+:LazyVcsNextHunk      Jump to the next changed hunk.
+
+                                                            *:LazyVcsPrevHunk*
+:LazyVcsPrevHunk      Jump to the previous changed hunk.
+
+                                                             *:VcsLiveDiffOpen*
+:VcsLiveDiffOpen      Alias for |:LazyVcsDiffOpen|.
+
+==============================================================================
+MAPPINGS                                                     *lazyvcs-mappings*
+
+Global mappings are usually defined through lazy.nvim or AstroNvim:
+
+    <leader>vo   open live diff
+    <leader>vq   close live diff
+    <leader>vr   revert current hunk
+    ]v           next hunk
+    [v           previous hunk
+
+Inside an active live diff session the plugin also adds buffer-local mappings:
+
+    q            close the live diff session
+    <leader>vr   revert current hunk
+    ]v           next hunk
+    [v           previous hunk
+
+==============================================================================
+CONFIGURATION                                           *lazyvcs-configuration*
+
+Example lazy.nvim configuration:
+
+>lua
+  {
+    dir = "~/Repos/lazyvcs.nvim",
+    main = "lazyvcs",
+    cmd = { "LazyVcsDiffOpen", "LazyVcsDiffClose" },
+    opts = {
+      debounce_ms = 120,
+      use_gitsigns = true,
+      base_window = {
+        width = 0.45,
+      },
+    },
+  }
+<
+
+Options:
+
+    debounce_ms        Delay before diff refresh after edits.
+    use_gitsigns       Prefer `gitsigns.reset_hunk()` for Git when possible.
+    set_winbar         Write simple winbar labels while the session is active.
+    session_keymaps    Add buffer-local session mappings.
+    base_window        Width for the right-side base window.
+                       Values <= 1 are treated as a ratio of editor columns.
+                       Values > 1 are treated as a fixed column width.
+
+==============================================================================
+NOTES                                                           *lazyvcs-notes*
+
+- The left window is a normal file buffer. The right window is a scratch buffer.
+- Git hunk reset falls back to plugin-owned replacement if gitsigns is absent.
+- SVN support is implemented by the plugin backend; gitsigns is not used there.
+- Newline-at-EOF differences are not currently modeled separately.
+- Use |:checkhealth| `lazyvcs` to verify local prerequisites.
+
+vim:tw=78:ts=8:noet:ft=help:norl:
