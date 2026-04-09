@@ -53,6 +53,25 @@ local function apply_diff(winid)
 	end
 end
 
+local function restore_winbar(winid, value)
+	if util.win_is_valid(winid) then
+		vim.wo[winid].winbar = value or ""
+	end
+end
+
+function M.reset_tab_diff(winid)
+	local target = winid
+	if not util.win_is_valid(target) then
+		target = vim.api.nvim_get_current_win()
+	end
+
+	if util.win_is_valid(target) then
+		vim.api.nvim_win_call(target, function()
+			vim.cmd("silent diffoff!")
+		end)
+	end
+end
+
 function M.open(session)
 	local editable_win = vim.fn.bufwinid(session.editable_bufnr)
 	if editable_win == -1 then
@@ -96,27 +115,37 @@ function M.refresh(session)
 	end
 end
 
-function M.close(session)
+function M.close(session, opts)
+	opts = opts or {}
+
+	if opts.reset_tab_diff then
+		M.reset_tab_diff(session.editable_win)
+	end
+
 	if util.win_is_valid(session.editable_win) then
-		pcall(vim.api.nvim_win_call, session.editable_win, function()
-			if not session.editable_had_diff then
-				vim.cmd("silent diffoff")
-			end
-			if session.opts.set_winbar then
-				vim.wo.winbar = session.editable_prev_winbar or ""
-			end
-		end)
+		if not opts.reset_tab_diff then
+			pcall(vim.api.nvim_win_call, session.editable_win, function()
+				if not session.editable_had_diff then
+					vim.cmd("silent diffoff")
+				end
+			end)
+		end
+		if session.opts.set_winbar then
+			restore_winbar(session.editable_win, session.editable_prev_winbar)
+		end
 	end
 
 	if util.win_is_valid(session.base_win) then
-		pcall(vim.api.nvim_win_call, session.base_win, function()
-			if not session.base_had_diff then
-				vim.cmd("silent diffoff")
-			end
-			if session.opts.set_winbar then
-				vim.wo.winbar = session.base_prev_winbar or ""
-			end
-		end)
+		if not opts.reset_tab_diff then
+			pcall(vim.api.nvim_win_call, session.base_win, function()
+				if not session.base_had_diff then
+					vim.cmd("silent diffoff")
+				end
+			end)
+		end
+		if session.opts.set_winbar then
+			restore_winbar(session.base_win, session.base_prev_winbar)
+		end
 		pcall(vim.api.nvim_win_close, session.base_win, true)
 	end
 

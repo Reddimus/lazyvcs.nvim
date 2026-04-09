@@ -81,4 +81,34 @@ function M.reset_hunk(bufnr, base_lines, hunk)
 	vim.api.nvim_buf_set_lines(bufnr, start_idx, end_idx, false, replacement)
 end
 
+function M.compute_target_view(hunk, win_height, line_count)
+	local anchor = M.hunk_anchor(hunk)
+	local hunk_end = M.hunk_last_line(hunk)
+	local hunk_height = math.max(hunk_end - anchor + 1, 1)
+	local visible_height = math.max(win_height, 1)
+	local max_topline = math.max(line_count - visible_height + 1, 1)
+
+	local topline
+	if hunk_height >= visible_height then
+		topline = anchor
+	else
+		local top_padding = math.floor((visible_height - hunk_height) / 2)
+		topline = anchor - top_padding
+	end
+
+	return {
+		lnum = anchor,
+		col = 0,
+		curswant = 0,
+		topline = math.max(1, math.min(topline, max_topline)),
+	}
+end
+
+function M.focus_hunk(winid, bufnr, hunk)
+	local view = M.compute_target_view(hunk, vim.api.nvim_win_get_height(winid), vim.api.nvim_buf_line_count(bufnr))
+	vim.api.nvim_win_call(winid, function()
+		vim.fn.winrestview(view)
+	end)
+end
+
 return M
