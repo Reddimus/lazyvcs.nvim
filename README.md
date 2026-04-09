@@ -24,6 +24,7 @@ It is designed for a lazy.nvim and AstroNvim workflow:
    The left window is the real editable buffer.
    The right window is a scratch buffer showing the VCS base/original content.
    The diff updates as you edit, with a small debounce.
+   `]v` and `[v` move between hunks and position the target hunk intentionally in the viewport.
 5. Revert the current hunk with:
    `:LazyVcsRevertHunk`
    `<leader>vr`
@@ -38,6 +39,7 @@ It is designed for a lazy.nvim and AstroNvim workflow:
    `:LazyVcsDiffClose`
    `<leader>vq`
    `q` inside the live diff session
+9. If you switch to another buffer from the editable lazyvcs window, lazyvcs tears down the old diff pair, clears stale tab-local diff state, and reopens on the newly entered file when that file is supported by Git or SVN.
 
 ### Useful checks
 
@@ -50,6 +52,11 @@ It is designed for a lazy.nvim and AstroNvim workflow:
 - SVN compares against working-copy `BASE`.
 - If a file is untracked, the right side may be empty because there is no VCS base yet.
 - If you revert the wrong hunk, use normal Neovim undo with `u`. Redo with `Ctrl-r`.
+- When a hunk fits on screen, navigation centers the hunk block as much as possible. Oversized hunks start at the top of the viewport.
+- Near the start or end of a file, viewport placement clamps naturally to the available lines.
+- Switching to another buffer from the editable window performs a clean tab-local diff reset before reopening lazyvcs on the destination file.
+- Unsupported or non-file destination buffers close the old session without reopening it.
+- While a lazyvcs session is active, lazyvcs owns diff mode in the current tab so stale diff participants do not leak across buffer transfers.
 
 ## Commands
 

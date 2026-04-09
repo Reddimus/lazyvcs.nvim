@@ -65,6 +65,15 @@ Inside an active live diff session the plugin also adds buffer-local mappings:
     ]v           next hunk
     [v           previous hunk
 
+The `]v` and `[v` mappings place the target hunk intentionally in the viewport.
+Small hunks are centered as a block when possible. Oversized hunks start at the
+top of the viewport with the cursor on the first visible hunk line.
+
+If you switch buffers from the editable lazyvcs window, the current lazyvcs
+session is fully torn down, stale tab-local diff state is cleared, and lazyvcs
+reopens on the newly entered file when that file is supported by the Git or
+SVN backend.
+
 ==============================================================================
 CONFIGURATION                                           *lazyvcs-configuration*
 
@@ -103,5 +112,10 @@ NOTES                                                           *lazyvcs-notes*
 - SVN support is implemented by the plugin backend; gitsigns is not used there.
 - Newline-at-EOF differences are not currently modeled separately.
 - Use |:checkhealth| `lazyvcs` to verify local prerequisites.
+- Near the start or end of a file, viewport placement clamps to the available lines.
+- Unsupported or non-file destination buffers close the old session without
+  reopening it.
+- While a lazyvcs session is active, lazyvcs owns diff mode in the current tab
+  so stale diff participants do not leak across buffer transfers.
 
 vim:tw=78:ts=8:noet:ft=help:norl:
