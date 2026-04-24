@@ -1,6 +1,8 @@
 local backends = require("lazyvcs.backends")
 local config = require("lazyvcs.config")
 local diff = require("lazyvcs.diff")
+local aerial = require("lazyvcs.integrations.aerial")
+local editor = require("lazyvcs.integrations.editor")
 local layout = require("lazyvcs.layout")
 local state = require("lazyvcs.state")
 local util = require("lazyvcs.util")
@@ -11,6 +13,8 @@ local refresh
 local clear_session_maps
 local set_session_maps
 local attach_session
+local schedule_rebalance
+local rebalance_tab
 
 local function notify_open_error(err, opts)
 	if not opts.silent then
@@ -48,10 +52,18 @@ local function build_session(bufnr)
 end
 
 local function open_session(session)
-	layout.open(session)
+	editor.guard_markdown_buffer(session.editable_bufnr, session.source_path)
+	local editable_aerial_state = aerial.disable_buffer(session.editable_bufnr, { detach = true })
+	local ok, err = pcall(layout.open, session)
+	aerial.restore_buffer(editable_aerial_state)
+	if not ok then
+		error(err)
+	end
 	state.register(session)
 	set_session_maps(session)
 	attach_session(session)
+	aerial.resume_win(session.editable_win)
+	aerial.refetch_buffer(session.editable_bufnr)
 	refresh(session.editable_bufnr)
 	return session
 end
@@ -70,10 +82,22 @@ local function close_session(session, opts)
 	if session.augroup then
 		pcall(vim.api.nvim_del_augroup_by_id, session.augroup)
 	end
+	aerial.resume_win(session.editable_win)
+	aerial.restore_buffer(session.aerial_transfer_state)
+	session.aerial_transfer_state = nil
 	state.unregister(session)
 	layout.close(session, {
 		reset_tab_diff = opts.reset_tab_diff,
 	})
+end
+
+local function resume_transfer_aerial(pending)
+	if pending and pending.editable_win then
+		aerial.resume_win(pending.editable_win)
+	end
+	if pending and pending.aerial_transfer_state then
+		aerial.restore_buffer(pending.aerial_transfer_state)
+	end
 end
 
 local function handle_pending_transfer(target_bufnr)
@@ -83,38 +107,46 @@ local function handle_pending_transfer(target_bufnr)
 	end
 
 	if pending.tabpage ~= vim.api.nvim_get_current_tabpage() then
+		resume_transfer_aerial(pending)
 		state.clear_pending_transfer()
 		return
 	end
 
 	if pending.editable_win ~= vim.api.nvim_get_current_win() then
+		resume_transfer_aerial(pending)
 		state.clear_pending_transfer()
 		return
 	end
 
 	if target_bufnr == pending.editable_bufnr or target_bufnr == pending.base_bufnr then
+		resume_transfer_aerial(pending)
 		state.clear_pending_transfer()
 		return
 	end
 
 	pending = state.take_pending_transfer()
 	vim.schedule(function()
+		local function abort()
+			resume_transfer_aerial(pending)
+		end
+
 		if not pending then
 			return
 		end
 
 		if pending.tabpage ~= vim.api.nvim_get_current_tabpage() then
-			return
+			return abort()
 		end
 
 		if pending.editable_win ~= vim.api.nvim_get_current_win() then
-			return
+			return abort()
 		end
 
 		if vim.api.nvim_get_current_buf() ~= target_bufnr then
-			return
+			return abort()
 		end
 
+		editor.guard_markdown_buffer(target_bufnr, vim.api.nvim_buf_get_name(target_bufnr))
 		local replacement = build_session(target_bufnr)
 		local live = state.get(pending.editable_bufnr)
 		if live then
@@ -126,6 +158,8 @@ local function handle_pending_transfer(target_bufnr)
 
 		if replacement then
 			open_session(replacement)
+		else
+			abort()
 		end
 	end)
 end
@@ -140,6 +174,31 @@ local function ensure_global_autocmds()
 		group = global_augroup,
 		callback = function(args)
 			handle_pending_transfer(args.buf)
+		end,
+	})
+	vim.api.nvim_create_autocmd({ "BufReadPre", "BufNewFile" }, {
+		group = global_augroup,
+		callback = function(args)
+			local pending = state.peek_pending_transfer()
+			if not pending then
+				return
+			end
+			if pending.tabpage ~= vim.api.nvim_get_current_tabpage() then
+				return
+			end
+			if pending.editable_win ~= vim.api.nvim_get_current_win() then
+				return
+			end
+			if args.buf == pending.editable_bufnr or args.buf == pending.base_bufnr then
+				return
+			end
+			editor.guard_markdown_buffer(args.buf, args.match)
+		end,
+	})
+	vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, {
+		group = global_augroup,
+		callback = function()
+			rebalance_tab(vim.api.nvim_get_current_tabpage())
 		end,
 	})
 end
@@ -183,10 +242,39 @@ clear_session_maps = function(session)
 		{ "n", maps.revert_hunk, session.editable_bufnr },
 		{ "n", maps.close, session.editable_bufnr },
 		{ "n", maps.close, session.base_bufnr },
+		{ "n", "<leader>q", session.base_bufnr },
 	}
 
 	for _, item in ipairs(targets) do
 		pcall(vim.keymap.del, item[1], item[2], { buffer = item[3] })
+	end
+end
+
+schedule_rebalance = function(session)
+	if not session or session.closing then
+		return
+	end
+
+	session.rebalance_tick = (session.rebalance_tick or 0) + 1
+	local tick = session.rebalance_tick
+	vim.defer_fn(function()
+		local live = state.get(session.editable_bufnr)
+		if not live or live.closing or live.rebalance_tick ~= tick then
+			return
+		end
+		layout.rebalance(live)
+	end, 20)
+end
+
+rebalance_tab = function(tabpage)
+	for _, session in ipairs(state.list()) do
+		if not session.closing and util.win_is_valid(session.editable_win) and util.win_is_valid(session.base_win) then
+			local editable_tab = vim.api.nvim_win_get_tabpage(session.editable_win)
+			local base_tab = vim.api.nvim_win_get_tabpage(session.base_win)
+			if editable_tab == tabpage and base_tab == tabpage then
+				schedule_rebalance(session)
+			end
+		end
 	end
 end
 
@@ -210,6 +298,12 @@ set_session_maps = function(session)
 	vim.keymap.set(
 		"n",
 		maps.close,
+		M.close,
+		{ silent = true, buffer = session.base_bufnr, desc = "lazyvcs close diff view" }
+	)
+	vim.keymap.set(
+		"n",
+		"<leader>q",
 		M.close,
 		{ silent = true, buffer = session.base_bufnr, desc = "lazyvcs close diff view" }
 	)
@@ -258,6 +352,8 @@ attach_session = function(session)
 			if not live or live.closing then
 				return
 			end
+			live.aerial_transfer_state = aerial.disable_buffer(live.editable_bufnr, { detach = true })
+			aerial.suspend_win(live.editable_win)
 			state.set_pending_transfer(live)
 		end,
 	})
@@ -385,6 +481,19 @@ function M.refresh_current()
 	if session then
 		refresh(session.editable_bufnr)
 	end
+end
+
+function M.rebalance(target)
+	local bufnr = type(target) == "number" and target or vim.api.nvim_get_current_buf()
+	local session = state.get(bufnr)
+	if session then
+		return layout.rebalance(session)
+	end
+	return false
+end
+
+function M.rebalance_tab(tabpage)
+	rebalance_tab(tabpage or vim.api.nvim_get_current_tabpage())
 end
 
 return M

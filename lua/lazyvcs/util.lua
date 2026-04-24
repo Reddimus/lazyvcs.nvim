@@ -27,14 +27,65 @@ function M.join_lines(lines)
 	return table.concat(lines, "\n") .. "\n"
 end
 
+function M.system_result(args, opts)
+	return vim.system(args, vim.tbl_extend("keep", opts or {}, { text = true })):wait()
+end
+
+function M.system_error(result)
+	local stderr = M.trim(result and result.stderr)
+	local stdout = M.trim(result and result.stdout)
+	return stderr ~= "" and stderr or stdout
+end
+
 function M.system(args, opts)
-	local result = vim.system(args, vim.tbl_extend("keep", opts or {}, { text = true })):wait()
+	local result = M.system_result(args, opts)
 	if result.code ~= 0 then
-		local stderr = M.trim(result.stderr)
-		local stdout = M.trim(result.stdout)
-		return nil, stderr ~= "" and stderr or stdout
+		return nil, M.system_error(result)
 	end
 	return result
+end
+
+function M.system_start(args, opts, on_exit)
+	opts = opts or {}
+	local timeout_ms = opts.timeout
+	opts.timeout = nil
+	local done = false
+	local handle
+	local timer
+	if timeout_ms and timeout_ms > 0 then
+		timer = vim.defer_fn(function()
+			if done or not handle then
+				return
+			end
+			done = true
+			pcall(handle.kill, handle, 15)
+			if type(on_exit) == "function" then
+				vim.schedule(function()
+					on_exit(nil, string.format("Timed out after %dms: %s", timeout_ms, table.concat(args, " ")))
+				end)
+			end
+		end, timeout_ms)
+	end
+	handle = vim.system(args, vim.tbl_extend("keep", opts, { text = true }), function(result)
+		if done then
+			return
+		end
+		done = true
+		if timer and not timer:is_closing() then
+			timer:stop()
+			timer:close()
+		end
+		if type(on_exit) ~= "function" then
+			return
+		end
+		vim.schedule(function()
+			if result.code ~= 0 then
+				return on_exit(nil, M.system_error(result), result)
+			end
+			on_exit(result, nil, result)
+		end)
+	end)
+	return handle
 end
 
 function M.system_lines(args, opts)
@@ -103,6 +154,16 @@ end
 
 function M.buf_is_valid(bufnr)
 	return bufnr and bufnr ~= 0 and vim.api.nvim_buf_is_valid(bufnr)
+end
+
+function M.truncate(text, max_len)
+	if not text or #text <= max_len then
+		return text or ""
+	end
+	if max_len <= 3 then
+		return text:sub(1, max_len)
+	end
+	return text:sub(1, max_len - 3) .. "..."
 end
 
 return M

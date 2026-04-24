@@ -1,6 +1,44 @@
 local util = require("lazyvcs.util")
+local aerial = require("lazyvcs.integrations.aerial")
+local editor = require("lazyvcs.integrations.editor")
 
 local M = {}
+
+local function sanitize_buffer_segment(text)
+	return (vim.fs.normalize(text or ""):gsub("\n", " "):gsub("\r", " "))
+end
+
+local function base_buffer_name(session)
+	local root = sanitize_buffer_segment(session.root)
+	local relpath = sanitize_buffer_segment(session.relpath)
+	return string.format("lazyvcs://%s/%s//%s", session.backend, root, relpath)
+end
+
+local function resolve_base_buffer_name(session)
+	local canonical = base_buffer_name(session)
+	local existing = vim.fn.bufnr(canonical)
+	if existing <= 0 or not util.buf_is_valid(existing) then
+		return canonical
+	end
+
+	-- Reuse the canonical name when the previous scratch buffer is stale and hidden.
+	if #vim.fn.win_findbuf(existing) == 0 then
+		pcall(vim.api.nvim_buf_delete, existing, { force = true })
+		if vim.fn.bufnr(canonical) <= 0 then
+			return canonical
+		end
+	end
+
+	local suffix = 2
+	while true do
+		local candidate = string.format("%s [%d]", canonical, suffix)
+		local candidate_buf = vim.fn.bufnr(candidate)
+		if candidate_buf <= 0 or not util.buf_is_valid(candidate_buf) then
+			return candidate
+		end
+		suffix = suffix + 1
+	end
+end
 
 local function resolve_base_width(width)
 	if width <= 1 then
@@ -8,6 +46,12 @@ local function resolve_base_width(width)
 	end
 
 	return math.max(width, 30)
+end
+
+local function same_tab(win_a, win_b)
+	return util.win_is_valid(win_a)
+		and util.win_is_valid(win_b)
+		and vim.api.nvim_win_get_tabpage(win_a) == vim.api.nvim_win_get_tabpage(win_b)
 end
 
 local function set_window_labels(session)
@@ -31,8 +75,10 @@ end
 local function configure_base_buffer(session)
 	local buf = vim.api.nvim_create_buf(false, true)
 	session.base_bufnr = buf
+	session.aerial_base_state = aerial.disable_buffer(buf)
+	editor.guard_scratch_buffer(buf)
 
-	vim.api.nvim_buf_set_name(buf, string.format("lazyvcs://%s/%s", session.backend, session.relpath))
+	vim.api.nvim_buf_set_name(buf, resolve_base_buffer_name(session))
 	vim.bo[buf].buftype = "nofile"
 	vim.bo[buf].bufhidden = "wipe"
 	vim.bo[buf].buflisted = false
@@ -103,7 +149,42 @@ function M.open(session)
 
 	apply_diff(editable_win)
 	apply_diff(session.base_win)
+	session.tabpage = vim.api.nvim_win_get_tabpage(editable_win)
 	set_window_labels(session)
+end
+
+function M.rebalance(session)
+	if not session or session.closing then
+		return false
+	end
+
+	if not same_tab(session.editable_win, session.base_win) then
+		return false
+	end
+
+	local editable_width = vim.api.nvim_win_get_width(session.editable_win)
+	local base_width = vim.api.nvim_win_get_width(session.base_win)
+	if editable_width <= 0 or base_width <= 0 then
+		return false
+	end
+
+	local total_width = editable_width + base_width
+	local target_base = math.max(math.floor(total_width / 2), 1)
+	local target_editable = math.max(total_width - target_base, 1)
+
+	if math.abs(editable_width - target_editable) <= 1 and math.abs(base_width - target_base) <= 1 then
+		return false
+	end
+
+	local base_fix = vim.wo[session.base_win].winfixwidth
+	vim.wo[session.base_win].winfixwidth = false
+
+	local ok = pcall(vim.api.nvim_win_set_width, session.base_win, target_base)
+
+	vim.wo[session.base_win].winfixwidth = base_fix
+	session.tabpage = vim.api.nvim_win_get_tabpage(session.editable_win)
+	set_window_labels(session)
+	return ok
 end
 
 function M.refresh(session)
@@ -150,6 +231,7 @@ function M.close(session, opts)
 	end
 
 	if util.buf_is_valid(session.base_bufnr) then
+		aerial.restore_buffer(session.aerial_base_state)
 		pcall(vim.api.nvim_buf_delete, session.base_bufnr, { force = true })
 	end
 end

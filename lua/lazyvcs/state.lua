@@ -2,6 +2,7 @@ local M = {
 	sessions = {},
 	buffer_index = {},
 	pending_transfer = nil,
+	repo_jobs = {},
 }
 
 function M.register(session)
@@ -35,6 +36,14 @@ function M.current()
 	return M.get(vim.api.nvim_get_current_buf())
 end
 
+function M.list()
+	local out = {}
+	for _, session in pairs(M.sessions) do
+		out[#out + 1] = session
+	end
+	return out
+end
+
 function M.set_pending_transfer(session)
 	M.pending_transfer = {
 		tabpage = vim.api.nvim_get_current_tabpage(),
@@ -42,6 +51,7 @@ function M.set_pending_transfer(session)
 		base_bufnr = session.base_bufnr,
 		editable_win = session.editable_win,
 		base_win = session.base_win,
+		aerial_transfer_state = session.aerial_transfer_state,
 	}
 end
 
@@ -57,6 +67,51 @@ end
 
 function M.clear_pending_transfer()
 	M.pending_transfer = nil
+end
+
+function M.set_repo_job(repo_root, job)
+	if not repo_root then
+		return
+	end
+	M.repo_jobs[repo_root] = vim.tbl_extend("force", { root = repo_root }, job or {})
+end
+
+function M.get_repo_job(repo_root)
+	if not repo_root then
+		return nil
+	end
+	return M.repo_jobs[repo_root]
+end
+
+function M.clear_repo_job(repo_root)
+	if not repo_root then
+		return
+	end
+	M.repo_jobs[repo_root] = nil
+end
+
+function M.clear_repo_job_errors(repo_root)
+	if repo_root then
+		local job = M.repo_jobs[repo_root]
+		if job and job.status == "error" then
+			M.repo_jobs[repo_root] = nil
+		end
+		return
+	end
+
+	for root, job in pairs(M.repo_jobs) do
+		if job.status == "error" then
+			M.repo_jobs[root] = nil
+		end
+	end
+end
+
+function M.list_repo_jobs()
+	local out = {}
+	for _, job in pairs(M.repo_jobs) do
+		out[#out + 1] = job
+	end
+	return out
 end
 
 return M

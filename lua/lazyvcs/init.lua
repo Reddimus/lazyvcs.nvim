@@ -6,8 +6,8 @@ function M.setup(opts)
 	return config.setup(opts)
 end
 
-function M.open()
-	return require("lazyvcs.actions").open()
+function M.open(opts)
+	return require("lazyvcs.actions").open(opts)
 end
 
 function M.close()

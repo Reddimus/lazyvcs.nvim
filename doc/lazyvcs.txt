@@ -6,8 +6,9 @@ CONTENTS                                                   *lazyvcs-contents*
 1. Introduction ................................................ |lazyvcs-intro|
 2. Commands .................................................. |lazyvcs-commands|
 3. Mappings .................................................. |lazyvcs-mappings|
-4. Configuration ........................................ |lazyvcs-configuration|
-5. Notes ......................................................... |lazyvcs-notes|
+4. Source Control ...................................... |lazyvcs-source-control|
+5. Configuration ........................................ |lazyvcs-configuration|
+6. Notes ......................................................... |lazyvcs-notes|
 
 ==============================================================================
 INTRODUCTION                                                   *lazyvcs-intro*
@@ -19,6 +20,10 @@ the VCS base stays on the right. Both windows use |:diffthis| and |:diffupdate|.
 Git support compares the buffer to the index with `git show :path`. This matches
 gitsigns' default unstaged-change model. SVN support compares the buffer to
 `svn cat -r BASE path`.
+
+lazyvcs.nvim also provides an external Neo-tree source named
+`lazyvcs_source_control`. In AstroNvim this can replace the selector's `Git`
+tab with a `VCS` source-control sidebar for nested Git and SVN working copies.
 
 ==============================================================================
 COMMANDS                                                     *lazyvcs-commands*
@@ -44,6 +49,10 @@ COMMANDS                                                     *lazyvcs-commands*
                                                             *:LazyVcsPrevHunk*
 :LazyVcsPrevHunk      Jump to the previous changed hunk.
 
+                                                *:LazyVcsSourceControlProfile*
+:LazyVcsSourceControlProfile
+                      Show recent source-control background job timings.
+
                                                              *:VcsLiveDiffOpen*
 :VcsLiveDiffOpen      Alias for |:LazyVcsDiffOpen|.
 
@@ -61,6 +70,7 @@ Global mappings are usually defined through lazy.nvim or AstroNvim:
 Inside an active live diff session the plugin also adds buffer-local mappings:
 
     q            close the live diff session
+    <leader>q    close the live diff session from the right/base diff window
     <leader>vr   revert current hunk
     ]v           next hunk
     [v           previous hunk
@@ -73,6 +83,97 @@ If you switch buffers from the editable lazyvcs window, the current lazyvcs
 session is fully torn down, stale tab-local diff state is cleared, and lazyvcs
 reopens on the newly entered file when that file is supported by the Git or
 SVN backend.
+
+==============================================================================
+SOURCE CONTROL                                       *lazyvcs-source-control*
+
+The source-control sidebar is intended to replace Neo-tree's stock `git_status`
+source in the AstroNvim selector while showing the `VCS` label.
+
+Behavior:
+
+- The current root is scanned for nested Git and SVN working copies.
+- The source also works when the current root is itself a single Git or SVN
+  working copy.
+- The source renders a `Repositories` section and a `Changes` section.
+- Repo rows are rendered first, then status is hydrated progressively in
+  background jobs.
+- Repo visibility is persisted per workspace root.
+- Clean repos are hidden by default after hydration. Press `H` to reveal them.
+- Repo rows render right-aligned sync badges and branch labels.
+- Narrow panes hide lower-priority metadata before truncating repo names.
+- Pressing <CR> on a changed file opens that file in |lazyvcs.nvim| live diff.
+- Repeated file opens from the VCS tree reuse the active editable diff window in
+  the current tab instead of creating a second diff layout.
+- Active lazyvcs diff pairs rebalance automatically when the sidebar or editor
+  width changes, keeping the editable and base windows evenly split.
+- The scratch/base diff buffer opts out of Aerial, and editable-buffer transfers
+  temporarily suspend then refetch Aerial to avoid outline-plugin races.
+- Markdown targets are guarded before the session swap completes so markdown
+  scope and Treesitter helpers do not break sequential file switching.
+- Git repos can switch branches or tags directly from the sidebar.
+- SVN working copies can switch targets directly from the sidebar.
+- VCS reads and long-running sidebar actions run in the background so Neovim
+  stays responsive while repos refresh, sync, update, commit, fetch, pull, push,
+  discover switch targets, or switch.
+- Git sync follows VS Code's repository-scoped model: pull from the selected
+  branch's configured upstream, then push local commits when needed.
+- Git sync and pull avoid bare `git pull`; they fetch the configured upstream
+  remote and fast-forward explicitly with `git merge --ff-only <upstream>`.
+- Only the in-progress repo is dimmed and partially disabled while its mutation
+  job runs. Other repos in the same VCS tab remain interactive.
+- Background refresh preserves cached repo icons, branch names, and sync counts.
+  Refresh state is shown once on the root row as a quiet icon instead of
+  flickering on individual repo rows or section headers.
+- Pressing <CR> on an expanded repo node collapses it immediately, even if its
+  details are stale after a sync/update.
+- SVN labels are compact and meaningful, for example `trunk`,
+  `private/KMLopez/RP-2927`, or `integration/platform/OS/factory`.
+
+Default sidebar mappings:
+
+    <CR>         focus repos, expand repo/section nodes, open file diff, or
+                 activate the primary action row
+    <Space>      toggle repository visibility in the `Changes` section
+    <Tab>        toggle repository visibility in the `Changes` section
+    H            toggle clean repos
+    R            refresh source-control state
+    e            resize the tree, except on commit rows where it edits the draft
+    b            open the branch or switch picker for the selected repo
+    gm           generate a commit subject with CopilotChat
+    s            open the sync/action picker for the selected repo
+    c            commit the selected repo
+    ga           stage a Git file
+    gu           unstage a Git file
+    gr           revert the selected Git or SVN file
+    v            toggle list/tree change layout
+    S            cycle file sort order
+
+Repo actions:
+
+- Git repos support refresh, fetch, pull, push, sync changes, stage all, and
+  commit using the current draft message.
+- `Sync Changes` fetches the selected Git repo's upstream remote, fast-forwards
+  when behind, pushes to the configured upstream when ahead, and refuses
+  diverged branches.
+- Git repos also support `Checkout Branch or Tag...`, including create-branch
+  flows, remote tracking checkout, and detached checkout.
+- SVN working copies support refresh, update, sync changes, and commit using
+  the current draft message.
+- SVN working copies also support `Switch...`. Standard `trunk/branches/tags`
+  layouts show discovered targets. Nonstandard layouts fall back to a manual
+  URL switch prompt.
+- Selecting a commit draft row opens a popup editor for the repo message.
+- If |CopilotChat| is installed, `gm` can generate a subject line from the
+  repo's current changes.
+- Background jobs replace the repo's primary action label with text such as
+  `Syncing...`, `Updating...`, `Switching...`, or `Committing...`.
+- While a repo job is active, the repo stays navigable but file diff opens,
+  commit editing, and repo action triggers are disabled for that repo only.
+- `Repositories` always lists discovered repos. `Changes` only lists the
+  repositories currently marked visible.
+- In list mode, file groups are flat. In tree mode, nested paths are folded
+  into folder nodes and compact folders can collapse single-child chains.
 
 ==============================================================================
 CONFIGURATION                                           *lazyvcs-configuration*
@@ -90,6 +191,38 @@ Example lazy.nvim configuration:
       base_window = {
         width = 0.45,
       },
+      source_control = {
+        enabled = true,
+        scan_depth = 3,
+        show_clean = false,
+        always_show_repositories = false,
+        selection_mode = "multiple",
+        repositories_sort = "discovery_time",
+        changes_view_mode = "list",
+        changes_sort = "path",
+        compact_folders = true,
+        show_action_button = true,
+        show_input_action_button = true,
+        remote_refresh = "on_open",
+        remote_refresh_interval_ms = 60000,
+        selector_label = "VCS",
+        sync_button_behavior = "picker",
+        remote_error_notifications = "summary",
+        background = {
+          git_workers = 4,
+          svn_workers = 1,
+          status_timeout_ms = 30000,
+          remote_timeout_ms = 30000,
+          switch_timeout_ms = 30000,
+          mutation_timeout_ms = 0,
+          history_limit = 100,
+        },
+      },
+      ai = {
+        commit_message = {
+          provider = "copilotchat",
+        },
+      },
     },
   }
 <
@@ -103,6 +236,39 @@ Options:
     base_window        Width for the right-side base window.
                        Values <= 1 are treated as a ratio of editor columns.
                        Values > 1 are treated as a fixed column width.
+    source_control     Settings for the Neo-tree source-control sidebar.
+    ai                 Settings for commit-message generation providers.
+
+The source-control options are:
+
+    enabled            Enable the source-control integration.
+    scan_depth         Maximum nested repo discovery depth.
+    show_clean         Show clean repos by default.
+    always_show_repositories
+                       Always render the `Repositories` section.
+    selection_mode     `multiple` shows several repos in `Changes`.
+                       `single` keeps one visible repo at a time.
+    repositories_sort  Sort repo rows by discovery time, name, or path.
+    changes_view_mode  `list` or `tree`.
+    changes_sort       Sort change rows by path, name, or status.
+    compact_folders    Collapse single-child folder chains in tree mode.
+    show_action_button Show the primary action row below the commit input.
+    show_input_action_button
+                       Show the primary action label on the commit-input row.
+    remote_refresh     Remote status policy. `manual` avoids network refresh on
+                       open; `on_open` runs remote checks in background jobs.
+    remote_refresh_interval_ms
+                       Minimum interval between automatic remote refreshes for
+                       the same root. Explicit refresh and repo actions bypass
+                       this throttle.
+    selector_label     Intended selector label when wiring into AstroNvim.
+    sync_button_behavior
+                       How the sync badge behaves. `picker` opens repo actions.
+    remote_error_notifications
+                       `summary`, `inline`, or `notify` for remote refresh
+                       failures.
+    background         Worker limits, timeouts, and profile history size for
+                       background source-control jobs.
 
 ==============================================================================
 NOTES                                                           *lazyvcs-notes*
@@ -117,5 +283,17 @@ NOTES                                                           *lazyvcs-notes*
   reopening it.
 - While a lazyvcs session is active, lazyvcs owns diff mode in the current tab
   so stale diff participants do not leak across buffer transfers.
+- Closing or changing the Neo-tree VCS root cancels stale background status
+  reads. Explicit sync/update/commit/switch jobs continue until the VCS command
+  exits.
+- User-triggered detail and switch-target loads take priority over all-repo
+  background remote refresh, so the VCS tab remains navigable while sync/update
+  refreshes other repos.
+- Never-loaded repos show a loading badge, but already-loaded repos keep their
+  cached status badges while background refresh is running.
+- Failed mutation jobs keep an inline error badge on the repo row until the next
+  refresh or successful repo action.
+- Failed background remote refreshes keep inline error state and emit one
+  summary notification per refresh batch by default.
 
 vim:tw=78:ts=8:noet:ft=help:norl:
