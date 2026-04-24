@@ -14,6 +14,11 @@ It is designed for a lazy.nvim and AstroNvim workflow:
 - native splits, native diff mode, and debounced `:diffupdate`
 - nested source-control discovery for Git and SVN working copies
 
+> [!NOTE]
+> The Neo-tree source-control tab currently targets Neo-tree's stable `v3.x`
+> branch. Pin Neo-tree with `branch = "v3.x"` until this plugin is updated for
+> newer Neo-tree internals.
+
 ## Source Control Tab
 
 When loaded with Neo-tree, `lazyvcs.nvim` can replace AstroNvim's `<Space>e`
@@ -23,6 +28,8 @@ What it does:
 
 - scans the current root for nested Git and SVN working copies
 - also works when the current root is itself a single Git or SVN working copy
+- handles broad roots such as `~/Repos` by keying repos by normalized absolute
+  path and disambiguating duplicate repo names with relative path labels
 - renders a `Repositories` section and a `Changes` section, like VS Code SCM
 - paints repo rows first, then hydrates repo status progressively in background jobs
 - keeps multi-repo visibility state per root and restores it per workspace root
@@ -164,7 +171,7 @@ Layout details:
 - `:LazyVcsSourceControlProfile` show recent source-control job timings
 - `:VcsLiveDiffOpen`
 
-## Default AstroNvim Mappings
+## Suggested Global Mappings
 
 - `<leader>vo` open live diff
 - `<leader>vq` close live diff
@@ -174,16 +181,101 @@ Layout details:
 
 ## Setup
 
+### AstroNvim quick start
+
+Create `~/.config/nvim/lua/plugins/lazyvcs.lua`:
+
+```lua
+return {
+  {
+    -- Replace this with your plugin repository, or use `dir = "/path/to/lazyvcs.nvim"`.
+    "yourname/lazyvcs.nvim",
+    main = "lazyvcs",
+    dependencies = {
+      "lewis6991/gitsigns.nvim",
+      { "nvim-neo-tree/neo-tree.nvim", branch = "v3.x" },
+    },
+    cmd = {
+      "LazyVcsDiffOpen",
+      "LazyVcsDiffClose",
+      "LazyVcsDiffToggle",
+      "LazyVcsDiffRefresh",
+      "LazyVcsRevertHunk",
+      "LazyVcsNextHunk",
+      "LazyVcsPrevHunk",
+      "LazyVcsSourceControlProfile",
+      "VcsLiveDiffOpen",
+    },
+    keys = {
+      { "<leader>vo", "<cmd>LazyVcsDiffOpen<cr>", desc = "Open VCS diff" },
+      { "<leader>vq", "<cmd>LazyVcsDiffClose<cr>", desc = "Close VCS diff" },
+      { "<leader>vr", "<cmd>LazyVcsRevertHunk<cr>", desc = "Revert VCS hunk" },
+      { "]v", "<cmd>LazyVcsNextHunk<cr>", desc = "Next VCS hunk" },
+      { "[v", "<cmd>LazyVcsPrevHunk<cr>", desc = "Previous VCS hunk" },
+    },
+    opts = {
+      source_control = {
+        enabled = true,
+        remote_refresh = "on_open",
+        remote_refresh_interval_ms = 60000,
+      },
+    },
+  },
+  {
+    "nvim-neo-tree/neo-tree.nvim",
+    branch = "v3.x",
+    opts = function(_, opts)
+      local get_icon = require("astroui").get_icon
+      opts.sources = opts.sources or {}
+
+      local function ensure_source(list, value)
+        for _, item in ipairs(list) do
+          if item == value then
+            return
+          end
+        end
+        list[#list + 1] = value
+      end
+
+      ensure_source(opts.sources, "git_status")
+      ensure_source(opts.sources, "lazyvcs.source_control")
+
+      opts.source_selector = opts.source_selector or {}
+      opts.source_selector.sources = opts.source_selector.sources or {}
+      for index, item in ipairs(opts.source_selector.sources) do
+        if item.source == "git_status" then
+          opts.source_selector.sources[index] = {
+            source = "lazyvcs_source_control",
+            display_name = get_icon("Git", 1, true) .. "VCS",
+          }
+        end
+      end
+    end,
+  },
+}
+```
+
+Restart Neovim, run `:Lazy sync` if needed, then open the VCS tab from the
+Neo-tree source selector or directly with:
+
+```vim
+:Neotree source=lazyvcs_source_control
+```
+
+Run `:checkhealth lazyvcs` after installation. It should report Neovim, Git/SVN,
+gitsigns, and Neo-tree compatibility.
+
 ### Generic lazy.nvim setup
 
-Use a normal plugin spec if you are installing from a repository:
+Use this when you are not using AstroNvim's Neo-tree source selector:
 
 ```lua
 {
   "yourname/lazyvcs.nvim",
+  main = "lazyvcs",
   dependencies = {
     "lewis6991/gitsigns.nvim",
-    "nvim-neo-tree/neo-tree.nvim",
+    { "nvim-neo-tree/neo-tree.nvim", branch = "v3.x" },
   },
   cmd = {
     "LazyVcsDiffOpen",
@@ -195,6 +287,13 @@ Use a normal plugin spec if you are installing from a repository:
     "LazyVcsPrevHunk",
     "LazyVcsSourceControlProfile",
     "VcsLiveDiffOpen",
+  },
+  keys = {
+    { "<leader>vo", "<cmd>LazyVcsDiffOpen<cr>", desc = "Open VCS diff" },
+    { "<leader>vq", "<cmd>LazyVcsDiffClose<cr>", desc = "Close VCS diff" },
+    { "<leader>vr", "<cmd>LazyVcsRevertHunk<cr>", desc = "Revert VCS hunk" },
+    { "]v", "<cmd>LazyVcsNextHunk<cr>", desc = "Next VCS hunk" },
+    { "[v", "<cmd>LazyVcsPrevHunk<cr>", desc = "Previous VCS hunk" },
   },
   opts = {
     debounce_ms = 120,
@@ -249,7 +348,7 @@ Use a normal plugin spec if you are installing from a repository:
   main = "lazyvcs",
   dependencies = {
     "lewis6991/gitsigns.nvim",
-    "nvim-neo-tree/neo-tree.nvim",
+    { "nvim-neo-tree/neo-tree.nvim", branch = "v3.x" },
   },
   cmd = {
     "LazyVcsDiffOpen",
@@ -307,6 +406,7 @@ source as `VCS` and points it at the external `lazyvcs` source:
 ```lua
 {
   "nvim-neo-tree/neo-tree.nvim",
+  branch = "v3.x",
   opts = function(_, opts)
     local get_icon = require("astroui").get_icon
     opts.sources = opts.sources or {}
@@ -337,9 +437,16 @@ source as `VCS` and points it at the external `lazyvcs` source:
 }
 ```
 
+Neo-tree uses two different identifiers here:
+
+- `lazyvcs.source_control` is the Lua module path added to `opts.sources`.
+- `lazyvcs_source_control` is the source name used by `source_selector` and
+  `:Neotree source=lazyvcs_source_control`.
+
 ## Health
 
-Run `:checkhealth lazyvcs` to verify Neovim version and Git/SVN/gitsigns availability.
+Run `:checkhealth lazyvcs` to verify Neovim, Git/SVN, gitsigns, and Neo-tree
+availability.
 
 ## Tests
 
@@ -349,10 +456,41 @@ Run the headless test suite with:
 nvim --headless -u NONE -l /home/kevim/Repos/lazyvcs.nvim/tests/run.lua
 ```
 
+The runner expects `plenary.nvim`, `nui.nvim`, `neo-tree.nvim`, and
+`gitsigns.nvim` under the local lazy.nvim plugin directory. Override that path
+when needed:
+
+```sh
+LAZYVCS_TEST_LAZY_ROOT=/path/to/lazy \
+nvim --headless -u NONE -l /home/kevim/Repos/lazyvcs.nvim/tests/run.lua
+```
+
 Format and lint with locally available tools:
 
 ```sh
 /home/kevim/.local/share/nvim/mason/bin/stylua /home/kevim/Repos/lazyvcs.nvim
 /home/kevim/.local/share/nvim/mason/bin/lua-language-server --check=/home/kevim/Repos/lazyvcs.nvim --check_format=pretty --checklevel=Warning
 nvim --headless -u NONE -l /home/kevim/Repos/lazyvcs.nvim/tests/run.lua
+bash -n /home/kevim/Repos/lazyvcs.nvim/tests/e2e/ubuntu-astronvim.sh
+```
+
+Run the Ubuntu + AstroNvim container smoke test with:
+
+```sh
+/home/kevim/Repos/lazyvcs.nvim/tests/e2e/ubuntu-astronvim.sh
+```
+
+The container test installs Ubuntu packages, Neovim, AstroNvim, and this local
+plugin into an isolated `$HOME`, then runs headless load checks, `:checkhealth`,
+source-control Git/SVN smoke checks, and a pseudo-TTY Neo-tree VCS launch. It
+uses temporary local Git/SVN fixtures and does not run `git commit` or
+`svn commit`.
+
+Useful overrides:
+
+```sh
+NVIM_VERSION=v0.12.2 \
+UBUNTU_IMAGE=ubuntu:24.04 \
+E2E_ARTIFACT_DIR=/tmp/lazyvcs-e2e \
+/home/kevim/Repos/lazyvcs.nvim/tests/e2e/ubuntu-astronvim.sh
 ```

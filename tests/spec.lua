@@ -43,6 +43,15 @@ local function find_first_node(node, wanted_type)
 	return nil
 end
 
+local function find_view_section(node, section)
+	for _, child in ipairs(node.children or {}) do
+		if child.type == "view_section" and child.extra and child.extra.section == section then
+			return child
+		end
+	end
+	return nil
+end
+
 local function install_aerial_stubs()
 	local previous_aerial = package.loaded["aerial"]
 	local previous_aerial_util = package.loaded["aerial.util"]
@@ -553,6 +562,86 @@ local function test_source_control_single_repo_root_uses_unique_node_ids()
 	eq(root.children[1].children[1].type, "repo_changes")
 	eq(root.children[1].children[1].id, model.repo_changes_id(fixture.root))
 	assert(root.children[1].id ~= root.children[1].children[1].id, "view section and repo node ids must differ")
+end
+
+local function test_source_control_duplicate_repo_names_use_root_identity()
+	require("lazyvcs").setup({
+		source_control = {
+			scan_depth = 3,
+			show_clean = true,
+		},
+	})
+
+	local workspace = vim.fn.tempname()
+	local repo_a = workspace .. "/team-a/service"
+	local repo_b = workspace .. "/team-b/service"
+	vim.fn.mkdir(repo_a .. "/.git", "p")
+	vim.fn.mkdir(repo_b .. "/.git", "p")
+
+	local model = require("lazyvcs.source_control.model")
+	local specs = model.discover(workspace, 3)
+	table.sort(specs, function(a, b)
+		return a.root < b.root
+	end)
+
+	eq(#specs, 2, "both same-named repositories should be discovered")
+	eq(specs[1].name, "service")
+	eq(specs[2].name, "service")
+	eq(specs[1].root, vim.fs.normalize(repo_a))
+	eq(specs[2].root, vim.fs.normalize(repo_b))
+	eq(specs[1].path_label, "team-a/service")
+	eq(specs[2].path_label, "team-b/service")
+
+	local state = {
+		path = workspace,
+		lazyvcs_commit_drafts = {},
+		lazyvcs_repo_specs = specs,
+		lazyvcs_repo_cache = {},
+		lazyvcs_repo_visibility = {
+			[specs[1].root] = true,
+			[specs[2].root] = true,
+		},
+	}
+	for _, spec in ipairs(specs) do
+		state.lazyvcs_repo_cache[spec.root] = model.make_placeholder(spec, {})
+	end
+
+	local root = model.collect(state, {
+		root = workspace,
+		scan_depth = 3,
+	})
+
+	local seen = {}
+	local duplicates = {}
+	local function walk(node)
+		if seen[node.id] then
+			duplicates[node.id] = true
+		end
+		seen[node.id] = true
+		for _, child in ipairs(node.children or {}) do
+			walk(child)
+		end
+	end
+	walk(root)
+	eq(next(duplicates), nil, "duplicate repo names should not generate duplicate node ids")
+
+	local repositories = assert(find_view_section(root, "repositories"))
+	local changes = assert(find_view_section(root, "changes"))
+	eq(#repositories.children, 2)
+	eq(#changes.children, 2)
+	for index, spec in ipairs(specs) do
+		local selector = repositories.children[index]
+		local repo_changes = changes.children[index]
+		eq(selector.name, "service")
+		eq(selector.id, model.repo_selector_id(spec.root))
+		eq(selector.extra.repo_root, spec.root)
+		eq(selector.extra.path_label, spec.path_label)
+		eq(selector.extra.visible, true)
+		eq(repo_changes.name, "service")
+		eq(repo_changes.id, model.repo_changes_id(spec.root))
+		eq(repo_changes.extra.repo_root, spec.root)
+		eq(repo_changes.extra.path_label, spec.path_label)
+	end
 end
 
 local function test_source_control_can_show_clean_repos()
@@ -2348,6 +2437,7 @@ test_source_control_unloaded_repo_still_shows_loading_badge()
 test_source_control_jobs_prioritize_user_work_over_background_refresh()
 test_source_control_svn_summary_uses_compact_branch_label()
 test_source_control_single_repo_root_uses_unique_node_ids()
+test_source_control_duplicate_repo_names_use_root_identity()
 test_source_control_can_show_clean_repos()
 test_source_control_toggle_repo_visibility_keeps_a_visible_repo()
 test_source_control_tree_view_groups_files_into_folders()

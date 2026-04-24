@@ -32,6 +32,19 @@ function M.check()
 	else
 		warn("gitsigns.nvim not available; Git hunk reset will fall back to plugin-owned replacement")
 	end
+
+	local has_neotree = package.loaded["neo-tree"] ~= nil or pcall(require, "neo-tree")
+	if has_neotree then
+		ok("neo-tree.nvim available for the source-control sidebar")
+	else
+		warn("neo-tree.nvim not available; the source-control sidebar will be unavailable")
+	end
+
+	if pcall(require, "neo-tree.ui.renderer") then
+		ok("neo-tree.nvim exposes the v3 renderer API used by lazyvcs")
+	else
+		warn("neo-tree.nvim v3.x renderer API not found; pin neo-tree.nvim with branch = 'v3.x'")
+	end
 end
 
 return M

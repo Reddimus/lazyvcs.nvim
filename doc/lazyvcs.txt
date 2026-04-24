@@ -8,7 +8,8 @@ CONTENTS                                                   *lazyvcs-contents*
 3. Mappings .................................................. |lazyvcs-mappings|
 4. Source Control ...................................... |lazyvcs-source-control|
 5. Configuration ........................................ |lazyvcs-configuration|
-6. Notes ......................................................... |lazyvcs-notes|
+6. Testing ..................................................... |lazyvcs-testing|
+7. Notes ......................................................... |lazyvcs-notes|
 
 ==============================================================================
 INTRODUCTION                                                   *lazyvcs-intro*
@@ -24,6 +25,7 @@ gitsigns' default unstaged-change model. SVN support compares the buffer to
 lazyvcs.nvim also provides an external Neo-tree source named
 `lazyvcs_source_control`. In AstroNvim this can replace the selector's `Git`
 tab with a `VCS` source-control sidebar for nested Git and SVN working copies.
+The Neo-tree source currently targets Neo-tree's stable `v3.x` branch.
 
 ==============================================================================
 COMMANDS                                                     *lazyvcs-commands*
@@ -95,6 +97,9 @@ Behavior:
 - The current root is scanned for nested Git and SVN working copies.
 - The source also works when the current root is itself a single Git or SVN
   working copy.
+- Broad roots such as `~/Repos` are supported. Repos are keyed by normalized
+  absolute path, and duplicate repo names are disambiguated with relative path
+  labels.
 - The source renders a `Repositories` section and a `Changes` section.
 - Repo rows are rendered first, then status is hydrated progressively in
   background jobs.
@@ -184,7 +189,27 @@ Example lazy.nvim configuration:
   {
     dir = "~/Repos/lazyvcs.nvim",
     main = "lazyvcs",
-    cmd = { "LazyVcsDiffOpen", "LazyVcsDiffClose" },
+    cmd = {
+      "LazyVcsDiffOpen",
+      "LazyVcsDiffClose",
+      "LazyVcsDiffToggle",
+      "LazyVcsDiffRefresh",
+      "LazyVcsRevertHunk",
+      "LazyVcsNextHunk",
+      "LazyVcsPrevHunk",
+      "LazyVcsSourceControlProfile",
+      "VcsLiveDiffOpen",
+    },
+    keys = {
+      { "<leader>vo", "<cmd>LazyVcsDiffOpen<cr>", desc = "Open VCS diff" },
+      { "<leader>vq", "<cmd>LazyVcsDiffClose<cr>", desc = "Close VCS diff" },
+      { "<leader>vr", "<cmd>LazyVcsRevertHunk<cr>", desc = "Revert VCS hunk" },
+      { "]v", "<cmd>LazyVcsNextHunk<cr>", desc = "Next VCS hunk" },
+      { "[v", "<cmd>LazyVcsPrevHunk<cr>", desc = "Previous VCS hunk" },
+    },
+    dependencies = {
+      { "nvim-neo-tree/neo-tree.nvim", branch = "v3.x" },
+    },
     opts = {
       debounce_ms = 120,
       use_gitsigns = true,
@@ -226,6 +251,22 @@ Example lazy.nvim configuration:
     },
   }
 <
+
+For AstroNvim, put the plugin spec in:
+
+>
+  ~/.config/nvim/lua/plugins/lazyvcs.lua
+<
+
+Open the source-control sidebar directly with:
+
+>
+  :Neotree source=lazyvcs_source_control
+<
+
+When wiring Neo-tree manually, add the Lua module path
+`lazyvcs.source_control` to `opts.sources`. Use the source name
+`lazyvcs_source_control` in the source selector and in `:Neotree source=...`.
 
 Options:
 
@@ -269,6 +310,30 @@ The source-control options are:
                        failures.
     background         Worker limits, timeouts, and profile history size for
                        background source-control jobs.
+
+==============================================================================
+TESTING                                                       *lazyvcs-testing*
+
+Run the headless Lua test suite with:
+
+>
+  nvim --headless -u NONE -l /home/kevim/Repos/lazyvcs.nvim/tests/run.lua
+<
+
+Set `LAZYVCS_TEST_LAZY_ROOT=/path/to/lazy` if your lazy.nvim plugin directory
+is not under the default |stdpath()| data directory.
+
+Run the Ubuntu plus AstroNvim container smoke test with:
+
+>
+  /home/kevim/Repos/lazyvcs.nvim/tests/e2e/ubuntu-astronvim.sh
+<
+
+The container test installs Ubuntu packages, Neovim, AstroNvim, and this local
+plugin into an isolated `$HOME`. It then runs headless load checks,
+|:checkhealth|, Git/SVN source-control smoke checks, and a pseudo-TTY Neo-tree
+VCS launch. It uses temporary local Git/SVN fixtures and does not run
+`git commit` or `svn commit`.
 
 ==============================================================================
 NOTES                                                           *lazyvcs-notes*
