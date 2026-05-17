@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Neovim (stable)
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Install Subversion (full SVN test coverage)
+        run: sudo apt-get update -y && sudo apt-get install -y subversion
+
+      - name: Check stylua formatting
+        uses: JohnnyMorganz/stylua-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: latest
+          args: --check .
+
+      - name: Install lua-language-server
+        run: |
+          set -euo pipefail
+          LLS_VERSION="3.16.4"
+          curl -fsSL -o lls.tar.gz \
+            "https://github.com/LuaLS/lua-language-server/releases/download/${LLS_VERSION}/lua-language-server-${LLS_VERSION}-linux-x64.tar.gz"
+          mkdir -p "$HOME/.lls" && tar -xf lls.tar.gz -C "$HOME/.lls"
+          echo "$HOME/.lls/bin" >> "$GITHUB_PATH"
+
+      - name: lua-language-server static check
+        run: |
+          set -euo pipefail
+          out="$(lua-language-server --check="$PWD" --check_format=pretty --checklevel=Warning 2>&1 || true)"
+          echo "$out"
+          echo "$out" | grep -q "no problems found"
+
+      - name: Clone test dependencies
+        run: |
+          set -euo pipefail
+          LAZY="$RUNNER_TEMP/lazy"
+          mkdir -p "$LAZY"
+          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim "$LAZY/plenary.nvim"
+          git clone --depth 1 https://github.com/MunifTanjim/nui.nvim "$LAZY/nui.nvim"
+          git clone --depth 1 --branch v3.x https://github.com/nvim-neo-tree/neo-tree.nvim "$LAZY/neo-tree.nvim"
+          git clone --depth 1 https://github.com/lewis6991/gitsigns.nvim "$LAZY/gitsigns.nvim"
+          echo "LAZYVCS_TEST_LAZY_ROOT=$LAZY" >> "$GITHUB_ENV"
+
+      - name: Run headless test suite
+        run: nvim --headless -u NONE -l tests/run.lua
+
+      - name: Verify help tags generate cleanly
+        run: nvim --headless "+helptags doc" "+qa" && test -f doc/tags

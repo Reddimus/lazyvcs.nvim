@@ -1,5 +1,7 @@
 # lazyvcs.nvim
 
+[![CI](https://github.com/Reddimus/lazyvcs.nvim/actions/workflows/ci.yml/badge.svg)](https://github.com/Reddimus/lazyvcs.nvim/actions/workflows/ci.yml)
+
 `lazyvcs.nvim` is a Neovim plugin for opening an editable live diff view with a
 real file buffer on one side and a VCS base scratch buffer on the other.
 
@@ -448,6 +450,10 @@ Neo-tree uses two different identifiers here:
 Run `:checkhealth lazyvcs` to verify Neovim, Git/SVN, gitsigns, and Neo-tree
 availability.
 
+Subversion is optional. lazyvcs is Git-first: when the `svn` executable is not
+present the SVN backend is skipped silently, and Git diff/source-control
+workflows continue to work normally.
+
 ## Tests
 
 Run the headless test suite with:
@@ -464,6 +470,12 @@ when needed:
 LAZYVCS_TEST_LAZY_ROOT=/path/to/lazy \
 nvim --headless -u NONE -l /home/kevim/Repos/lazyvcs.nvim/tests/run.lua
 ```
+
+Each test runs in isolation. The runner prints a `PASS` / `SKIP` / `FAIL` line
+per test and a final `N passed, N skipped, N failed` summary. SVN tests
+require the `svnadmin` binary; when Subversion is not installed they are
+reported as `SKIP` (not a failure) so the Git suite still runs and passes.
+The process exits non-zero if any test fails, so it is safe to use in CI.
 
 Format and lint with locally available tools:
 
