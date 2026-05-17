@@ -491,38 +491,53 @@ local function test_source_control_confirm_popup_key_paths()
 end
 
 local function test_svn_async_blame_cancels_active_child_process()
+	if vim.fn.executable("svn") ~= 1 then
+		-- backends/svn.lua short-circuits when the svn executable is missing,
+		-- so blame_lines_async never reaches the mocked system_start. Skip
+		-- rather than fail (consistent with the other SVN tests).
+		error({ lazyvcs_skip = "svn not installed — SVN tests skipped" })
+	end
+
 	local backend = require("lazyvcs.backends.svn")
 	local util = require("lazyvcs.util")
 	local original_system_start = util.system_start
-	local handles = {}
-	local callbacks = {}
 
-	---@diagnostic disable-next-line: duplicate-set-field
-	util.system_start = function(args, _, on_exit)
-		local handle = {
-			args = args,
-			killed = false,
-			kill = function(self)
-				self.killed = true
-			end,
-		}
-		handles[#handles + 1] = handle
-		callbacks[#callbacks + 1] = on_exit
-		return handle
-	end
+	-- Guarantee the global monkey-patch is restored even if an assertion
+	-- fails, so a failure here cannot contaminate later tests.
+	local ok, err = pcall(function()
+		local handles = {}
+		local callbacks = {}
 
-	local completed = false
-	local job = backend.blame_lines_async("/tmp/wc/sample.txt", function()
-		completed = true
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.system_start = function(args, _, on_exit)
+			local handle = {
+				args = args,
+				killed = false,
+				kill = function(self)
+					self.killed = true
+				end,
+			}
+			handles[#handles + 1] = handle
+			callbacks[#callbacks + 1] = on_exit
+			return handle
+		end
+
+		local completed = false
+		local job = backend.blame_lines_async("/tmp/wc/sample.txt", function()
+			completed = true
+		end)
+		callbacks[1]({ stdout = "/tmp/wc\n", code = 0 })
+		eq(#handles, 2)
+		job:kill()
+		assert(handles[2].killed, "active svn blame child process should be killed")
+		callbacks[2]({ stdout = "     1 alice        2026-04-01 line\n", code = 0 })
+		eq(completed, false)
 	end)
-	callbacks[1]({ stdout = "/tmp/wc\n", code = 0 })
-	eq(#handles, 2)
-	job:kill()
-	assert(handles[2].killed, "active svn blame child process should be killed")
-	callbacks[2]({ stdout = "     1 alice        2026-04-01 line\n", code = 0 })
-	eq(completed, false)
 
 	util.system_start = original_system_start
+	if not ok then
+		error(err)
+	end
 end
 
 local function test_source_control_collects_dirty_nested_repos()
