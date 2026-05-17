@@ -430,9 +430,9 @@ function M.toggle()
 end
 
 function M.revert_hunk()
-	local session = current_session_or_warn()
+	local session = state.current()
 	if not session then
-		return
+		return require("lazyvcs.signs").revert_hunk()
 	end
 
 	refresh(session.editable_bufnr)
@@ -451,9 +451,9 @@ function M.revert_hunk()
 end
 
 function M.jump_to_hunk(direction)
-	local session = current_session_or_warn()
+	local session = state.current()
 	if not session then
-		return
+		return require("lazyvcs.signs").jump_to_hunk(direction)
 	end
 
 	refresh(session.editable_bufnr)

@@ -9,6 +9,29 @@ local function wait_for(predicate, msg, timeout)
 	assert(ok, msg or "timed out")
 end
 
+local function feed(keys)
+	vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "xt", false)
+end
+
+local function inline_blame_text(bufnr)
+	local test_state = require("lazyvcs.svn_ui")._test_inline_state()
+	local marks = vim.api.nvim_buf_get_extmarks(bufnr, test_state.namespace, 0, -1, { details = true })
+	if #marks == 0 then
+		return nil
+	end
+	return marks[1][4].virt_text and marks[1][4].virt_text[1][1] or nil
+end
+
+local function flatten_chunks(chunks)
+	local text = {}
+	for _, chunk in ipairs(chunks or {}) do
+		if type(chunk[1]) == "string" then
+			text[#text + 1] = chunk[1]
+		end
+	end
+	return table.concat(text)
+end
+
 local function diff_window_count()
 	local count = 0
 	for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
@@ -171,10 +194,31 @@ local function test_config_normalization()
 	eq(opts.base_window.width, 40)
 	eq(opts.source_control.scan_depth, 4)
 	eq(opts.source_control.show_clean, false)
+	eq(opts.source_control.auto_expand_width, false)
+	eq(opts.source_control.auto_expand_max_width_ratio, 0.5)
 	eq(opts.source_control.selection_mode, "single")
 	eq(opts.source_control.changes_view_mode, "tree")
 	eq(opts.source_control.remote_refresh_interval_ms, 1234)
 	eq(opts.ai.commit_message.provider, "copilotchat")
+	eq(opts.ai.commit_message.provider_order, { "copilotchat", "claude", "codex", "gemini", "copilot_cli" })
+	eq(opts.ai.commit_message.instructions, "")
+	eq(opts.ai.commit_message.timeout_ms, 30000)
+	eq(opts.ai.commit_message.max_context_chars, 12000)
+	eq(opts.ai.commit_message.context, "staged_first")
+	eq(opts.ai.commit_message.generate_key, "gm")
+	eq(opts.ai.commit_message.insert_generate_key, "<C-g>")
+	eq(opts.ai.commit_message.confirm_privacy, true)
+	eq(opts.signs.enabled, true)
+	eq(opts.signs.debounce_ms, 120)
+	eq(opts.blame.mode, "inline")
+	eq(opts.blame.delay_ms, 500)
+	eq(opts.blame.loading_delay_ms, 750)
+	eq(opts.blame.loading_text, "Blame loading...")
+	eq(opts.blame.uncommitted_text, "Uncommitted line")
+	eq(opts.blame.max_width, 80)
+	eq(opts.blame.split_min_width, 20)
+	eq(opts.blame.split_max_width, 34)
+	eq(opts.compat.svnsigns_commands, true)
 
 	local ok, err = pcall(config.setup, {
 		base_window = {
@@ -182,11 +226,30 @@ local function test_config_normalization()
 		},
 	})
 	assert(ok == false and tostring(err):match("base_window.width"), "invalid width should fail validation")
+
+	ok, err = pcall(config.setup, {
+		blame = {
+			mode = "bad",
+		},
+	})
+	assert(ok == false and tostring(err):match("blame.mode"), "invalid blame mode should fail validation")
+
+	ok, err = pcall(config.setup, {
+		ai = {
+			commit_message = {
+				provider = "bad",
+			},
+		},
+	})
+	assert(
+		ok == false and tostring(err):match("ai.commit_message.provider"),
+		"invalid AI provider should fail validation"
+	)
 end
 
 local function test_source_control_auto_remote_refresh_is_throttled_per_root()
 	local config = require("lazyvcs.config")
-	local source = require("lazyvcs.source_control.init")
+	local source = require("lazyvcs.source_control.native")
 	config.setup({
 		source_control = {
 			remote_refresh = "on_open",
@@ -208,6 +271,258 @@ local function test_source_control_auto_remote_refresh_is_throttled_per_root()
 	eq(source._test_should_remote_refresh(state), true)
 	state.lazyvcs_remote_refresh = nil
 	eq(source._test_should_remote_refresh(state), false)
+end
+
+local function test_source_control_legacy_neotree_ui_routes_to_native()
+	local config = require("lazyvcs.config")
+	local opts = config.setup({
+		source_control = {
+			ui = "neo-tree",
+			remote_refresh = "manual",
+		},
+	})
+	eq(opts.source_control.ui, "neo-tree")
+	assert(require("lazyvcs.source_control.native")._test_should_remote_refresh({ path = "/tmp/workspace" }) == false)
+end
+
+local function test_optional_integrations_detect_vanilla_and_enhanced_modes()
+	package.loaded["lazyvcs.integrations.optional"] = nil
+
+	local optional = require("lazyvcs.integrations.optional")
+	local vanilla = optional.status(function()
+		return false
+	end)
+	eq(vanilla.mode, "vanilla")
+
+	local enhanced = optional.status(function(module)
+		return module == "snacks.picker.select"
+	end)
+	eq(enhanced.mode, "enhanced")
+
+	local enhanced_picker = optional.status(function(module)
+		return module == "fzf-lua"
+	end)
+	eq(enhanced_picker.mode, "enhanced")
+
+	local recommended_modules = {
+		"gitsigns",
+		"snacks.picker.select",
+		"fzf-lua",
+		"CopilotChat",
+		"claude",
+		"codex",
+		"gemini",
+		"copilot",
+	}
+	for _, module in ipairs(recommended_modules) do
+		local status = optional.status(function(candidate)
+			return candidate == module
+		end)
+		eq(status.mode, "enhanced", module .. " should enable enhanced mode")
+	end
+end
+
+local function test_commit_input_generates_message_from_popup()
+	require("lazyvcs").setup({
+		ai = {
+			commit_message = {
+				provider = "off",
+			},
+		},
+	})
+
+	local input = require("lazyvcs.source_control.input")
+	local submitted
+	local handle = input.open_text({
+		title = " Commit Message: repo ",
+		can_generate = true,
+		on_generate = function(done)
+			done("Add generated commit message")
+		end,
+	}, function(value)
+		submitted = value
+	end)
+
+	local footer = vim.api.nvim_win_get_config(handle.winid).footer
+	assert(vim.inspect(footer):match("Generate"), "commit popup should expose a generate hint")
+	handle.generate()
+	wait_for(function()
+		return vim.api.nvim_buf_get_lines(handle.bufnr, 0, 1, false)[1] == "Add generated commit message"
+	end, "generated commit message was not inserted")
+	feed("<CR>")
+	wait_for(function()
+		return submitted ~= nil
+	end, "generated commit message was not submitted")
+	eq(submitted, "Add generated commit message")
+end
+
+local function test_ai_commit_message_auto_falls_back_to_next_cli_provider()
+	require("lazyvcs").setup({
+		ai = {
+			commit_message = {
+				provider = "auto",
+				provider_order = { "claude", "codex" },
+				instructions = "Use ticket IDs when present.",
+				confirm_privacy = false,
+			},
+		},
+	})
+
+	local ai = require("lazyvcs.source_control.ai")
+	local util = require("lazyvcs.util")
+	local previous_system_start = util.system_start
+	local calls = {}
+	local codex_stdin
+	ai._test_reset_privacy()
+	ai._test_set_executable_checker(function(name)
+		return name == "claude" or name == "codex"
+	end)
+
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.system_start = function(args, opts, on_exit)
+		local key = table.concat(args, " ")
+		calls[#calls + 1] = key
+		if key:match("^git diff %-%-staged") then
+			on_exit({ code = 0, stdout = "diff --git a/app.lua b/app.lua\n+return true\n", stderr = "" }, nil)
+		elseif key:match("^claude ") then
+			on_exit(nil, "claude failed")
+		elseif key:match("^codex exec") then
+			codex_stdin = opts.stdin
+			on_exit({ code = 0, stdout = "Add generated commit message\n\nignored body\n", stderr = "" }, nil)
+		else
+			error("unexpected command: " .. key)
+		end
+		return {}
+	end
+
+	local message
+	local err
+	local provider
+	local ok = ai.generate({
+		vcs = "git",
+		root = vim.fn.tempname(),
+	}, function(generated, generate_err, used_provider)
+		message = generated
+		err = generate_err
+		provider = used_provider
+	end)
+	assert(ok, "AI generation should start")
+	wait_for(function()
+		return message ~= nil or err ~= nil
+	end, "AI generation did not finish")
+	eq(message, "Add generated commit message")
+	eq(err, nil)
+	eq(provider, "codex")
+	assert(codex_stdin:match("Use ticket IDs when present"), "custom instructions should be included")
+	assert(codex_stdin:match("diff %-%-git"), "diff context should be included")
+	eq(calls[1], "git diff --staged --stat --patch --minimal --unified=1")
+	assert(calls[2]:match("^claude "), "auto provider should try claude first")
+	eq(calls[3], "codex exec --skip-git-repo-check --ephemeral --sandbox read-only --ask-for-approval never -")
+
+	util.system_start = previous_system_start
+	ai._test_reset_privacy()
+end
+
+local function test_picker_uses_snacks_select_module_when_available()
+	local previous_picker = package.loaded["lazyvcs.picker"]
+	local previous_snacks = package.loaded["snacks.picker.select"]
+	package.loaded["lazyvcs.picker"] = nil
+
+	local calls = {}
+	package.loaded["snacks.picker.select"] = {
+		select = function(items, opts, on_choice)
+			calls[#calls + 1] = {
+				items = items,
+				opts = opts,
+			}
+			on_choice(items[1])
+		end,
+	}
+
+	local selected
+	require("lazyvcs.picker").select({ { label = "first" } }, { prompt = "Pick" }, function(item)
+		selected = item
+	end)
+
+	eq(#calls, 1)
+	eq(calls[1].opts.prompt, "Pick")
+	eq(selected, { label = "first" })
+
+	package.loaded["lazyvcs.picker"] = previous_picker
+	package.loaded["snacks.picker.select"] = previous_snacks
+end
+
+local function test_source_control_confirm_popup_key_paths()
+	local confirm = require("lazyvcs.source_control.confirm")
+	vim.cmd.enew()
+	vim.api.nvim_buf_set_lines(0, 0, -1, false, { "source" })
+	local previous_win = vim.api.nvim_get_current_win()
+	vim.api.nvim_win_set_cursor(previous_win, { 1, 0 })
+
+	local function choose(keys)
+		local choice
+		local handle = confirm.open({
+			prompt = "Sync example?",
+		}, function(result)
+			choice = result
+		end)
+		eq(vim.api.nvim_buf_get_lines(handle.bufnr, 0, -1, false), {
+			"1. Confirm",
+			"2. Confirm and do not ask again this session",
+			"3. Cancel",
+		})
+		feed(keys)
+		wait_for(function()
+			return choice ~= nil
+		end, "confirmation popup did not resolve")
+		eq(vim.api.nvim_get_current_win(), previous_win)
+		eq(vim.api.nvim_win_get_cursor(previous_win), { 1, 0 })
+		return choice
+	end
+
+	eq(choose("1"), "confirm")
+	eq(choose("<CR>"), "confirm")
+	eq(choose("2"), "confirm_session")
+	eq(choose("3"), "cancel")
+	eq(choose("j<CR>"), "confirm_session")
+	eq(choose("k<CR>"), "cancel")
+	eq(choose("q"), "cancel")
+	eq(choose("<Esc>"), "cancel")
+end
+
+local function test_svn_async_blame_cancels_active_child_process()
+	local backend = require("lazyvcs.backends.svn")
+	local util = require("lazyvcs.util")
+	local original_system_start = util.system_start
+	local handles = {}
+	local callbacks = {}
+
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.system_start = function(args, _, on_exit)
+		local handle = {
+			args = args,
+			killed = false,
+			kill = function(self)
+				self.killed = true
+			end,
+		}
+		handles[#handles + 1] = handle
+		callbacks[#callbacks + 1] = on_exit
+		return handle
+	end
+
+	local completed = false
+	local job = backend.blame_lines_async("/tmp/wc/sample.txt", function()
+		completed = true
+	end)
+	callbacks[1]({ stdout = "/tmp/wc\n", code = 0 })
+	eq(#handles, 2)
+	job:kill()
+	assert(handles[2].killed, "active svn blame child process should be killed")
+	callbacks[2]({ stdout = "     1 alice        2026-04-01 line\n", code = 0 })
+	eq(completed, false)
+
+	util.system_start = original_system_start
 end
 
 local function test_source_control_collects_dirty_nested_repos()
@@ -272,7 +587,6 @@ local function test_source_control_progressive_collect_shows_unhydrated_repos()
 		source_control = {
 			scan_depth = 3,
 			show_clean = false,
-			selector_label = "VCS",
 		},
 	})
 
@@ -513,10 +827,10 @@ local function test_source_control_svn_summary_uses_compact_branch_label()
 	pending[2].on_done({
 		code = 0,
 		stdout = [[<?xml version="1.0" encoding="UTF-8"?>
-<info><entry revision="1"><url>svn://ravesvn/Rave/projects/branches/private/KMLopez/RP-2927</url><repository><root>svn://ravesvn/Rave</root></repository></entry></info>]],
+	<info><entry revision="1"><url>svn://example/svn/projects/branches/private/devuser/RP-2927</url><repository><root>svn://example/svn</root></repository></entry></info>]],
 		stderr = "",
 	})
-	eq(summary.branch, "private/KMLopez/RP-2927")
+	eq(summary.branch, "private/devuser/RP-2927")
 end
 
 local function test_source_control_single_repo_root_uses_unique_node_ids()
@@ -704,14 +1018,10 @@ local function test_source_control_toggle_repo_visibility_keeps_a_visible_repo()
 	})
 	local first_repo = root.children[1].children[1]
 
-	local previous_navigate = require("neo-tree.sources.manager").navigate
-	require("neo-tree.sources.manager").navigate = function() end
-
-	state.tree = {
-		get_node = function()
-			return first_repo
-		end,
-	}
+	state.lazyvcs_get_node = function()
+		return first_repo
+	end
+	state.lazyvcs_render = function() end
 	ops.toggle_repo_visibility(state)
 
 	local visible = 0
@@ -721,8 +1031,130 @@ local function test_source_control_toggle_repo_visibility_keeps_a_visible_repo()
 		end
 	end
 	assert(visible >= 1, "at least one repository should stay visible")
+end
 
-	require("neo-tree.sources.manager").navigate = previous_navigate
+local function test_source_control_toggle_repo_visibility_ignores_section_rows()
+	require("lazyvcs").setup({
+		source_control = {
+			scan_depth = 3,
+			show_clean = false,
+		},
+	})
+
+	local fixture = helpers.make_source_control_fixture()
+	local model = require("lazyvcs.source_control.model")
+	local ops = require("lazyvcs.source_control.ops")
+	local specs = model.discover(fixture.root, 3)
+	local state = {
+		path = fixture.root,
+		lazyvcs_commit_drafts = {},
+		lazyvcs_repo_specs = specs,
+		lazyvcs_repo_cache = {},
+		lazyvcs_render = function() end,
+	}
+	local root = model.collect(state, {
+		root = fixture.root,
+		scan_depth = 3,
+	})
+	local repositories = assert(find_view_section(root, "repositories"))
+	local changes = assert(find_view_section(root, "changes"))
+	local visibility_before = vim.deepcopy(state.lazyvcs_repo_visibility)
+
+	local ok, err = pcall(ops.toggle_repo_visibility, state, repositories)
+	assert(ok, tostring(err))
+	ok, err = pcall(ops.toggle_repo_visibility, state, changes)
+	assert(ok, tostring(err))
+	eq(state.lazyvcs_repo_visibility, visibility_before)
+end
+
+local function test_source_control_repo_actions_ignore_non_repo_rows()
+	require("lazyvcs").setup({
+		source_control = {
+			scan_depth = 3,
+			show_clean = false,
+		},
+	})
+
+	local fixture = helpers.make_source_control_fixture()
+	local model = require("lazyvcs.source_control.model")
+	local ops = require("lazyvcs.source_control.ops")
+	local specs = model.discover(fixture.root, 3)
+	local state = {
+		path = fixture.root,
+		lazyvcs_commit_drafts = {},
+		lazyvcs_repo_specs = specs,
+		lazyvcs_repo_cache = {},
+		lazyvcs_render = function() end,
+	}
+	local root = model.collect(state, {
+		root = fixture.root,
+		scan_depth = 3,
+	})
+	local section = assert(find_view_section(root, "repositories"))
+	local actions = {
+		ops.focus_repo,
+		ops.open_repo,
+		ops.switch_repo,
+		ops.run_primary_action,
+		ops.repo_action_picker,
+		ops.sync_repo,
+		ops.generate_commit_message,
+		ops.open_change,
+		ops.stage_file,
+		ops.unstage_file,
+		ops.revert_file,
+		ops.commit_repo,
+	}
+
+	for _, action in ipairs(actions) do
+		local ok, err = pcall(action, state, section)
+		assert(ok, tostring(err))
+	end
+end
+
+local function test_source_control_confirm_session_choice_disables_more_prompts()
+	require("lazyvcs").setup({
+		source_control = {
+			scan_depth = 1,
+			show_clean = true,
+			confirm_mutations = true,
+		},
+	})
+
+	local root = vim.fn.tempname()
+	vim.fn.mkdir(root, "p")
+	helpers.exec({ "git", "init" }, root)
+	helpers.write_file(root .. "/changed.txt", "changed\n")
+
+	local state = {
+		lazyvcs_confirm_mutations = true,
+		lazyvcs_commit_drafts = {},
+		lazyvcs_repo_cache = {
+			[root] = {
+				root = root,
+				name = "repo",
+				vcs = "git",
+				counts = { local_changes = 1, staged = 0, remote = 0 },
+			},
+		},
+		lazyvcs_render = function() end,
+	}
+	local node = {
+		type = "file",
+		path = root .. "/changed.txt",
+		extra = {
+			repo_root = root,
+			relpath = "changed.txt",
+		},
+	}
+
+	require("lazyvcs.source_control.ops").stage_file(state, node)
+	feed("2")
+	wait_for(function()
+		local result = vim.system({ "git", "diff", "--cached", "--name-only" }, { cwd = root, text = true }):wait()
+		return result.stdout:match("changed%.txt") ~= nil
+	end, "stage confirmation did not run git add")
+	eq(state.lazyvcs_confirm_mutations, false)
 end
 
 local function test_source_control_tree_view_groups_files_into_folders()
@@ -772,147 +1204,6 @@ local function test_source_control_tree_view_groups_files_into_folders()
 	eq(section.children[1].children[1].extra.relpath, "src/module/app.lua")
 end
 
-local function test_source_control_components_hide_low_priority_metadata_in_narrow_windows()
-	local components = require("lazyvcs.source_control.components")
-
-	local repo_node = {
-		type = "repo_selector",
-		name = "integrated-solutions-rdk-webserver",
-		extra = {
-			path_label = "platform/projects/subdir",
-			counts = { local_changes = 8 },
-			sync = { text = "2↓ 8↑", status = "diverged", highlight = "DiagnosticWarn" },
-		},
-	}
-	local change_node = {
-		type = "repo_changes",
-		name = "integrated-solutions-rdk-webserver",
-		extra = {
-			branch = "feature/very-long-branch-name",
-			counts = { local_changes = 8 },
-			sync = { text = "2↓ 8↑", status = "diverged", highlight = "DiagnosticWarn" },
-		},
-	}
-	local commit_node = {
-		type = "commit_input",
-		extra = {
-			show_input_action_button = true,
-			primary_label = "Sync Changes",
-			draft = "",
-		},
-	}
-	local selector_meta = components.repo_selector_meta({}, repo_node, {}, 6)
-	local changes_meta = components.repo_changes_meta({}, change_node, {}, 6)
-
-	eq(selector_meta.text, " 2↓ 8↑")
-	eq(changes_meta.text, " 2↓ 8↑")
-	eq(components.input_hint({}, commit_node, {}, 6), nil)
-end
-
-local function test_source_control_components_restore_metadata_in_wide_windows()
-	local components = require("lazyvcs.source_control.components")
-
-	local repo_node = {
-		type = "repo_selector",
-		name = "repo",
-		extra = {
-			path_label = "platform/projects/subdir",
-			counts = { local_changes = 8 },
-			sync = { text = "2↓ 8↑", status = "diverged", highlight = "DiagnosticWarn" },
-		},
-	}
-	local change_node = {
-		type = "repo_changes",
-		name = "repo",
-		extra = {
-			branch = "feature/very-long-branch-name",
-			counts = { local_changes = 8 },
-			sync = { text = "2↓ 8↑", status = "diverged", highlight = "DiagnosticWarn" },
-		},
-	}
-	local commit_node = {
-		type = "commit_input",
-		extra = {
-			show_input_action_button = true,
-			primary_label = "Sync Changes",
-			draft = "",
-		},
-	}
-	local selector_meta = components.repo_selector_meta({}, repo_node, {}, 40)
-	local changes_meta = components.repo_changes_meta({}, change_node, {}, 40)
-
-	eq(selector_meta[1].text, " platform/projects/subdir ")
-	eq(selector_meta[2].text, "2↓ 8↑")
-	eq(changes_meta[1].text, " feature/very-long-branch-name ")
-	eq(changes_meta[2].text, "2↓ 8↑")
-	eq(components.input_hint({}, commit_node, {}, 20).text, "Sync Changes")
-end
-
-local function test_source_control_components_show_short_path_when_budget_allows()
-	local components = require("lazyvcs.source_control.components")
-	local repo_node = {
-		type = "repo_selector",
-		name = "factory",
-		extra = {
-			path_label = "platform",
-			counts = { local_changes = 2 },
-			sync = { text = "2↑", status = "outgoing", highlight = "DiagnosticHint" },
-		},
-	}
-	local meta = components.repo_selector_meta({}, repo_node, {}, 12)
-	eq(meta[1].text, " platform ")
-	eq(meta[2].text, "2↑")
-end
-
-local function test_source_control_components_exact_fit_regression_keeps_last_character()
-	local components = require("lazyvcs.source_control.components")
-	local repo_node = {
-		type = "repo_selector",
-		name = "factory",
-		extra = {
-			path_label = "platform",
-			counts = { local_changes = 2 },
-			sync = { text = "2↑", status = "outgoing", highlight = "DiagnosticHint" },
-		},
-	}
-	local meta = components.repo_selector_meta({}, repo_node, {}, 12)
-	eq(meta[1].text, " platform ")
-	eq(meta[2].text, "2↑")
-end
-
-local function test_source_control_components_keep_repo_rows_stable_during_refresh()
-	local components = require("lazyvcs.source_control.components")
-	local repo_node = {
-		type = "repo_selector",
-		name = "factory",
-		extra = {
-			path_label = "platform",
-			counts = { local_changes = 2 },
-			sync = { text = "2↑", status = "outgoing", highlight = "DiagnosticHint" },
-			refreshing_summary = true,
-		},
-	}
-
-	local meta = components.repo_selector_meta({}, repo_node, {}, 13)
-	eq(meta[1].text, " platform ")
-	eq(meta[2].text, "2↑")
-	eq(meta[3], nil)
-
-	local root_node = {
-		type = "root",
-		name = "Source Control for /tmp",
-		extra = {
-			hydration_active = true,
-			hydration_pending = 7,
-		},
-	}
-	local root_meta = components.root_meta({}, root_node, {}, 4)
-	eq(root_meta.text, "󰑓")
-
-	root_node.extra.hydration_active = false
-	eq(components.root_meta({}, root_node, {}, 4), nil)
-end
-
 local function test_source_control_hides_clean_repo_after_summary_hydration()
 	require("lazyvcs").setup({
 		source_control = {
@@ -950,71 +1241,9 @@ local function test_source_control_hides_clean_repo_after_summary_hydration()
 	eq(root.children[2].children[3].name, "projects")
 end
 
-local function test_source_control_smart_e_is_contextual()
-	local common = require("neo-tree.sources.common.commands")
-	local actions = require("lazyvcs.actions")
-	local commands = require("lazyvcs.source_control.commands")
-	local ops = require("lazyvcs.source_control.ops")
-	local resized = false
-	local edited = false
-	local rebalanced = false
-	local prev_resize = common.toggle_auto_expand_width
-	local prev_edit = ops.edit_commit_message
-	local prev_rebalance = actions.rebalance_tab
-
-	---@diagnostic disable-next-line: duplicate-set-field
-	common.toggle_auto_expand_width = function()
-		resized = true
-	end
-	---@diagnostic disable-next-line: duplicate-set-field
-	ops.edit_commit_message = function()
-		edited = true
-	end
-	---@diagnostic disable-next-line: duplicate-set-field
-	actions.rebalance_tab = function()
-		rebalanced = true
-	end
-
-	local non_message_state = {
-		tabid = 7,
-		tree = {
-			get_node = function()
-				return { type = "repo_changes" }
-			end,
-		},
-	}
-	commands.smart_e(non_message_state)
-	eq(resized, true)
-	eq(edited, false)
-	vim.wait(100, function()
-		return rebalanced
-	end)
-	eq(rebalanced, true)
-
-	resized = false
-	edited = false
-	rebalanced = false
-	local message_state = {
-		tree = {
-			get_node = function()
-				return { type = "commit_input" }
-			end,
-		},
-	}
-	commands.smart_e(message_state)
-	eq(resized, false)
-	eq(edited, true)
-	eq(rebalanced, false)
-
-	common.toggle_auto_expand_width = prev_resize
-	ops.edit_commit_message = prev_edit
-	actions.rebalance_tab = prev_rebalance
-end
-
 local function test_source_control_open_repo_recreates_force_expand_after_intermediate_navigate()
 	local ops = require("lazyvcs.source_control.ops")
 	local model = require("lazyvcs.source_control.model")
-	local manager = require("neo-tree.sources.manager")
 
 	local repo = {
 		root = "/tmp/repo",
@@ -1030,28 +1259,22 @@ local function test_source_control_open_repo_recreates_force_expand_after_interm
 		lazyvcs_repo_cache = {
 			[repo.root] = repo,
 		},
-		tree = {
-			get_node = function()
-				return {
-					type = "repo_changes",
-					path = repo.root,
-					extra = { repo_root = repo.root },
-					get_id = function()
-						return repo.root
-					end,
-				}
-			end,
-		},
 	}
+	state.lazyvcs_get_node = function()
+		return {
+			type = "repo_changes",
+			path = repo.root,
+			extra = { repo_root = repo.root },
+			get_id = function()
+				return repo.root
+			end,
+		}
+	end
 
-	local previous_navigate = manager.navigate
 	local previous_load = model.load_repo_details_async
 	local navigate_count = 0
-	manager.navigate = function(s)
+	state.lazyvcs_render = function()
 		navigate_count = navigate_count + 1
-		if navigate_count == 1 then
-			s.lazyvcs_force_expand = nil
-		end
 	end
 	---@diagnostic disable-next-line: duplicate-set-field
 	model.load_repo_details_async = function(_, _, _, on_done)
@@ -1064,9 +1287,9 @@ local function test_source_control_open_repo_recreates_force_expand_after_interm
 	ops.open_repo(state)
 
 	eq(state.lazyvcs_repo_cache[repo.root].details_loaded, true)
-	eq(navigate_count, 1)
+	assert(navigate_count >= 1, "open_repo should render after details load")
+	assert(state.lazyvcs_force_expand[model.repo_changes_id(repo.root)], "open_repo should keep force-expand state")
 
-	manager.navigate = previous_navigate
 	model.load_repo_details_async = previous_load
 end
 
@@ -1087,6 +1310,12 @@ local function test_source_control_open_repo_collapses_expanded_stale_node_first
 		lazyvcs_repo_cache = {
 			[repo.root] = repo,
 		},
+		lazyvcs_expanded = {
+			[model.repo_changes_id(repo.root)] = true,
+		},
+		lazyvcs_force_expand = {
+			[model.repo_changes_id(repo.root)] = true,
+		},
 	}
 	local node = {
 		type = "repo_changes",
@@ -1100,21 +1329,301 @@ local function test_source_control_open_repo_collapses_expanded_stale_node_first
 		end,
 	}
 	local previous_load = model.load_repo_details_async
-	local toggled = false
 	local loaded = false
 	---@diagnostic disable-next-line: duplicate-set-field
 	model.load_repo_details_async = function()
 		loaded = true
 	end
 
-	ops.open_repo(state, node, function()
-		toggled = true
-	end)
+	ops.open_repo(state, node)
 
-	eq(toggled, true)
+	eq(state.lazyvcs_expanded[model.repo_changes_id(repo.root)], false)
+	eq(state.lazyvcs_force_expand[model.repo_changes_id(repo.root)], nil)
 	eq(loaded, false)
 
 	model.load_repo_details_async = previous_load
+end
+
+local function test_source_control_open_repo_expands_loaded_collapsed_node()
+	local ops = require("lazyvcs.source_control.ops")
+	local model = require("lazyvcs.source_control.model")
+	local repo = {
+		root = "/tmp/repo",
+		name = "repo",
+		vcs = "git",
+		order = 1,
+		counts = { local_changes = 1, staged = 0, remote = 0 },
+		sync = { status = "dirty" },
+		details_loaded = true,
+	}
+	local state = {
+		path = "/tmp",
+		lazyvcs_repo_cache = {
+			[repo.root] = repo,
+		},
+		lazyvcs_expanded = {
+			[model.repo_changes_id(repo.root)] = false,
+		},
+	}
+	local node = {
+		type = "repo_changes",
+		path = repo.root,
+		extra = { repo_root = repo.root },
+		is_expanded = function()
+			return false
+		end,
+	}
+	local render_count = 0
+	state.lazyvcs_render = function()
+		render_count = render_count + 1
+	end
+
+	ops.open_repo(state, node)
+
+	eq(state.lazyvcs_expanded[model.repo_changes_id(repo.root)], true)
+	eq(render_count, 1)
+end
+
+local function test_source_control_open_repo_can_collapse_while_busy()
+	local ops = require("lazyvcs.source_control.ops")
+	local model = require("lazyvcs.source_control.model")
+	local state_mod = require("lazyvcs.state")
+	local repo = {
+		root = "/tmp/repo",
+		name = "repo",
+		vcs = "git",
+		order = 1,
+		counts = { local_changes = 1, staged = 0, remote = 0 },
+		sync = { status = "dirty" },
+		details_loaded = true,
+	}
+	local state = {
+		path = "/tmp",
+		lazyvcs_repo_cache = {
+			[repo.root] = repo,
+		},
+		lazyvcs_expanded = {
+			[model.repo_changes_id(repo.root)] = true,
+		},
+	}
+	local node = {
+		type = "repo_changes",
+		path = repo.root,
+		extra = { repo_root = repo.root },
+		is_expanded = function()
+			return true
+		end,
+		get_id = function()
+			return repo.root
+		end,
+	}
+
+	state_mod.set_repo_job(repo.root, {
+		status = "running",
+		action = "sync",
+		label = "Syncing...",
+		sync_text = "Sync",
+	})
+	ops.open_repo(state, node)
+
+	eq(state.lazyvcs_expanded[model.repo_changes_id(repo.root)], false)
+	state_mod.clear_repo_job(repo.root)
+end
+
+local function test_source_control_native_render_consumes_force_expand()
+	require("lazyvcs").setup({
+		source_control = {
+			scan_depth = 1,
+			show_clean = true,
+		},
+	})
+
+	local fixture = helpers.make_git_fixture()
+	local model = require("lazyvcs.source_control.model")
+	local native = require("lazyvcs.source_control.native")
+	local specs = model.discover(fixture.root, 1)
+	local repo = assert(model.load_repo_details(specs[1], {
+		changes_sort = "path",
+	}))
+	local repo_id = model.repo_changes_id(repo.root)
+	local state = {
+		path = fixture.root,
+		bufnr = vim.api.nvim_create_buf(false, true),
+		lazyvcs_expanded = {},
+		lazyvcs_force_expand = {
+			[repo_id] = true,
+		},
+		lazyvcs_commit_drafts = {},
+		lazyvcs_repo_specs = specs,
+		lazyvcs_repo_cache = {
+			[repo.root] = repo,
+		},
+		lazyvcs_repo_visibility = {
+			[repo.root] = true,
+		},
+	}
+
+	native.render(state)
+
+	local text = table.concat(vim.api.nvim_buf_get_lines(state.bufnr, 0, -1, false), "\n")
+	assert(text:match("Commit message"), text)
+	assert(text:match("sample%.txt"), text)
+	eq(state.lazyvcs_expanded[repo_id], true)
+	eq(state.lazyvcs_force_expand[repo_id], nil)
+end
+
+local function test_source_control_native_open_can_preserve_current_window()
+	require("lazyvcs").setup({
+		source_control = {
+			ui = "native",
+			scan_depth = 1,
+			show_clean = true,
+			remote_refresh = "manual",
+		},
+	})
+
+	local fixture = helpers.make_git_fixture()
+	local original_win = vim.api.nvim_get_current_win()
+	require("lazyvcs").source_control_open({ path = fixture.root, focus = false })
+	local state = assert(require("lazyvcs.source_control.native")._state(), "missing native state")
+
+	eq(vim.api.nvim_get_current_win(), original_win, "focus=false open should preserve the active window")
+	local sidebar_winid = state.winid
+	require("lazyvcs").source_control_close()
+	assert(not vim.api.nvim_win_is_valid(sidebar_winid), "sidebar window should close")
+end
+
+local function test_source_control_native_smart_e_toggles_auto_width_and_restores_cursor()
+	require("lazyvcs").setup({
+		source_control = {
+			ui = "native",
+			scan_depth = 1,
+			show_clean = true,
+			remote_refresh = "manual",
+			width = 24,
+			auto_expand_max_width_ratio = 0.5,
+		},
+	})
+
+	local previous_columns = vim.o.columns
+	vim.o.columns = 100
+	local fixture = helpers.make_git_fixture()
+	local native = require("lazyvcs.source_control.native")
+	require("lazyvcs").source_control_open({ path = fixture.root })
+	local state = assert(native._state(), "missing native state")
+	vim.api.nvim_win_set_width(state.winid, 24)
+	native.render(state)
+	vim.api.nvim_set_current_win(state.winid)
+	vim.api.nvim_win_set_cursor(state.winid, { 1, 3 })
+
+	native.dispatch("smart_e")
+	eq(vim.api.nvim_win_get_cursor(state.winid), { 1, 3 }, "auto-fit should preserve sidebar cursor")
+	assert(vim.api.nvim_win_get_width(state.winid) > 24, "auto-fit should expand for long visible text")
+	assert(vim.api.nvim_win_get_width(state.winid) <= 50, "auto-fit should respect max width ratio")
+
+	native.dispatch("smart_e")
+	eq(vim.api.nvim_win_get_width(state.winid), 24, "auto-fit should restore the previous user width")
+
+	require("lazyvcs").source_control_close()
+	vim.o.columns = previous_columns
+end
+
+local function test_source_control_native_render_preserves_active_window_and_repo_meta_spacing()
+	require("lazyvcs").setup({
+		source_control = {
+			ui = "native",
+			scan_depth = 1,
+			show_clean = true,
+			remote_refresh = "manual",
+			width = 80,
+		},
+	})
+
+	local fixture = helpers.make_git_fixture()
+	local native = require("lazyvcs.source_control.native")
+	local editor_win = vim.api.nvim_get_current_win()
+	require("lazyvcs").source_control_open({ path = fixture.root, focus = false })
+	local state = assert(native._state(), "missing native state")
+	local spec = assert(state.lazyvcs_repo_specs[1], "missing repo spec")
+	state.lazyvcs_repo_cache[spec.root] = {
+		root = spec.root,
+		name = spec.name,
+		vcs = "git",
+		order = 1,
+		relpath = spec.relpath,
+		path_label = spec.path_label,
+		branch = "feature/spacing-check",
+		sections = {},
+		counts = {
+			local_changes = 2,
+			staged = 0,
+			remote = 0,
+		},
+		sync = {
+			text = "Publish Branch",
+			status = "publish",
+			highlight = "DiagnosticInfo",
+		},
+		summary_loaded = true,
+		details_loaded = true,
+		loading_details = false,
+		loading_summary = false,
+	}
+	vim.api.nvim_win_set_width(state.winid, 80)
+	native.render(state)
+
+	eq(vim.api.nvim_get_current_win(), editor_win, "render should not steal focus from the editor")
+	local repo_line
+	for _, line in ipairs(vim.api.nvim_buf_get_lines(state.bufnr, 0, -1, false)) do
+		if line:find("feature/spacing%-check") then
+			repo_line = line
+			break
+		end
+	end
+	assert(repo_line, "expected rendered repo branch metadata")
+	local name_start = assert(repo_line:find(spec.name, 1, true), repo_line)
+	local after_name = repo_line:sub(name_start + #spec.name, name_start + #spec.name)
+	eq(after_name, " ", "repo name and branch metadata should not touch")
+
+	require("lazyvcs").source_control_close()
+end
+
+local function test_source_control_native_invalidated_cache_rehydrates()
+	require("lazyvcs").setup({
+		source_control = {
+			ui = "native",
+			scan_depth = 1,
+			show_clean = true,
+			remote_refresh = "manual",
+			confirm_mutations = false,
+		},
+	})
+
+	local fixture = helpers.make_git_fixture()
+	local ops = require("lazyvcs.source_control.ops")
+	require("lazyvcs").source_control_open({ path = fixture.root })
+	local state = assert(require("lazyvcs.source_control.native")._state(), "missing native state")
+	local spec = assert(state.lazyvcs_repo_specs[1], "missing repo spec")
+
+	wait_for(function()
+		local cached = state.lazyvcs_repo_cache[spec.root]
+		return cached and cached.summary_loaded == true and cached.loading_summary ~= true
+	end, "initial native hydration should load repo summary")
+
+	local generation = state.lazyvcs_hydration_generation
+	ops.toggle_show_clean(state)
+	local placeholder = state.lazyvcs_repo_cache[spec.root]
+	assert(placeholder and placeholder.loading_summary == true, "invalidated cache should render a loading placeholder")
+
+	wait_for(function()
+		local cached = state.lazyvcs_repo_cache[spec.root]
+		return cached
+			and cached.summary_loaded == true
+			and cached.loading_summary ~= true
+			and state.lazyvcs_hydration_generation > generation
+	end, "native navigate should restart hydration after cache invalidation")
+
+	require("lazyvcs").source_control_close()
 end
 
 local function test_svn_status_xml_ignores_external_banner_noise()
@@ -1180,10 +1689,6 @@ local function test_source_control_open_change_reopens_without_base_buffer_colli
 	local actions = require("lazyvcs.actions")
 	local state_mod = require("lazyvcs.state")
 	local util = require("lazyvcs.util")
-	require("neo-tree").config = {
-		open_files_using_relative_paths = false,
-		keep_altfile = false,
-	}
 	local specs = model.discover(fixture.root, 1)
 	local state = {
 		path = fixture.root,
@@ -1233,10 +1738,6 @@ local function test_source_control_open_change_reuses_active_diff_window()
 	local ops = require("lazyvcs.source_control.ops")
 	local state_mod = require("lazyvcs.state")
 	local util = require("lazyvcs.util")
-	require("neo-tree").config = {
-		open_files_using_relative_paths = false,
-		keep_altfile = false,
-	}
 	local specs = model.discover(fixture.root, 1)
 	local state = {
 		path = fixture.root,
@@ -1390,6 +1891,21 @@ local function test_git_backend()
 	eq(info.base_lines, { "one", "two", "three" })
 end
 
+local function test_async_system_reports_missing_executable()
+	local util = require("lazyvcs.util")
+	local callback_err
+	local callback_result
+	util.system_start({ "lazyvcs-definitely-missing-executable" }, {}, function(result, err)
+		callback_result = result
+		callback_err = err
+	end)
+	wait_for(function()
+		return callback_err ~= nil
+	end, "missing async executable should report through callback")
+	eq(callback_result, nil)
+	assert(callback_err:match("lazyvcs%-definitely%-missing%-executable"), callback_err)
+end
+
 local function test_svn_backend()
 	local backend = require("lazyvcs.backends.svn")
 	local fixture = helpers.make_svn_fixture()
@@ -1398,6 +1914,306 @@ local function test_svn_backend()
 	eq(info.name, "svn")
 	eq(info.base_label, "BASE")
 	eq(info.base_lines, { "one", "two", "three" })
+end
+
+local function test_svn_status_and_blame_parsers()
+	local backend = require("lazyvcs.backends.svn")
+	local items = backend.parse_status_lines({
+		"M       src/changed.lua",
+		"A       src/added.lua",
+		"?       scratch.txt",
+	}, "/tmp/wc")
+
+	eq(#items, 3)
+	eq(items[1].status, "M")
+	eq(items[1].label, "modified")
+	eq(items[1].path, "src/changed.lua")
+	eq(items[1].absolute_path, "/tmp/wc/src/changed.lua")
+	eq(items[3].label, "untracked")
+
+	local blame = backend.parse_blame_metadata({
+		"     7 alice        2026-04-01 line one",
+		"    12 bob          2026-04-02 line two",
+		"      -          -                                            -     local line",
+	})
+	eq(blame, {
+		"     7           alice 2026-04-01",
+		"    12             bob 2026-04-02",
+		"Uncommitted line",
+	})
+	local entries = backend.parse_blame_entries({
+		"     7 alice        2026-04-01 line one",
+		"    12 bob          2026-04-02 line two",
+		"      -          -                                            -     local line",
+	})
+	eq(entries, {
+		{ revision = "7", author = "alice", date = "2026-04-01" },
+		{ revision = "12", author = "bob", date = "2026-04-02" },
+		{ revision = "-", author = "-", date = "-", uncommitted = true },
+	})
+end
+
+local function test_svn_blame_inline_virtual_text()
+	require("lazyvcs").setup({
+		blame = {
+			delay_ms = 0,
+			format = "{author} r{revision}",
+			max_width = 40,
+		},
+		signs = {
+			debounce_ms = 10,
+		},
+	})
+
+	local fixture = helpers.make_svn_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+	local source_win = vim.api.nvim_get_current_win()
+	local source_buf = vim.api.nvim_get_current_buf()
+	vim.api.nvim_win_set_cursor(source_win, { 2, 0 })
+
+	assert(require("lazyvcs.svn_ui").blame())
+	wait_for(function()
+		local test_state = require("lazyvcs.svn_ui")._test_inline_state()
+		local marks = vim.api.nvim_buf_get_extmarks(source_buf, test_state.namespace, 0, -1, { details = true })
+		return #marks == 1 and marks[1][4].virt_text and marks[1][4].virt_text[1][2] == "LazyVcsBlame"
+	end, "inline blame virtual text should render", 5000)
+	eq(vim.api.nvim_get_current_win(), source_win)
+	eq(vim.api.nvim_win_get_cursor(source_win), { 2, 0 })
+
+	require("lazyvcs.svn_ui").blame_clear()
+	local test_state = require("lazyvcs.svn_ui")._test_inline_state()
+	local marks = vim.api.nvim_buf_get_extmarks(source_buf, test_state.namespace, 0, -1, { details = true })
+	eq(#marks, 0)
+end
+
+local function test_svn_blame_inline_delays_loading_indicator()
+	require("lazyvcs").setup({
+		blame = {
+			delay_ms = 0,
+			loading_delay_ms = 1000,
+		},
+	})
+
+	local backend = require("lazyvcs.backends.svn")
+	local original_blame_lines_async = backend.blame_lines_async
+	local callback
+	---@diagnostic disable-next-line: duplicate-set-field
+	backend.blame_lines_async = function(_, on_done)
+		callback = on_done
+		return {
+			kill = function() end,
+		}
+	end
+
+	local fixture = helpers.make_svn_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+	local source_buf = vim.api.nvim_get_current_buf()
+	assert(require("lazyvcs.svn_ui").blame())
+	wait_for(function()
+		local view = require("lazyvcs.svn_ui")._test_inline_state().views[source_buf]
+		return view and view.loading and callback
+	end, "inline blame should start loading")
+	eq(inline_blame_text(source_buf), nil, "inline blame should stay quiet before loading delay")
+
+	callback({ "     7 alice        2026-04-01 line one" })
+	wait_for(function()
+		return inline_blame_text(source_buf) ~= nil
+	end, "inline blame result should render")
+
+	require("lazyvcs.svn_ui").blame_clear()
+	backend.blame_lines_async = original_blame_lines_async
+end
+
+local function test_svn_blame_inline_loading_indicator_and_uncommitted_line()
+	require("lazyvcs").setup({
+		blame = {
+			delay_ms = 0,
+			loading_delay_ms = 10,
+			loading_text = "Blame loading...",
+			uncommitted_text = "Uncommitted line",
+			format = "{author} r{revision}",
+			max_width = 40,
+		},
+	})
+
+	local backend = require("lazyvcs.backends.svn")
+	local original_blame_lines_async = backend.blame_lines_async
+	local callback
+	---@diagnostic disable-next-line: duplicate-set-field
+	backend.blame_lines_async = function(_, on_done)
+		callback = on_done
+		return {
+			kill = function() end,
+		}
+	end
+
+	local fixture = helpers.make_svn_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+	local source_buf = vim.api.nvim_get_current_buf()
+	vim.api.nvim_win_set_cursor(0, { 2, 0 })
+	assert(require("lazyvcs.svn_ui").blame())
+	wait_for(function()
+		return inline_blame_text(source_buf) == "  Blame loading..."
+	end, "inline blame loading indicator should render after delay")
+
+	callback({
+		"     7 alice        2026-04-01 line one",
+		"      -          -                                            -     local line",
+	})
+	wait_for(function()
+		return inline_blame_text(source_buf) == "  Uncommitted line"
+	end, "inline blame should render a friendly uncommitted label")
+
+	require("lazyvcs.svn_ui").blame_clear()
+	backend.blame_lines_async = original_blame_lines_async
+end
+
+local function test_svn_blame_split_is_fixed_width_and_muted()
+	require("lazyvcs").setup({
+		blame = {
+			mode = "split",
+			uncommitted_text = "Uncommitted line",
+			split_min_width = 20,
+			split_max_width = 24,
+		},
+	})
+
+	local fixture = helpers.make_svn_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+	local source_win = vim.api.nvim_get_current_win()
+	local source_buf = vim.api.nvim_get_current_buf()
+	vim.wo[source_win].scrollbind = false
+	vim.wo[source_win].cursorbind = false
+	require("lazyvcs.svn_ui").blame_split()
+
+	wait_for(function()
+		local view = require("lazyvcs.svn_ui")._test_blame_views()[source_buf]
+		return view and not view.loading and vim.api.nvim_win_is_valid(view.winid)
+	end, "split blame should open", 5000)
+
+	local view = require("lazyvcs.svn_ui")._test_blame_views()[source_buf]
+	eq(vim.api.nvim_get_current_win(), source_win)
+	assert(vim.wo[view.winid].winfixwidth, "split blame should use fixed width")
+	assert(vim.api.nvim_win_get_width(view.winid) <= 24, "split blame should respect max width")
+	assert(vim.wo[view.winid].winhighlight:match("LazyVcsBlame"), "split blame should use muted highlights")
+	eq(vim.wo[view.winid].number, false)
+	eq(vim.wo[view.winid].relativenumber, false)
+	eq(vim.wo[view.winid].signcolumn, "no")
+	eq(vim.wo[view.winid].foldcolumn, "0")
+	eq(vim.wo[view.winid].wrap, false)
+	eq(vim.wo[view.winid].list, false)
+	eq(vim.wo[view.winid].spell, false)
+	eq(vim.wo[view.winid].scrollbind, true)
+	eq(vim.wo[view.winid].cursorbind, true)
+	eq(vim.wo[source_win].scrollbind, true)
+	eq(vim.wo[source_win].cursorbind, true)
+	pcall(function()
+		eq(vim.wo[view.winid].statuscolumn, "")
+	end)
+	local blame_lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
+	assert(vim.tbl_contains(blame_lines, "Uncommitted line"), "split blame should label uncommitted rows")
+	require("lazyvcs.svn_ui").blame_split()
+	eq(vim.wo[source_win].scrollbind, false)
+	eq(vim.wo[source_win].cursorbind, false)
+end
+
+local function test_svn_signs_render_and_revert_without_live_diff()
+	require("lazyvcs").setup({
+		debounce_ms = 10,
+		signs = {
+			debounce_ms = 10,
+		},
+	})
+
+	local fixture = helpers.make_svn_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+
+	local signs = require("lazyvcs.signs")
+	local actions = require("lazyvcs.actions")
+	local state = assert(signs.refresh_sync(0))
+	eq(#state.hunks, 1)
+
+	local test_state = signs._test_state()
+	local marks = vim.api.nvim_buf_get_extmarks(0, test_state.namespace, 0, -1, { details = true })
+	assert(#marks > 0, "SVN signs should render extmarks")
+
+	vim.api.nvim_win_set_cursor(0, { 1, 0 })
+	actions.next_hunk()
+	eq(vim.api.nvim_win_get_cursor(0)[1], 2)
+	actions.revert_hunk()
+	eq(vim.api.nvim_buf_get_lines(0, 0, -1, false), { "one", "two", "three" })
+end
+
+local function test_svn_signs_preview_diff_window()
+	require("lazyvcs").setup({
+		signs = {
+			debounce_ms = 10,
+		},
+	})
+
+	local fixture = helpers.make_svn_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+	assert(require("lazyvcs.signs").preview_diff())
+	local buf = vim.api.nvim_get_current_buf()
+	eq(vim.bo[buf].filetype, "diff")
+	vim.cmd.close()
+end
+
+local function test_svnsigns_compat_commands_follow_config()
+	require("lazyvcs").setup({
+		compat = {
+			svnsigns_commands = true,
+		},
+	})
+	eq(vim.fn.exists(":SvnBlame"), 2)
+
+	require("lazyvcs").setup({
+		compat = {
+			svnsigns_commands = false,
+		},
+	})
+	eq(vim.fn.exists(":SvnBlame"), 0)
+
+	require("lazyvcs").setup({
+		compat = {
+			svnsigns_commands = true,
+		},
+	})
+	eq(vim.fn.exists(":SvnBlame"), 2)
+end
+
+local function test_setup_is_idempotent_and_respects_sign_toggle()
+	require("lazyvcs").setup({
+		signs = {
+			enabled = true,
+		},
+		compat = {
+			svnsigns_commands = true,
+		},
+	})
+	require("lazyvcs").setup({
+		signs = {
+			enabled = false,
+		},
+		compat = {
+			svnsigns_commands = false,
+		},
+	})
+
+	eq(vim.fn.exists(":LazyVcsBlame"), 2)
+	eq(vim.fn.exists(":LazyVcsBlameSplit"), 2)
+	eq(vim.fn.exists(":LazyVcsBlameClear"), 2)
+	eq(vim.fn.exists(":SvnBlame"), 0)
+
+	require("lazyvcs").setup({
+		signs = {
+			enabled = true,
+		},
+		compat = {
+			svnsigns_commands = true,
+		},
+	})
+	eq(vim.fn.exists(":SvnBlame"), 2)
 end
 
 local function test_git_integration()
@@ -1688,7 +2504,6 @@ local function test_source_control_git_file_actions_commit_and_sync()
 	local fixture = helpers.make_git_fixture()
 	local model = require("lazyvcs.source_control.model")
 	local ops = require("lazyvcs.source_control.ops")
-	local manager = require("neo-tree.sources.manager")
 	local util = require("lazyvcs.util")
 	local specs = model.discover(fixture.root, 1)
 	local state = {
@@ -1698,9 +2513,7 @@ local function test_source_control_git_file_actions_commit_and_sync()
 		lazyvcs_repo_cache = {},
 		lazyvcs_changes_sort = "path",
 	}
-
-	local previous_navigate = manager.navigate
-	manager.navigate = function() end
+	state.lazyvcs_render = function() end
 
 	local function reload_tree()
 		state.lazyvcs_repo_cache[fixture.root] = assert(model.load_repo_details(specs[1], {
@@ -1781,8 +2594,6 @@ local function test_source_control_git_file_actions_commit_and_sync()
 		),
 		util.trim(helpers.exec({ "git", "rev-parse", "HEAD" }, remote_fixture.root))
 	)
-
-	manager.navigate = previous_navigate
 end
 
 local function test_source_control_git_sync_uses_explicit_upstream_fast_forward()
@@ -1978,6 +2789,459 @@ local function test_source_control_git_sync_pushes_to_configured_upstream()
 	session_state.clear_repo_job(repo_root)
 end
 
+local function test_source_control_git_publish_branch_sets_upstream_to_origin()
+	require("lazyvcs").setup()
+
+	local ops = require("lazyvcs.source_control.ops")
+	local util = require("lazyvcs.util")
+	local session_state = require("lazyvcs.state")
+	local previous_system_start = util.system_start
+	local calls = {}
+	local repo_root = vim.fn.tempname()
+	local state = {
+		path = repo_root,
+		lazyvcs_commit_drafts = {},
+		lazyvcs_repo_cache = {
+			[repo_root] = {
+				root = repo_root,
+				name = "repo",
+				vcs = "git",
+				branch = "feature/new",
+				counts = { local_changes = 0, staged = 0, remote = 0 },
+				sync = { status = "publish" },
+			},
+		},
+	}
+	local node = {
+		type = "action_button",
+		path = repo_root,
+		extra = {
+			repo_root = repo_root,
+			action = "push",
+		},
+		get_id = function()
+			return repo_root
+		end,
+	}
+	local responses = {
+		["git remote"] = "fork\norigin\n",
+		["git push --set-upstream origin feature/new"] = "",
+	}
+
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.system_start = function(args, _opts, on_exit)
+		local key = table.concat(args, " ")
+		calls[#calls + 1] = key
+		if key == "git rev-parse --abbrev-ref --symbolic-full-name @{upstream}" then
+			on_exit(nil, "fatal: no upstream branch")
+			return {}
+		end
+		assert(responses[key] ~= nil, "unexpected command: " .. key)
+		on_exit({ code = 0, stdout = responses[key], stderr = "" }, nil)
+		return {}
+	end
+
+	ops.run_primary_action(state, node)
+	eq(calls, {
+		"git rev-parse --abbrev-ref --symbolic-full-name @{upstream}",
+		"git remote",
+		"git push --set-upstream origin feature/new",
+	})
+	eq(session_state.get_repo_job(repo_root), nil)
+
+	util.system_start = previous_system_start
+	session_state.clear_repo_job(repo_root)
+end
+
+local function test_source_control_git_sync_without_upstream_publishes_branch()
+	require("lazyvcs").setup({
+		source_control = {
+			sync_button_behavior = "direct",
+		},
+	})
+
+	local ops = require("lazyvcs.source_control.ops")
+	local util = require("lazyvcs.util")
+	local session_state = require("lazyvcs.state")
+	local previous_system_start = util.system_start
+	local calls = {}
+	local repo_root = vim.fn.tempname()
+	local state = {
+		path = repo_root,
+		lazyvcs_commit_drafts = {},
+		lazyvcs_repo_cache = {
+			[repo_root] = {
+				root = repo_root,
+				name = "repo",
+				vcs = "git",
+				branch = "feature/new",
+				counts = { local_changes = 0, staged = 0, remote = 0 },
+				sync = { status = "publish" },
+			},
+		},
+	}
+	local node = {
+		type = "repo_changes",
+		path = repo_root,
+		extra = { repo_root = repo_root },
+		get_id = function()
+			return repo_root
+		end,
+	}
+	local responses = {
+		["git remote"] = "origin\n",
+		["git push --set-upstream origin feature/new"] = "",
+	}
+
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.system_start = function(args, _opts, on_exit)
+		local key = table.concat(args, " ")
+		calls[#calls + 1] = key
+		if key == "git rev-parse --abbrev-ref --symbolic-full-name @{upstream}" then
+			on_exit(nil, "fatal: no upstream branch")
+			return {}
+		end
+		assert(responses[key] ~= nil, "unexpected command: " .. key)
+		on_exit({ code = 0, stdout = responses[key], stderr = "" }, nil)
+		return {}
+	end
+
+	ops.sync_repo(state, node)
+	eq(calls, {
+		"git rev-parse --abbrev-ref --symbolic-full-name @{upstream}",
+		"git remote",
+		"git push --set-upstream origin feature/new",
+	})
+	eq(session_state.get_repo_job(repo_root), nil)
+
+	util.system_start = previous_system_start
+	session_state.clear_repo_job(repo_root)
+end
+
+local function test_source_control_git_push_uses_configured_upstream()
+	require("lazyvcs").setup()
+
+	local ops = require("lazyvcs.source_control.ops")
+	local util = require("lazyvcs.util")
+	local session_state = require("lazyvcs.state")
+	local previous_system_start = util.system_start
+	local calls = {}
+	local repo_root = vim.fn.tempname()
+	local state = {
+		path = repo_root,
+		lazyvcs_commit_drafts = {},
+		lazyvcs_repo_cache = {
+			[repo_root] = {
+				root = repo_root,
+				name = "repo",
+				vcs = "git",
+				branch = "feature/local",
+				counts = { local_changes = 0, staged = 0, remote = 0 },
+				sync = { status = "outgoing" },
+			},
+		},
+	}
+	local node = {
+		type = "action_button",
+		path = repo_root,
+		extra = {
+			repo_root = repo_root,
+			action = "push",
+		},
+		get_id = function()
+			return repo_root
+		end,
+	}
+	local responses = {
+		["git rev-parse --abbrev-ref --symbolic-full-name @{upstream}"] = "fork/feature/shared\n",
+		["git push fork feature/local:feature/shared"] = "",
+	}
+
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.system_start = function(args, _opts, on_exit)
+		local key = table.concat(args, " ")
+		calls[#calls + 1] = key
+		assert(responses[key] ~= nil, "unexpected command: " .. key)
+		on_exit({ code = 0, stdout = responses[key], stderr = "" }, nil)
+		return {}
+	end
+
+	ops.run_primary_action(state, node)
+	eq(calls, {
+		"git rev-parse --abbrev-ref --symbolic-full-name @{upstream}",
+		"git push fork feature/local:feature/shared",
+	})
+	eq(session_state.get_repo_job(repo_root), nil)
+
+	util.system_start = previous_system_start
+	session_state.clear_repo_job(repo_root)
+end
+
+local function test_source_control_git_publish_falls_back_to_single_remote()
+	require("lazyvcs").setup()
+
+	local ops = require("lazyvcs.source_control.ops")
+	local util = require("lazyvcs.util")
+	local session_state = require("lazyvcs.state")
+	local previous_system_start = util.system_start
+	local calls = {}
+	local repo_root = vim.fn.tempname()
+	local state = {
+		path = repo_root,
+		lazyvcs_commit_drafts = {},
+		lazyvcs_repo_cache = {
+			[repo_root] = {
+				root = repo_root,
+				name = "repo",
+				vcs = "git",
+				branch = "feature/new",
+				counts = { local_changes = 0, staged = 0, remote = 0 },
+				sync = { status = "publish" },
+			},
+		},
+	}
+	local node = {
+		type = "action_button",
+		path = repo_root,
+		extra = {
+			repo_root = repo_root,
+			action = "push",
+		},
+		get_id = function()
+			return repo_root
+		end,
+	}
+	local responses = {
+		["git remote"] = "fork\n",
+		["git push --set-upstream fork feature/new"] = "",
+	}
+
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.system_start = function(args, _opts, on_exit)
+		local key = table.concat(args, " ")
+		calls[#calls + 1] = key
+		if key == "git rev-parse --abbrev-ref --symbolic-full-name @{upstream}" then
+			on_exit(nil, "fatal: no upstream branch")
+			return {}
+		end
+		assert(responses[key] ~= nil, "unexpected command: " .. key)
+		on_exit({ code = 0, stdout = responses[key], stderr = "" }, nil)
+		return {}
+	end
+
+	ops.run_primary_action(state, node)
+	eq(calls, {
+		"git rev-parse --abbrev-ref --symbolic-full-name @{upstream}",
+		"git remote",
+		"git push --set-upstream fork feature/new",
+	})
+	eq(session_state.get_repo_job(repo_root), nil)
+
+	util.system_start = previous_system_start
+	session_state.clear_repo_job(repo_root)
+end
+
+local function test_source_control_git_publish_requires_unambiguous_remote()
+	require("lazyvcs").setup()
+
+	local ops = require("lazyvcs.source_control.ops")
+	local util = require("lazyvcs.util")
+	local session_state = require("lazyvcs.state")
+	local previous_system_start = util.system_start
+	local previous_notify = util.notify
+	local calls = {}
+	local notifications = {}
+	local repo_root = vim.fn.tempname()
+	local state = {
+		path = repo_root,
+		lazyvcs_commit_drafts = {},
+		lazyvcs_repo_cache = {
+			[repo_root] = {
+				root = repo_root,
+				name = "repo",
+				vcs = "git",
+				branch = "feature/new",
+				counts = { local_changes = 0, staged = 0, remote = 0 },
+				sync = { status = "publish" },
+			},
+		},
+	}
+	local node = {
+		type = "action_button",
+		path = repo_root,
+		extra = {
+			repo_root = repo_root,
+			action = "push",
+		},
+		get_id = function()
+			return repo_root
+		end,
+	}
+
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.system_start = function(args, _opts, on_exit)
+		local key = table.concat(args, " ")
+		calls[#calls + 1] = key
+		if key == "git rev-parse --abbrev-ref --symbolic-full-name @{upstream}" then
+			on_exit(nil, "fatal: no upstream branch")
+			return {}
+		end
+		if key == "git remote" then
+			on_exit({ code = 0, stdout = "fork\nupstream\n", stderr = "" }, nil)
+			return {}
+		end
+		error("unexpected command: " .. key)
+	end
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.notify = function(message)
+		notifications[#notifications + 1] = message
+	end
+
+	ops.run_primary_action(state, node)
+	eq(calls, {
+		"git rev-parse --abbrev-ref --symbolic-full-name @{upstream}",
+		"git remote",
+	})
+	local job = assert(session_state.get_repo_job(repo_root))
+	eq(job.status, "error")
+	assert(job.error:match("multiple Git remotes and no origin remote"), job.error)
+	assert(notifications[1]:match("multiple Git remotes and no origin remote"), notifications[1])
+
+	util.system_start = previous_system_start
+	util.notify = previous_notify
+	session_state.clear_repo_job(repo_root)
+end
+
+local function test_source_control_git_publish_requires_a_remote()
+	require("lazyvcs").setup()
+
+	local ops = require("lazyvcs.source_control.ops")
+	local util = require("lazyvcs.util")
+	local session_state = require("lazyvcs.state")
+	local previous_system_start = util.system_start
+	local previous_notify = util.notify
+	local calls = {}
+	local notifications = {}
+	local repo_root = vim.fn.tempname()
+	local state = {
+		path = repo_root,
+		lazyvcs_commit_drafts = {},
+		lazyvcs_repo_cache = {
+			[repo_root] = {
+				root = repo_root,
+				name = "repo",
+				vcs = "git",
+				branch = "feature/new",
+				counts = { local_changes = 0, staged = 0, remote = 0 },
+				sync = { status = "publish" },
+			},
+		},
+	}
+	local node = {
+		type = "action_button",
+		path = repo_root,
+		extra = {
+			repo_root = repo_root,
+			action = "push",
+		},
+		get_id = function()
+			return repo_root
+		end,
+	}
+
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.system_start = function(args, _opts, on_exit)
+		local key = table.concat(args, " ")
+		calls[#calls + 1] = key
+		if key == "git rev-parse --abbrev-ref --symbolic-full-name @{upstream}" then
+			on_exit(nil, "fatal: no upstream branch")
+			return {}
+		end
+		if key == "git remote" then
+			on_exit({ code = 0, stdout = "", stderr = "" }, nil)
+			return {}
+		end
+		error("unexpected command: " .. key)
+	end
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.notify = function(message)
+		notifications[#notifications + 1] = message
+	end
+
+	ops.run_primary_action(state, node)
+	eq(calls, {
+		"git rev-parse --abbrev-ref --symbolic-full-name @{upstream}",
+		"git remote",
+	})
+	local job = assert(session_state.get_repo_job(repo_root))
+	eq(job.status, "error")
+	assert(job.error:match("has no Git remotes"), job.error)
+	assert(notifications[1]:match("has no Git remotes"), notifications[1])
+
+	util.system_start = previous_system_start
+	util.notify = previous_notify
+	session_state.clear_repo_job(repo_root)
+end
+
+local function test_source_control_git_publish_rejects_detached_head()
+	require("lazyvcs").setup()
+
+	local ops = require("lazyvcs.source_control.ops")
+	local util = require("lazyvcs.util")
+	local session_state = require("lazyvcs.state")
+	local previous_system_start = util.system_start
+	local previous_notify = util.notify
+	local calls = {}
+	local notifications = {}
+	local repo_root = vim.fn.tempname()
+	local state = {
+		path = repo_root,
+		lazyvcs_commit_drafts = {},
+		lazyvcs_repo_cache = {
+			[repo_root] = {
+				root = repo_root,
+				name = "repo",
+				vcs = "git",
+				branch = "HEAD",
+				counts = { local_changes = 0, staged = 0, remote = 0 },
+				sync = { status = "publish" },
+			},
+		},
+	}
+	local node = {
+		type = "action_button",
+		path = repo_root,
+		extra = {
+			repo_root = repo_root,
+			action = "push",
+		},
+		get_id = function()
+			return repo_root
+		end,
+	}
+
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.system_start = function(args)
+		calls[#calls + 1] = table.concat(args, " ")
+		return {}
+	end
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.notify = function(message)
+		notifications[#notifications + 1] = message
+	end
+
+	ops.run_primary_action(state, node)
+	eq(calls, {})
+	local job = assert(session_state.get_repo_job(repo_root))
+	eq(job.status, "error")
+	assert(job.error:match("detached HEAD"), job.error)
+	assert(notifications[1]:match("detached HEAD"), notifications[1])
+
+	util.system_start = previous_system_start
+	util.notify = previous_notify
+	session_state.clear_repo_job(repo_root)
+end
+
 local function test_svn_integration()
 	require("lazyvcs").setup({ debounce_ms = 10, use_gitsigns = false })
 
@@ -2012,10 +3276,7 @@ local function test_source_control_svn_commit_and_update()
 
 	local model = require("lazyvcs.source_control.model")
 	local ops = require("lazyvcs.source_control.ops")
-	local manager = require("neo-tree.sources.manager")
 	local util = require("lazyvcs.util")
-	local previous_navigate = manager.navigate
-	manager.navigate = function() end
 
 	local commit_fixture = helpers.make_svn_fixture()
 	local commit_specs = model.discover(commit_fixture.root, 1)
@@ -2026,6 +3287,7 @@ local function test_source_control_svn_commit_and_update()
 		lazyvcs_repo_cache = {},
 		lazyvcs_changes_sort = "path",
 	}
+	commit_state.lazyvcs_render = function() end
 	commit_state.lazyvcs_repo_cache[commit_fixture.root] = assert(model.load_repo_details(commit_specs[1], {
 		changes_sort = "path",
 	}))
@@ -2054,6 +3316,7 @@ local function test_source_control_svn_commit_and_update()
 		lazyvcs_repo_specs = update_specs,
 		lazyvcs_repo_cache = {},
 	}
+	update_state.lazyvcs_render = function() end
 	update_state.lazyvcs_repo_cache[update_fixture.root] = assert(model.load_repo_summary(update_specs[1], {
 		remote_refresh = false,
 	}))
@@ -2070,8 +3333,6 @@ local function test_source_control_svn_commit_and_update()
 		return vim.deep_equal(vim.fn.readfile(update_fixture.file), { "one", "updated", "three" })
 	end, "svn update should finish in the background")
 	eq(vim.fn.readfile(update_fixture.file), { "one", "updated", "three" })
-
-	manager.navigate = previous_navigate
 end
 
 local function test_source_control_busy_repo_blocks_repo_actions()
@@ -2152,6 +3413,99 @@ local function test_source_control_git_switch_collects_refs()
 	assert(kinds.remote_branch["origin/feature/remote"], "git switch picker should include remote branches")
 	assert(kinds.tag["v1.0.0"], "git switch picker should include tags")
 	eq(context.head.current_branch, "main")
+end
+
+local function test_source_control_git_switch_picker_is_vscode_like()
+	local switch = require("lazyvcs.source_control.switch")
+	local context = {
+		refs = {
+			{
+				ref_kind = "remote_branch",
+				short = "origin/feature/remote",
+				short_hash = "2222222",
+				relative_date = "2 days ago",
+				author = "Ada",
+				subject = "Remote work",
+			},
+			{
+				ref_kind = "local_branch",
+				short = "main",
+				short_hash = "1111111",
+				relative_date = "1 day ago",
+				author = "Ada",
+				subject = "Main work",
+				current = true,
+			},
+			{
+				ref_kind = "tag",
+				short = "v1.0.0",
+				short_hash = "3333333",
+				relative_date = "3 days ago",
+				author = "Ada",
+				subject = "Release",
+			},
+		},
+	}
+	local items = switch._test_git_picker_items(context)
+	eq(items[1].action, "git_create_branch")
+	eq(items[2].action, "git_create_branch_from")
+	eq(items[3].action, "git_checkout_detached")
+	eq(items[4].kind, "local_branch")
+	eq(items[5].kind, "remote_branch")
+	eq(items[6].kind, "tag")
+
+	local command_line = switch._test_format_picker_item(items[1], false)
+	assert(command_line:match("^%+ Create new branch%.%.%."), command_line)
+	local current_chunks = switch._test_format_picker_item(items[4], true)
+	assert(type(current_chunks) == "table", "current branch should format as chunks")
+	local current_line = flatten_chunks(current_chunks)
+	assert(not current_line:match("^%s*%d+%."), current_line)
+	assert(current_line:find("✓", 1, true), current_line)
+	assert(current_line:find("main", 1, true), current_line)
+	local remote_chunks = switch._test_format_picker_item(items[5], true)
+	assert(type(remote_chunks) == "table", "remote branch should format as chunks")
+	local remote_line = flatten_chunks(remote_chunks)
+	assert(remote_line:find("Remote branch at 2222222", 1, true), remote_line)
+	local has_remote_category = false
+	for _, chunk in ipairs(remote_chunks) do
+		if chunk.virt_text and chunk.virt_text[1] and chunk.virt_text[1][1] == "remote branches" then
+			has_remote_category = true
+		end
+	end
+	assert(has_remote_category, "remote branch category should be right-aligned virtual text")
+end
+
+local function test_source_control_git_switch_snacks_picker_omits_indices()
+	local previous_snacks_picker = package.loaded["snacks.picker"]
+	local captured
+	package.loaded["snacks.picker"] = {
+		pick = function(opts)
+			local items = opts.finder()
+			captured = {
+				title = opts.title,
+				layout = opts.layout,
+				first_line = flatten_chunks(opts.format(items[1])),
+				second_line = flatten_chunks(opts.format(items[2])),
+			}
+			return {}
+		end,
+	}
+
+	local fixture = helpers.make_git_switch_fixture()
+	local repo = { root = fixture.root, name = "clone", vcs = "git" }
+	require("lazyvcs.source_control.switch").open(repo, {
+		input = function(_, _) end,
+		notify = function() end,
+	})
+
+	assert(captured, "expected Snacks picker to be used")
+	eq(captured.title, "Checkout branch or tag for clone")
+	eq(captured.layout.preset, "vscode")
+	assert(not captured.first_line:match("^%s*%d+%."), captured.first_line)
+	assert(captured.first_line:match("^%+ Create new branch%.%.%."), captured.first_line)
+	assert(not captured.second_line:match("^%s*%d+%."), captured.second_line)
+
+	package.loaded["snacks.picker"] = previous_snacks_picker
 end
 
 local function test_source_control_git_switch_executes_checkout_flows()
@@ -2429,12 +3783,41 @@ local cases = {
 		"test_source_control_auto_remote_refresh_is_throttled_per_root",
 		test_source_control_auto_remote_refresh_is_throttled_per_root,
 	},
+	{
+		"test_source_control_legacy_neotree_ui_routes_to_native",
+		test_source_control_legacy_neotree_ui_routes_to_native,
+	},
+	{
+		"test_optional_integrations_detect_vanilla_and_enhanced_modes",
+		test_optional_integrations_detect_vanilla_and_enhanced_modes,
+	},
+	{ "test_commit_input_generates_message_from_popup", test_commit_input_generates_message_from_popup },
+	{
+		"test_ai_commit_message_auto_falls_back_to_next_cli_provider",
+		test_ai_commit_message_auto_falls_back_to_next_cli_provider,
+	},
+	{ "test_picker_uses_snacks_select_module_when_available", test_picker_uses_snacks_select_module_when_available },
+	{ "test_source_control_confirm_popup_key_paths", test_source_control_confirm_popup_key_paths },
 	{ "test_compute_target_view_centered_hunk", test_compute_target_view_centered_hunk },
 	{ "test_compute_target_view_large_hunk", test_compute_target_view_large_hunk },
 	{ "test_compute_target_view_start_and_end_clamping", test_compute_target_view_start_and_end_clamping },
 	{ "test_compute_target_view_for_deletion_hunk", test_compute_target_view_for_deletion_hunk },
 	{ "test_git_backend", test_git_backend },
+	{ "test_async_system_reports_missing_executable", test_async_system_reports_missing_executable },
 	{ "test_svn_backend", test_svn_backend },
+	{ "test_svn_status_and_blame_parsers", test_svn_status_and_blame_parsers },
+	{ "test_svn_async_blame_cancels_active_child_process", test_svn_async_blame_cancels_active_child_process },
+	{ "test_svn_blame_inline_virtual_text", test_svn_blame_inline_virtual_text },
+	{ "test_svn_blame_inline_delays_loading_indicator", test_svn_blame_inline_delays_loading_indicator },
+	{
+		"test_svn_blame_inline_loading_indicator_and_uncommitted_line",
+		test_svn_blame_inline_loading_indicator_and_uncommitted_line,
+	},
+	{ "test_svn_blame_split_is_fixed_width_and_muted", test_svn_blame_split_is_fixed_width_and_muted },
+	{ "test_svn_signs_render_and_revert_without_live_diff", test_svn_signs_render_and_revert_without_live_diff },
+	{ "test_svn_signs_preview_diff_window", test_svn_signs_preview_diff_window },
+	{ "test_svnsigns_compat_commands_follow_config", test_svnsigns_compat_commands_follow_config },
+	{ "test_setup_is_idempotent_and_respects_sign_toggle", test_setup_is_idempotent_and_respects_sign_toggle },
 	{ "test_source_control_collects_dirty_nested_repos", test_source_control_collects_dirty_nested_repos },
 	{
 		"test_source_control_progressive_collect_shows_unhydrated_repos",
@@ -2475,34 +3858,22 @@ local cases = {
 		test_source_control_toggle_repo_visibility_keeps_a_visible_repo,
 	},
 	{
+		"test_source_control_toggle_repo_visibility_ignores_section_rows",
+		test_source_control_toggle_repo_visibility_ignores_section_rows,
+	},
+	{ "test_source_control_repo_actions_ignore_non_repo_rows", test_source_control_repo_actions_ignore_non_repo_rows },
+	{
+		"test_source_control_confirm_session_choice_disables_more_prompts",
+		test_source_control_confirm_session_choice_disables_more_prompts,
+	},
+	{
 		"test_source_control_tree_view_groups_files_into_folders",
 		test_source_control_tree_view_groups_files_into_folders,
-	},
-	{
-		"test_source_control_components_hide_low_priority_metadata_in_narrow_windows",
-		test_source_control_components_hide_low_priority_metadata_in_narrow_windows,
-	},
-	{
-		"test_source_control_components_restore_metadata_in_wide_windows",
-		test_source_control_components_restore_metadata_in_wide_windows,
-	},
-	{
-		"test_source_control_components_show_short_path_when_budget_allows",
-		test_source_control_components_show_short_path_when_budget_allows,
-	},
-	{
-		"test_source_control_components_exact_fit_regression_keeps_last_character",
-		test_source_control_components_exact_fit_regression_keeps_last_character,
-	},
-	{
-		"test_source_control_components_keep_repo_rows_stable_during_refresh",
-		test_source_control_components_keep_repo_rows_stable_during_refresh,
 	},
 	{
 		"test_source_control_hides_clean_repo_after_summary_hydration",
 		test_source_control_hides_clean_repo_after_summary_hydration,
 	},
-	{ "test_source_control_smart_e_is_contextual", test_source_control_smart_e_is_contextual },
 	{
 		"test_source_control_open_repo_recreates_force_expand_after_intermediate_navigate",
 		test_source_control_open_repo_recreates_force_expand_after_intermediate_navigate,
@@ -2510,6 +3881,31 @@ local cases = {
 	{
 		"test_source_control_open_repo_collapses_expanded_stale_node_first",
 		test_source_control_open_repo_collapses_expanded_stale_node_first,
+	},
+	{
+		"test_source_control_open_repo_expands_loaded_collapsed_node",
+		test_source_control_open_repo_expands_loaded_collapsed_node,
+	},
+	{ "test_source_control_open_repo_can_collapse_while_busy", test_source_control_open_repo_can_collapse_while_busy },
+	{
+		"test_source_control_native_render_consumes_force_expand",
+		test_source_control_native_render_consumes_force_expand,
+	},
+	{
+		"test_source_control_native_open_can_preserve_current_window",
+		test_source_control_native_open_can_preserve_current_window,
+	},
+	{
+		"test_source_control_native_smart_e_toggles_auto_width_and_restores_cursor",
+		test_source_control_native_smart_e_toggles_auto_width_and_restores_cursor,
+	},
+	{
+		"test_source_control_native_render_preserves_active_window_and_repo_meta_spacing",
+		test_source_control_native_render_preserves_active_window_and_repo_meta_spacing,
+	},
+	{
+		"test_source_control_native_invalidated_cache_rehydrates",
+		test_source_control_native_invalidated_cache_rehydrates,
 	},
 	{ "test_svn_status_xml_ignores_external_banner_noise", test_svn_status_xml_ignores_external_banner_noise },
 	{
@@ -2558,8 +3954,32 @@ local cases = {
 		"test_source_control_git_sync_pushes_to_configured_upstream",
 		test_source_control_git_sync_pushes_to_configured_upstream,
 	},
+	{
+		"test_source_control_git_publish_branch_sets_upstream_to_origin",
+		test_source_control_git_publish_branch_sets_upstream_to_origin,
+	},
+	{
+		"test_source_control_git_sync_without_upstream_publishes_branch",
+		test_source_control_git_sync_without_upstream_publishes_branch,
+	},
+	{ "test_source_control_git_push_uses_configured_upstream", test_source_control_git_push_uses_configured_upstream },
+	{
+		"test_source_control_git_publish_falls_back_to_single_remote",
+		test_source_control_git_publish_falls_back_to_single_remote,
+	},
+	{
+		"test_source_control_git_publish_requires_unambiguous_remote",
+		test_source_control_git_publish_requires_unambiguous_remote,
+	},
+	{ "test_source_control_git_publish_requires_a_remote", test_source_control_git_publish_requires_a_remote },
+	{ "test_source_control_git_publish_rejects_detached_head", test_source_control_git_publish_rejects_detached_head },
 	{ "test_source_control_busy_repo_blocks_repo_actions", test_source_control_busy_repo_blocks_repo_actions },
 	{ "test_source_control_git_switch_collects_refs", test_source_control_git_switch_collects_refs },
+	{ "test_source_control_git_switch_picker_is_vscode_like", test_source_control_git_switch_picker_is_vscode_like },
+	{
+		"test_source_control_git_switch_snacks_picker_omits_indices",
+		test_source_control_git_switch_snacks_picker_omits_indices,
+	},
 	{
 		"test_source_control_git_switch_executes_checkout_flows",
 		test_source_control_git_switch_executes_checkout_flows,

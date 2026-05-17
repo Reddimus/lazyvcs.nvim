@@ -41,3 +41,9 @@ luac.out
 
 # Generated Neovim help tags
 doc/tags
+
+# Test dependencies fetched on demand
+deps/
+
+# Node tooling for Markdown formatting
+node_modules/

@@ -30,8 +30,23 @@ local function get_root(path)
 end
 
 local function is_versioned(path)
+	if not svn_available() then
+		return false
+	end
 	local _, err = util.system({ "svn", "info", path }, { cwd = vim.fs.dirname(path) })
 	return err == nil
+end
+
+local function status_label(code)
+	return ({
+		M = "modified",
+		A = "added",
+		D = "deleted",
+		R = "replaced",
+		C = "conflicted",
+		["?"] = "untracked",
+		["!"] = "missing",
+	})[code] or "changed"
 end
 
 function M.probe(path)
@@ -75,6 +90,212 @@ end
 
 function M.revert_hunk()
 	return false
+end
+
+function M.root(path)
+	return get_root(path)
+end
+
+function M.is_versioned(path)
+	return is_versioned(path)
+end
+
+function M.load_base(path)
+	local root, err = get_root(path)
+	if not root then
+		return nil, err or "Not an SVN working copy"
+	end
+
+	if not is_versioned(path) then
+		return nil, "File is not tracked by SVN"
+	end
+
+	local lines, load_err = util.system_lines({ "svn", "cat", "-r", "BASE", path }, { cwd = root })
+	if not lines then
+		return nil, load_err
+	end
+	return {
+		root = root,
+		relpath = util.relpath(root, path),
+		base_lines = lines,
+	}
+end
+
+function M.load_base_async(path, on_done)
+	if not svn_available() then
+		vim.schedule(function()
+			on_done(nil, "svn executable not found")
+		end)
+		return nil
+	end
+
+	local cwd = vim.fs.dirname(path)
+	util.system_start({ "svn", "info", "--show-item", "wc-root", path }, { cwd = cwd }, function(result, err)
+		if err then
+			return on_done(nil, err)
+		end
+		local root = util.trim(result.stdout)
+		util.system_start({ "svn", "info", path }, { cwd = cwd }, function(_, tracked_err)
+			if tracked_err then
+				return on_done(nil, "File is not tracked by SVN")
+			end
+			util.system_lines_start({ "svn", "cat", "-r", "BASE", path }, { cwd = root }, function(lines, cat_err)
+				if not lines then
+					return on_done(nil, cat_err)
+				end
+				on_done({
+					root = root,
+					relpath = util.relpath(root, path),
+					base_lines = lines,
+				})
+			end)
+		end)
+	end)
+end
+
+function M.parse_status_lines(lines, root)
+	local items = {}
+	for _, line in ipairs(lines or {}) do
+		local code = line:sub(1, 1)
+		if code ~= "" and code ~= " " then
+			local path = util.trim(line:sub(9))
+			if path ~= "" then
+				items[#items + 1] = {
+					status = code,
+					label = status_label(code),
+					path = path,
+					absolute_path = root and vim.fs.normalize(root .. "/" .. path) or path,
+				}
+			end
+		end
+	end
+	return items
+end
+
+function M.changed_files(root)
+	if not svn_available() then
+		return nil, "svn executable not found"
+	end
+
+	local lines, err = util.system_lines({ "svn", "status" }, { cwd = root })
+	if not lines then
+		return nil, err
+	end
+	return M.parse_status_lines(lines, root)
+end
+
+function M.blame_lines(path)
+	local root, err = get_root(path)
+	if not root then
+		return nil, err or "Not an SVN working copy"
+	end
+	return util.system_lines({ "svn", "blame", "-v", path }, { cwd = root })
+end
+
+function M.blame_lines_async(path, on_done)
+	if not svn_available() then
+		vim.schedule(function()
+			on_done(nil, "svn executable not found")
+		end)
+		return {
+			kill = function() end,
+		}
+	end
+
+	local cwd = vim.fs.dirname(path)
+	local job = {
+		handle = nil,
+		cancelled = false,
+	}
+	function job:kill(signal)
+		self.cancelled = true
+		if self.handle then
+			pcall(self.handle.kill, self.handle, signal or 15)
+		end
+	end
+
+	job.handle = util.system_start(
+		{ "svn", "info", "--show-item", "wc-root", path },
+		{ cwd = cwd },
+		function(result, err)
+			if job.cancelled then
+				return
+			end
+			if err then
+				return on_done(nil, err)
+			end
+			local root = util.trim(result.stdout)
+			job.handle = util.system_lines_start(
+				{ "svn", "blame", "-v", path },
+				{ cwd = root },
+				function(lines, blame_err)
+					if job.cancelled then
+						return
+					end
+					if not lines then
+						return on_done(nil, blame_err)
+					end
+					on_done(lines, nil, root)
+				end
+			)
+		end
+	)
+	return job
+end
+
+function M.parse_blame_entries(lines)
+	local out = {}
+	for _, line in ipairs(lines or {}) do
+		local revision, author, date = line:match("^%s*(%S+)%s+(%S+)%s+(%S+)")
+		local uncommitted = revision == "-" and author == "-" and date == "-"
+		out[#out + 1] = {
+			revision = revision or "-",
+			author = author or "-",
+			date = date or "-",
+			uncommitted = uncommitted or nil,
+		}
+	end
+	return out
+end
+
+function M.parse_blame_metadata(lines, uncommitted_text)
+	local out = {}
+	for _, entry in ipairs(M.parse_blame_entries(lines)) do
+		if entry.uncommitted then
+			out[#out + 1] = uncommitted_text or "Uncommitted line"
+		else
+			out[#out + 1] = string.format("%6s %15s %s", entry.revision, entry.author, entry.date)
+		end
+	end
+	return out
+end
+
+function M.line_revision(path, line_number)
+	local lines, err = M.blame_lines(path)
+	if not lines then
+		return nil, err
+	end
+	local line = lines[line_number]
+	if not line then
+		return nil, "No blame information for this line"
+	end
+	local entry = M.parse_blame_entries({ line })[1]
+	if not entry or entry.uncommitted then
+		return nil, "No committed SVN revision for this line"
+	end
+	return entry.revision
+end
+
+function M.revision_log(path, revision)
+	local root, err = get_root(path)
+	if not root then
+		return nil, err or "Not an SVN working copy"
+	end
+	local lines, log_err = util.system_lines({ "svn", "log", "-r", tostring(revision), path }, { cwd = root })
+	if not lines then
+		return nil, log_err
+	end
+	return lines
 end
 
 return M

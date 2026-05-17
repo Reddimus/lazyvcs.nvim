@@ -1,62 +1,116 @@
 name: CI
 
 on:
-  push:
-    branches: ["**"]
   pull_request:
+  push:
+    branches:
+      - "**"
   workflow_dispatch:
 
 jobs:
-  lint-and-test:
-    runs-on: ubuntu-latest
+  checks:
+    runs-on: ubuntu-24.04
+    env:
+      NVIM_VERSION: v0.12.2
+      STYLUA_VERSION: v2.3.0
+      LUALS_VERSION: 3.15.0
+      LAZYVCS_TEST_LAZY_ROOT: ${{ github.workspace }}/deps/lazy
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install Neovim (stable)
-        uses: rhysd/action-setup-vim@v1
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            git \
+            gzip \
+            subversion \
+            tar \
+            unzip
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          neovim: true
-          version: stable
+          node-version: "22"
+          cache: npm
 
-      - name: Install Subversion (full SVN test coverage)
-        run: sudo apt-get update -y && sudo apt-get install -y subversion
+      - name: Install Markdown tooling
+        run: npm ci
 
-      - name: Check stylua formatting
-        uses: JohnnyMorganz/stylua-action@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          version: latest
-          args: --check .
-
-      - name: Install lua-language-server
+      - name: Install Neovim
         run: |
-          set -euo pipefail
-          LLS_VERSION="3.16.4"
-          curl -fsSL -o lls.tar.gz \
-            "https://github.com/LuaLS/lua-language-server/releases/download/${LLS_VERSION}/lua-language-server-${LLS_VERSION}-linux-x64.tar.gz"
-          mkdir -p "$HOME/.lls" && tar -xf lls.tar.gz -C "$HOME/.lls"
-          echo "$HOME/.lls/bin" >> "$GITHUB_PATH"
+          archive=/tmp/nvim.tar.gz
+          base="https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}"
+          curl -fsSL "${base}/nvim-linux-x86_64.tar.gz" -o "${archive}" \
+            || curl -fsSL "${base}/nvim-linux64.tar.gz" -o "${archive}"
+          mkdir -p /tmp/nvim
+          tar -C /tmp/nvim --strip-components=1 -xzf "${archive}"
+          echo "/tmp/nvim/bin" >> "${GITHUB_PATH}"
 
-      - name: lua-language-server static check
+      - name: Install Stylua
         run: |
-          set -euo pipefail
-          out="$(lua-language-server --check="$PWD" --check_format=pretty --checklevel=Warning 2>&1 || true)"
-          echo "$out"
-          echo "$out" | grep -q "no problems found"
+          archive=/tmp/stylua.zip
+          curl -fsSL "https://github.com/JohnnyMorganz/StyLua/releases/download/${STYLUA_VERSION}/stylua-linux-x86_64.zip" -o "${archive}"
+          unzip -q "${archive}" -d /tmp/stylua
+          chmod +x /tmp/stylua/stylua
+          echo "/tmp/stylua" >> "${GITHUB_PATH}"
 
-      - name: Clone test dependencies
+      - name: Install LuaLS
         run: |
-          set -euo pipefail
-          LAZY="$RUNNER_TEMP/lazy"
-          mkdir -p "$LAZY"
-          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim "$LAZY/plenary.nvim"
-          git clone --depth 1 https://github.com/MunifTanjim/nui.nvim "$LAZY/nui.nvim"
-          git clone --depth 1 --branch v3.x https://github.com/nvim-neo-tree/neo-tree.nvim "$LAZY/neo-tree.nvim"
-          git clone --depth 1 https://github.com/lewis6991/gitsigns.nvim "$LAZY/gitsigns.nvim"
-          echo "LAZYVCS_TEST_LAZY_ROOT=$LAZY" >> "$GITHUB_ENV"
+          archive=/tmp/lua-language-server.tar.gz
+          curl -fsSL "https://github.com/LuaLS/lua-language-server/releases/download/${LUALS_VERSION}/lua-language-server-${LUALS_VERSION}-linux-x64.tar.gz" -o "${archive}"
+          mkdir -p /tmp/lua-language-server
+          tar -C /tmp/lua-language-server -xzf "${archive}"
+          echo "/tmp/lua-language-server/bin" >> "${GITHUB_PATH}"
 
-      - name: Run headless test suite
+      - name: Install test dependencies
+        run: |
+          mkdir -p "${LAZYVCS_TEST_LAZY_ROOT}"
+          git clone --filter=blob:none https://github.com/nvim-lua/plenary.nvim "${LAZYVCS_TEST_LAZY_ROOT}/plenary.nvim"
+          git clone --filter=blob:none https://github.com/lewis6991/gitsigns.nvim "${LAZYVCS_TEST_LAZY_ROOT}/gitsigns.nvim"
+
+      - name: Markdown format
+        run: npm run format:md:check
+
+      - name: Lua format
+        run: stylua --check lua tests
+
+      - name: Lua diagnostics
+        run: lua-language-server --check=. --check_format=pretty --checklevel=Warning
+
+      - name: Shell syntax
+        run: bash -n tests/minitest.sh tests/e2e/ubuntu-native.sh tests/e2e/ubuntu-astronvim.sh
+
+      - name: Whitespace
+        run: git diff-tree --check --no-commit-id --root -r HEAD
+
+      - name: Headless smoke
+        run: nvim --headless -u NONE -l tests/native_smoke.lua
+
+      - name: Lua tests
         run: nvim --headless -u NONE -l tests/run.lua
 
-      - name: Verify help tags generate cleanly
-        run: nvim --headless "+helptags doc" "+qa" && test -f doc/tags
+      - name: Native sidebar UI tests
+        run: tests/minitest.sh
+
+      - name: Help tags
+        run: nvim --headless -u NONE -c 'helptags doc' -c 'quitall'
+
+      - name: Health check
+        run: nvim --headless -u NONE -c 'set rtp+=.' -c 'runtime plugin/lazyvcs.lua' -c 'checkhealth lazyvcs' -c 'quitall'
+
+  e2e:
+    runs-on: ubuntu-24.04
+    needs: checks
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Native container E2E
+        run: tests/e2e/ubuntu-native.sh
+
+      - name: AstroNvim container E2E
+        run: tests/e2e/ubuntu-astronvim.sh
