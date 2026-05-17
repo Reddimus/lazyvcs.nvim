@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-05-17
+
+### Fixed
+
+- `test_svn_async_blame_cancels_active_child_process` no longer fails the whole
+  suite on machines without the `svn` executable. The v0.1.0 svn guard makes
+  `blame_lines_async` short-circuit when svn is absent, so the test's mocked
+  `system_start` was never reached and the test errored before restoring the
+  global monkey-patch — which then cascaded into a spurious failure of
+  `test_source_control_git_file_actions_commit_and_sync` (the leaked mock
+  stalled its background `git commit`). The SVN test now skips cleanly without
+  svn, and restores `util.system_start` via `pcall` so an assertion failure can
+  never contaminate later tests. `tests/run.lua` is green again on svn-less
+  environments (the documented local workflow).
+
 ## [0.2.0] - 2026-05-17
 
 ### Added
@@ -79,3 +94,4 @@ First tagged release.
 
 [0.1.0]: https://github.com/Reddimus/lazyvcs.nvim/releases/tag/v0.1.0
 [0.2.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.1.0...v0.2.0
+[0.2.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.2.0...v0.2.1
