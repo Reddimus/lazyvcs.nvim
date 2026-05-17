@@ -2416,65 +2416,195 @@ local function test_transfer_to_unsupported_buffer_closes_session()
 	eq(#vim.api.nvim_tabpage_list_wins(0), 1, "base window should close on unsupported buffer transfer")
 end
 
-test_diff_reset()
-test_diff_reset_for_insertion()
-test_diff_reset_for_deletion()
-test_diff_reset_for_top_deletion()
-test_config_normalization()
-test_source_control_auto_remote_refresh_is_throttled_per_root()
-test_compute_target_view_centered_hunk()
-test_compute_target_view_large_hunk()
-test_compute_target_view_start_and_end_clamping()
-test_compute_target_view_for_deletion_hunk()
-test_git_backend()
-test_svn_backend()
-test_source_control_collects_dirty_nested_repos()
-test_source_control_progressive_collect_shows_unhydrated_repos()
-test_source_control_busy_repo_marks_nodes_disabled()
-test_source_control_async_summary_waits_for_command_callback()
-test_source_control_background_refresh_preserves_cached_badges()
-test_source_control_unloaded_repo_still_shows_loading_badge()
-test_source_control_jobs_prioritize_user_work_over_background_refresh()
-test_source_control_svn_summary_uses_compact_branch_label()
-test_source_control_single_repo_root_uses_unique_node_ids()
-test_source_control_duplicate_repo_names_use_root_identity()
-test_source_control_can_show_clean_repos()
-test_source_control_toggle_repo_visibility_keeps_a_visible_repo()
-test_source_control_tree_view_groups_files_into_folders()
-test_source_control_components_hide_low_priority_metadata_in_narrow_windows()
-test_source_control_components_restore_metadata_in_wide_windows()
-test_source_control_components_show_short_path_when_budget_allows()
-test_source_control_components_exact_fit_regression_keeps_last_character()
-test_source_control_components_keep_repo_rows_stable_during_refresh()
-test_source_control_hides_clean_repo_after_summary_hydration()
-test_source_control_smart_e_is_contextual()
-test_source_control_open_repo_recreates_force_expand_after_intermediate_navigate()
-test_source_control_open_repo_collapses_expanded_stale_node_first()
-test_svn_status_xml_ignores_external_banner_noise()
-test_source_control_open_change_reopens_without_base_buffer_collision()
-test_source_control_open_change_reuses_active_diff_window()
-test_aerial_integration_suspends_window_and_restores_buffer_state()
-test_git_integration()
-test_git_reopen_tolerates_stale_base_buffer_name()
-test_git_sessions_with_same_relpath_in_different_repos_do_not_collide()
-test_git_buffer_transfer_reopens_session()
-test_git_buffer_transfer_refetches_aerial_after_reopen()
-test_git_rebalance_evenly_splits_active_diff_pair()
-test_git_win_resized_rebalances_active_diff_pair()
-test_git_base_window_leader_q_closes_session()
-test_markdown_transfer_sets_editor_guards_and_reopens_cleanly()
-test_source_control_git_file_actions_commit_and_sync()
-test_source_control_git_sync_uses_explicit_upstream_fast_forward()
-test_source_control_git_pull_action_uses_explicit_upstream_fast_forward()
-test_source_control_git_sync_pushes_to_configured_upstream()
-test_source_control_busy_repo_blocks_repo_actions()
-test_source_control_git_switch_collects_refs()
-test_source_control_git_switch_executes_checkout_flows()
-test_svn_integration()
-test_source_control_svn_commit_and_update()
-test_source_control_svn_switch_supports_standard_and_manual_layouts()
-test_source_control_switch_repo_closes_matching_sessions_and_refreshes_repo()
-test_svn_buffer_transfer_reopens_session()
-test_transfer_to_unsupported_buffer_closes_session()
+-- Test registry. Each test runs in isolation via xpcall so one failing or
+-- skipped test no longer aborts the whole suite (previously the missing-svnadmin
+-- assert in make_svn_fixture killed every test that followed it).
+local cases = {
+	{ "test_diff_reset", test_diff_reset },
+	{ "test_diff_reset_for_insertion", test_diff_reset_for_insertion },
+	{ "test_diff_reset_for_deletion", test_diff_reset_for_deletion },
+	{ "test_diff_reset_for_top_deletion", test_diff_reset_for_top_deletion },
+	{ "test_config_normalization", test_config_normalization },
+	{
+		"test_source_control_auto_remote_refresh_is_throttled_per_root",
+		test_source_control_auto_remote_refresh_is_throttled_per_root,
+	},
+	{ "test_compute_target_view_centered_hunk", test_compute_target_view_centered_hunk },
+	{ "test_compute_target_view_large_hunk", test_compute_target_view_large_hunk },
+	{ "test_compute_target_view_start_and_end_clamping", test_compute_target_view_start_and_end_clamping },
+	{ "test_compute_target_view_for_deletion_hunk", test_compute_target_view_for_deletion_hunk },
+	{ "test_git_backend", test_git_backend },
+	{ "test_svn_backend", test_svn_backend },
+	{ "test_source_control_collects_dirty_nested_repos", test_source_control_collects_dirty_nested_repos },
+	{
+		"test_source_control_progressive_collect_shows_unhydrated_repos",
+		test_source_control_progressive_collect_shows_unhydrated_repos,
+	},
+	{ "test_source_control_busy_repo_marks_nodes_disabled", test_source_control_busy_repo_marks_nodes_disabled },
+	{
+		"test_source_control_async_summary_waits_for_command_callback",
+		test_source_control_async_summary_waits_for_command_callback,
+	},
+	{
+		"test_source_control_background_refresh_preserves_cached_badges",
+		test_source_control_background_refresh_preserves_cached_badges,
+	},
+	{
+		"test_source_control_unloaded_repo_still_shows_loading_badge",
+		test_source_control_unloaded_repo_still_shows_loading_badge,
+	},
+	{
+		"test_source_control_jobs_prioritize_user_work_over_background_refresh",
+		test_source_control_jobs_prioritize_user_work_over_background_refresh,
+	},
+	{
+		"test_source_control_svn_summary_uses_compact_branch_label",
+		test_source_control_svn_summary_uses_compact_branch_label,
+	},
+	{
+		"test_source_control_single_repo_root_uses_unique_node_ids",
+		test_source_control_single_repo_root_uses_unique_node_ids,
+	},
+	{
+		"test_source_control_duplicate_repo_names_use_root_identity",
+		test_source_control_duplicate_repo_names_use_root_identity,
+	},
+	{ "test_source_control_can_show_clean_repos", test_source_control_can_show_clean_repos },
+	{
+		"test_source_control_toggle_repo_visibility_keeps_a_visible_repo",
+		test_source_control_toggle_repo_visibility_keeps_a_visible_repo,
+	},
+	{
+		"test_source_control_tree_view_groups_files_into_folders",
+		test_source_control_tree_view_groups_files_into_folders,
+	},
+	{
+		"test_source_control_components_hide_low_priority_metadata_in_narrow_windows",
+		test_source_control_components_hide_low_priority_metadata_in_narrow_windows,
+	},
+	{
+		"test_source_control_components_restore_metadata_in_wide_windows",
+		test_source_control_components_restore_metadata_in_wide_windows,
+	},
+	{
+		"test_source_control_components_show_short_path_when_budget_allows",
+		test_source_control_components_show_short_path_when_budget_allows,
+	},
+	{
+		"test_source_control_components_exact_fit_regression_keeps_last_character",
+		test_source_control_components_exact_fit_regression_keeps_last_character,
+	},
+	{
+		"test_source_control_components_keep_repo_rows_stable_during_refresh",
+		test_source_control_components_keep_repo_rows_stable_during_refresh,
+	},
+	{
+		"test_source_control_hides_clean_repo_after_summary_hydration",
+		test_source_control_hides_clean_repo_after_summary_hydration,
+	},
+	{ "test_source_control_smart_e_is_contextual", test_source_control_smart_e_is_contextual },
+	{
+		"test_source_control_open_repo_recreates_force_expand_after_intermediate_navigate",
+		test_source_control_open_repo_recreates_force_expand_after_intermediate_navigate,
+	},
+	{
+		"test_source_control_open_repo_collapses_expanded_stale_node_first",
+		test_source_control_open_repo_collapses_expanded_stale_node_first,
+	},
+	{ "test_svn_status_xml_ignores_external_banner_noise", test_svn_status_xml_ignores_external_banner_noise },
+	{
+		"test_source_control_open_change_reopens_without_base_buffer_collision",
+		test_source_control_open_change_reopens_without_base_buffer_collision,
+	},
+	{
+		"test_source_control_open_change_reuses_active_diff_window",
+		test_source_control_open_change_reuses_active_diff_window,
+	},
+	{
+		"test_aerial_integration_suspends_window_and_restores_buffer_state",
+		test_aerial_integration_suspends_window_and_restores_buffer_state,
+	},
+	{ "test_git_integration", test_git_integration },
+	{ "test_git_reopen_tolerates_stale_base_buffer_name", test_git_reopen_tolerates_stale_base_buffer_name },
+	{
+		"test_git_sessions_with_same_relpath_in_different_repos_do_not_collide",
+		test_git_sessions_with_same_relpath_in_different_repos_do_not_collide,
+	},
+	{ "test_git_buffer_transfer_reopens_session", test_git_buffer_transfer_reopens_session },
+	{
+		"test_git_buffer_transfer_refetches_aerial_after_reopen",
+		test_git_buffer_transfer_refetches_aerial_after_reopen,
+	},
+	{ "test_git_rebalance_evenly_splits_active_diff_pair", test_git_rebalance_evenly_splits_active_diff_pair },
+	{ "test_git_win_resized_rebalances_active_diff_pair", test_git_win_resized_rebalances_active_diff_pair },
+	{ "test_git_base_window_leader_q_closes_session", test_git_base_window_leader_q_closes_session },
+	{
+		"test_markdown_transfer_sets_editor_guards_and_reopens_cleanly",
+		test_markdown_transfer_sets_editor_guards_and_reopens_cleanly,
+	},
+	{
+		"test_source_control_git_file_actions_commit_and_sync",
+		test_source_control_git_file_actions_commit_and_sync,
+	},
+	{
+		"test_source_control_git_sync_uses_explicit_upstream_fast_forward",
+		test_source_control_git_sync_uses_explicit_upstream_fast_forward,
+	},
+	{
+		"test_source_control_git_pull_action_uses_explicit_upstream_fast_forward",
+		test_source_control_git_pull_action_uses_explicit_upstream_fast_forward,
+	},
+	{
+		"test_source_control_git_sync_pushes_to_configured_upstream",
+		test_source_control_git_sync_pushes_to_configured_upstream,
+	},
+	{ "test_source_control_busy_repo_blocks_repo_actions", test_source_control_busy_repo_blocks_repo_actions },
+	{ "test_source_control_git_switch_collects_refs", test_source_control_git_switch_collects_refs },
+	{
+		"test_source_control_git_switch_executes_checkout_flows",
+		test_source_control_git_switch_executes_checkout_flows,
+	},
+	{ "test_svn_integration", test_svn_integration },
+	{ "test_source_control_svn_commit_and_update", test_source_control_svn_commit_and_update },
+	{
+		"test_source_control_svn_switch_supports_standard_and_manual_layouts",
+		test_source_control_svn_switch_supports_standard_and_manual_layouts,
+	},
+	{
+		"test_source_control_switch_repo_closes_matching_sessions_and_refreshes_repo",
+		test_source_control_switch_repo_closes_matching_sessions_and_refreshes_repo,
+	},
+	{ "test_svn_buffer_transfer_reopens_session", test_svn_buffer_transfer_reopens_session },
+	{ "test_transfer_to_unsupported_buffer_closes_session", test_transfer_to_unsupported_buffer_closes_session },
+}
 
-print("lazyvcs tests: ok")
+local passed, skipped = 0, 0
+local failures = {}
+for _, case in ipairs(cases) do
+	local name, fn = case[1], case[2]
+	local ok, err = xpcall(fn, function(e)
+		if type(e) == "table" then
+			return e
+		end
+		return debug.traceback(tostring(e), 2)
+	end)
+	if ok then
+		passed = passed + 1
+		print(string.format("PASS  %s", name))
+	elseif type(err) == "table" and err.lazyvcs_skip then
+		skipped = skipped + 1
+		print(string.format("SKIP  %s — %s", name, err.lazyvcs_skip))
+	else
+		failures[#failures + 1] = name
+		print(string.format("FAIL  %s\n%s", name, tostring(err)))
+	end
+end
+
+print(string.format("\nlazyvcs tests: %d passed, %d skipped, %d failed", passed, skipped, #failures))
+if #failures > 0 then
+	print("FAILED: " .. table.concat(failures, ", "))
+	_G.LAZYVCS_TEST_FAILED = true
+else
+	print("lazyvcs tests: ok")
+	_G.LAZYVCS_TEST_FAILED = false
+end

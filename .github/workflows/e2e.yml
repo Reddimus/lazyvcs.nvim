@@ -1,0 +1,27 @@
+name: E2E (Ubuntu + AstroNvim)
+
+# Heavy: builds a full Ubuntu + AstroNvim container. Manual trigger only so it
+# does not run on every push/PR.
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Ubuntu + AstroNvim smoke test
+        run: bash tests/e2e/ubuntu-astronvim.sh
+        env:
+          UBUNTU_IMAGE: ubuntu:24.04
+          E2E_ARTIFACT_DIR: ${{ runner.temp }}/lazyvcs-e2e
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lazyvcs-e2e-artifacts
+          path: ${{ runner.temp }}/lazyvcs-e2e
+          if-no-files-found: ignore
