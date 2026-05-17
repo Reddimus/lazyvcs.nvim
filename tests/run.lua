@@ -33,4 +33,11 @@ for _, dependency in ipairs({
 end
 
 require("spec")
-vim.cmd("qa!")
+
+-- Propagate a non-zero exit status when any test failed so CI (and shell
+-- callers) can detect regressions. Skipped tests do not fail the suite.
+if _G.LAZYVCS_TEST_FAILED then
+	vim.cmd("cquit 1")
+else
+	vim.cmd("qa!")
+end
