@@ -21,7 +21,7 @@ else
 	ARTIFACT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lazyvcs-astronvim-e2e.XXXXXX")"
 fi
 
-printf 'lazyvcs AstroNvim E2E\n'
+printf 'lazyvcs AstroNvim native E2E\n'
 printf '  repo:      %s\n' "${REPO_ROOT}"
 printf '  image:     %s\n' "${UBUNTU_IMAGE}"
 printf '  nvim:      %s\n' "${NVIM_VERSION}"
@@ -131,8 +131,10 @@ return {
     name = "lazyvcs.nvim",
     main = "lazyvcs",
     dependencies = {
-      "lewis6991/gitsigns.nvim",
-      { "nvim-neo-tree/neo-tree.nvim", branch = "v3.x" },
+      { "lewis6991/gitsigns.nvim", optional = true },
+      { "folke/snacks.nvim", optional = true },
+      { "ibhagwan/fzf-lua", optional = true },
+      { "CopilotC-Nvim/CopilotChat.nvim", optional = true },
     },
     cmd = {
       "LazyVcsDiffOpen",
@@ -142,71 +144,40 @@ return {
       "LazyVcsRevertHunk",
       "LazyVcsNextHunk",
       "LazyVcsPrevHunk",
+      "LazyVcsSignsRefresh",
+      "LazyVcsBlame",
+      "LazyVcsBlameSplit",
+      "LazyVcsBlameClear",
+      "LazyVcsLineLog",
+      "LazyVcsPreviewDiff",
+      "LazyVcsRevertBuffer",
+      "LazyVcsFiles",
+      "LazyVcsSourceControlOpen",
+      "LazyVcsSourceControlClose",
+      "LazyVcsSourceControlToggle",
+      "LazyVcsSourceControlRefresh",
       "LazyVcsSourceControlProfile",
       "VcsLiveDiffOpen",
+      "SvnBlame",
+      "SvnLog",
+      "SvnPreview",
+      "SvnRevert",
+      "SvnResetHunk",
+      "SvnFiles",
+    },
+    keys = {
+      { "<leader>vs", "<cmd>LazyVcsSourceControlToggle<cr>", desc = "Toggle VCS sidebar" },
     },
     opts = {
       source_control = {
         enabled = true,
+        ui = "auto",
         scan_depth = 3,
         show_clean = true,
-        remote_refresh = "on_open",
+        remote_refresh = "manual",
         remote_refresh_interval_ms = 60000,
-        selector_label = "VCS",
-        background = {
-          git_workers = 4,
-          svn_workers = 1,
-          status_timeout_ms = 30000,
-          remote_timeout_ms = 30000,
-          switch_timeout_ms = 30000,
-          mutation_timeout_ms = 0,
-          history_limit = 100,
-        },
       },
     },
-  },
-  {
-    "nvim-neo-tree/neo-tree.nvim",
-    branch = "v3.x",
-    opts = function(_, opts)
-      local icon = "󰊢 "
-      local ok, astroui = pcall(require, "astroui")
-      if ok then
-        icon = astroui.get_icon("Git", 1, true)
-      end
-
-      opts.sources = opts.sources or {}
-      local function ensure_source(source)
-        for _, item in ipairs(opts.sources) do
-          if item == source then
-            return
-          end
-        end
-        opts.sources[#opts.sources + 1] = source
-      end
-
-      ensure_source("git_status")
-      ensure_source("lazyvcs.source_control")
-
-      opts.source_selector = opts.source_selector or {}
-      opts.source_selector.sources = opts.source_selector.sources or {}
-      local replaced = false
-      for index, item in ipairs(opts.source_selector.sources) do
-        if item.source == "git_status" then
-          opts.source_selector.sources[index] = {
-            source = "lazyvcs_source_control",
-            display_name = icon .. "VCS",
-          }
-          replaced = true
-        end
-      end
-      if not replaced then
-        opts.source_selector.sources[#opts.source_selector.sources + 1] = {
-          source = "lazyvcs_source_control",
-          display_name = icon .. "VCS",
-        }
-      end
-    end,
   },
 }
 LUA
@@ -215,16 +186,7 @@ run_logged lazy-sync timeout 360s nvim --headless "+Lazy! sync" "+qa"
 run_logged plugin-registration timeout 180s nvim --headless "+Lazy! sync" \
 	"+lua local plugin = require('lazy.core.config').plugins['lazyvcs.nvim']; assert(plugin and plugin.dir == '/work/lazyvcs.nvim', 'lazyvcs.nvim is not registered from the mounted plugin path')" \
 	"+qa"
-run_logged dependency-contract timeout 60s bash -lc '
-	set -Eeuo pipefail
-	neo_tree="${XDG_DATA_HOME}/nvim/lazy/neo-tree.nvim"
-	printf "neo-tree branch: "
-	git -C "${neo_tree}" branch --show-current || true
-	printf "neo-tree head: "
-	git -C "${neo_tree}" rev-parse --short HEAD
-	test -f "${neo_tree}/lua/neo-tree/ui/renderer.lua"
-'
-run_logged checkhealth timeout 180s nvim --headless "+checkhealth lazyvcs" "+checkhealth neo-tree" "+qa"
+run_logged checkhealth timeout 180s nvim --headless "+checkhealth lazyvcs" "+qa"
 
 WORKSPACE=/tmp/lazyvcs-e2e-workspace
 SVN_REPO=/tmp/lazyvcs-e2e-svn-store
@@ -242,120 +204,25 @@ svn checkout "file://${SVN_REPO}" "${WORKSPACE}/svn-repo" --quiet
 printf 'svn added from e2e\n' >"${WORKSPACE}/svn-repo/added.txt"
 svn add "${WORKSPACE}/svn-repo/added.txt" --quiet
 
-cat >/tmp/lazyvcs-source-control-smoke-body.lua <<'LUA'
-local workspace = assert(vim.env.LAZYVCS_E2E_WORKSPACE, "missing LAZYVCS_E2E_WORKSPACE")
-local plugin_root = "/work/lazyvcs.nvim"
-local lazy_root = assert(vim.env.XDG_DATA_HOME, "missing XDG_DATA_HOME") .. "/nvim/lazy"
-
-local function add_runtime(path)
-  vim.opt.runtimepath:append(path)
-  package.path = table.concat({
-    path .. "/lua/?.lua",
-    path .. "/lua/?/init.lua",
-    package.path,
-  }, ";")
-end
-
-vim.opt.runtimepath:prepend(plugin_root)
-package.path = table.concat({
-  plugin_root .. "/lua/?.lua",
-  plugin_root .. "/lua/?/init.lua",
-  package.path,
-}, ";")
-
-for _, dep in ipairs({
-  "plenary.nvim",
-  "nui.nvim",
-  "neo-tree.nvim",
-  "gitsigns.nvim",
-}) do
-  add_runtime(lazy_root .. "/" .. dep)
-end
-
-vim.cmd("runtime plugin/lazyvcs.lua")
-
-require("lazyvcs").setup({
-  source_control = {
-    scan_depth = 3,
-    show_clean = true,
-    remote_refresh = "manual",
-  },
-})
-
-assert(vim.fn.exists(":LazyVcsDiffOpen") == 2, "LazyVcsDiffOpen command missing")
-assert(vim.fn.exists(":LazyVcsSourceControlProfile") == 2, "LazyVcsSourceControlProfile command missing")
-
-local source = require("lazyvcs.source_control.init")
-assert(source.name == "lazyvcs_source_control", "unexpected source name")
-
-local model = require("lazyvcs.source_control.model")
-local repos = model.discover(workspace, 3)
-assert(#repos == 2, "expected two discovered repos, got " .. tostring(#repos))
-
-local seen = {}
-local state = {
-  path = workspace,
-  lazyvcs_show_clean = true,
-  lazyvcs_repo_cache = {},
-}
-
-for _, repo in ipairs(repos) do
-  seen[repo.vcs] = true
-  local summary, summary_err = model.load_repo_summary(repo, {
-    remote_refresh = false,
-    status_timeout_ms = 30000,
-    remote_timeout_ms = 30000,
-  })
-  assert(summary, repo.name .. " summary failed: " .. tostring(summary_err))
-  assert(summary.summary_loaded == true, repo.name .. " summary did not mark loaded")
-  assert(summary.counts.local_changes > 0, repo.name .. " should have local changes")
-
-  local details, details_err = model.load_repo_details(repo, {
-    remote_refresh = false,
-    status_timeout_ms = 30000,
-    remote_timeout_ms = 30000,
-  })
-  assert(details, repo.name .. " details failed: " .. tostring(details_err))
-  assert(details.details_loaded == true, repo.name .. " details did not mark loaded")
-  state.lazyvcs_repo_cache[repo.root] = details
-end
-
-assert(seen.git, "git repo not discovered")
-assert(seen.svn, "svn repo not discovered")
-
-local root = model.collect(state, {
-  root = workspace,
-  scan_depth = 3,
-})
-assert(root.extra.repo_count == 2, "collected root should expose two repos")
-
-local components = require("lazyvcs.source_control.components")
-local root_meta = components.root_meta({}, {
-  type = "root",
-  extra = {
-    hydration_active = true,
-    hydration_pending = 2,
-  },
-}, {}, 4)
-assert(root_meta and root_meta.text == "󰑓", "refresh indicator should be one quiet icon")
-
-local changes_meta = components.repo_changes_meta({}, {
-  type = "repo_changes",
-  name = "fixture",
-  extra = {
-    branch = " feature/example",
-    counts = {},
-    sync = { text = "", status = "synced", highlight = "Comment" },
-  },
-}, {}, 30)
-assert(changes_meta and changes_meta.text:sub(1, 1) == " ", "branch metadata should keep a leading space")
-
-print("lazyvcs source-control smoke ok")
-LUA
-
 cat >/tmp/lazyvcs-source-control-smoke.lua <<'LUA'
 local ok, err = xpcall(function()
-  dofile("/tmp/lazyvcs-source-control-smoke-body.lua")
+  local workspace = assert(vim.env.LAZYVCS_E2E_WORKSPACE, "missing LAZYVCS_E2E_WORKSPACE")
+  assert(vim.fn.exists(":LazyVcsSourceControlToggle") == 2, "LazyVcsSourceControlToggle command missing")
+  assert(vim.fn.exists(":LazyVcsSourceControlProfile") == 2, "LazyVcsSourceControlProfile command missing")
+  assert(vim.fn.exists(":LazyVcsBlame") == 2, "LazyVcsBlame command missing")
+  assert(vim.fn.exists(":LazyVcsBlameSplit") == 2, "LazyVcsBlameSplit command missing")
+  assert(vim.fn.exists(":LazyVcsBlameClear") == 2, "LazyVcsBlameClear command missing")
+  assert(vim.fn.exists(":SvnBlame") == 2, "SvnBlame compatibility command missing")
+
+  require("lazyvcs").source_control_open({ path = workspace })
+  local state = assert(require("lazyvcs.source_control.native")._state(), "missing native source-control state")
+  assert(vim.api.nvim_buf_is_valid(state.bufnr), "native source-control buffer is invalid")
+  local text = table.concat(vim.api.nvim_buf_get_lines(state.bufnr, 0, -1, false), "\n")
+  assert(text:match("Repositories %(2%)"), text)
+  assert(text:match("git%-repo"), text)
+  assert(text:match("svn%-repo"), text)
+  assert(not pcall(require, "lazyvcs.source_control.init"), "removed Neo-tree adapter module should not load")
+  require("lazyvcs").source_control_close()
 end, debug.traceback)
 
 if not ok then
@@ -367,11 +234,7 @@ vim.cmd("qa")
 LUA
 
 run_logged source-control-smoke env LAZYVCS_E2E_WORKSPACE="${WORKSPACE}" \
-	timeout 180s nvim --headless -u NONE "+luafile /tmp/lazyvcs-source-control-smoke.lua"
-
-run_logged tty-smoke timeout 120s script -q -e -c \
-	"env LAZYVCS_E2E_WORKSPACE='${WORKSPACE}' nvim '+Neotree source=lazyvcs_source_control dir=${WORKSPACE}' '+sleep 1500m' '+qa!'" \
-	/artifacts/tty-smoke.typescript
+	timeout 180s nvim --headless "+luafile /tmp/lazyvcs-source-control-smoke.lua"
 
 if [ -n "${KEEP_E2E_HOME}" ]; then
 	cp -a "${HOME}" /artifacts/home

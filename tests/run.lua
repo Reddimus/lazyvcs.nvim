@@ -25,8 +25,6 @@ package.path = table.concat({
 
 for _, dependency in ipairs({
 	"plenary.nvim",
-	"nui.nvim",
-	"neo-tree.nvim",
 	"gitsigns.nvim",
 }) do
 	add_dependency(dependency)

@@ -4,28 +4,37 @@
 CONTENTS                                                   *lazyvcs-contents*
 
 1. Introduction ................................................ |lazyvcs-intro|
-2. Commands .................................................. |lazyvcs-commands|
-3. Mappings .................................................. |lazyvcs-mappings|
-4. Source Control ...................................... |lazyvcs-source-control|
-5. Configuration ........................................ |lazyvcs-configuration|
-6. Testing ..................................................... |lazyvcs-testing|
-7. Notes ......................................................... |lazyvcs-notes|
+2. Requirements .......................................... |lazyvcs-requirements|
+3. Commands .................................................. |lazyvcs-commands|
+4. Mappings .................................................. |lazyvcs-mappings|
+5. SVN Inline Signs ............................... |lazyvcs-svn-inline-signs|
+6. Source Control ...................................... |lazyvcs-source-control|
+7. Configuration ........................................ |lazyvcs-configuration|
+8. Testing ..................................................... |lazyvcs-testing|
+9. Notes ......................................................... |lazyvcs-notes|
 
 ==============================================================================
 INTRODUCTION                                                   *lazyvcs-intro*
 
-lazyvcs.nvim opens a VS Code style live diff view using native Neovim windows.
-The current file stays editable on the left, and a scratch buffer containing
-the VCS base stays on the right. Both windows use |:diffthis| and |:diffupdate|.
+lazyvcs.nvim provides native VCS workflows:
 
-Git support compares the buffer to the index with `git show :path`. This matches
-gitsigns' default unstaged-change model. SVN support compares the buffer to
-`svn cat -r BASE path`.
+- SVN gutter signs, hunk navigation, blame, line log, and file picker
+- an editable live diff view for the current Git/SVN file
+- a standalone source-control sidebar for nested Git/SVN working copies
 
-lazyvcs.nvim also provides an external Neo-tree source named
-`lazyvcs_source_control`. In AstroNvim this can replace the selector's `Git`
-tab with a `VCS` source-control sidebar for nested Git and SVN working copies.
-The Neo-tree source currently targets Neo-tree's stable `v3.x` branch.
+The live diff keeps the real file editable on the left and shows a scratch VCS
+base buffer on the right. Git compares against the index with `git show :path`.
+SVN compares against working-copy BASE with `svn cat -r BASE path`.
+
+The source-control sidebar is native Neovim UI. Neo-tree is not required.
+
+==============================================================================
+REQUIREMENTS                                           *lazyvcs-requirements*
+
+- Neovim 0.10 or newer.
+- `git` for Git repositories.
+- `svn` for SVN working copies.
+- A Nerd Font is recommended for sidebar icons.
 
 ==============================================================================
 COMMANDS                                                     *lazyvcs-commands*
@@ -34,13 +43,13 @@ COMMANDS                                                     *lazyvcs-commands*
 :LazyVcsDiffOpen      Open the live diff view for the current file.
 
                                                           *:LazyVcsDiffClose*
-:LazyVcsDiffClose     Close the live diff session for the current file.
+:LazyVcsDiffClose     Close the current live diff view.
 
                                                          *:LazyVcsDiffToggle*
-:LazyVcsDiffToggle    Toggle the live diff session for the current file.
+:LazyVcsDiffToggle    Toggle the live diff view.
 
                                                          *:LazyVcsDiffRefresh*
-:LazyVcsDiffRefresh   Refresh the current live diff view manually.
+:LazyVcsDiffRefresh   Refresh the current live diff view.
 
                                                           *:LazyVcsRevertHunk*
 :LazyVcsRevertHunk    Revert the hunk under the cursor.
@@ -51,144 +60,174 @@ COMMANDS                                                     *lazyvcs-commands*
                                                             *:LazyVcsPrevHunk*
 :LazyVcsPrevHunk      Jump to the previous changed hunk.
 
+                                                        *:LazyVcsSignsRefresh*
+:LazyVcsSignsRefresh  Reload SVN BASE and refresh signs for the current buffer.
+
+                                                               *:LazyVcsBlame*
+:LazyVcsBlame         Toggle SVN blame using `blame.mode`.
+
+                                                          *:LazyVcsBlameSplit*
+:LazyVcsBlameSplit    Toggle full-file SVN blame in a fixed-width split.
+
+                                                          *:LazyVcsBlameClear*
+:LazyVcsBlameClear    Clear inline SVN blame from the current buffer.
+
+                                                             *:LazyVcsLineLog*
+:LazyVcsLineLog       Show SVN log for the current line.
+
+                                                         *:LazyVcsPreviewDiff*
+:LazyVcsPreviewDiff   Preview the current SVN buffer diff.
+
+                                                        *:LazyVcsRevertBuffer*
+:LazyVcsRevertBuffer  Revert the current SVN file.
+
+                                                               *:LazyVcsFiles*
+:LazyVcsFiles         Pick from modified SVN files.
+
+                                                   *:LazyVcsSourceControlOpen*
+:LazyVcsSourceControlOpen [path]
+                      Open the source-control sidebar.
+
+                                                  *:LazyVcsSourceControlClose*
+:LazyVcsSourceControlClose
+                      Close the source-control sidebar.
+
+                                                 *:LazyVcsSourceControlToggle*
+:LazyVcsSourceControlToggle [path]
+                      Toggle the source-control sidebar.
+
+                                                *:LazyVcsSourceControlRefresh*
+:LazyVcsSourceControlRefresh
+                      Refresh the source-control sidebar.
+
                                                 *:LazyVcsSourceControlProfile*
-:LazyVcsSourceControlProfile
-                      Show recent source-control background job timings.
+:LazyVcsSourceControlProfile [clear]
+                      Show or clear recent source-control job timings.
 
                                                              *:VcsLiveDiffOpen*
 :VcsLiveDiffOpen      Alias for |:LazyVcsDiffOpen|.
 
+svnsigns.nvim compatibility aliases are enabled by default:
+
+    :SvnBlame
+    :SvnLog
+    :SvnPreview
+    :SvnRevert
+    :SvnResetHunk
+    :SvnFiles
+
 ==============================================================================
 MAPPINGS                                                     *lazyvcs-mappings*
 
-Global mappings are usually defined through lazy.nvim or AstroNvim:
+Suggested global mappings:
 
     <leader>vo   open live diff
     <leader>vq   close live diff
     <leader>vr   revert current hunk
+    <leader>vs   toggle source-control sidebar
     ]v           next hunk
     [v           previous hunk
 
-Inside an active live diff session the plugin also adds buffer-local mappings:
+Live diff buffer-local mappings:
 
     q            close the live diff session
-    <leader>q    close the live diff session from the right/base diff window
+    <leader>q    close from the right/base diff window
     <leader>vr   revert current hunk
     ]v           next hunk
     [v           previous hunk
 
-The `]v` and `[v` mappings place the target hunk intentionally in the viewport.
-Small hunks are centered as a block when possible. Oversized hunks start at the
-top of the viewport with the cursor on the first visible hunk line.
+Source-control sidebar mappings:
 
-If you switch buffers from the editable lazyvcs window, the current lazyvcs
-session is fully torn down, stale tab-local diff state is cleared, and lazyvcs
-reopens on the newly entered file when that file is supported by the Git or
-SVN backend.
+    <CR>, l      focus repo, toggle Changes repo rows, run action, or open file
+                 diff
+    h            collapse node
+    <Space>      toggle repo visibility; expand/collapse sections
+    <Tab>        toggle repo visibility; expand/collapse sections
+    R            refresh
+    H            toggle clean repos
+    e            edit commit message, or toggle auto-fit width
+    b            switch Git branch/tag or SVN target
+    s, .         open repo actions
+    c            commit repo
+    gm           generate commit message
+    ga           stage Git file
+    gu           unstage Git file
+    gr           revert Git or SVN file
+    v            toggle list/tree changes
+    S            cycle file sort
+
+With snacks.nvim installed, b opens a VS Code-style Git branch picker with
+commands pinned first, current branch marked, and no numeric prefixes. Without
+Snacks, lazyvcs falls back to the built-in vim.ui.select.
+
+==============================================================================
+SVN INLINE SIGNS                                   *lazyvcs-svn-inline-signs*
+
+SVN file buffers get gutter signs automatically. lazyvcs compares the buffer
+against working-copy BASE with `svn cat -r BASE` in the background and updates
+signs after edits.
+
+Commands:
+
+    :LazyVcsSignsRefresh   reload BASE and refresh signs
+    :LazyVcsBlame          toggle inline current-line blame by default
+    :LazyVcsBlameSplit     toggle aligned full-file blame audit split
+    :LazyVcsBlameClear     clear inline blame
+    :LazyVcsLineLog        show SVN log for the current line
+    :LazyVcsPreviewDiff    preview current buffer diff
+    :LazyVcsRevertBuffer   revert the current SVN file
+    :LazyVcsFiles          pick from modified SVN files
+
+Hunk commands work in normal SVN buffers too:
+
+    :LazyVcsRevertHunk
+    :LazyVcsNextHunk
+    :LazyVcsPrevHunk
 
 ==============================================================================
 SOURCE CONTROL                                       *lazyvcs-source-control*
 
-The source-control sidebar is intended to replace Neo-tree's stock `git_status`
-source in the AstroNvim selector while showing the `VCS` label.
+Open the sidebar with:
+
+>
+  :LazyVcsSourceControlToggle
+<
 
 Behavior:
 
-- The current root is scanned for nested Git and SVN working copies.
-- The source also works when the current root is itself a single Git or SVN
-  working copy.
-- Broad roots such as `~/Repos` are supported. Repos are keyed by normalized
-  absolute path, and duplicate repo names are disambiguated with relative path
-  labels.
-- The source renders a `Repositories` section and a `Changes` section.
-- Repo rows are rendered first, then status is hydrated progressively in
-  background jobs.
-- Repo visibility is persisted per workspace root.
-- Clean repos are hidden by default after hydration. Press `H` to reveal them.
-- Repo rows render right-aligned sync badges and branch labels.
-- Narrow panes hide lower-priority metadata before truncating repo names.
-- Pressing <CR> on a changed file opens that file in |lazyvcs.nvim| live diff.
-- Repeated file opens from the VCS tree reuse the active editable diff window in
-  the current tab instead of creating a second diff layout.
-- Active lazyvcs diff pairs rebalance automatically when the sidebar or editor
-  width changes, keeping the editable and base windows evenly split.
-- The scratch/base diff buffer opts out of Aerial, and editable-buffer transfers
-  temporarily suspend then refetch Aerial to avoid outline-plugin races.
-- Markdown targets are guarded before the session swap completes so markdown
-  scope and Treesitter helpers do not break sequential file switching.
-- Git repos can switch branches or tags directly from the sidebar.
-- SVN working copies can switch targets directly from the sidebar.
-- VCS reads and long-running sidebar actions run in the background so Neovim
-  stays responsive while repos refresh, sync, update, commit, fetch, pull, push,
-  discover switch targets, or switch.
-- Git sync follows VS Code's repository-scoped model: pull from the selected
-  branch's configured upstream, then push local commits when needed.
-- Git sync and pull avoid bare `git pull`; they fetch the configured upstream
-  remote and fast-forward explicitly with `git merge --ff-only <upstream>`.
-- Only the in-progress repo is dimmed and partially disabled while its mutation
-  job runs. Other repos in the same VCS tab remain interactive.
-- Background refresh preserves cached repo icons, branch names, and sync counts.
-  Refresh state is shown once on the root row as a quiet icon instead of
-  flickering on individual repo rows or section headers.
-- Pressing <CR> on an expanded repo node collapses it immediately, even if its
-  details are stale after a sync/update.
-- SVN labels are compact and meaningful, for example `trunk`,
-  `private/KMLopez/RP-2927`, or `integration/platform/OS/factory`.
+- Scans the current root for nested Git and SVN repos.
+- Supports broad workspace roots such as `~/src`.
+- Disambiguates duplicate repo names with relative path labels.
+- Shows `Repositories` and `Changes`.
+- Hydrates repo status in background jobs.
+- Keeps other repos usable while one repo syncs, updates, commits, or switches.
+- Keeps cached repo badges visible during refresh.
+- Supports Git fetch/pull/push/sync and SVN update/switch.
+- Publishes no-upstream Git branches with upstream tracking.
+- Uses origin for publishing, or the only configured remote when origin is
+  absent.
+- Opens changed files in the live diff view.
 
-Default sidebar mappings:
-
-    <CR>         focus repos, expand repo/section nodes, open file diff, or
-                 activate the primary action row
-    <Space>      toggle repository visibility in the `Changes` section
-    <Tab>        toggle repository visibility in the `Changes` section
-    H            toggle clean repos
-    R            refresh source-control state
-    e            resize the tree, except on commit rows where it edits the draft
-    b            open the branch or switch picker for the selected repo
-    gm           generate a commit subject with CopilotChat
-    s            open the sync/action picker for the selected repo
-    c            commit the selected repo
-    ga           stage a Git file
-    gu           unstage a Git file
-    gr           revert the selected Git or SVN file
-    v            toggle list/tree change layout
-    S            cycle file sort order
-
-Repo actions:
-
-- Git repos support refresh, fetch, pull, push, sync changes, stage all, and
-  commit using the current draft message.
-- `Sync Changes` fetches the selected Git repo's upstream remote, fast-forwards
-  when behind, pushes to the configured upstream when ahead, and refuses
-  diverged branches.
-- Git repos also support `Checkout Branch or Tag...`, including create-branch
-  flows, remote tracking checkout, and detached checkout.
-- SVN working copies support refresh, update, sync changes, and commit using
-  the current draft message.
-- SVN working copies also support `Switch...`. Standard `trunk/branches/tags`
-  layouts show discovered targets. Nonstandard layouts fall back to a manual
-  URL switch prompt.
-- Selecting a commit draft row opens a popup editor for the repo message.
-- If |CopilotChat| is installed, `gm` can generate a subject line from the
-  repo's current changes.
-- Background jobs replace the repo's primary action label with text such as
-  `Syncing...`, `Updating...`, `Switching...`, or `Committing...`.
-- While a repo job is active, the repo stays navigable but file diff opens,
-  commit editing, and repo action triggers are disabled for that repo only.
-- `Repositories` always lists discovered repos. `Changes` only lists the
-  repositories currently marked visible.
-- In list mode, file groups are flat. In tree mode, nested paths are folded
-  into folder nodes and compact folders can collapse single-child chains.
+Pressing `e` outside a commit-message row toggles sidebar auto-fit. The width is
+capped by `source_control.auto_expand_max_width_ratio`, then restored when `e`
+is pressed again.
 
 ==============================================================================
 CONFIGURATION                                           *lazyvcs-configuration*
 
-Example lazy.nvim configuration:
+Minimal lazy.nvim or AstroNvim spec:
 
 >lua
   {
-    dir = "~/Repos/lazyvcs.nvim",
+    "Reddimus/lazyvcs.nvim",
     main = "lazyvcs",
+    event = { "BufReadPost", "BufNewFile" },
+    dependencies = {
+      { "lewis6991/gitsigns.nvim", optional = true },
+      { "folke/snacks.nvim", optional = true },
+      { "ibhagwan/fzf-lua", optional = true },
+      { "CopilotC-Nvim/CopilotChat.nvim", optional = true },
+    },
     cmd = {
       "LazyVcsDiffOpen",
       "LazyVcsDiffClose",
@@ -197,168 +236,205 @@ Example lazy.nvim configuration:
       "LazyVcsRevertHunk",
       "LazyVcsNextHunk",
       "LazyVcsPrevHunk",
+      "LazyVcsSignsRefresh",
+      "LazyVcsBlame",
+      "LazyVcsBlameSplit",
+      "LazyVcsBlameClear",
+      "LazyVcsLineLog",
+      "LazyVcsPreviewDiff",
+      "LazyVcsRevertBuffer",
+      "LazyVcsFiles",
+      "LazyVcsSourceControlOpen",
+      "LazyVcsSourceControlClose",
+      "LazyVcsSourceControlToggle",
+      "LazyVcsSourceControlRefresh",
       "LazyVcsSourceControlProfile",
       "VcsLiveDiffOpen",
+      "SvnBlame",
+      "SvnLog",
+      "SvnPreview",
+      "SvnRevert",
+      "SvnResetHunk",
+      "SvnFiles",
     },
     keys = {
       { "<leader>vo", "<cmd>LazyVcsDiffOpen<cr>", desc = "Open VCS diff" },
       { "<leader>vq", "<cmd>LazyVcsDiffClose<cr>", desc = "Close VCS diff" },
       { "<leader>vr", "<cmd>LazyVcsRevertHunk<cr>", desc = "Revert VCS hunk" },
+      { "<leader>vs", "<cmd>LazyVcsSourceControlToggle<cr>", desc = "Toggle VCS sidebar" },
       { "]v", "<cmd>LazyVcsNextHunk<cr>", desc = "Next VCS hunk" },
       { "[v", "<cmd>LazyVcsPrevHunk<cr>", desc = "Previous VCS hunk" },
     },
-    dependencies = {
-      { "nvim-neo-tree/neo-tree.nvim", branch = "v3.x" },
-    },
     opts = {
-      debounce_ms = 120,
-      use_gitsigns = true,
-      base_window = {
-        width = 0.45,
-      },
       source_control = {
         enabled = true,
-        scan_depth = 3,
-        show_clean = false,
-        always_show_repositories = false,
-        selection_mode = "multiple",
-        repositories_sort = "discovery_time",
-        changes_view_mode = "list",
-        changes_sort = "path",
-        compact_folders = true,
-        show_action_button = true,
-        show_input_action_button = true,
+        ui = "auto",
         remote_refresh = "on_open",
         remote_refresh_interval_ms = 60000,
-        selector_label = "VCS",
-        sync_button_behavior = "picker",
-        remote_error_notifications = "summary",
-        background = {
-          git_workers = 4,
-          svn_workers = 1,
-          status_timeout_ms = 30000,
-          remote_timeout_ms = 30000,
-          switch_timeout_ms = 30000,
-          mutation_timeout_ms = 0,
-          history_limit = 100,
-        },
-      },
-      ai = {
-        commit_message = {
-          provider = "copilotchat",
-        },
       },
     },
   }
 <
 
-For AstroNvim, put the plugin spec in:
+This vanilla install has no hard plugin dependencies. The optional dependency
+specs above do not install anything by themselves. If gitsigns.nvim,
+snacks.nvim, fzf-lua, or CopilotChat.nvim are already installed elsewhere,
+lazyvcs detects them at runtime and uses enhanced paths automatically. Supported
+AI CLIs are also detected for ai.commit_message.provider = "auto".
 
->
-  ~/.config/nvim/lua/plugins/lazyvcs.lua
+For AstroNvim, put the same spec in `lua/plugins/lazyvcs.lua`. Keep the `event`
+entry so SVN signs attach when files open, even before a LazyVCS command is run.
+
+Optional integrations are detected at runtime:
+
+    gitsigns.nvim     Git hunk reset delegation
+    snacks.nvim       Action picker, VS Code-style Git branch picker,
+                      and SVN file pickers
+    fzf-lua           SVN file picker fallback
+    CopilotChat.nvim  Commit-message generation with `gm`
+    Claude CLI        Commit-message generation with `gm`
+    Codex CLI         Commit-message generation with `gm`
+    Gemini CLI        Commit-message generation with `gm`
+    Copilot CLI       Commit-message generation with `gm`
+
+|:checkhealth| `lazyvcs` reports `vanilla` mode when built-in fallbacks are
+active and `enhanced` mode when one or more optional integrations are present.
+
+To install all enhanced integrations, remove optional=true and add them as
+lazy.nvim dependencies:
+
+>lua
+  dependencies = {
+    "lewis6991/gitsigns.nvim",
+    "folke/snacks.nvim",
+    "ibhagwan/fzf-lua",
+    "CopilotC-Nvim/CopilotChat.nvim",
+  }
 <
 
-Open the source-control sidebar directly with:
+Commit messages can be generated from the source-control sidebar with `gm` or
+from the commit popup with `gm` in normal mode and `<C-g>` in insert mode. The
+default provider is CopilotChat.nvim. Set ai.commit_message.provider to "auto"
+to try CopilotChat.nvim, Claude CLI, Codex CLI, Gemini CLI, then GitHub Copilot
+CLI. LazyVCS asks once per session before sending diffs to an AI provider.
 
->
-  :Neotree source=lazyvcs_source_control
+>lua
+  opts = {
+    ai = {
+      commit_message = {
+        provider = "auto",
+        instructions = "Use imperative mood and include a ticket ID when present.",
+      },
+    },
+  }
 <
 
-When wiring Neo-tree manually, add the Lua module path
-`lazyvcs.source_control` to `opts.sources`. Use the source name
-`lazyvcs_source_control` in the source selector and in `:Neotree source=...`.
+Main options:
 
-Options:
+    debounce_ms        Delay before live diff refresh.
+    use_gitsigns       Prefer `gitsigns.reset_hunk()` for Git hunks.
+    set_winbar         Set simple winbar labels during live diff.
+    session_keymaps    Add buffer-local live diff mappings.
+    base_window.width  Right/base diff window width. Ratio when <= 1.
 
-    debounce_ms        Delay before diff refresh after edits.
-    use_gitsigns       Prefer `gitsigns.reset_hunk()` for Git when possible.
-    set_winbar         Write simple winbar labels while the session is active.
-    session_keymaps    Add buffer-local session mappings.
-    base_window        Width for the right-side base window.
-                       Values <= 1 are treated as a ratio of editor columns.
-                       Values > 1 are treated as a fixed column width.
-    source_control     Settings for the Neo-tree source-control sidebar.
-    ai                 Settings for commit-message generation providers.
+SVN signs options:
 
-The source-control options are:
+    signs.enabled      Enable SVN gutter signs.
+    signs.debounce_ms  Delay sign refresh after buffer edits.
+    signs.sign_priority
+                       Sign-column priority.
+    signs.max_file_bytes
+                       Skip large files.
+    signs.text         Sign glyphs for add/change/delete/topdelete/changedelete.
 
-    enabled            Enable the source-control integration.
-    scan_depth         Maximum nested repo discovery depth.
+SVN blame options:
+
+    blame.mode         `inline`, `split`, or `off` for :LazyVcsBlame.
+    blame.delay_ms     Delay before inline blame follows the cursor.
+    blame.loading_delay_ms
+                       Delay before showing slow-load feedback.
+    blame.loading_text Muted text shown while slow blame is still loading.
+    blame.uncommitted_text
+                       Muted text for local/uncommitted SVN blame rows.
+    blame.format       Inline format with {author}, {date}, and {revision}.
+    blame.max_width    Maximum inline blame text width.
+    blame.split_min_width
+                       Minimum full-file blame split width.
+    blame.split_max_width
+                       Maximum full-file blame split width.
+
+Terminal Neovim cannot apply true per-text opacity. lazyvcs uses muted,
+theme-aware Comment highlights for blame text. Inline blame stays quiet during
+fast loads, shows `Blame loading...` only for slow SVN calls, and labels local
+SVN rows as `Uncommitted line` instead of displaying raw `- - -` placeholders.
+
+Compatibility options:
+
+    compat.svnsigns_commands
+                       Register :SvnBlame, :SvnLog, :SvnPreview, :SvnRevert,
+                       :SvnResetHunk, and :SvnFiles aliases.
+
+Source-control options:
+
+    enabled            Enable the source-control sidebar.
+    ui                 `auto` or `native`. Legacy `neo-tree` routes native.
+    scan_depth         Nested repo discovery depth.
+    width              Initial sidebar width.
+    auto_expand_width  Start sidebar in auto-fit mode.
+    auto_expand_max_width_ratio
+                       Width cap for `e` auto-fit.
     show_clean         Show clean repos by default.
-    always_show_repositories
-                       Always render the `Repositories` section.
-    selection_mode     `multiple` shows several repos in `Changes`.
-                       `single` keeps one visible repo at a time.
-    repositories_sort  Sort repo rows by discovery time, name, or path.
-    changes_view_mode  `list` or `tree`.
-    changes_sort       Sort change rows by path, name, or status.
-    compact_folders    Collapse single-child folder chains in tree mode.
-    show_action_button Show the primary action row below the commit input.
-    show_input_action_button
-                       Show the primary action label on the commit-input row.
-    remote_refresh     Remote status policy. `manual` avoids network refresh on
-                       open; `on_open` runs remote checks in background jobs.
+    confirm_mutations  Confirm repo/file mutations.
+    remote_refresh     `manual` or `on_open`.
     remote_refresh_interval_ms
-                       Minimum interval between automatic remote refreshes for
-                       the same root. Explicit refresh and repo actions bypass
-                       this throttle.
-    selector_label     Intended selector label when wiring into AstroNvim.
-    sync_button_behavior
-                       How the sync badge behaves. `picker` opens repo actions.
-    remote_error_notifications
-                       `summary`, `inline`, or `notify` for remote refresh
-                       failures.
-    background         Worker limits, timeouts, and profile history size for
-                       background source-control jobs.
+                       Minimum automatic refresh interval per root.
+    selection_mode     `multiple` or `single`.
+    repositories_sort  `discovery_time`, `name`, or `path`.
+    changes_view_mode  `list` or `tree`.
+    changes_sort       `path`, `name`, or `status`.
+    compact_folders    Collapse single-child folder chains in tree mode.
+
+Mutation confirmations use a small native popup. Press 1 to confirm, 2 to
+confirm and skip more mutation prompts for the current Neovim session, or 3,
+q, or <Esc> to cancel. j/k and arrow keys move the selection; <CR> runs the
+highlighted choice. Confirm is highlighted by default.
 
 ==============================================================================
 TESTING                                                       *lazyvcs-testing*
 
-Run the headless Lua test suite with:
+Local checks:
 
 >
-  nvim --headless -u NONE -l /home/kevim/Repos/lazyvcs.nvim/tests/run.lua
+  nvim --headless -u NONE -l tests/native_smoke.lua
+  nvim --headless -u NONE -l tests/run.lua
+  tests/minitest.sh
+  stylua --check lua tests
+  lua-language-server --check=. --check_format=pretty --checklevel=Warning
+  npm ci
+  npm run format:md:check
+  bash -n tests/minitest.sh tests/e2e/ubuntu-native.sh tests/e2e/ubuntu-astronvim.sh
 <
 
-Set `LAZYVCS_TEST_LAZY_ROOT=/path/to/lazy` if your lazy.nvim plugin directory
-is not under the default |stdpath()| data directory.
-
-Run the Ubuntu plus AstroNvim container smoke test with:
+Container checks:
 
 >
-  /home/kevim/Repos/lazyvcs.nvim/tests/e2e/ubuntu-astronvim.sh
+  tests/e2e/ubuntu-native.sh
+  tests/e2e/ubuntu-astronvim.sh
 <
 
-The container test installs Ubuntu packages, Neovim, AstroNvim, and this local
-plugin into an isolated `$HOME`. It then runs headless load checks,
-|:checkhealth|, Git/SVN source-control smoke checks, and a pseudo-TTY Neo-tree
-VCS launch. It uses temporary local Git/SVN fixtures and does not run
-`git commit` or `svn commit`.
+`tests/minitest.sh` fetches `mini.nvim` into ignored `deps/` unless
+`MINI_TEST_PATH` points to an existing checkout. The native container test also
+runs a fixed-size `pexpect` terminal smoke test for the sidebar.
 
 ==============================================================================
 NOTES                                                           *lazyvcs-notes*
 
-- The left window is a normal file buffer. The right window is a scratch buffer.
-- Git hunk reset falls back to plugin-owned replacement if gitsigns is absent.
-- SVN support is implemented by the plugin backend; gitsigns is not used there.
-- Newline-at-EOF differences are not currently modeled separately.
-- Use |:checkhealth| `lazyvcs` to verify local prerequisites.
-- Near the start or end of a file, viewport placement clamps to the available lines.
-- Unsupported or non-file destination buffers close the old session without
-  reopening it.
-- While a lazyvcs session is active, lazyvcs owns diff mode in the current tab
-  so stale diff participants do not leak across buffer transfers.
-- Closing or changing the Neo-tree VCS root cancels stale background status
-  reads. Explicit sync/update/commit/switch jobs continue until the VCS command
-  exits.
-- User-triggered detail and switch-target loads take priority over all-repo
-  background remote refresh, so the VCS tab remains navigable while sync/update
-  refreshes other repos.
-- Never-loaded repos show a loading badge, but already-loaded repos keep their
-  cached status badges while background refresh is running.
-- Failed mutation jobs keep an inline error badge on the repo row until the next
-  refresh or successful repo action.
-- Failed background remote refreshes keep inline error state and emit one
-  summary notification per refresh batch by default.
+- The Neo-tree adapter has been removed. Use |:LazyVcsSourceControlToggle|.
+- Git compares live diff buffers against the index.
+- SVN compares live diff buffers against working-copy BASE.
+- Untracked files show an empty base.
+- Normal undo works after a hunk revert.
+- Forge Terminal MCP can help with local agent-driven TUI debugging, but it is
+  not required for tests or CI.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

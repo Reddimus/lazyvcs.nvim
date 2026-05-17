@@ -2,8 +2,33 @@ local config = require("lazyvcs.config")
 
 local M = {}
 
+local warned_removed_neotree = false
+
+local function source_control_enabled()
+	if config.get().source_control.enabled then
+		return true
+	end
+	require("lazyvcs.util").notify("lazyvcs source control is disabled", vim.log.levels.WARN)
+	return false
+end
+
+local function warn_removed_neotree()
+	if config.get().source_control.ui ~= "neo-tree" or warned_removed_neotree then
+		return
+	end
+	warned_removed_neotree = true
+	require("lazyvcs.util").notify(
+		"lazyvcs source_control.ui='neo-tree' is no longer supported; using the native sidebar",
+		vim.log.levels.WARN
+	)
+end
+
 function M.setup(opts)
-	return config.setup(opts)
+	local resolved = config.setup(opts)
+	require("lazyvcs.commands").setup()
+	require("lazyvcs.signs").setup()
+	require("lazyvcs.svn_ui").setup()
+	return resolved
 end
 
 function M.open(opts)
@@ -32,6 +57,63 @@ end
 
 function M.refresh()
 	return require("lazyvcs.actions").refresh_current()
+end
+
+function M.blame()
+	return require("lazyvcs.svn_ui").blame()
+end
+
+function M.blame_split()
+	return require("lazyvcs.svn_ui").blame_split()
+end
+
+function M.blame_clear()
+	return require("lazyvcs.svn_ui").blame_clear()
+end
+
+function M.line_log()
+	return require("lazyvcs.svn_ui").line_log()
+end
+
+function M.preview_diff()
+	return require("lazyvcs.svn_ui").preview_diff()
+end
+
+function M.revert_buffer()
+	return require("lazyvcs.svn_ui").revert_buffer()
+end
+
+function M.files()
+	return require("lazyvcs.svn_ui").files()
+end
+
+function M.source_control_open(opts)
+	if not source_control_enabled() then
+		return
+	end
+	warn_removed_neotree()
+	return require("lazyvcs.source_control.native").open(opts)
+end
+
+function M.source_control_close()
+	warn_removed_neotree()
+	return require("lazyvcs.source_control.native").close()
+end
+
+function M.source_control_toggle(opts)
+	if not source_control_enabled() then
+		return
+	end
+	warn_removed_neotree()
+	return require("lazyvcs.source_control.native").toggle(opts)
+end
+
+function M.source_control_refresh()
+	if not source_control_enabled() then
+		return
+	end
+	warn_removed_neotree()
+	return require("lazyvcs.source_control.native").refresh(true)
 end
 
 return M

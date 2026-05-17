@@ -73,7 +73,7 @@ function M.system_start(args, opts, on_exit)
 			end
 		end, timeout_ms)
 	end
-	handle = vim.system(args, vim.tbl_extend("keep", opts, { text = true }), function(result)
+	local ok, proc = pcall(vim.system, args, vim.tbl_extend("keep", opts, { text = true }), function(result)
 		if done then
 			return
 		end
@@ -92,6 +92,21 @@ function M.system_start(args, opts, on_exit)
 			on_exit(result, nil, result)
 		end)
 	end)
+	if not ok then
+		done = true
+		if timer and not timer:is_closing() then
+			timer:stop()
+			timer:close()
+		end
+		if type(on_exit) == "function" then
+			vim.schedule(function()
+				local result = { code = 127, stdout = "", stderr = tostring(proc) }
+				on_exit(nil, M.system_error(result), result)
+			end)
+		end
+		return nil
+	end
+	handle = proc
 	return handle
 end
 
@@ -101,6 +116,15 @@ function M.system_lines(args, opts)
 		return nil, err
 	end
 	return M.split_lines(result.stdout), nil
+end
+
+function M.system_lines_start(args, opts, on_exit)
+	return M.system_start(args, opts, function(result, err, raw)
+		if err then
+			return on_exit(nil, err, raw)
+		end
+		on_exit(M.split_lines(result.stdout), nil, raw)
+	end)
 end
 
 function M.relpath(root, path)
@@ -153,6 +177,11 @@ function M.buf_path(bufnr)
 		return nil
 	end
 	return vim.fs.normalize(name)
+end
+
+function M.file_size(path)
+	local stat = path and vim.uv.fs_stat(path)
+	return stat and stat.size or 0
 end
 
 function M.win_is_valid(winid)

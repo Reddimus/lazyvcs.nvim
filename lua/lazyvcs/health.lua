@@ -26,25 +26,45 @@ function M.check()
 		warn("svn executable not found; SVN backend will be unavailable")
 	end
 
-	local has_gitsigns = package.loaded.gitsigns ~= nil or pcall(require, "gitsigns")
-	if has_gitsigns then
-		ok("gitsigns.nvim available for Git hunk reset delegation")
+	local cfg = require("lazyvcs.config").get()
+	if cfg.signs.enabled then
+		ok("SVN inline signs are enabled")
 	else
-		warn("gitsigns.nvim not available; Git hunk reset will fall back to plugin-owned replacement")
+		ok("SVN inline signs are disabled by config")
+	end
+	if cfg.compat.svnsigns_commands then
+		ok("svnsigns.nvim compatibility commands are enabled")
+	else
+		ok("svnsigns.nvim compatibility commands are disabled")
 	end
 
-	local has_neotree = package.loaded["neo-tree"] ~= nil or pcall(require, "neo-tree")
-	if has_neotree then
-		ok("neo-tree.nvim available for the source-control sidebar")
-	else
-		warn("neo-tree.nvim not available; the source-control sidebar will be unavailable")
+	local optional = require("lazyvcs.integrations.optional").status()
+	ok("integration mode: " .. optional.mode)
+	for _, item in ipairs(optional.items) do
+		if item.available then
+			ok(string.format("%s available for %s", item.label, item.feature))
+		else
+			ok(string.format("%s not installed; using %s", item.label, item.fallback))
+		end
 	end
 
-	if pcall(require, "neo-tree.ui.renderer") then
-		ok("neo-tree.nvim exposes the v3 renderer API used by lazyvcs")
-	else
-		warn("neo-tree.nvim v3.x renderer API not found; pin neo-tree.nvim with branch = 'v3.x'")
+	local ai = require("lazyvcs.source_control.ai")
+	ok("AI commit-message provider: " .. cfg.ai.commit_message.provider)
+	if cfg.ai.commit_message.provider == "auto" then
+		ok("AI auto provider order: " .. table.concat(cfg.ai.commit_message.provider_order, ", "))
 	end
+	for _, item in ipairs(ai.status()) do
+		if item.available then
+			ok(string.format("AI provider %s available", item.provider))
+		elseif item.last_error then
+			warn(string.format("AI provider %s unavailable: %s", item.provider, item.last_error))
+		else
+			ok(string.format("AI provider %s not available", item.provider))
+		end
+	end
+
+	ok("native source-control sidebar is available without UI plugin dependencies")
+	ok("legacy Neo-tree source-control adapter has been removed")
 end
 
 return M

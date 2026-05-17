@@ -1,0 +1,11 @@
+{
+  "name": "lazyvcs.nvim",
+  "private": true,
+  "scripts": {
+    "format:md": "prettier --write \"**/*.md\"",
+    "format:md:check": "prettier --check \"**/*.md\""
+  },
+  "devDependencies": {
+    "prettier": "3.8.3"
+  }
+}

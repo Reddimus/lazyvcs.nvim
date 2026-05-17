@@ -3,10 +3,11 @@ local util = require("lazyvcs.util")
 local M = {}
 
 local FIELD_SEP = "\0"
+local format_picker_item
 
 local function icon_for_kind(kind)
 	local icons = {
-		command = "󰘳",
+		command = "+",
 		local_branch = "",
 		remote_branch = "󰘬",
 		tag = "",
@@ -18,19 +19,86 @@ local function icon_for_kind(kind)
 	return icons[kind] or "•"
 end
 
-local function pad_or_trim(text, width)
-	text = text or ""
-	if width <= 0 then
-		return ""
+local function picker_search_text(item)
+	local parts = {
+		item.label,
+		item.short,
+		item.description,
+		item.detail,
+		item.group,
+		item.kind,
+	}
+	return table.concat(
+		vim.tbl_filter(function(part)
+			return part and part ~= ""
+		end, parts),
+		" "
+	)
+end
+
+local function snacks_branch_select(items, opts, on_choice)
+	local ok, picker = pcall(require, "snacks.picker")
+	if not ok or not picker or type(picker.pick) ~= "function" then
+		return nil
 	end
-	local text_width = vim.api.nvim_strwidth(text)
-	if text_width == width then
-		return text
-	end
-	if text_width < width then
-		return text .. string.rep(" ", width - text_width)
-	end
-	return util.truncate(text, width)
+
+	local completed = false
+	return picker.pick({
+		source = "lazyvcs_git_switch",
+		title = opts.prompt or "Select a branch or tag to checkout",
+		finder = function()
+			local finder_items = {}
+			for index, item in ipairs(items) do
+				local finder_item = setmetatable({
+					idx = index,
+					item = item,
+					text = picker_search_text(item),
+				}, { __index = item })
+				finder_items[#finder_items + 1] = finder_item
+			end
+			return finder_items
+		end,
+		format = function(item)
+			return format_picker_item(item.item or item, true)
+		end,
+		layout = {
+			preset = "vscode",
+			layout = {
+				width = 0.55,
+				min_width = 72,
+				height = 0.35,
+			},
+		},
+		matcher = {
+			sort_empty = false,
+			fuzzy = true,
+			smartcase = true,
+		},
+		sort = {
+			fields = { "score:desc", "idx" },
+		},
+		actions = {
+			confirm = function(active_picker, item)
+				if completed then
+					return
+				end
+				completed = true
+				active_picker:close()
+				vim.schedule(function()
+					on_choice(item and item.item or nil)
+				end)
+			end,
+		},
+		on_close = function()
+			if completed then
+				return
+			end
+			completed = true
+			vim.schedule(function()
+				on_choice(nil)
+			end)
+		end,
+	})
 end
 
 local function default_select(items, opts, on_choice)
@@ -46,6 +114,10 @@ local function default_select(items, opts, on_choice)
 			return tostring(item.label or item.text or item.name or "")
 		end,
 	}
+
+	if opts.kind == "git_switch" and snacks_branch_select(items, picker_opts, on_choice) then
+		return
+	end
 
 	local ok, select_mod = pcall(require, "snacks.picker.select")
 	if ok and select_mod and type(select_mod.select) == "function" then
@@ -201,9 +273,9 @@ local function git_picker_items(context, opts)
 	}
 	local order = {
 		commands = 1,
-		local_branches = 2,
-		remote_branches = 3,
-		tags = 4,
+		local_branches = 10,
+		remote_branches = 20,
+		tags = 30,
 	}
 
 	for _, ref in ipairs(context.refs) do
@@ -640,53 +712,74 @@ end
 
 local function group_label(item)
 	local map = {
-		commands = "command",
-		local_branches = "branch",
-		remote_branches = "remote",
-		tags = "tag",
+		commands = "",
+		local_branches = "branches",
+		remote_branches = "remote branches",
+		tags = "tags",
 		trunk = "trunk",
-		branches = "branch",
-		tags_svn = "tag",
+		branches = "branches",
+		tags_svn = "tags",
 	}
 	return map[item.group] or item.group or ""
 end
 
-local function format_picker_item(item, chunks)
+local function item_description(item)
+	if item.kind == "remote_branch" and item.short_hash and item.short_hash ~= "" then
+		return "Remote branch at " .. item.short_hash
+	end
+	if item.kind == "tag" and item.short_hash and item.short_hash ~= "" then
+		return "Tag at " .. item.short_hash
+	end
+	if item.current then
+		return "Current branch"
+	end
+	if item.kind == "local_branch" and item.short_hash and item.short_hash ~= "" then
+		return item.short_hash
+	end
+	return item.description or ""
+end
+
+function format_picker_item(item, chunks)
 	local icon = icon_for_kind(item.kind)
-	local current = item.current and " " or "  "
-	local label = pad_or_trim(item.label or "", 32)
-	local description = pad_or_trim(item.description or "", 14)
-	local detail = util.truncate(item.detail or "", 64)
+	local current = item.current and "✓ " or ""
+	local label = item.label or ""
+	local description = item_description(item)
+	local detail = util.truncate(item.subject or item.detail or "", 64)
 	local category = group_label(item)
 
 	if not chunks then
-		local prefix = string.format("%s %s", current, icon)
+		local prefix = current .. icon
 		local line = prefix .. " " .. label
+		if description ~= "" then
+			line = line .. "  " .. description
+		end
+		if detail ~= "" and detail ~= description then
+			line = line .. "  " .. detail
+		end
 		if category ~= "" then
 			line = line .. "  " .. category
-		end
-		if description ~= "" then
-			line = line .. "  " .. vim.trim(description)
-		end
-		if detail ~= "" then
-			line = line .. "  " .. detail
 		end
 		return line
 	end
 
 	local ret = {
-		{ current, item.current and "SnacksPickerGitBranchCurrent" or "Comment" },
+		{ current, item.current and "Special" or "Comment" },
 		{ icon .. " ", "Identifier" },
 		{ label, item.kind == "command" and "Function" or "String" },
 	}
-	if category ~= "" then
-		ret[#ret + 1] = { " " .. category, "Comment" }
-	end
 	if description ~= "" then
-		ret[#ret + 1] = { "  " .. vim.trim(description), "Comment" }
+		ret[#ret + 1] = { "  " .. description, "Comment" }
 	end
-	if detail ~= "" then
+	if detail ~= "" and detail ~= description then
 		ret[#ret + 1] = { "  " .. detail, "Comment" }
+	end
+	if category ~= "" then
+		ret[#ret + 1] = {
+			col = 0,
+			virt_text = { { category, "Comment" } },
+			virt_text_pos = "right_align",
+			hl_mode = "combine",
+		}
 	end
 	return ret
 end
@@ -695,6 +788,7 @@ local function select_items(items, opts, on_choice)
 	opts = defaults(opts)
 	return opts.select(items, {
 		prompt = opts.prompt,
+		kind = opts.kind,
 		format_item = format_picker_item,
 	}, on_choice)
 end
@@ -799,6 +893,7 @@ local function pick_git_refs(context, opts, spec, on_choice)
 	local items = git_picker_items(context, spec)
 	return select_items(items, {
 		prompt = spec.prompt,
+		kind = "git_switch",
 		select = opts.select,
 		input = opts.input,
 		notify = opts.notify,
@@ -898,6 +993,7 @@ function M.open(repo, opts)
 	return select_items(items, {
 		prompt = context.vcs == "git" and ("Checkout branch or tag for " .. repo.name)
 			or ("Switch working copy for " .. repo.name),
+		kind = context.vcs == "git" and "git_switch" or nil,
 		select = opts.select,
 		input = opts.input,
 		notify = opts.notify,
@@ -932,6 +1028,7 @@ function M.open_async(repo, opts, run_command)
 		return select_items(items, {
 			prompt = context.vcs == "git" and ("Checkout branch or tag for " .. repo.name)
 				or ("Switch working copy for " .. repo.name),
+			kind = context.vcs == "git" and "git_switch" or nil,
 			select = opts.select,
 			input = opts.input,
 			notify = opts.notify,
@@ -947,6 +1044,14 @@ function M.open_async(repo, opts, run_command)
 			return execute_svn(repo, context, choice, opts)
 		end)
 	end)
+end
+
+function M._test_git_picker_items(context, opts)
+	return git_picker_items(context, opts)
+end
+
+function M._test_format_picker_item(item, chunks)
+	return format_picker_item(item, chunks)
 end
 
 return M

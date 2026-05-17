@@ -1,12 +1,11 @@
 local ai = require("lazyvcs.source_control.ai")
+local confirm = require("lazyvcs.source_control.confirm")
 local config = require("lazyvcs.config")
 local input = require("lazyvcs.source_control.input")
 local jobs = require("lazyvcs.source_control.jobs")
 local model = require("lazyvcs.source_control.model")
 local persist = require("lazyvcs.source_control.persist")
 local repo_switch = require("lazyvcs.source_control.switch")
-local manager = require("neo-tree.sources.manager")
-local renderer = require("neo-tree.ui.renderer")
 local session_state = require("lazyvcs.state")
 local util = require("lazyvcs.util")
 
@@ -17,7 +16,23 @@ local function file_exists(path)
 end
 
 local function current_node(state)
+	if state.lazyvcs_get_node then
+		return state.lazyvcs_get_node(state)
+	end
 	return state.tree and state.tree:get_node() or nil
+end
+
+local function navigate(state)
+	if state.lazyvcs_render then
+		return state.lazyvcs_render(state)
+	end
+end
+
+local function window_exists(state)
+	if state.lazyvcs_window_exists then
+		return state.lazyvcs_window_exists(state)
+	end
+	return true
 end
 
 local function active_session_for_tab()
@@ -58,13 +73,48 @@ local function save_state(state)
 	end
 end
 
-local function current_repo(state, node)
-	node = node or current_node(state)
+local function repo_root_for_node(node)
 	if not node then
 		return nil
 	end
-	local repo_root = node.extra and node.extra.repo_root or node.path or node:get_id()
+	if node.extra and node.extra.repo_root then
+		return node.extra.repo_root
+	end
+	if node.path then
+		return node.path
+	end
+	if type(node.get_id) == "function" then
+		return node:get_id()
+	end
+	return nil
+end
+
+local function current_repo(state, node)
+	local repo_root = repo_root_for_node(node or current_node(state))
+	if not repo_root then
+		return nil
+	end
 	return state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[repo_root] or nil
+end
+
+local function repo_changes_expanded(state, node, repo)
+	if node and type(node.is_expanded) == "function" then
+		return node:is_expanded()
+	end
+	local id = model.repo_changes_id(repo.root)
+	return state.lazyvcs_expanded and state.lazyvcs_expanded[id] == true
+end
+
+local function set_repo_changes_expanded(state, repo, expanded)
+	local id = model.repo_changes_id(repo.root)
+	state.lazyvcs_expanded = state.lazyvcs_expanded or {}
+	state.lazyvcs_force_expand = state.lazyvcs_force_expand or {}
+	state.lazyvcs_expanded[id] = expanded == true
+	if not expanded then
+		state.lazyvcs_force_expand[id] = nil
+	end
+	save_state(state)
+	navigate(state)
 end
 
 local function restart_source(state, remote_refresh)
@@ -78,12 +128,12 @@ local function restart_source(state, remote_refresh)
 	end)
 	state.lazyvcs_remote_refresh = remote_refresh ~= false
 	save_state(state)
-	manager.navigate(state, state.path, nil, nil, false)
+	navigate(state)
 end
 
 local function navigate_if_visible(state)
-	if state.path and renderer.window_exists(state) then
-		manager.navigate(state, state.path, nil, nil, false)
+	if state.path and window_exists(state) then
+		navigate(state)
 	end
 end
 
@@ -118,6 +168,48 @@ local function run(args, opts)
 	return result
 end
 
+local function select_items(items, opts, on_choice)
+	opts = opts or {}
+	local format_item = opts.format_item
+		or function(item)
+			return type(item) == "table" and (item.label or item.text or item.name or "") or tostring(item)
+		end
+
+	local ok, select_mod = pcall(require, "snacks.picker.select")
+	if ok and select_mod and type(select_mod.select) == "function" then
+		return select_mod.select(items, {
+			prompt = opts.prompt,
+			format_item = format_item,
+			snacks = {
+				layout = "select",
+				matcher = { sort_empty = true },
+			},
+		}, on_choice)
+	end
+
+	return vim.ui.select(items, {
+		prompt = opts.prompt,
+		format_item = format_item,
+	}, on_choice)
+end
+
+local function confirm_mutation(state, message, on_confirm)
+	if not state.lazyvcs_confirm_mutations then
+		return on_confirm()
+	end
+	confirm.open({
+		prompt = message,
+	}, function(choice)
+		if choice == "confirm_session" then
+			state.lazyvcs_confirm_mutations = false
+			return on_confirm()
+		end
+		if choice == "confirm" then
+			on_confirm()
+		end
+	end)
+end
+
 local function stage_all(repo)
 	if repo.vcs ~= "git" then
 		return nil, "Stage all is only supported for Git"
@@ -145,6 +237,14 @@ end
 
 local function notify_repo_busy(repo, job)
 	util.notify((job and job.label or "Repository action") .. " already running for " .. repo.name, vim.log.levels.INFO)
+end
+
+local function repo_needs_publish(repo)
+	return repo and repo.sync and repo.sync.status == "publish"
+end
+
+local function publish_prompt(repo)
+	return "Publish branch " .. (repo.branch or "HEAD") .. " in " .. repo.name .. "?"
 end
 
 local function clear_repo_job_errors(repo_root)
@@ -238,6 +338,39 @@ local function parse_upstream(upstream)
 	return remote, branch, upstream
 end
 
+local function git_branch_name(repo)
+	local branch = repo and repo.branch or nil
+	if not branch or branch == "" or branch == "HEAD" then
+		return nil
+	end
+	return branch
+end
+
+local function parse_git_remotes(stdout)
+	local seen = {}
+	local remotes = {}
+	for _, line in ipairs(util.split_lines(stdout or "")) do
+		local remote = util.trim(line)
+		if remote ~= "" and not seen[remote] then
+			seen[remote] = true
+			remotes[#remotes + 1] = remote
+		end
+	end
+	return remotes
+end
+
+local function select_publish_remote(remotes)
+	for _, remote in ipairs(remotes) do
+		if remote == "origin" then
+			return remote
+		end
+	end
+	if #remotes == 1 then
+		return remotes[1]
+	end
+	return nil
+end
+
 local function start_git_status(repo, on_done)
 	start_command(
 		{ "git", "status", "--branch", "--porcelain=v1", "--untracked-files=no", "--ignored=no" },
@@ -276,6 +409,52 @@ local function start_git_upstream(repo, on_done)
 	)
 end
 
+local function start_git_publish(repo, on_done)
+	local branch = git_branch_name(repo)
+	if not branch then
+		return on_done(nil, "Cannot publish detached HEAD for " .. repo.name .. ". Check out a branch first.")
+	end
+
+	start_command({ "git", "remote" }, repo.root, function(remote_result, remote_err)
+		if remote_err then
+			return on_done(nil, remote_err)
+		end
+
+		local remotes = parse_git_remotes(remote_result and remote_result.stdout or "")
+		local remote = select_publish_remote(remotes)
+		if not remote then
+			if #remotes == 0 then
+				return on_done(nil, "Cannot publish " .. branch .. " because " .. repo.name .. " has no Git remotes.")
+			end
+			return on_done(
+				nil,
+				"Cannot publish "
+					.. branch
+					.. " because "
+					.. repo.name
+					.. " has multiple Git remotes and no origin remote."
+			)
+		end
+
+		start_command({ "git", "push", "--set-upstream", remote, branch }, repo.root, on_done)
+	end)
+end
+
+local function start_git_push(repo, on_done)
+	local branch = git_branch_name(repo)
+	if not branch then
+		return on_done(nil, "Cannot push detached HEAD for " .. repo.name .. ". Check out a branch first.")
+	end
+
+	start_git_upstream(repo, function(upstream, upstream_err)
+		if upstream_err then
+			return start_git_publish(repo, on_done)
+		end
+
+		start_command({ "git", "push", upstream.remote, branch .. ":" .. upstream.branch }, repo.root, on_done)
+	end)
+end
+
 local function start_git_fast_forward(repo, on_done)
 	start_git_upstream(repo, function(upstream, upstream_err)
 		if upstream_err then
@@ -309,7 +488,7 @@ end
 local function start_git_sync(repo, on_done)
 	start_git_upstream(repo, function(upstream, upstream_err)
 		if upstream_err then
-			return start_command({ "git", "push", "--set-upstream", "origin", repo.branch }, repo.root, on_done)
+			return start_git_publish(repo, on_done)
 		end
 
 		start_command({ "git", "fetch", "--prune", "--quiet", upstream.remote }, repo.root, function(_, fetch_err)
@@ -406,7 +585,7 @@ end
 function M.toggle_changes_view_mode(state)
 	state.lazyvcs_changes_view_mode = state.lazyvcs_changes_view_mode == "tree" and "list" or "tree"
 	save_state(state)
-	manager.navigate(state, state.path, nil, nil, false)
+	navigate(state)
 end
 
 function M.cycle_changes_sort(state)
@@ -438,7 +617,7 @@ function M.edit_commit_message(state, node)
 			return
 		end
 		state.lazyvcs_commit_drafts[repo.root] = util.trim(value)
-		manager.navigate(state, state.path, nil, nil, false)
+		navigate(state)
 	end)
 end
 
@@ -451,9 +630,16 @@ function M.generate_commit_message(state, node)
 	if busy then
 		return notify_repo_busy(repo, job)
 	end
-	local ok, err = ai.generate(repo, function(message)
+	local ok, err = ai.generate(repo, function(message, generate_err)
+		if generate_err then
+			util.notify(generate_err, vim.log.levels.WARN)
+			return
+		end
+		if not message or util.trim(message) == "" then
+			return
+		end
 		state.lazyvcs_commit_drafts[repo.root] = message
-		manager.navigate(state, state.path, nil, nil, false)
+		navigate(state)
 	end)
 	if not ok then
 		util.notify(err, vim.log.levels.WARN)
@@ -486,7 +672,11 @@ function M.open_change(state, node)
 		vim.cmd.edit(vim.fn.fnameescape(node.path))
 		return
 	end
-	require("neo-tree.utils").open_file(state, node.path, "edit")
+	if state.lazyvcs_open_file then
+		state.lazyvcs_open_file(state, node.path)
+	else
+		vim.cmd.edit(vim.fn.fnameescape(node.path))
+	end
 	require("lazyvcs").open({ bufnr = vim.api.nvim_get_current_buf() })
 end
 
@@ -506,9 +696,11 @@ function M.stage_file(state, node)
 	end
 	local relpath = node.extra.relpath
 	local args = node.extra.deleted and { "git", "add", "-A", "--", relpath } or { "git", "add", "--", relpath }
-	if run(args, { cwd = repo.root }) then
-		restart_source(state, false)
-	end
+	confirm_mutation(state, "Stage " .. relpath .. " in " .. repo.name .. "?", function()
+		if run(args, { cwd = repo.root }) then
+			restart_source(state, false)
+		end
+	end)
 end
 
 function M.unstage_file(state, node)
@@ -525,9 +717,11 @@ function M.unstage_file(state, node)
 	if busy then
 		return notify_repo_busy(repo, job)
 	end
-	if run({ "git", "reset", "--", node.extra.relpath }, { cwd = repo.root }) then
-		restart_source(state, false)
-	end
+	confirm_mutation(state, "Unstage " .. node.extra.relpath .. " in " .. repo.name .. "?", function()
+		if run({ "git", "reset", "--", node.extra.relpath }, { cwd = repo.root }) then
+			restart_source(state, false)
+		end
+	end)
 end
 
 function M.revert_file(state, node)
@@ -544,19 +738,21 @@ function M.revert_file(state, node)
 		return notify_repo_busy(repo, job)
 	end
 	local relpath = node.extra.relpath
-	local result
-	if repo.vcs == "git" then
-		result = run({ "git", "restore", "--worktree", "--", relpath }, { cwd = repo.root })
-		if not result and node.extra.change_kind == "untracked" and file_exists(node.path) then
-			vim.fn.delete(node.path)
-			result = { stdout = "" }
+	confirm_mutation(state, "Revert " .. relpath .. " in " .. repo.name .. "?", function()
+		local result
+		if repo.vcs == "git" then
+			result = run({ "git", "restore", "--worktree", "--", relpath }, { cwd = repo.root })
+			if not result and node.extra.change_kind == "untracked" and file_exists(node.path) then
+				vim.fn.delete(node.path)
+				result = { stdout = "" }
+			end
+		else
+			result = run({ "svn", "revert", relpath }, { cwd = repo.root })
 		end
-	else
-		result = run({ "svn", "revert", relpath }, { cwd = repo.root })
-	end
-	if result then
-		restart_source(state, false)
-	end
+		if result then
+			restart_source(state, false)
+		end
+	end)
 end
 
 function M.commit_repo(state, node)
@@ -574,38 +770,65 @@ function M.commit_repo(state, node)
 		return notify_repo_busy(repo, job)
 	end
 
-	if repo.vcs == "git" then
-		if repo.counts.staged == 0 and repo.counts.local_changes > 0 then
-			vim.ui.select({
-				"Stage all and commit",
-				"Cancel",
-			}, {
-				prompt = "No staged changes in " .. repo.name,
-			}, function(choice)
-				if choice ~= "Stage all and commit" then
-					return
-				end
-				start_repo_job(state, repo, {
-					action = "commit",
-					label = "Committing...",
-					sync_text = "Commit",
-					remote_refresh = true,
-					clear_draft = true,
-					start = function(resolve, reject)
-						start_command({ "git", "add", "-A" }, repo.root, function(_, add_err)
-							if add_err then
-								return reject(add_err)
-							end
-							start_command({ "git", "commit", "-m", message }, repo.root, function(result, commit_err)
-								if commit_err then
-									return reject(commit_err)
+	confirm_mutation(state, "Commit changes in " .. repo.name .. "?", function()
+		if repo.vcs == "git" then
+			if repo.counts.staged == 0 and repo.counts.local_changes > 0 then
+				select_items({
+					"Stage all and commit",
+					"Cancel",
+				}, {
+					prompt = "No staged changes in " .. repo.name,
+				}, function(choice)
+					if choice ~= "Stage all and commit" then
+						return
+					end
+					start_repo_job(state, repo, {
+						action = "commit",
+						label = "Committing...",
+						sync_text = "Commit",
+						remote_refresh = true,
+						clear_draft = true,
+						start = function(resolve, reject)
+							start_command({ "git", "add", "-A" }, repo.root, function(_, add_err)
+								if add_err then
+									return reject(add_err)
 								end
-								resolve(result)
+								start_command(
+									{ "git", "commit", "-m", message },
+									repo.root,
+									function(result, commit_err)
+										if commit_err then
+											return reject(commit_err)
+										end
+										resolve(result)
+									end
+								)
 							end)
-						end)
-					end,
-				})
-			end)
+						end,
+					})
+				end)
+				return
+			end
+			start_repo_job(state, repo, {
+				action = "commit",
+				label = "Committing...",
+				sync_text = "Commit",
+				remote_refresh = true,
+				clear_draft = true,
+				start = function(resolve, reject)
+					start_command({ "git", "commit", "-m", message }, repo.root, function(result, err)
+						if err then
+							return reject(err)
+						end
+						resolve(result)
+					end)
+				end,
+			})
+			return
+		end
+
+		if repo.counts.local_changes == 0 then
+			util.notify("No local SVN changes to commit", vim.log.levels.WARN)
 			return
 		end
 		start_repo_job(state, repo, {
@@ -615,7 +838,7 @@ function M.commit_repo(state, node)
 			remote_refresh = true,
 			clear_draft = true,
 			start = function(resolve, reject)
-				start_command({ "git", "commit", "-m", message }, repo.root, function(result, err)
+				start_command({ "svn", "commit", "-m", message, repo.root }, repo.root, function(result, err)
 					if err then
 						return reject(err)
 					end
@@ -623,28 +846,7 @@ function M.commit_repo(state, node)
 				end)
 			end,
 		})
-		return
-	end
-
-	if repo.counts.local_changes == 0 then
-		util.notify("No local SVN changes to commit", vim.log.levels.WARN)
-		return
-	end
-	start_repo_job(state, repo, {
-		action = "commit",
-		label = "Committing...",
-		sync_text = "Commit",
-		remote_refresh = true,
-		clear_draft = true,
-		start = function(resolve, reject)
-			start_command({ "svn", "commit", "-m", message, repo.root }, repo.root, function(result, err)
-				if err then
-					return reject(err)
-				end
-				resolve(result)
-			end)
-		end,
-	})
+	end)
 end
 
 function M.focus_repo(state, node, activate_changes)
@@ -668,7 +870,7 @@ function M.focus_repo(state, node, activate_changes)
 	end
 
 	save_state(state)
-	manager.navigate(state, state.path, nil, nil, false)
+	navigate(state)
 end
 
 function M.toggle_repo_visibility(state, node)
@@ -705,29 +907,29 @@ function M.toggle_repo_visibility(state, node)
 	end
 
 	save_state(state)
-	manager.navigate(state, state.path, nil, nil, false)
+	navigate(state)
 end
 
-function M.open_repo(state, node, toggle_node)
+function M.open_repo(state, node, _toggle_node)
 	local repo = current_repo(state, node)
 	if not repo then
 		return
+	end
+	if repo_changes_expanded(state, node, repo) then
+		return set_repo_changes_expanded(state, repo, false)
 	end
 	local busy = repo_is_busy(repo.root)
 	if busy then
 		return
 	end
-	if node and type(node.is_expanded) == "function" and node:is_expanded() then
-		return toggle_node(state)
-	end
 	if repo.details_loaded then
-		return toggle_node(state)
+		return set_repo_changes_expanded(state, repo, true)
 	end
 
 	state.lazyvcs_force_expand = state.lazyvcs_force_expand or {}
 	state.lazyvcs_force_expand[model.repo_changes_id(repo.root)] = true
 	ensure_repo_details(state, repo)
-	manager.navigate(state, state.path, nil, nil, false)
+	navigate(state)
 end
 
 local function repo_actions(repo)
@@ -769,6 +971,22 @@ local function execute_repo_action(state, repo, action, node)
 	local busy, job = repo_is_busy(repo.root)
 	if busy then
 		return notify_repo_busy(repo, job)
+	end
+	local mutation_labels = {
+		stage_all = "Stage all changes in " .. repo.name .. "?",
+		fetch = "Fetch " .. repo.name .. "?",
+		pull = "Pull " .. repo.name .. "?",
+		push = repo_needs_publish(repo) and publish_prompt(repo) or "Push " .. repo.name .. "?",
+		update = "Update " .. repo.name .. "?",
+		sync = repo_needs_publish(repo) and publish_prompt(repo) or "Sync " .. repo.name .. "?",
+	}
+	if mutation_labels[action] then
+		return confirm_mutation(state, mutation_labels[action], function()
+			execute_repo_action(state, repo, "_" .. action, node)
+		end)
+	end
+	if action:sub(1, 1) == "_" then
+		action = action:sub(2)
 	end
 	if action == "stage_all" then
 		if stage_all(repo) then
@@ -816,13 +1034,14 @@ local function execute_repo_action(state, repo, action, node)
 		return
 	end
 	if action == "push" then
+		local publishing = repo_needs_publish(repo)
 		start_repo_job(state, repo, {
 			action = "push",
-			label = "Pushing...",
-			sync_text = "Push",
+			label = publishing and "Publishing..." or "Pushing...",
+			sync_text = publishing and "Publish" or "Push",
 			remote_refresh = true,
 			start = function(resolve, reject)
-				start_command({ "git", "push" }, repo.root, function(result, err)
+				start_git_push(repo, function(result, err)
 					if err then
 						return reject(err)
 					end
@@ -853,10 +1072,11 @@ local function execute_repo_action(state, repo, action, node)
 	end
 	if action == "sync" then
 		if repo.vcs == "git" then
+			local publishing = repo_needs_publish(repo)
 			start_repo_job(state, repo, {
 				action = "sync",
-				label = "Syncing...",
-				sync_text = "Sync",
+				label = publishing and "Publishing..." or "Syncing...",
+				sync_text = publishing and "Publish" or "Sync",
 				remote_refresh = true,
 				checktime = true,
 				close_sessions = true,
@@ -913,31 +1133,34 @@ function M.switch_repo(state, node)
 			session_state.clear_repo_job(repo.root)
 			navigate_if_visible(state)
 		end,
-		before_mutation = function(target_repo)
+		before_mutation = function()
 			return true
 		end,
 		run_mutation = function(target_repo, choice, args, mutation_opts)
-			start_repo_job(state, target_repo, {
-				action = "switch",
-				label = "Switching...",
-				sync_text = "Switch",
-				remote_refresh = false,
-				checktime = true,
-				close_sessions = true,
-				start = function(resolve, reject)
-					start_command(args, mutation_opts.cwd or target_repo.root, function(result, err)
-						if err then
-							return reject(err)
+			local label = choice and (choice.label or choice.short or choice.text or choice.name) or "selected target"
+			confirm_mutation(state, "Switch " .. target_repo.name .. " to " .. label .. "?", function()
+				start_repo_job(state, target_repo, {
+					action = "switch",
+					label = "Switching...",
+					sync_text = "Switch",
+					remote_refresh = false,
+					checktime = true,
+					close_sessions = true,
+					start = function(resolve, reject)
+						start_command(args, mutation_opts.cwd or target_repo.root, function(result, err)
+							if err then
+								return reject(err)
+							end
+							resolve(result)
+						end)
+					end,
+					after_success = function(result)
+						if type(mutation_opts.on_success) == "function" then
+							mutation_opts.on_success(result)
 						end
-						resolve(result)
-					end)
-				end,
-				after_success = function(result)
-					if type(mutation_opts.on_success) == "function" then
-						mutation_opts.on_success(result)
-					end
-				end,
-			})
+					end,
+				})
+			end)
 		end,
 		after_mutation = function() end,
 	}, function(args, opts, on_done)
@@ -970,7 +1193,7 @@ function M.repo_action_picker(state, node)
 		return notify_repo_busy(repo, job)
 	end
 	local actions = repo_actions(repo)
-	vim.ui.select(actions, {
+	select_items(actions, {
 		prompt = "Actions for " .. repo.name,
 		format_item = function(item)
 			return item.label
