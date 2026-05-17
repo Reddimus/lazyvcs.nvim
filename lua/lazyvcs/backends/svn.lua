@@ -4,7 +4,23 @@ local M = {
 	name = "svn",
 }
 
+-- Cache the `svn` executable lookup so a machine without Subversion (the common
+-- case — lazyvcs is Git-first) does not spawn a process that throws ENOENT on
+-- every session open. backends/init.lua probes every backend for each path, so
+-- an unguarded svn call here breaks Git workflows too.
+local svn_checked, svn_present = false, false
+local function svn_available()
+	if not svn_checked then
+		svn_checked = true
+		svn_present = vim.fn.executable("svn") == 1
+	end
+	return svn_present
+end
+
 local function get_root(path)
+	if not svn_available() then
+		return nil, "svn executable not found"
+	end
 	local cwd = vim.fs.dirname(path)
 	local result, err = util.system({ "svn", "info", "--show-item", "wc-root", path }, { cwd = cwd })
 	if not result then

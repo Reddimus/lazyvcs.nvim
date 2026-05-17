@@ -28,7 +28,14 @@ function M.join_lines(lines)
 end
 
 function M.system_result(args, opts)
-	return vim.system(args, vim.tbl_extend("keep", opts or {}, { text = true })):wait()
+	-- vim.system raises synchronously when the executable is missing (ENOENT).
+	-- Convert that into a normal non-zero result so callers can handle it via
+	-- the usual result.code path instead of crashing.
+	local ok, proc = pcall(vim.system, args, vim.tbl_extend("keep", opts or {}, { text = true }))
+	if not ok then
+		return { code = 127, stdout = "", stderr = tostring(proc) }
+	end
+	return proc:wait()
 end
 
 function M.system_error(result)
