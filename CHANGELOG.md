@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-31
+
+### Changed
+
+- Live diff now follows the universal old/new convention: the read-only VCS base
+  (the old version) is shown in the **left** window and the editable file (your
+  new changes) in the **right** window, matching git, VS Code, GitHub, and
+  `vimdiff`. Previously the sides were reversed.
+- Inline SVN blame follows the cursor instantly. Full-file blame is fetched once
+  per buffer and cached, and the cursor-follow render no longer waits behind the
+  fetch debounce, so the overlay no longer lags when moving up and down.
+  `blame.delay_ms` now only debounces the initial fetch and defaults to `150`
+  (was `500`).
+
+### Added
+
+- Inline blame is now a single global toggle that persists across sessions.
+  `:LazyVcsBlame` enables or disables the overlay for every supported SVN
+  buffer, and with the new `blame.persist` option (default `true`) the choice is
+  saved to `stdpath("state")/lazyvcs/state.json` and restored on the next
+  launch.
+
 ## [0.2.1] - 2026-05-17
 
 ### Fixed

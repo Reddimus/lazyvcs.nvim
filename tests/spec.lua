@@ -1,5 +1,11 @@
 local helpers = require("helpers")
 
+-- Redirect persisted UI state to a throwaway dir so tests never touch the real
+-- stdpath("state") file and cannot leak the inline-blame toggle between runs.
+local store = require("lazyvcs.store")
+local STORE_DIR = vim.fn.tempname()
+store._test_set_dir(STORE_DIR)
+
 local function eq(left, right, msg)
 	assert(vim.deep_equal(left, right), msg or (vim.inspect(left) .. " ~= " .. vim.inspect(right)))
 end
@@ -211,7 +217,8 @@ local function test_config_normalization()
 	eq(opts.signs.enabled, true)
 	eq(opts.signs.debounce_ms, 120)
 	eq(opts.blame.mode, "inline")
-	eq(opts.blame.delay_ms, 500)
+	eq(opts.blame.persist, true)
+	eq(opts.blame.delay_ms, 150)
 	eq(opts.blame.loading_delay_ms, 750)
 	eq(opts.blame.loading_text, "Blame loading...")
 	eq(opts.blame.uncommitted_text, "Uncommitted line")
@@ -1971,6 +1978,7 @@ end
 local function test_svn_blame_inline_virtual_text()
 	require("lazyvcs").setup({
 		blame = {
+			persist = false,
 			delay_ms = 0,
 			format = "{author} r{revision}",
 			max_width = 40,
@@ -2004,6 +2012,7 @@ end
 local function test_svn_blame_inline_delays_loading_indicator()
 	require("lazyvcs").setup({
 		blame = {
+			persist = false,
 			delay_ms = 0,
 			loading_delay_ms = 1000,
 		},
@@ -2042,6 +2051,7 @@ end
 local function test_svn_blame_inline_loading_indicator_and_uncommitted_line()
 	require("lazyvcs").setup({
 		blame = {
+			persist = false,
 			delay_ms = 0,
 			loading_delay_ms = 10,
 			loading_text = "Blame loading...",
@@ -2081,6 +2091,95 @@ local function test_svn_blame_inline_loading_indicator_and_uncommitted_line()
 
 	require("lazyvcs.svn_ui").blame_clear()
 	backend.blame_lines_async = original_blame_lines_async
+end
+
+local function test_svn_blame_inline_loading_indicator_follows_cursor()
+	require("lazyvcs").setup({
+		blame = {
+			persist = false,
+			delay_ms = 0,
+			loading_delay_ms = 10,
+			loading_text = "Blame loading...",
+		},
+	})
+
+	local backend = require("lazyvcs.backends.svn")
+	local original_blame_lines_async = backend.blame_lines_async
+	---@diagnostic disable-next-line: duplicate-set-field
+	backend.blame_lines_async = function()
+		return {
+			kill = function() end,
+		}
+	end
+
+	local fixture = helpers.make_svn_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+	local source_buf = vim.api.nvim_get_current_buf()
+	local source_win = vim.api.nvim_get_current_win()
+	vim.api.nvim_win_set_cursor(source_win, { 1, 0 })
+	assert(require("lazyvcs.svn_ui").blame())
+	wait_for(function()
+		return inline_blame_text(source_buf) == "  Blame loading..."
+	end, "inline blame loading indicator should render after delay")
+
+	vim.api.nvim_win_set_cursor(source_win, { 3, 0 })
+	vim.api.nvim_exec_autocmds("CursorMoved", { buffer = source_buf })
+	local test_state = require("lazyvcs.svn_ui")._test_inline_state()
+	local marks = vim.api.nvim_buf_get_extmarks(source_buf, test_state.namespace, 0, -1, {})
+	eq(#marks, 1)
+	eq(marks[1][2] + 1, 3, "loading inline blame should follow the cursor immediately once visible")
+
+	require("lazyvcs.svn_ui").blame_clear()
+	backend.blame_lines_async = original_blame_lines_async
+end
+
+local function test_svn_blame_inline_failure_does_not_retry_on_cursor_move()
+	require("lazyvcs").setup({
+		blame = {
+			persist = false,
+			delay_ms = 0,
+		},
+	})
+
+	local backend = require("lazyvcs.backends.svn")
+	local original_blame_lines_async = backend.blame_lines_async
+	local util = require("lazyvcs.util")
+	local original_notify = util.notify
+	local calls = 0
+	---@diagnostic disable-next-line: duplicate-set-field
+	backend.blame_lines_async = function(_, on_done)
+		calls = calls + 1
+		vim.schedule(function()
+			on_done(nil, "simulated blame failure")
+		end)
+		return {
+			kill = function() end,
+		}
+	end
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.notify = function() end
+
+	local fixture = helpers.make_svn_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+	local source_buf = vim.api.nvim_get_current_buf()
+	local source_win = vim.api.nvim_get_current_win()
+	assert(require("lazyvcs.svn_ui").blame())
+	wait_for(function()
+		local view = require("lazyvcs.svn_ui")._test_inline_state().views[source_buf]
+		return view and view.error
+	end, "inline blame failure should be recorded")
+	eq(calls, 1)
+
+	for line = 1, 3 do
+		vim.api.nvim_win_set_cursor(source_win, { line, 0 })
+		vim.api.nvim_exec_autocmds("CursorMoved", { buffer = source_buf })
+	end
+	vim.wait(50)
+	eq(calls, 1, "failed inline blame should not refetch until the buffer is invalidated")
+
+	require("lazyvcs.svn_ui").blame_clear()
+	backend.blame_lines_async = original_blame_lines_async
+	util.notify = original_notify
 end
 
 local function test_svn_blame_split_is_fixed_width_and_muted()
@@ -2130,6 +2229,107 @@ local function test_svn_blame_split_is_fixed_width_and_muted()
 	require("lazyvcs.svn_ui").blame_split()
 	eq(vim.wo[source_win].scrollbind, false)
 	eq(vim.wo[source_win].cursorbind, false)
+end
+
+local function test_live_diff_places_base_window_on_the_left()
+	require("lazyvcs").setup({ debounce_ms = 10 })
+
+	local fixture = helpers.make_git_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+
+	local actions = require("lazyvcs.actions")
+	local session = assert(actions.open())
+
+	local base_col = vim.api.nvim_win_get_position(session.base_win)[2]
+	local editable_col = vim.api.nvim_win_get_position(session.editable_win)[2]
+	assert(
+		base_col < editable_col,
+		"base/OLD window should sit left of the editable/NEW window (old -> new, left -> right)"
+	)
+
+	actions.close()
+end
+
+local function test_store_persists_values_across_reload()
+	store._test_set_dir(STORE_DIR)
+	store.set("lazyvcs_test_flag", true)
+	store.set("lazyvcs_test_name", "kevin")
+
+	eq(store.get("lazyvcs_test_flag"), true)
+	eq(store.get("lazyvcs_test_name"), "kevin")
+	eq(store.get("lazyvcs_test_missing", "fallback"), "fallback")
+
+	-- Drop the in-memory cache and re-read from disk to prove the values were
+	-- actually written, not just memoized.
+	store._test_set_dir(STORE_DIR)
+	eq(store.get("lazyvcs_test_flag"), true)
+	eq(store.get("lazyvcs_test_name"), "kevin")
+	assert(vim.uv.fs_stat(store.path()), "state file should exist on disk")
+
+	store.set("lazyvcs_test_flag", nil)
+	store.set("lazyvcs_test_name", nil)
+end
+
+local function test_blame_inline_toggle_persists_across_setup()
+	store._test_set_dir(STORE_DIR)
+	store.set("blame_inline_enabled", true)
+
+	require("lazyvcs").setup({})
+	local svn_ui = require("lazyvcs.svn_ui")
+	assert(svn_ui._test_inline_enabled(), "persisted inline blame should be restored on setup")
+
+	-- A non-inline mode must ignore the persisted flag.
+	require("lazyvcs").setup({ blame = { mode = "off" } })
+	assert(not svn_ui._test_inline_enabled(), "non-inline blame mode should not restore the toggle")
+
+	-- Reset shared state so later tests start with blame off.
+	store.set("blame_inline_enabled", nil)
+	require("lazyvcs").setup({})
+	assert(not svn_ui._test_inline_enabled(), "inline blame should be off once the flag is cleared")
+end
+
+local function test_blame_inline_follows_cursor_without_waiting()
+	-- persist = false keeps this responsiveness test from touching the toggle store.
+	require("lazyvcs").setup({
+		blame = {
+			persist = false,
+			delay_ms = 0,
+			format = "{author} r{revision}",
+		},
+	})
+
+	local fixture = helpers.make_svn_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+	local source_buf = vim.api.nvim_get_current_buf()
+	local source_win = vim.api.nvim_get_current_win()
+	vim.api.nvim_win_set_cursor(source_win, { 1, 0 })
+
+	local svn_ui = require("lazyvcs.svn_ui")
+	assert(svn_ui.blame())
+
+	-- Wait once for the initial async `svn blame` fetch to populate the cache.
+	wait_for(function()
+		local view = svn_ui._test_inline_state().views[source_buf]
+		return view and view.entries ~= nil
+	end, "inline blame data should load", 5000)
+
+	local ns = svn_ui._test_inline_state().namespace
+	local function mark_lines()
+		local out = {}
+		for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(source_buf, ns, 0, -1, {})) do
+			out[#out + 1] = mark[2] + 1
+		end
+		return out
+	end
+
+	-- Move to line 3 and fire CursorMoved. With data cached the overlay must
+	-- follow on this very tick, so assert immediately without any vim.wait.
+	vim.api.nvim_win_set_cursor(source_win, { 3, 0 })
+	vim.api.nvim_exec_autocmds("CursorMoved", { buffer = source_buf })
+	eq(mark_lines(), { 3 }, "cached inline blame should follow the cursor immediately")
+
+	svn_ui.blame_clear()
+	eq(#mark_lines(), 0)
 end
 
 local function test_svn_signs_render_and_revert_without_live_diff()
@@ -3828,7 +4028,19 @@ local cases = {
 		"test_svn_blame_inline_loading_indicator_and_uncommitted_line",
 		test_svn_blame_inline_loading_indicator_and_uncommitted_line,
 	},
+	{
+		"test_svn_blame_inline_loading_indicator_follows_cursor",
+		test_svn_blame_inline_loading_indicator_follows_cursor,
+	},
+	{
+		"test_svn_blame_inline_failure_does_not_retry_on_cursor_move",
+		test_svn_blame_inline_failure_does_not_retry_on_cursor_move,
+	},
 	{ "test_svn_blame_split_is_fixed_width_and_muted", test_svn_blame_split_is_fixed_width_and_muted },
+	{ "test_live_diff_places_base_window_on_the_left", test_live_diff_places_base_window_on_the_left },
+	{ "test_store_persists_values_across_reload", test_store_persists_values_across_reload },
+	{ "test_blame_inline_toggle_persists_across_setup", test_blame_inline_toggle_persists_across_setup },
+	{ "test_blame_inline_follows_cursor_without_waiting", test_blame_inline_follows_cursor_without_waiting },
 	{ "test_svn_signs_render_and_revert_without_live_diff", test_svn_signs_render_and_revert_without_live_diff },
 	{ "test_svn_signs_preview_diff_window", test_svn_signs_preview_diff_window },
 	{ "test_svnsigns_compat_commands_follow_config", test_svnsigns_compat_commands_follow_config },

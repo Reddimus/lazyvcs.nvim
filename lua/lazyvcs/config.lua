@@ -29,7 +29,8 @@ local defaults = {
 	},
 	blame = {
 		mode = "inline",
-		delay_ms = 500,
+		persist = true,
+		delay_ms = 150,
 		loading_delay_ms = 750,
 		loading_text = "Blame loading...",
 		uncommitted_text = "Uncommitted line",
@@ -128,6 +129,7 @@ local function normalize(opts)
 		signs_max_file_bytes = { opts.signs.max_file_bytes, "number" },
 		signs_text = { opts.signs.text, "table" },
 		blame_mode = { opts.blame.mode, "string" },
+		blame_persist = { opts.blame.persist, "boolean" },
 		blame_delay_ms = { opts.blame.delay_ms, "number" },
 		blame_loading_delay_ms = { opts.blame.loading_delay_ms, "number" },
 		blame_loading_text = { opts.blame.loading_text, "string" },
