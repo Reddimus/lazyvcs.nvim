@@ -1,6 +1,7 @@
 local config = require("lazyvcs.config")
 local picker = require("lazyvcs.picker")
 local signs = require("lazyvcs.signs")
+local store = require("lazyvcs.store")
 local svn = require("lazyvcs.backends.svn")
 local util = require("lazyvcs.util")
 
@@ -10,6 +11,12 @@ local ns_id = vim.api.nvim_create_namespace("lazyvcs_svn_blame_inline")
 local augroup
 local blame_views = {}
 local inline_views = {}
+
+-- Inline blame is a single global preference: when enabled it follows the cursor
+-- in every supported (SVN) buffer. The flag is persisted so it is restored on the
+-- next launch (see store.lua); per-buffer data lives in `inline_views`.
+local inline_enabled = false
+local STORE_KEY = "blame_inline_enabled"
 
 local function capture_win_options(winid, names)
 	local out = {}
@@ -148,6 +155,7 @@ local function render_loading_inline(bufnr)
 	if not line then
 		return
 	end
+	view.last_line = line
 	set_inline_text(bufnr, line, util.truncate(config.get().blame.loading_text, config.get().blame.max_width))
 end
 
@@ -165,6 +173,7 @@ local function render_inline(bufnr)
 	if not line then
 		return
 	end
+	view.last_line = line
 	local entry = view.entries[line]
 	if not entry then
 		return
@@ -210,22 +219,75 @@ local function load_inline(bufnr, path)
 		live.loading_visible = false
 		live.handle = nil
 		if not lines then
-			clear_inline(bufnr)
+			live.entries = nil
+			live.error = err or true
+			pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns_id, 0, -1)
 			if err then
 				util.notify(err, vim.log.levels.DEBUG)
 			end
 			return
 		end
+		live.error = nil
 		live.entries = svn.parse_blame_entries(lines)
 		render_inline(bufnr)
 	end)
 end
 
-local function schedule_inline(bufnr)
-	local view = inline_views[bufnr]
-	if not view or not view.enabled then
+local invalidate_inline
+
+-- Drive the inline overlay for `bufnr` in response to cursor/buffer events. When
+-- blame data is already cached we render immediately so the overlay tracks the
+-- cursor with no perceptible lag; only the expensive `svn blame` fetch is
+-- debounced (it runs at most once per buffer until the file changes).
+local function update_inline(bufnr)
+	if not inline_enabled then
 		return
 	end
+	local path = supported_blame_buffer(bufnr)
+	if not path then
+		clear_inline(bufnr)
+		return
+	end
+
+	local view = inline_views[bufnr]
+	if not view then
+		view = { enabled = true, path = path, generation = 0 }
+		inline_views[bufnr] = view
+	elseif view.path ~= path then
+		-- The buffer now shows a different file; refetch blame from scratch.
+		view.path = path
+		invalidate_inline(bufnr)
+		return
+	end
+
+	if view.entries then
+		-- Cheap path: move the overlay now, skipping redundant redraws when the
+		-- cursor stays on the same line (horizontal motion, insert-mode edits).
+		local line = current_visible_line(bufnr)
+		if line and line ~= view.last_line then
+			render_inline(bufnr)
+		end
+		return
+	end
+
+	if view.error then
+		return
+	end
+
+	if view.loading then
+		-- A fetch is already in flight. Once the slow-load text is visible, keep
+		-- it attached to the current cursor line instead of letting it lag.
+		if view.loading_visible then
+			local line = current_visible_line(bufnr)
+			if line and line ~= view.last_line then
+				render_loading_inline(bufnr)
+			end
+		end
+		return
+	end
+
+	-- No data yet: debounce the blame fetch so rapid buffer switches don't spawn
+	-- an `svn blame` process per event.
 	if view.timer then
 		view.timer:stop()
 		view.timer:close()
@@ -233,32 +295,25 @@ local function schedule_inline(bufnr)
 	end
 	view.timer = vim.defer_fn(function()
 		local live = inline_views[bufnr]
-		if not live or not live.enabled then
+		if not live or not inline_enabled then
 			return
 		end
 		live.timer = nil
-		local path = supported_blame_buffer(bufnr)
-		if not path then
+		local current = supported_blame_buffer(bufnr)
+		if not current then
 			clear_inline(bufnr)
 			return
 		end
-		if live.path ~= path then
-			live.path = path
-			live.entries = nil
-		end
-		if live.entries then
-			render_inline(bufnr)
-		elseif live.loading and live.loading_visible then
-			render_loading_inline(bufnr)
-		else
-			load_inline(bufnr, path)
+		if not live.entries and not live.loading then
+			load_inline(bufnr, current)
 		end
 	end, config.get().blame.delay_ms)
 end
 
-local function invalidate_inline(bufnr)
+function invalidate_inline(bufnr)
 	local view = inline_views[bufnr]
 	if not view then
+		update_inline(bufnr)
 		return
 	end
 	if view.handle then
@@ -270,31 +325,55 @@ local function invalidate_inline(bufnr)
 		view.loading_timer:close()
 		view.loading_timer = nil
 	end
+	if view.timer then
+		view.timer:stop()
+		view.timer:close()
+		view.timer = nil
+	end
 	view.entries = nil
+	view.last_line = nil
+	view.error = nil
 	view.loading = false
 	view.loading_visible = false
 	view.generation = (view.generation or 0) + 1
 	pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns_id, 0, -1)
-	schedule_inline(bufnr)
+	update_inline(bufnr)
+end
+
+local function clear_all_inline()
+	for bufnr in pairs(inline_views) do
+		clear_inline(bufnr)
+	end
+end
+
+local function persist_enabled()
+	if config.get().blame.persist then
+		store.set(STORE_KEY, inline_enabled)
+	end
+end
+
+local function set_inline_enabled(enabled)
+	enabled = enabled and true or false
+	if inline_enabled == enabled then
+		return
+	end
+	inline_enabled = enabled
+	persist_enabled()
+	if inline_enabled then
+		update_inline(vim.api.nvim_get_current_buf())
+	else
+		clear_all_inline()
+	end
 end
 
 local function toggle_inline()
-	local bufnr = vim.api.nvim_get_current_buf()
-	local path = supported_blame_buffer(bufnr)
-	if not path then
+	-- Only reject an unsupported buffer when turning blame ON, so the user gets
+	-- immediate feedback; turning it off (a global preference) always succeeds.
+	if not inline_enabled and not supported_blame_buffer(vim.api.nvim_get_current_buf()) then
 		util.notify("Current buffer is not an SVN file", vim.log.levels.WARN)
 		return false
 	end
-	if inline_views[bufnr] and inline_views[bufnr].enabled then
-		clear_inline(bufnr)
-		return true
-	end
-	inline_views[bufnr] = {
-		enabled = true,
-		path = path,
-		generation = 0,
-	}
-	schedule_inline(bufnr)
+	set_inline_enabled(not inline_enabled)
 	return true
 end
 
@@ -311,7 +390,7 @@ function M.blame()
 end
 
 function M.blame_clear()
-	clear_inline(vim.api.nvim_get_current_buf())
+	set_inline_enabled(false)
 	return true
 end
 
@@ -577,17 +656,27 @@ function M.setup()
 		close_blame(bufnr)
 	end
 
+	-- Restore the persisted on/off preference (only meaningful for inline mode).
+	local blame_opts = config.get().blame
+	if blame_opts.persist and blame_opts.mode == "inline" then
+		inline_enabled = store.get(STORE_KEY, false) and true or false
+	else
+		inline_enabled = false
+	end
+
 	augroup = vim.api.nvim_create_augroup("lazyvcs_svn_blame_inline", { clear = true })
-	vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "WinEnter" }, {
+	vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "WinEnter", "BufWinEnter" }, {
 		group = augroup,
 		callback = function(args)
-			schedule_inline(args.buf)
+			update_inline(args.buf)
 		end,
 	})
 	vim.api.nvim_create_autocmd({ "BufWritePost", "BufFilePost" }, {
 		group = augroup,
 		callback = function(args)
-			invalidate_inline(args.buf)
+			if inline_enabled then
+				invalidate_inline(args.buf)
+			end
 		end,
 	})
 	vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
@@ -596,6 +685,15 @@ function M.setup()
 			clear_inline(args.buf)
 		end,
 	})
+
+	if inline_enabled then
+		-- Show the overlay on the buffer already open at startup; other buffers
+		-- pick it up through the autocmd as they are entered.
+		local bufnr = vim.api.nvim_get_current_buf()
+		vim.schedule(function()
+			update_inline(bufnr)
+		end)
+	end
 end
 
 function M._test_blame_views()
@@ -607,6 +705,10 @@ function M._test_inline_state()
 		namespace = ns_id,
 		views = inline_views,
 	}
+end
+
+function M._test_inline_enabled()
+	return inline_enabled
 end
 
 return M

@@ -147,9 +147,9 @@ Useful commands:
 | Command                | Description                       |
 | ---------------------- | --------------------------------- |
 | `:LazyVcsSignsRefresh` | Reload SVN BASE and refresh signs |
-| `:LazyVcsBlame`        | Toggle inline current-line blame  |
+| `:LazyVcsBlame`        | Toggle global inline blame        |
 | `:LazyVcsBlameSplit`   | Toggle full-file blame split      |
-| `:LazyVcsBlameClear`   | Clear inline blame                |
+| `:LazyVcsBlameClear`   | Disable global inline blame       |
 | `:LazyVcsLineLog`      | Show log for the current line     |
 | `:LazyVcsPreviewDiff`  | Preview current buffer diff       |
 | `:LazyVcsRevertBuffer` | Revert the current SVN file       |
@@ -246,8 +246,10 @@ Open a live diff for the current file:
 :LazyVcsDiffOpen
 ```
 
-The left window is the real editable file. The right window is a scratch buffer
-containing the VCS base:
+The left window is a read-only scratch buffer holding the VCS base (the **old**
+version); the right window is the real editable file (your **new** changes).
+This follows the convention shared by git, VS Code, GitHub, and `vimdiff` — old
+on the left, new on the right, so the diff reads old → new left → right:
 
 - Git compares against the index with `git show :path`
 - SVN compares against working-copy `BASE` with `svn cat -r BASE`
@@ -258,8 +260,8 @@ containing the VCS base:
 
 ```mermaid
 flowchart LR
-  File[Editable file buffer] --> Detect[Detect Git or SVN backend]
-  Detect --> Base[Load VCS base into scratch buffer]
+  File["Editable file (NEW, right window)"] --> Detect[Detect Git or SVN backend]
+  Detect --> Base["VCS base (OLD, left window, read-only)"]
   File --> Diff[Native Neovim diff mode]
   Base --> Diff
   Diff --> Revert[Optional hunk revert]
@@ -276,9 +278,9 @@ flowchart LR
 | `:LazyVcsRevertHunk`                    | Revert current hunk                  |
 | `:LazyVcsNextHunk` / `:LazyVcsPrevHunk` | Move between hunks                   |
 | `:LazyVcsSignsRefresh`                  | Refresh SVN signs                    |
-| `:LazyVcsBlame`                         | Toggle inline SVN blame              |
+| `:LazyVcsBlame`                         | Toggle global inline SVN blame       |
 | `:LazyVcsBlameSplit`                    | Toggle aligned SVN blame audit split |
-| `:LazyVcsBlameClear`                    | Clear inline SVN blame               |
+| `:LazyVcsBlameClear`                    | Disable global inline SVN blame      |
 | `:LazyVcsLineLog`                       | Show SVN log for current line        |
 | `:LazyVcsPreviewDiff`                   | Preview SVN buffer diff              |
 | `:LazyVcsRevertBuffer`                  | Revert current SVN file              |
@@ -318,7 +320,8 @@ require("lazyvcs").setup({
   },
   blame = {
     mode = "inline", -- "inline", "split", or "off"
-    delay_ms = 500,
+    persist = true, -- remember the inline blame on/off toggle across sessions
+    delay_ms = 150, -- debounce before the first `svn blame` fetch (the overlay then follows the cursor instantly)
     loading_delay_ms = 750,
     loading_text = "Blame loading...",
     uncommitted_text = "Uncommitted line",
@@ -361,23 +364,31 @@ Important signs options:
 
 Important blame options:
 
-| Option                   | Meaning                                             |
-| ------------------------ | --------------------------------------------------- |
-| `blame.mode`             | `inline`, `split`, or `off` for `:LazyVcsBlame`     |
-| `blame.delay_ms`         | Delay before inline blame follows the cursor        |
-| `blame.loading_delay_ms` | Delay before showing slow-load feedback             |
-| `blame.loading_text`     | Muted text shown while slow blame is still loading  |
-| `blame.uncommitted_text` | Muted text for local/uncommitted SVN blame rows     |
-| `blame.format`           | Inline text with `{author}`, `{date}`, `{revision}` |
-| `blame.max_width`        | Maximum inline blame text width                     |
-| `blame.split_min_width`  | Minimum full-file blame split width                 |
-| `blame.split_max_width`  | Maximum full-file blame split width                 |
+| Option                   | Meaning                                                                                    |
+| ------------------------ | ------------------------------------------------------------------------------------------ |
+| `blame.mode`             | `inline`, `split`, or `off` for `:LazyVcsBlame`                                            |
+| `blame.persist`          | Remember the inline blame on/off toggle across sessions                                    |
+| `blame.delay_ms`         | Debounce before the first `svn blame` fetch (the overlay then tracks the cursor instantly) |
+| `blame.loading_delay_ms` | Delay before showing slow-load feedback                                                    |
+| `blame.loading_text`     | Muted text shown while slow blame is still loading                                         |
+| `blame.uncommitted_text` | Muted text for local/uncommitted SVN blame rows                                            |
+| `blame.format`           | Inline text with `{author}`, `{date}`, `{revision}`                                        |
+| `blame.max_width`        | Maximum inline blame text width                                                            |
+| `blame.split_min_width`  | Minimum full-file blame split width                                                        |
+| `blame.split_max_width`  | Maximum full-file blame split width                                                        |
 
 Terminal Neovim cannot apply true per-text opacity. LazyVCS uses muted,
 theme-aware `Comment` highlights for blame text instead. Inline blame stays
 quiet during fast loads, shows `Blame loading...` only for slow SVN calls, and
 labels local SVN rows as `Uncommitted line` instead of displaying raw `- - -`
 placeholders.
+
+`:LazyVcsBlame` is a single global toggle: enabling it shows the overlay in
+every supported SVN buffer, and the cursor-follow render is instant because
+full-file blame is fetched once per buffer and cached. With
+`blame.persist = true` (the default) the on/off choice is saved to
+`stdpath("state")/lazyvcs/state.json` and restored on the next launch, so blame
+"shows again" automatically.
 
 Important source-control options:
 

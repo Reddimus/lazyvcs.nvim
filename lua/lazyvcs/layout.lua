@@ -131,7 +131,10 @@ function M.open(session)
 	configure_base_buffer(session)
 	vim.api.nvim_set_current_win(editable_win)
 
-	vim.cmd("rightbelow vsplit")
+	-- Place the read-only base (OLD) buffer on the LEFT and keep the editable
+	-- (NEW) buffer on the RIGHT, matching the universal diff convention used by
+	-- git, VS Code, GitHub, and vimdiff (old -> new reads left -> right).
+	vim.cmd("leftabove vsplit")
 	session.base_win = vim.api.nvim_get_current_win()
 	vim.api.nvim_win_set_buf(session.base_win, session.base_bufnr)
 	session.base_had_diff = false

@@ -22,9 +22,11 @@ lazyvcs.nvim provides native VCS workflows:
 - an editable live diff view for the current Git/SVN file
 - a standalone source-control sidebar for nested Git/SVN working copies
 
-The live diff keeps the real file editable on the left and shows a scratch VCS
-base buffer on the right. Git compares against the index with `git show :path`.
-SVN compares against working-copy BASE with `svn cat -r BASE path`.
+The live diff shows the read-only VCS base (the old version) on the left and the
+real editable file (your new changes) on the right, matching the git/VS Code/
+vimdiff convention (old -> new reads left -> right). Git compares against the
+index with `git show :path`. SVN compares against working-copy BASE with
+`svn cat -r BASE path`.
 
 The source-control sidebar is native Neovim UI. Neo-tree is not required.
 
@@ -64,13 +66,13 @@ COMMANDS                                                     *lazyvcs-commands*
 :LazyVcsSignsRefresh  Reload SVN BASE and refresh signs for the current buffer.
 
                                                                *:LazyVcsBlame*
-:LazyVcsBlame         Toggle SVN blame using `blame.mode`.
+:LazyVcsBlame         Toggle global inline SVN blame using `blame.mode`.
 
                                                           *:LazyVcsBlameSplit*
 :LazyVcsBlameSplit    Toggle full-file SVN blame in a fixed-width split.
 
                                                           *:LazyVcsBlameClear*
-:LazyVcsBlameClear    Clear inline SVN blame from the current buffer.
+:LazyVcsBlameClear    Disable global inline SVN blame.
 
                                                              *:LazyVcsLineLog*
 :LazyVcsLineLog       Show SVN log for the current line.
@@ -131,7 +133,7 @@ Suggested global mappings:
 Live diff buffer-local mappings:
 
     q            close the live diff session
-    <leader>q    close from the right/base diff window
+    <leader>q    close from the left/base diff window
     <leader>vr   revert current hunk
     ]v           next hunk
     [v           previous hunk
@@ -170,9 +172,9 @@ signs after edits.
 Commands:
 
     :LazyVcsSignsRefresh   reload BASE and refresh signs
-    :LazyVcsBlame          toggle inline current-line blame by default
+    :LazyVcsBlame          toggle global inline blame by default
     :LazyVcsBlameSplit     toggle aligned full-file blame audit split
-    :LazyVcsBlameClear     clear inline blame
+    :LazyVcsBlameClear     disable global inline blame
     :LazyVcsLineLog        show SVN log for the current line
     :LazyVcsPreviewDiff    preview current buffer diff
     :LazyVcsRevertBuffer   revert the current SVN file
@@ -335,7 +337,7 @@ Main options:
     use_gitsigns       Prefer `gitsigns.reset_hunk()` for Git hunks.
     set_winbar         Set simple winbar labels during live diff.
     session_keymaps    Add buffer-local live diff mappings.
-    base_window.width  Right/base diff window width. Ratio when <= 1.
+    base_window.width  Left/base diff window width. Ratio when <= 1.
 
 SVN signs options:
 
@@ -350,7 +352,9 @@ SVN signs options:
 SVN blame options:
 
     blame.mode         `inline`, `split`, or `off` for :LazyVcsBlame.
-    blame.delay_ms     Delay before inline blame follows the cursor.
+    blame.persist      Remember the inline blame toggle across sessions.
+    blame.delay_ms     Debounce before the first `svn blame` fetch; the
+                       overlay then tracks the cursor instantly.
     blame.loading_delay_ms
                        Delay before showing slow-load feedback.
     blame.loading_text Muted text shown while slow blame is still loading.
@@ -434,6 +438,10 @@ NOTES                                                           *lazyvcs-notes*
 - SVN compares live diff buffers against working-copy BASE.
 - Untracked files show an empty base.
 - Normal undo works after a hunk revert.
+- Live diff shows the VCS base (old) on the left and the editable file
+  (new) on the right.
+- Inline blame is one global toggle; with `blame.persist` it is saved to
+  `stdpath('state')/lazyvcs/state.json` and restored on the next launch.
 - Forge Terminal MCP can help with local agent-driven TUI debugging, but it is
   not required for tests or CI.
 

@@ -38,6 +38,12 @@ function M.check()
 		ok("svnsigns.nvim compatibility commands are disabled")
 	end
 
+	if cfg.blame.persist then
+		ok("inline blame state is persisted across sessions (" .. require("lazyvcs.store").path() .. ")")
+	else
+		ok("inline blame state persistence is disabled by config")
+	end
+
 	local optional = require("lazyvcs.integrations.optional").status()
 	ok("integration mode: " .. optional.mode)
 	for _, item in ipairs(optional.items) do
