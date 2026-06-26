@@ -138,25 +138,45 @@ return {
     },
     cmd = {
       "LazyVcsDiffOpen",
+      "LazyVCSDiffOpen",
       "LazyVcsDiffClose",
+      "LazyVCSDiffClose",
       "LazyVcsDiffToggle",
+      "LazyVCSDiffToggle",
       "LazyVcsDiffRefresh",
+      "LazyVCSDiffRefresh",
       "LazyVcsRevertHunk",
+      "LazyVCSRevertHunk",
       "LazyVcsNextHunk",
+      "LazyVCSNextHunk",
       "LazyVcsPrevHunk",
+      "LazyVCSPrevHunk",
       "LazyVcsSignsRefresh",
+      "LazyVCSSignsRefresh",
       "LazyVcsBlame",
+      "LazyVCSBlame",
       "LazyVcsBlameSplit",
+      "LazyVCSBlameSplit",
       "LazyVcsBlameClear",
+      "LazyVCSBlameClear",
       "LazyVcsLineLog",
+      "LazyVCSLineLog",
       "LazyVcsPreviewDiff",
+      "LazyVCSPreviewDiff",
       "LazyVcsRevertBuffer",
+      "LazyVCSRevertBuffer",
       "LazyVcsFiles",
+      "LazyVCSFiles",
       "LazyVcsSourceControlOpen",
+      "LazyVCSSourceControlOpen",
       "LazyVcsSourceControlClose",
+      "LazyVCSSourceControlClose",
       "LazyVcsSourceControlToggle",
+      "LazyVCSSourceControlToggle",
       "LazyVcsSourceControlRefresh",
+      "LazyVCSSourceControlRefresh",
       "LazyVcsSourceControlProfile",
+      "LazyVCSSourceControlProfile",
       "VcsLiveDiffOpen",
       "SvnBlame",
       "SvnLog",
@@ -208,10 +228,15 @@ cat >/tmp/lazyvcs-source-control-smoke.lua <<'LUA'
 local ok, err = xpcall(function()
   local workspace = assert(vim.env.LAZYVCS_E2E_WORKSPACE, "missing LAZYVCS_E2E_WORKSPACE")
   assert(vim.fn.exists(":LazyVcsSourceControlToggle") == 2, "LazyVcsSourceControlToggle command missing")
+  assert(vim.fn.exists(":LazyVCSSourceControlToggle") == 2, "LazyVCSSourceControlToggle command missing")
   assert(vim.fn.exists(":LazyVcsSourceControlProfile") == 2, "LazyVcsSourceControlProfile command missing")
+  assert(vim.fn.exists(":LazyVCSSourceControlProfile") == 2, "LazyVCSSourceControlProfile command missing")
   assert(vim.fn.exists(":LazyVcsBlame") == 2, "LazyVcsBlame command missing")
+  assert(vim.fn.exists(":LazyVCSBlame") == 2, "LazyVCSBlame command missing")
   assert(vim.fn.exists(":LazyVcsBlameSplit") == 2, "LazyVcsBlameSplit command missing")
+  assert(vim.fn.exists(":LazyVCSBlameSplit") == 2, "LazyVCSBlameSplit command missing")
   assert(vim.fn.exists(":LazyVcsBlameClear") == 2, "LazyVcsBlameClear command missing")
+  assert(vim.fn.exists(":LazyVCSBlameClear") == 2, "LazyVCSBlameClear command missing")
   assert(vim.fn.exists(":SvnBlame") == 2, "SvnBlame compatibility command missing")
 
   require("lazyvcs").source_control_open({ path = workspace })

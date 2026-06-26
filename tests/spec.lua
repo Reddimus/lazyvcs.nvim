@@ -1969,10 +1969,78 @@ local function test_svn_status_and_blame_parsers()
 		"      -          -                                            -     local line",
 	})
 	eq(entries, {
-		{ revision = "7", author = "alice", date = "2026-04-01" },
-		{ revision = "12", author = "bob", date = "2026-04-02" },
-		{ revision = "-", author = "-", date = "-", uncommitted = true },
+		{ revision = "7", full_revision = "7", author = "alice", date = "2026-04-01", backend = "svn" },
+		{ revision = "12", full_revision = "12", author = "bob", date = "2026-04-02", backend = "svn" },
+		{ revision = "-", full_revision = "-", author = "-", date = "-", backend = "svn", uncommitted = true },
 	})
+end
+
+local function test_git_blame_parser_and_remote_urls()
+	local backend = require("lazyvcs.backends.git")
+	local entries = backend.parse_blame_entries({
+		"0123456789abcdef0123456789abcdef01234567 1 1 1",
+		"author Alice Example",
+		"author-time 1775000000",
+		"summary Add first line",
+		"filename sample.txt",
+		"\tline one",
+		"0000000000000000000000000000000000000000 2 2 1",
+		"author Not Committed Yet",
+		"author-time 1775000100",
+		"summary Not Committed Yet",
+		"filename sample.txt",
+		"\tlocal line",
+	})
+	eq(entries[1].revision, "01234567")
+	eq(entries[1].full_revision, "0123456789abcdef0123456789abcdef01234567")
+	eq(entries[1].author, "Alice Example")
+	eq(entries[1].summary, "Add first line")
+	eq(entries[1].backend, "git")
+	eq(entries[2].revision, "-")
+	eq(entries[2].uncommitted, true)
+
+	eq(
+		backend.commit_url(nil, "0123456789abcdef", "https://github.com/Reddimus/lazyvcs.nvim.git"),
+		"https://github.com/Reddimus/lazyvcs.nvim/commit/0123456789abcdef"
+	)
+	eq(
+		backend.commit_url(nil, "0123456789abcdef", "git@bitbucket.org:team/project.git"),
+		"https://bitbucket.org/team/project/commits/0123456789abcdef"
+	)
+	eq(
+		backend.commit_url(nil, "0123456789abcdef", "ssh://git@bitbucket.example.com:7999/scm/PROJ/repo.git"),
+		"https://bitbucket.example.com:7999/projects/PROJ/repos/repo/commits/0123456789abcdef"
+	)
+end
+
+local function test_git_blame_inline_virtual_text()
+	require("lazyvcs").setup({
+		blame = {
+			persist = false,
+			delay_ms = 0,
+			format = "{author} {revision}",
+			max_width = 40,
+		},
+	})
+
+	local fixture = helpers.make_git_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+	local source_win = vim.api.nvim_get_current_win()
+	local source_buf = vim.api.nvim_get_current_buf()
+	vim.api.nvim_win_set_cursor(source_win, { 1, 0 })
+
+	assert(require("lazyvcs").blame())
+	wait_for(function()
+		local test_state = require("lazyvcs.blame")._test_inline_state()
+		local marks = vim.api.nvim_buf_get_extmarks(source_buf, test_state.namespace, 0, -1, { details = true })
+		return #marks == 1 and marks[1][4].virt_text and marks[1][4].virt_text[1][2] == "LazyVcsBlame"
+	end, "git inline blame virtual text should render", 5000)
+	eq(vim.api.nvim_get_current_win(), source_win)
+
+	require("lazyvcs").blame_clear()
+	local test_state = require("lazyvcs.blame")._test_inline_state()
+	local marks = vim.api.nvim_buf_get_extmarks(source_buf, test_state.namespace, 0, -1, { details = true })
+	eq(#marks, 0)
 end
 
 local function test_svn_blame_inline_virtual_text()
@@ -2418,6 +2486,10 @@ local function test_setup_is_idempotent_and_respects_sign_toggle()
 	eq(vim.fn.exists(":LazyVcsBlame"), 2)
 	eq(vim.fn.exists(":LazyVcsBlameSplit"), 2)
 	eq(vim.fn.exists(":LazyVcsBlameClear"), 2)
+	eq(vim.fn.exists(":LazyVCSBlame"), 2)
+	eq(vim.fn.exists(":LazyVCSBlameSplit"), 2)
+	eq(vim.fn.exists(":LazyVCSBlameClear"), 2)
+	eq(vim.fn.exists(":LazyVCSSourceControlToggle"), 2)
 	eq(vim.fn.exists(":SvnBlame"), 0)
 
 	require("lazyvcs").setup({
@@ -4021,7 +4093,9 @@ local cases = {
 	{ "test_async_system_reports_missing_executable", test_async_system_reports_missing_executable },
 	{ "test_svn_backend", test_svn_backend },
 	{ "test_svn_status_and_blame_parsers", test_svn_status_and_blame_parsers },
+	{ "test_git_blame_parser_and_remote_urls", test_git_blame_parser_and_remote_urls },
 	{ "test_svn_async_blame_cancels_active_child_process", test_svn_async_blame_cancels_active_child_process },
+	{ "test_git_blame_inline_virtual_text", test_git_blame_inline_virtual_text },
 	{ "test_svn_blame_inline_virtual_text", test_svn_blame_inline_virtual_text },
 	{ "test_svn_blame_inline_delays_loading_indicator", test_svn_blame_inline_delays_loading_indicator },
 	{

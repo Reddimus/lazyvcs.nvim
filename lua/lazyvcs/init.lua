@@ -27,7 +27,7 @@ function M.setup(opts)
 	local resolved = config.setup(opts)
 	require("lazyvcs.commands").setup()
 	require("lazyvcs.signs").setup()
-	require("lazyvcs.svn_ui").setup()
+	require("lazyvcs.blame").setup()
 	return resolved
 end
 
@@ -60,19 +60,19 @@ function M.refresh()
 end
 
 function M.blame()
-	return require("lazyvcs.svn_ui").blame()
+	return require("lazyvcs.blame").blame()
 end
 
 function M.blame_split()
-	return require("lazyvcs.svn_ui").blame_split()
+	return require("lazyvcs.blame").blame_split()
 end
 
 function M.blame_clear()
-	return require("lazyvcs.svn_ui").blame_clear()
+	return require("lazyvcs.blame").blame_clear()
 end
 
 function M.line_log()
-	return require("lazyvcs.svn_ui").line_log()
+	return require("lazyvcs.blame").line_log()
 end
 
 function M.preview_diff()

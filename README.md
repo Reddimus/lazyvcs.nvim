@@ -34,26 +34,26 @@ Use the same plugin spec in lazy.nvim or AstroNvim. This is the vanilla install:
     { "CopilotC-Nvim/CopilotChat.nvim", optional = true },
   },
   cmd = {
-    "LazyVcsDiffOpen",
-    "LazyVcsDiffClose",
-    "LazyVcsDiffToggle",
-    "LazyVcsDiffRefresh",
-    "LazyVcsRevertHunk",
-    "LazyVcsNextHunk",
-    "LazyVcsPrevHunk",
-    "LazyVcsSignsRefresh",
-    "LazyVcsBlame",
-    "LazyVcsBlameSplit",
-    "LazyVcsBlameClear",
-    "LazyVcsLineLog",
-    "LazyVcsPreviewDiff",
-    "LazyVcsRevertBuffer",
-    "LazyVcsFiles",
-    "LazyVcsSourceControlOpen",
-    "LazyVcsSourceControlClose",
-    "LazyVcsSourceControlToggle",
-    "LazyVcsSourceControlRefresh",
-    "LazyVcsSourceControlProfile",
+    "LazyVCSDiffOpen",
+    "LazyVCSDiffClose",
+    "LazyVCSDiffToggle",
+    "LazyVCSDiffRefresh",
+    "LazyVCSRevertHunk",
+    "LazyVCSNextHunk",
+    "LazyVCSPrevHunk",
+    "LazyVCSSignsRefresh",
+    "LazyVCSBlame",
+    "LazyVCSBlameSplit",
+    "LazyVCSBlameClear",
+    "LazyVCSLineLog",
+    "LazyVCSPreviewDiff",
+    "LazyVCSRevertBuffer",
+    "LazyVCSFiles",
+    "LazyVCSSourceControlOpen",
+    "LazyVCSSourceControlClose",
+    "LazyVCSSourceControlToggle",
+    "LazyVCSSourceControlRefresh",
+    "LazyVCSSourceControlProfile",
     "VcsLiveDiffOpen",
     "SvnBlame",
     "SvnLog",
@@ -63,12 +63,12 @@ Use the same plugin spec in lazy.nvim or AstroNvim. This is the vanilla install:
     "SvnFiles",
   },
   keys = {
-    { "<leader>vo", "<cmd>LazyVcsDiffOpen<cr>", desc = "Open VCS diff" },
-    { "<leader>vq", "<cmd>LazyVcsDiffClose<cr>", desc = "Close VCS diff" },
-    { "<leader>vr", "<cmd>LazyVcsRevertHunk<cr>", desc = "Revert VCS hunk" },
-    { "<leader>vs", "<cmd>LazyVcsSourceControlToggle<cr>", desc = "Toggle VCS sidebar" },
-    { "]v", "<cmd>LazyVcsNextHunk<cr>", desc = "Next VCS hunk" },
-    { "[v", "<cmd>LazyVcsPrevHunk<cr>", desc = "Previous VCS hunk" },
+    { "<leader>vo", "<cmd>LazyVCSDiffOpen<cr>", desc = "Open VCS diff" },
+    { "<leader>vq", "<cmd>LazyVCSDiffClose<cr>", desc = "Close VCS diff" },
+    { "<leader>vr", "<cmd>LazyVCSRevertHunk<cr>", desc = "Revert VCS hunk" },
+    { "<leader>vs", "<cmd>LazyVCSSourceControlToggle<cr>", desc = "Toggle VCS sidebar" },
+    { "]v", "<cmd>LazyVCSNextHunk<cr>", desc = "Next VCS hunk" },
+    { "[v", "<cmd>LazyVCSPrevHunk<cr>", desc = "Previous VCS hunk" },
   },
   opts = {
     source_control = {
@@ -144,19 +144,19 @@ flowchart LR
 
 Useful commands:
 
-| Command                | Description                       |
-| ---------------------- | --------------------------------- |
-| `:LazyVcsSignsRefresh` | Reload SVN BASE and refresh signs |
-| `:LazyVcsBlame`        | Toggle global inline blame        |
-| `:LazyVcsBlameSplit`   | Toggle full-file blame split      |
-| `:LazyVcsBlameClear`   | Disable global inline blame       |
-| `:LazyVcsLineLog`      | Show log for the current line     |
-| `:LazyVcsPreviewDiff`  | Preview current buffer diff       |
-| `:LazyVcsRevertBuffer` | Revert the current SVN file       |
-| `:LazyVcsFiles`        | Pick from modified SVN files      |
-| `:LazyVcsRevertHunk`   | Revert current hunk               |
-| `:LazyVcsNextHunk`     | Jump to next hunk                 |
-| `:LazyVcsPrevHunk`     | Jump to previous hunk             |
+| Command                | Description                           |
+| ---------------------- | ------------------------------------- |
+| `:LazyVCSSignsRefresh` | Reload SVN BASE and refresh signs     |
+| `:LazyVCSBlame`        | Toggle global inline Git/SVN blame    |
+| `:LazyVCSBlameSplit`   | Toggle full-file Git/SVN blame split  |
+| `:LazyVCSBlameClear`   | Disable global inline blame           |
+| `:LazyVCSLineLog`      | Show Git/SVN log for the current line |
+| `:LazyVCSPreviewDiff`  | Preview current SVN buffer diff       |
+| `:LazyVCSRevertBuffer` | Revert the current SVN file           |
+| `:LazyVCSFiles`        | Pick from modified SVN files          |
+| `:LazyVCSRevertHunk`   | Revert current hunk                   |
+| `:LazyVCSNextHunk`     | Jump to next hunk                     |
+| `:LazyVCSPrevHunk`     | Jump to previous hunk                 |
 
 `svnsigns.nvim` command aliases are enabled by default: `:SvnBlame`, `:SvnLog`,
 `:SvnPreview`, `:SvnRevert`, `:SvnResetHunk`, and `:SvnFiles`.
@@ -166,7 +166,7 @@ Useful commands:
 Open it with:
 
 ```vim
-:LazyVcsSourceControlToggle
+:LazyVCSSourceControlToggle
 ```
 
 The sidebar:
@@ -243,7 +243,7 @@ opts = {
 Open a live diff for the current file:
 
 ```vim
-:LazyVcsDiffOpen
+:LazyVCSDiffOpen
 ```
 
 The left window is a read-only scratch buffer holding the VCS base (the **old**
@@ -255,7 +255,7 @@ on the left, new on the right, so the diff reads old → new left → right:
 - SVN compares against working-copy `BASE` with `svn cat -r BASE`
 - untracked files show an empty base
 - `]v` and `[v` move between hunks
-- `:LazyVcsRevertHunk` or `<leader>vr` reverts the current hunk
+- `:LazyVCSRevertHunk` or `<leader>vr` reverts the current hunk
 - normal undo still works if you revert the wrong hunk
 
 ```mermaid
@@ -269,28 +269,28 @@ flowchart LR
 
 ## Commands
 
-| Command                                 | Description                          |
-| --------------------------------------- | ------------------------------------ |
-| `:LazyVcsDiffOpen`                      | Open live diff                       |
-| `:LazyVcsDiffClose`                     | Close live diff                      |
-| `:LazyVcsDiffToggle`                    | Toggle live diff                     |
-| `:LazyVcsDiffRefresh`                   | Refresh live diff                    |
-| `:LazyVcsRevertHunk`                    | Revert current hunk                  |
-| `:LazyVcsNextHunk` / `:LazyVcsPrevHunk` | Move between hunks                   |
-| `:LazyVcsSignsRefresh`                  | Refresh SVN signs                    |
-| `:LazyVcsBlame`                         | Toggle global inline SVN blame       |
-| `:LazyVcsBlameSplit`                    | Toggle aligned SVN blame audit split |
-| `:LazyVcsBlameClear`                    | Disable global inline SVN blame      |
-| `:LazyVcsLineLog`                       | Show SVN log for current line        |
-| `:LazyVcsPreviewDiff`                   | Preview SVN buffer diff              |
-| `:LazyVcsRevertBuffer`                  | Revert current SVN file              |
-| `:LazyVcsFiles`                         | Browse modified SVN files            |
-| `:LazyVcsSourceControlOpen [path]`      | Open sidebar                         |
-| `:LazyVcsSourceControlClose`            | Close sidebar                        |
-| `:LazyVcsSourceControlToggle [path]`    | Toggle sidebar                       |
-| `:LazyVcsSourceControlRefresh`          | Refresh sidebar                      |
-| `:LazyVcsSourceControlProfile [clear]`  | Show or clear job timings            |
-| `:VcsLiveDiffOpen`                      | Alias for `:LazyVcsDiffOpen`         |
+| Command                                 | Description                        |
+| --------------------------------------- | ---------------------------------- |
+| `:LazyVCSDiffOpen`                      | Open live diff                     |
+| `:LazyVCSDiffClose`                     | Close live diff                    |
+| `:LazyVCSDiffToggle`                    | Toggle live diff                   |
+| `:LazyVCSDiffRefresh`                   | Refresh live diff                  |
+| `:LazyVCSRevertHunk`                    | Revert current hunk                |
+| `:LazyVCSNextHunk` / `:LazyVCSPrevHunk` | Move between hunks                 |
+| `:LazyVCSSignsRefresh`                  | Refresh SVN signs                  |
+| `:LazyVCSBlame`                         | Toggle global inline Git/SVN blame |
+| `:LazyVCSBlameSplit`                    | Toggle aligned Git/SVN blame split |
+| `:LazyVCSBlameClear`                    | Disable global inline blame        |
+| `:LazyVCSLineLog`                       | Show Git/SVN log for current line  |
+| `:LazyVCSPreviewDiff`                   | Preview SVN buffer diff            |
+| `:LazyVCSRevertBuffer`                  | Revert current SVN file            |
+| `:LazyVCSFiles`                         | Browse modified SVN files          |
+| `:LazyVCSSourceControlOpen [path]`      | Open sidebar                       |
+| `:LazyVCSSourceControlClose`            | Close sidebar                      |
+| `:LazyVCSSourceControlToggle [path]`    | Toggle sidebar                     |
+| `:LazyVCSSourceControlRefresh`          | Refresh sidebar                    |
+| `:LazyVCSSourceControlProfile [clear]`  | Show or clear job timings          |
+| `:VcsLiveDiffOpen`                      | Alias for `:LazyVCSDiffOpen`       |
 
 ## Configuration
 
@@ -321,7 +321,7 @@ require("lazyvcs").setup({
   blame = {
     mode = "inline", -- "inline", "split", or "off"
     persist = true, -- remember the inline blame on/off toggle across sessions
-    delay_ms = 150, -- debounce before the first `svn blame` fetch (the overlay then follows the cursor instantly)
+    delay_ms = 150, -- debounce before the first blame fetch (the overlay then follows the cursor instantly)
     loading_delay_ms = 750,
     loading_text = "Blame loading...",
     uncommitted_text = "Uncommitted line",
@@ -364,18 +364,18 @@ Important signs options:
 
 Important blame options:
 
-| Option                   | Meaning                                                                                    |
-| ------------------------ | ------------------------------------------------------------------------------------------ |
-| `blame.mode`             | `inline`, `split`, or `off` for `:LazyVcsBlame`                                            |
-| `blame.persist`          | Remember the inline blame on/off toggle across sessions                                    |
-| `blame.delay_ms`         | Debounce before the first `svn blame` fetch (the overlay then tracks the cursor instantly) |
-| `blame.loading_delay_ms` | Delay before showing slow-load feedback                                                    |
-| `blame.loading_text`     | Muted text shown while slow blame is still loading                                         |
-| `blame.uncommitted_text` | Muted text for local/uncommitted SVN blame rows                                            |
-| `blame.format`           | Inline text with `{author}`, `{date}`, `{revision}`                                        |
-| `blame.max_width`        | Maximum inline blame text width                                                            |
-| `blame.split_min_width`  | Minimum full-file blame split width                                                        |
-| `blame.split_max_width`  | Maximum full-file blame split width                                                        |
+| Option                   | Meaning                                                                             |
+| ------------------------ | ----------------------------------------------------------------------------------- |
+| `blame.mode`             | `inline`, `split`, or `off` for `:LazyVCSBlame`                                     |
+| `blame.persist`          | Remember the inline blame on/off toggle across sessions                             |
+| `blame.delay_ms`         | Debounce before the first blame fetch; the overlay then tracks the cursor instantly |
+| `blame.loading_delay_ms` | Delay before showing slow-load feedback                                             |
+| `blame.loading_text`     | Muted text shown while slow blame is still loading                                  |
+| `blame.uncommitted_text` | Muted text for local/uncommitted blame rows                                         |
+| `blame.format`           | Inline text with `{author}`, `{date}`, `{revision}`, `{summary}`, or `{backend}`    |
+| `blame.max_width`        | Maximum inline blame text width                                                     |
+| `blame.split_min_width`  | Minimum full-file blame split width                                                 |
+| `blame.split_max_width`  | Maximum full-file blame split width                                                 |
 
 Terminal Neovim cannot apply true per-text opacity. LazyVCS uses muted,
 theme-aware `Comment` highlights for blame text instead. Inline blame stays
@@ -383,9 +383,9 @@ quiet during fast loads, shows `Blame loading...` only for slow SVN calls, and
 labels local SVN rows as `Uncommitted line` instead of displaying raw `- - -`
 placeholders.
 
-`:LazyVcsBlame` is a single global toggle: enabling it shows the overlay in
-every supported SVN buffer, and the cursor-follow render is instant because
-full-file blame is fetched once per buffer and cached. With
+`:LazyVCSBlame` is a single global toggle: enabling it shows the overlay in
+every supported Git or SVN buffer, and the cursor-follow render is instant
+because full-file blame is fetched once per buffer and cached. With
 `blame.persist = true` (the default) the on/off choice is saved to
 `stdpath("state")/lazyvcs/state.json` and restored on the next launch, so blame
 "shows again" automatically.
@@ -416,7 +416,7 @@ Neo-tree source config and any `lazyvcs_source_control` selector entry.
 Use:
 
 ```vim
-:LazyVcsSourceControlToggle
+:LazyVCSSourceControlToggle
 ```
 
 ## Health

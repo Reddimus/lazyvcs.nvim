@@ -19,9 +19,13 @@ require("lazyvcs").setup({
 })
 
 assert(vim.fn.exists(":LazyVcsSourceControlToggle") == 2, "native source-control command was not created")
-assert(vim.fn.exists(":LazyVcsBlame") == 2, "SVN blame command was not created")
-assert(vim.fn.exists(":LazyVcsBlameSplit") == 2, "SVN blame split command was not created")
-assert(vim.fn.exists(":LazyVcsBlameClear") == 2, "SVN blame clear command was not created")
+assert(vim.fn.exists(":LazyVCSSourceControlToggle") == 2, "canonical source-control command was not created")
+assert(vim.fn.exists(":LazyVCSBlame") == 2, "canonical blame command was not created")
+assert(vim.fn.exists(":LazyVCSBlameSplit") == 2, "canonical blame split command was not created")
+assert(vim.fn.exists(":LazyVCSBlameClear") == 2, "canonical blame clear command was not created")
+assert(vim.fn.exists(":LazyVcsBlame") == 2, "legacy blame command was not created")
+assert(vim.fn.exists(":LazyVcsBlameSplit") == 2, "legacy blame split command was not created")
+assert(vim.fn.exists(":LazyVcsBlameClear") == 2, "legacy blame clear command was not created")
 assert(vim.fn.exists(":SvnBlame") == 2, "svnsigns compatibility command was not created")
 
 local root = vim.fn.tempname()
