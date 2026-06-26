@@ -250,8 +250,10 @@ function M.parse_blame_entries(lines)
 		local uncommitted = revision == "-" and author == "-" and date == "-"
 		out[#out + 1] = {
 			revision = revision or "-",
+			full_revision = revision or "-",
 			author = author or "-",
 			date = date or "-",
+			backend = M.name,
 			uncommitted = uncommitted or nil,
 		}
 	end

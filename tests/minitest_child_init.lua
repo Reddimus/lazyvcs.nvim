@@ -9,7 +9,7 @@ package.path = table.concat({
 
 vim.g.mapleader = " "
 vim.cmd.runtime("plugin/lazyvcs.lua")
-vim.keymap.set("n", "<leader>vs", "<cmd>LazyVcsSourceControlToggle<cr>", { desc = "Toggle VCS sidebar" })
+vim.keymap.set("n", "<leader>vs", "<cmd>LazyVCSSourceControlToggle<cr>", { desc = "Toggle VCS sidebar" })
 
 require("lazyvcs").setup({
 	source_control = {

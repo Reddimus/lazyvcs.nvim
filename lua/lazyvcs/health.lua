@@ -39,9 +39,9 @@ function M.check()
 	end
 
 	if cfg.blame.persist then
-		ok("inline blame state is persisted across sessions (" .. require("lazyvcs.store").path() .. ")")
+		ok("Git/SVN inline blame state is persisted across sessions (" .. require("lazyvcs.store").path() .. ")")
 	else
-		ok("inline blame state persistence is disabled by config")
+		ok("Git/SVN inline blame state persistence is disabled by config")
 	end
 
 	local optional = require("lazyvcs.integrations.optional").status()
