@@ -2318,6 +2318,119 @@ local function test_live_diff_places_base_window_on_the_left()
 	actions.close()
 end
 
+local function test_live_diff_scrollbinds_panes_and_restores_editable_window()
+	require("lazyvcs").setup({ debounce_ms = 10 })
+
+	vim.cmd.enew()
+	local editable_buf = vim.api.nvim_get_current_buf()
+	local editable_win = vim.api.nvim_get_current_win()
+	vim.api.nvim_buf_set_name(editable_buf, vim.fn.tempname() .. "/scrollbind-sample.txt")
+	vim.api.nvim_buf_set_lines(editable_buf, 0, -1, false, {
+		"one",
+		"two changed",
+		"three",
+		"four",
+		"five",
+	})
+	vim.wo[editable_win].scrollbind = false
+
+	local config = require("lazyvcs.config")
+	local layout = require("lazyvcs.layout")
+	local session = {
+		editable_bufnr = editable_buf,
+		editable_win = editable_win,
+		backend = "git",
+		root = vim.fn.tempname(),
+		relpath = "scrollbind-sample.txt",
+		base_label = "base",
+		base_lines = {
+			"one",
+			"two",
+			"three",
+			"four",
+			"five",
+		},
+		opts = vim.deepcopy(config.get()),
+	}
+
+	layout.open(session)
+	eq(vim.wo[session.editable_win].scrollbind, true)
+	eq(vim.wo[session.base_win].scrollbind, true)
+
+	layout.close(session)
+	eq(vim.wo[editable_win].scrollbind, false)
+end
+
+local function test_live_diff_sync_scroll_catches_unfocused_pane()
+	require("lazyvcs").setup({ debounce_ms = 10 })
+
+	local session
+	local ok, err = pcall(function()
+		local root = vim.fn.tempname()
+		vim.fn.mkdir(root, "p")
+		helpers.exec({ "git", "init" }, root)
+		helpers.exec({ "git", "config", "user.name", "lazyvcs-test" }, root)
+		helpers.exec({ "git", "config", "user.email", "lazyvcs@example.com" }, root)
+
+		local base = {}
+		local current = {}
+		for i = 1, 120 do
+			base[i] = string.format("line %03d base", i)
+			current[i] = string.format("line %03d current", i)
+		end
+
+		local file = root .. "/scroll.txt"
+		helpers.write_file(file, table.concat(base, "\n") .. "\n")
+		helpers.exec({ "git", "add", "scroll.txt" }, root)
+		helpers.exec({ "git", "commit", "-m", "init" }, root)
+		helpers.write_file(file, table.concat(current, "\n") .. "\n")
+
+		vim.cmd.edit(vim.fn.fnameescape(file))
+		local actions = require("lazyvcs.actions")
+		session = assert(actions.open())
+		vim.api.nvim_set_current_win(session.editable_win)
+
+		vim.api.nvim_win_call(session.base_win, function()
+			vim.wo[session.base_win].scrollbind = false
+			vim.api.nvim_win_set_cursor(session.base_win, { 25, 0 })
+			vim.fn.winrestview({ topline = 25, lnum = 25, col = 0, curswant = 0 })
+			vim.wo[session.base_win].scrollbind = true
+		end)
+
+		local editable_view = vim.api.nvim_win_call(session.editable_win, vim.fn.winsaveview)
+		local base_view = vim.api.nvim_win_call(session.base_win, vim.fn.winsaveview)
+		eq(editable_view.topline, 1, "test setup should leave the focused pane unmoved")
+		eq(base_view.topline, 25, "test setup should simulate an unfocused pane scroll")
+
+		local source = actions._test_scroll_event_source(session, {
+			[tostring(session.base_win)] = { topline = 24 },
+		})
+		eq(source, session.base_win)
+		eq(
+			actions._test_scroll_event_source(session, {
+				[tostring(session.base_win)] = { topline = 24 },
+				[tostring(session.editable_win)] = { topline = 24 },
+			}),
+			nil
+		)
+
+		assert(require("lazyvcs.layout").sync_scroll(session, session.base_win))
+		editable_view = vim.api.nvim_win_call(session.editable_win, vim.fn.winsaveview)
+		base_view = vim.api.nvim_win_call(session.base_win, vim.fn.winsaveview)
+		eq(editable_view.topline, base_view.topline, "sync_scroll should catch the focused pane up")
+
+		actions.close()
+		session = nil
+	end)
+
+	if session then
+		require("lazyvcs.actions").close(session.editable_bufnr)
+	end
+	if not ok then
+		error(err)
+	end
+end
+
 local function test_store_persists_values_across_reload()
 	store._test_set_dir(STORE_DIR)
 	store.set("lazyvcs_test_flag", true)
@@ -4112,6 +4225,14 @@ local cases = {
 	},
 	{ "test_svn_blame_split_is_fixed_width_and_muted", test_svn_blame_split_is_fixed_width_and_muted },
 	{ "test_live_diff_places_base_window_on_the_left", test_live_diff_places_base_window_on_the_left },
+	{
+		"test_live_diff_scrollbinds_panes_and_restores_editable_window",
+		test_live_diff_scrollbinds_panes_and_restores_editable_window,
+	},
+	{
+		"test_live_diff_sync_scroll_catches_unfocused_pane",
+		test_live_diff_sync_scroll_catches_unfocused_pane,
+	},
 	{ "test_store_persists_values_across_reload", test_store_persists_values_across_reload },
 	{ "test_blame_inline_toggle_persists_across_setup", test_blame_inline_toggle_persists_across_setup },
 	{ "test_blame_inline_follows_cursor_without_waiting", test_blame_inline_follows_cursor_without_waiting },

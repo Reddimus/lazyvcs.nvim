@@ -13,8 +13,10 @@ local refresh
 local clear_session_maps
 local set_session_maps
 local attach_session
+local schedule_scroll_sync
 local schedule_rebalance
 local rebalance_tab
+local scroll_event_source
 
 local function notify_open_error(err, opts)
 	if not opts.silent then
@@ -266,6 +268,50 @@ schedule_rebalance = function(session)
 	end, 20)
 end
 
+schedule_scroll_sync = function(session, source_win)
+	if not session or session.closing then
+		return
+	end
+
+	session.scroll_sync_tick = (session.scroll_sync_tick or 0) + 1
+	local tick = session.scroll_sync_tick
+	vim.defer_fn(function()
+		local live = state.get(session.editable_bufnr)
+		if not live or live.closing or live.scroll_sync_tick ~= tick then
+			return
+		end
+		layout.sync_scroll(live, source_win)
+	end, 20)
+end
+
+local function has_scroll_delta(entry)
+	return entry
+		and (
+			(entry.topline or 0) ~= 0
+			or (entry.topfill or 0) ~= 0
+			or (entry.leftcol or 0) ~= 0
+			or (entry.skipcol or 0) ~= 0
+		)
+end
+
+scroll_event_source = function(session, event)
+	if not session then
+		return nil
+	end
+
+	local windows = (event or {}).windows or event or {}
+	local editable_scrolled = has_scroll_delta(windows[tostring(session.editable_win)])
+	local base_scrolled = has_scroll_delta(windows[tostring(session.base_win)])
+
+	if base_scrolled and not editable_scrolled then
+		return session.base_win
+	end
+	if editable_scrolled and not base_scrolled then
+		return session.editable_win
+	end
+	return nil
+end
+
 rebalance_tab = function(tabpage)
 	for _, session in ipairs(state.list()) do
 		if not session.closing and util.win_is_valid(session.editable_win) and util.win_is_valid(session.base_win) then
@@ -323,6 +369,21 @@ attach_session = function(session)
 	})
 
 	session.augroup = vim.api.nvim_create_augroup("lazyvcs_" .. session.editable_bufnr, { clear = true })
+
+	vim.api.nvim_create_autocmd("WinScrolled", {
+		group = session.augroup,
+		callback = function()
+			local live = state.get(session.editable_bufnr)
+			if not live or live.closing or live.syncing_scroll then
+				return
+			end
+
+			local source_win = scroll_event_source(live, vim.v.event)
+			if source_win then
+				schedule_scroll_sync(live, source_win)
+			end
+		end,
+	})
 
 	vim.api.nvim_create_autocmd("BufWipeout", {
 		group = session.augroup,
@@ -495,5 +556,7 @@ end
 function M.rebalance_tab(tabpage)
 	rebalance_tab(tabpage or vim.api.nvim_get_current_tabpage())
 end
+
+M._test_scroll_event_source = scroll_event_source
 
 return M
