@@ -253,10 +253,14 @@ on the left, new on the right, so the diff reads old → new left → right:
 
 - Git compares against the index with `git show :path`
 - SVN compares against working-copy `BASE` with `svn cat -r BASE`
-- untracked files show an empty base
+- Git untracked files and SVN added files show an empty base
 - `]v` and `[v` move between hunks
 - `:LazyVCSRevertHunk` or `<leader>vr` reverts the current hunk
 - normal undo still works if you revert the wrong hunk
+
+When the active editor window changes buffers, such as with AstroNvim `]b`,
+`[b`, or tabline buffer picking, LazyVCS reopens the live diff for supported
+Git/SVN buffers and closes the session cleanly for unsupported buffers.
 
 ```mermaid
 flowchart LR
@@ -381,7 +385,7 @@ Terminal Neovim cannot apply true per-text opacity. LazyVCS uses muted,
 theme-aware `Comment` highlights for blame text instead. Inline blame stays
 quiet during fast loads, shows `Blame loading...` only for slow SVN calls, and
 labels local SVN rows as `Uncommitted line` instead of displaying raw `- - -`
-placeholders.
+placeholders. SVN added files use the same uncommitted-line display.
 
 `:LazyVCSBlame` is a single global toggle: enabling it shows the overlay in
 every supported Git or SVN buffer, and the cursor-follow render is instant

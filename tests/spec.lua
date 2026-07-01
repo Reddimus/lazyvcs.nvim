@@ -1938,6 +1938,54 @@ local function test_svn_backend()
 	eq(info.base_lines, { "one", "two", "three" })
 end
 
+local function test_svn_backend_added_file_uses_empty_base()
+	local backend = require("lazyvcs.backends.svn")
+	local fixture = helpers.make_svn_added_fixture()
+	local info = assert(backend.load(fixture.file))
+
+	eq(info.name, "svn")
+	eq(info.tracked, true)
+	eq(info.base_label, "EMPTY")
+	eq(info.base_lines, {})
+
+	local base = assert(backend.load_base(fixture.file))
+	eq(base.base_label, "EMPTY")
+	eq(base.base_lines, {})
+
+	local async_result
+	local async_err
+	backend.load_base_async(fixture.file, function(result, err)
+		async_result = result
+		async_err = err
+	end)
+	wait_for(function()
+		return async_result ~= nil or async_err ~= nil
+	end, "SVN added file base should load asynchronously")
+	eq(async_err, nil)
+	eq(async_result.base_label, "EMPTY")
+	eq(async_result.base_lines, {})
+end
+
+local function test_svn_added_file_blame_uses_uncommitted_lines()
+	local backend = require("lazyvcs.backends.svn")
+	local fixture = helpers.make_svn_added_fixture()
+
+	local lines = assert(backend.blame_lines(fixture.file))
+	eq(backend.parse_blame_metadata(lines), { "Uncommitted line", "Uncommitted line" })
+
+	local async_lines
+	local async_err
+	backend.blame_lines_async(fixture.file, function(result, err)
+		async_lines = result
+		async_err = err
+	end)
+	wait_for(function()
+		return async_lines ~= nil or async_err ~= nil
+	end, "SVN added file blame should load asynchronously")
+	eq(async_err, nil)
+	eq(backend.parse_blame_metadata(async_lines), { "Uncommitted line", "Uncommitted line" })
+end
+
 local function test_svn_status_and_blame_parsers()
 	local backend = require("lazyvcs.backends.svn")
 	local items = backend.parse_status_lines({
@@ -2318,6 +2366,119 @@ local function test_live_diff_places_base_window_on_the_left()
 	actions.close()
 end
 
+local function test_live_diff_scrollbinds_panes_and_restores_editable_window()
+	require("lazyvcs").setup({ debounce_ms = 10 })
+
+	vim.cmd.enew()
+	local editable_buf = vim.api.nvim_get_current_buf()
+	local editable_win = vim.api.nvim_get_current_win()
+	vim.api.nvim_buf_set_name(editable_buf, vim.fn.tempname() .. "/scrollbind-sample.txt")
+	vim.api.nvim_buf_set_lines(editable_buf, 0, -1, false, {
+		"one",
+		"two changed",
+		"three",
+		"four",
+		"five",
+	})
+	vim.wo[editable_win].scrollbind = false
+
+	local config = require("lazyvcs.config")
+	local layout = require("lazyvcs.layout")
+	local session = {
+		editable_bufnr = editable_buf,
+		editable_win = editable_win,
+		backend = "git",
+		root = vim.fn.tempname(),
+		relpath = "scrollbind-sample.txt",
+		base_label = "base",
+		base_lines = {
+			"one",
+			"two",
+			"three",
+			"four",
+			"five",
+		},
+		opts = vim.deepcopy(config.get()),
+	}
+
+	layout.open(session)
+	eq(vim.wo[session.editable_win].scrollbind, true)
+	eq(vim.wo[session.base_win].scrollbind, true)
+
+	layout.close(session)
+	eq(vim.wo[editable_win].scrollbind, false)
+end
+
+local function test_live_diff_sync_scroll_catches_unfocused_pane()
+	require("lazyvcs").setup({ debounce_ms = 10 })
+
+	local session
+	local ok, err = pcall(function()
+		local root = vim.fn.tempname()
+		vim.fn.mkdir(root, "p")
+		helpers.exec({ "git", "init" }, root)
+		helpers.exec({ "git", "config", "user.name", "lazyvcs-test" }, root)
+		helpers.exec({ "git", "config", "user.email", "lazyvcs@example.com" }, root)
+
+		local base = {}
+		local current = {}
+		for i = 1, 120 do
+			base[i] = string.format("line %03d base", i)
+			current[i] = string.format("line %03d current", i)
+		end
+
+		local file = root .. "/scroll.txt"
+		helpers.write_file(file, table.concat(base, "\n") .. "\n")
+		helpers.exec({ "git", "add", "scroll.txt" }, root)
+		helpers.exec({ "git", "commit", "-m", "init" }, root)
+		helpers.write_file(file, table.concat(current, "\n") .. "\n")
+
+		vim.cmd.edit(vim.fn.fnameescape(file))
+		local actions = require("lazyvcs.actions")
+		session = assert(actions.open())
+		vim.api.nvim_set_current_win(session.editable_win)
+
+		vim.api.nvim_win_call(session.base_win, function()
+			vim.wo[session.base_win].scrollbind = false
+			vim.api.nvim_win_set_cursor(session.base_win, { 25, 0 })
+			vim.fn.winrestview({ topline = 25, lnum = 25, col = 0, curswant = 0 })
+			vim.wo[session.base_win].scrollbind = true
+		end)
+
+		local editable_view = vim.api.nvim_win_call(session.editable_win, vim.fn.winsaveview)
+		local base_view = vim.api.nvim_win_call(session.base_win, vim.fn.winsaveview)
+		eq(editable_view.topline, 1, "test setup should leave the focused pane unmoved")
+		eq(base_view.topline, 25, "test setup should simulate an unfocused pane scroll")
+
+		local source = actions._test_scroll_event_source(session, {
+			[tostring(session.base_win)] = { topline = 24 },
+		})
+		eq(source, session.base_win)
+		eq(
+			actions._test_scroll_event_source(session, {
+				[tostring(session.base_win)] = { topline = 24 },
+				[tostring(session.editable_win)] = { topline = 24 },
+			}),
+			nil
+		)
+
+		assert(require("lazyvcs.layout").sync_scroll(session, session.base_win))
+		editable_view = vim.api.nvim_win_call(session.editable_win, vim.fn.winsaveview)
+		base_view = vim.api.nvim_win_call(session.base_win, vim.fn.winsaveview)
+		eq(editable_view.topline, base_view.topline, "sync_scroll should catch the focused pane up")
+
+		actions.close()
+		session = nil
+	end)
+
+	if session then
+		require("lazyvcs.actions").close(session.editable_bufnr)
+	end
+	if not ok then
+		error(err)
+	end
+end
+
 local function test_store_persists_values_across_reload()
 	store._test_set_dir(STORE_DIR)
 	store.set("lazyvcs_test_flag", true)
@@ -2440,6 +2601,58 @@ local function test_svn_signs_preview_diff_window()
 	local buf = vim.api.nvim_get_current_buf()
 	eq(vim.bo[buf].filetype, "diff")
 	vim.cmd.close()
+end
+
+local function test_svn_added_file_signs_and_live_diff()
+	require("lazyvcs").setup({
+		debounce_ms = 10,
+		use_gitsigns = false,
+		signs = {
+			debounce_ms = 10,
+		},
+	})
+
+	local fixture = helpers.make_svn_added_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+
+	local signs = require("lazyvcs.signs")
+	local state = assert(signs.refresh_sync(0))
+	eq(state.base_label, "EMPTY")
+	eq(state.base_lines, {})
+	eq(#state.hunks, 1)
+	eq(state.hunks[1].base_count, 0)
+	eq(state.hunks[1].current_count, 2)
+
+	local marks = vim.api.nvim_buf_get_extmarks(0, signs._test_state().namespace, 0, -1, { details = true })
+	eq(#marks, 2, "SVN added files should render every line as an added hunk")
+
+	local actions = require("lazyvcs.actions")
+	local session = assert(actions.open())
+	eq(session.backend, "svn")
+	eq(session.base_label, "EMPTY")
+	eq(session.base_lines, {})
+	eq(#session.hunks, 1)
+	actions.close()
+end
+
+local function test_svn_signs_ignore_untracked_files()
+	require("lazyvcs").setup({
+		debounce_ms = 10,
+		use_gitsigns = false,
+		signs = {
+			debounce_ms = 10,
+		},
+	})
+
+	local fixture = helpers.make_svn_transfer_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.untracked))
+
+	local signs = require("lazyvcs.signs")
+	local state, err = signs.refresh_sync(0)
+	eq(state, nil)
+	eq(err, nil)
+	local marks = vim.api.nvim_buf_get_extmarks(0, signs._test_state().namespace, 0, -1, { details = true })
+	eq(#marks, 0, "SVN untracked files should not render signs or load a base")
 end
 
 local function test_svnsigns_compat_commands_follow_config()
@@ -4037,6 +4250,60 @@ local function test_svn_buffer_transfer_reopens_session()
 	actions.close()
 end
 
+local function test_svn_buffer_transfer_handles_added_and_untracked_files()
+	require("lazyvcs").setup({ debounce_ms = 10, use_gitsigns = false })
+
+	local fixture = helpers.make_svn_transfer_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file1))
+
+	local actions = require("lazyvcs.actions")
+	local state = require("lazyvcs.state")
+	local first_session = assert(actions.open())
+
+	vim.cmd.badd(vim.fn.fnameescape(fixture.added))
+	vim.cmd.buffer(vim.fn.fnameescape(fixture.added))
+	vim.wait(500, function()
+		local live = state.current()
+		return live and live.source_path == fixture.added
+	end)
+
+	local added_session = assert(state.current())
+	eq(added_session.backend, "svn")
+	eq(added_session.source_path, fixture.added)
+	eq(added_session.base_label, "EMPTY")
+	eq(added_session.base_lines, {})
+	eq(diff_window_count(), 2, "SVN added file transfer should keep the live diff layout")
+
+	vim.cmd.badd(vim.fn.fnameescape(fixture.file2))
+	vim.cmd.buffer(vim.fn.fnameescape(fixture.file2))
+	vim.wait(500, function()
+		local live = state.current()
+		return live and live.source_path == fixture.file2
+	end)
+
+	local tracked_session = assert(state.current())
+	eq(tracked_session.backend, "svn")
+	eq(tracked_session.source_path, fixture.file2)
+	assert_transfer_session_matches(tracked_session, {
+		base_lines = fixture.base2,
+		changed_line = 4,
+		unchanged_line = 2,
+	})
+
+	vim.cmd.badd(vim.fn.fnameescape(fixture.untracked))
+	vim.cmd.buffer(vim.fn.fnameescape(fixture.untracked))
+	vim.wait(500, function()
+		return state.get(first_session.editable_bufnr) == nil
+			and state.get(added_session.editable_bufnr) == nil
+			and state.get(tracked_session.editable_bufnr) == nil
+			and diff_window_count() == 0
+	end)
+
+	eq(state.current(), nil, "SVN untracked transfer should close the active session")
+	eq(diff_window_count(), 0, "SVN untracked transfer should clear tab diff state")
+	eq(#vim.api.nvim_tabpage_list_wins(0), 1, "SVN untracked transfer should not leave a stale base split")
+end
+
 local function test_transfer_to_unsupported_buffer_closes_session()
 	require("lazyvcs").setup({ debounce_ms = 10 })
 
@@ -4092,6 +4359,8 @@ local cases = {
 	{ "test_git_backend", test_git_backend },
 	{ "test_async_system_reports_missing_executable", test_async_system_reports_missing_executable },
 	{ "test_svn_backend", test_svn_backend },
+	{ "test_svn_backend_added_file_uses_empty_base", test_svn_backend_added_file_uses_empty_base },
+	{ "test_svn_added_file_blame_uses_uncommitted_lines", test_svn_added_file_blame_uses_uncommitted_lines },
 	{ "test_svn_status_and_blame_parsers", test_svn_status_and_blame_parsers },
 	{ "test_git_blame_parser_and_remote_urls", test_git_blame_parser_and_remote_urls },
 	{ "test_svn_async_blame_cancels_active_child_process", test_svn_async_blame_cancels_active_child_process },
@@ -4112,11 +4381,21 @@ local cases = {
 	},
 	{ "test_svn_blame_split_is_fixed_width_and_muted", test_svn_blame_split_is_fixed_width_and_muted },
 	{ "test_live_diff_places_base_window_on_the_left", test_live_diff_places_base_window_on_the_left },
+	{
+		"test_live_diff_scrollbinds_panes_and_restores_editable_window",
+		test_live_diff_scrollbinds_panes_and_restores_editable_window,
+	},
+	{
+		"test_live_diff_sync_scroll_catches_unfocused_pane",
+		test_live_diff_sync_scroll_catches_unfocused_pane,
+	},
 	{ "test_store_persists_values_across_reload", test_store_persists_values_across_reload },
 	{ "test_blame_inline_toggle_persists_across_setup", test_blame_inline_toggle_persists_across_setup },
 	{ "test_blame_inline_follows_cursor_without_waiting", test_blame_inline_follows_cursor_without_waiting },
 	{ "test_svn_signs_render_and_revert_without_live_diff", test_svn_signs_render_and_revert_without_live_diff },
 	{ "test_svn_signs_preview_diff_window", test_svn_signs_preview_diff_window },
+	{ "test_svn_added_file_signs_and_live_diff", test_svn_added_file_signs_and_live_diff },
+	{ "test_svn_signs_ignore_untracked_files", test_svn_signs_ignore_untracked_files },
 	{ "test_svnsigns_compat_commands_follow_config", test_svnsigns_compat_commands_follow_config },
 	{ "test_setup_is_idempotent_and_respects_sign_toggle", test_setup_is_idempotent_and_respects_sign_toggle },
 	{ "test_source_control_collects_dirty_nested_repos", test_source_control_collects_dirty_nested_repos },
@@ -4296,6 +4575,10 @@ local cases = {
 		test_source_control_switch_repo_closes_matching_sessions_and_refreshes_repo,
 	},
 	{ "test_svn_buffer_transfer_reopens_session", test_svn_buffer_transfer_reopens_session },
+	{
+		"test_svn_buffer_transfer_handles_added_and_untracked_files",
+		test_svn_buffer_transfer_handles_added_and_untracked_files,
+	},
 	{ "test_transfer_to_unsupported_buffer_closes_session", test_transfer_to_unsupported_buffer_closes_session },
 }
 

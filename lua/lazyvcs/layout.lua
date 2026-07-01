@@ -105,6 +105,12 @@ local function restore_winbar(winid, value)
 	end
 end
 
+local function restore_window_option(winid, name, value)
+	if util.win_is_valid(winid) and value ~= nil then
+		vim.wo[winid][name] = value
+	end
+end
+
 function M.reset_tab_diff(winid)
 	local target = winid
 	if not util.win_is_valid(target) then
@@ -127,6 +133,7 @@ function M.open(session)
 
 	session.editable_win = editable_win
 	session.editable_had_diff = vim.wo[editable_win].diff
+	session.editable_prev_scrollbind = vim.wo[editable_win].scrollbind
 
 	configure_base_buffer(session)
 	vim.api.nvim_set_current_win(editable_win)
@@ -152,6 +159,11 @@ function M.open(session)
 
 	apply_diff(editable_win)
 	apply_diff(session.base_win)
+	vim.wo[editable_win].scrollbind = true
+	vim.wo[session.base_win].scrollbind = true
+	vim.api.nvim_win_call(editable_win, function()
+		vim.cmd("silent syncbind")
+	end)
 	session.tabpage = vim.api.nvim_win_get_tabpage(editable_win)
 	set_window_labels(session)
 end
@@ -190,6 +202,27 @@ function M.rebalance(session)
 	return ok
 end
 
+function M.sync_scroll(session, source_win)
+	if not session or session.closing or session.syncing_scroll then
+		return false
+	end
+
+	if source_win ~= session.editable_win and source_win ~= session.base_win then
+		return false
+	end
+
+	if not same_tab(session.editable_win, session.base_win) then
+		return false
+	end
+
+	session.syncing_scroll = true
+	local ok = pcall(vim.api.nvim_win_call, source_win, function()
+		vim.cmd("silent! syncbind")
+	end)
+	session.syncing_scroll = false
+	return ok
+end
+
 function M.refresh(session)
 	set_window_labels(session)
 	if util.win_is_valid(session.editable_win) then
@@ -217,6 +250,7 @@ function M.close(session, opts)
 		if session.opts.set_winbar then
 			restore_winbar(session.editable_win, session.editable_prev_winbar)
 		end
+		restore_window_option(session.editable_win, "scrollbind", session.editable_prev_scrollbind)
 	end
 
 	if util.win_is_valid(session.base_win) then

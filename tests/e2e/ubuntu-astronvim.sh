@@ -261,6 +261,206 @@ LUA
 run_logged source-control-smoke env LAZYVCS_E2E_WORKSPACE="${WORKSPACE}" \
 	timeout 180s nvim --headless "+luafile /tmp/lazyvcs-source-control-smoke.lua"
 
+SVN_NAV_REPO=/tmp/lazyvcs-e2e-svn-nav-store
+SVN_NAV_WC=/tmp/lazyvcs-e2e-svn-nav-wc
+rm -rf "${SVN_NAV_REPO}" "${SVN_NAV_WC}"
+svnadmin create "${SVN_NAV_REPO}"
+svn checkout "file://${SVN_NAV_REPO}" "${SVN_NAV_WC}" --quiet
+printf 'one\ntwo\nthree\n' >"${SVN_NAV_WC}/alpha.cpp"
+printf 'red\nblue\ngreen\n' >"${SVN_NAV_WC}/beta.cpp"
+svn add "${SVN_NAV_WC}/alpha.cpp" "${SVN_NAV_WC}/beta.cpp" --quiet
+svn commit "${SVN_NAV_WC}" -m "initial" --quiet
+printf 'one\nchanged\nthree\n' >"${SVN_NAV_WC}/alpha.cpp"
+printf 'red\nblue\namber\n' >"${SVN_NAV_WC}/beta.cpp"
+printf 'new\nfile\n' >"${SVN_NAV_WC}/added.cpp"
+svn add "${SVN_NAV_WC}/added.cpp" --quiet
+printf 'scratch\nfile\n' >"${SVN_NAV_WC}/scratch.cpp"
+
+cat >/tmp/lazyvcs-buffer-nav-smoke.lua <<'LUA'
+local result_path = "/tmp/lazyvcs-buffer-nav-result"
+local log_path = "/tmp/lazyvcs-buffer-nav-state.log"
+
+local function append_log(msg)
+  local f = assert(io.open(log_path, "a"))
+  f:write(os.date("%H:%M:%S"), " ", msg, "\n")
+  f:close()
+end
+
+local function finish(ok, msg)
+  vim.fn.writefile({ (ok and "OK " or "FAIL ") .. msg }, result_path)
+  vim.cmd("qa!")
+end
+
+local function dump(label)
+  local state = require("lazyvcs.state")
+  local live = state.current()
+  local wins = {}
+  for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local bufnr = vim.api.nvim_win_get_buf(winid)
+    wins[#wins + 1] = string.format(
+      "%d:%d:%s:diff=%s",
+      winid,
+      bufnr,
+      vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t"),
+      tostring(vim.wo[winid].diff)
+    )
+  end
+  append_log(string.format(
+    "%s curwin=%d curbuf=%d name=%s live=%s base=%s wins=[%s]",
+    label,
+    vim.api.nvim_get_current_win(),
+    vim.api.nvim_get_current_buf(),
+    vim.api.nvim_buf_get_name(0),
+    live and live.source_path or "nil",
+    live and live.base_label or "nil",
+    table.concat(wins, ", ")
+  ))
+end
+
+local function assert_wait(ms, predicate, message)
+  assert(vim.wait(ms, predicate, 50), message)
+end
+
+vim.schedule(function()
+  local ok, err = xpcall(function()
+    vim.fn.writefile({}, log_path)
+    local wc = assert(vim.env.LAZYVCS_E2E_SVN_NAV_WC, "missing LAZYVCS_E2E_SVN_NAV_WC")
+    require("lazy").load({ plugins = { "lazyvcs.nvim" } })
+
+    local files = {
+      alpha = wc .. "/alpha.cpp",
+      added = wc .. "/added.cpp",
+      beta = wc .. "/beta.cpp",
+      scratch = wc .. "/scratch.cpp",
+    }
+    local bufs = {}
+    for _, key in ipairs({ "alpha", "added", "beta", "scratch" }) do
+      vim.cmd.edit(vim.fn.fnameescape(files[key]))
+      bufs[key] = vim.api.nvim_get_current_buf()
+    end
+    vim.api.nvim_set_current_buf(bufs.alpha)
+    assert_wait(3000, function()
+      return vim.t.bufs
+        and vim.tbl_contains(vim.t.bufs, bufs.alpha)
+        and vim.tbl_contains(vim.t.bufs, bufs.added)
+        and vim.tbl_contains(vim.t.bufs, bufs.beta)
+        and vim.tbl_contains(vim.t.bufs, bufs.scratch)
+    end, "AstroNvim buffer list did not include all fixture buffers")
+    vim.t.bufs = { bufs.alpha, bufs.added, bufs.beta, bufs.scratch }
+
+    local actions = require("lazyvcs.actions")
+    local state = require("lazyvcs.state")
+    dump("before open")
+    assert(actions.open(), "failed to open initial live diff")
+    dump("after open")
+
+    require("astrocore.buffer").nav(1)
+    dump("after nav added immediate")
+    assert_wait(3000, function()
+      local live = state.current()
+      return live and live.source_path == files.added and live.base_label == "EMPTY"
+    end, "live diff did not transfer to SVN added file")
+    dump("after nav added settled")
+
+    require("astrocore.buffer").nav(1)
+    dump("after nav beta immediate")
+    assert_wait(3000, function()
+      local live = state.current()
+      return live and live.source_path == files.beta and live.base_label == "BASE"
+    end, "live diff did not transfer back to tracked SVN file")
+    dump("after nav beta settled")
+
+    require("astrocore.buffer").nav(1)
+    dump("after nav scratch immediate")
+    assert_wait(3000, function()
+      if state.current() ~= nil or #state.list() ~= 0 then
+        return false
+      end
+      for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+        local bufnr = vim.api.nvim_win_get_buf(winid)
+        local name = vim.api.nvim_buf_get_name(bufnr)
+        if name:match("^lazyvcs://") or vim.wo[winid].diff then
+          return false
+        end
+      end
+      return true
+    end, "live diff did not close on unsupported SVN file")
+    assert(state.current() == nil, "unsupported SVN file should close live diff")
+    assert(#state.list() == 0, "unsupported SVN file should remove live diff sessions")
+    for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      local bufnr = vim.api.nvim_win_get_buf(winid)
+      local name = vim.api.nvim_buf_get_name(bufnr)
+      assert(not name:match("^lazyvcs://"), "stale lazyvcs base window remained")
+      assert(not vim.wo[winid].diff, "diff mode should be cleared after unsupported transfer")
+    end
+    dump("after nav scratch settled")
+  end, debug.traceback)
+
+  finish(ok, ok and "buffer navigation smoke passed" or tostring(err))
+end)
+LUA
+
+buffer_nav_smoke() {
+	local sock="/tmp/lazyvcs-buffer-nav.sock"
+	local result="/tmp/lazyvcs-buffer-nav-result"
+	local ui_log="/artifacts/buffer-nav-smoke-ui.log"
+	local typescript="/artifacts/buffer-nav-smoke-ui.typescript"
+
+	export LAZYVCS_E2E_SVN_NAV_WC="${SVN_NAV_WC}"
+	rm -f "${sock}" "${result}" /tmp/lazyvcs-buffer-nav-state.log
+	timeout 180s script -qefc \
+		"nvim --listen '${sock}' '${SVN_NAV_WC}/alpha.cpp'" \
+		"${typescript}" >"${ui_log}" 2>&1 &
+	local nvim_pid=$!
+
+	for _ in $(seq 1 120); do
+		if [ -S "${sock}" ]; then
+			break
+		fi
+		if ! kill -0 "${nvim_pid}" 2>/dev/null; then
+			wait "${nvim_pid}" || true
+			printf 'interactive AstroNvim exited before creating %s\n' "${sock}" >&2
+			return 1
+		fi
+		sleep 0.25
+	done
+	if [ ! -S "${sock}" ]; then
+		kill "${nvim_pid}" 2>/dev/null || true
+		wait "${nvim_pid}" || true
+		printf 'timed out waiting for interactive AstroNvim socket %s\n' "${sock}" >&2
+		return 1
+	fi
+
+	nvim --server "${sock}" --remote-send '<Esc>:luafile /tmp/lazyvcs-buffer-nav-smoke.lua<CR>'
+	for _ in $(seq 1 240); do
+		if [ -f "${result}" ]; then
+			break
+		fi
+		if ! kill -0 "${nvim_pid}" 2>/dev/null; then
+			break
+		fi
+		sleep 0.25
+	done
+
+	if [ ! -f "${result}" ]; then
+		kill "${nvim_pid}" 2>/dev/null || true
+		wait "${nvim_pid}" || true
+		printf 'interactive AstroNvim did not produce a buffer navigation result\n' >&2
+		cat /tmp/lazyvcs-buffer-nav-state.log >&2 2>/dev/null || true
+		return 1
+	fi
+
+	wait "${nvim_pid}" || true
+	cat /tmp/lazyvcs-buffer-nav-state.log >&2 2>/dev/null || true
+	if grep -q '^OK ' "${result}"; then
+		return 0
+	fi
+	cat "${result}" >&2
+	return 1
+}
+
+run_logged buffer-nav-smoke buffer_nav_smoke
+
 if [ -n "${KEEP_E2E_HOME}" ]; then
 	cp -a "${HOME}" /artifacts/home
 fi
