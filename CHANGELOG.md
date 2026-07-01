@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- SVN added files now use an empty base consistently for signs, live diff, and
+  inline blame. Inline blame renders added-file lines as uncommitted instead of
+  surfacing `svn blame` errors while moving across buffers.
+- Live diff buffer transfer now handles AstroNvim-style buffer navigation across
+  tracked, added, and unsupported buffers without leaving stale diff state.
+
 ## [0.3.0] - 2026-05-31
 
 ### Changed

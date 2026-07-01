@@ -102,6 +102,35 @@ local function resume_transfer_aerial(pending)
 	end
 end
 
+local function close_failed_transfer_window(pending)
+	if not pending or not util.win_is_valid(pending.editable_win) then
+		return
+	end
+
+	local function cleanup()
+		if not vim.api.nvim_tabpage_is_valid(pending.tabpage) or not util.win_is_valid(pending.editable_win) then
+			return
+		end
+
+		local current_win = vim.api.nvim_get_current_win()
+		for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(pending.tabpage)) do
+			if winid ~= pending.editable_win and util.win_is_valid(winid) then
+				local bufnr = vim.api.nvim_win_get_buf(winid)
+				local name = vim.api.nvim_buf_get_name(bufnr)
+				if winid == pending.base_win or name:match("^lazyvcs://") then
+					pcall(vim.api.nvim_win_close, winid, true)
+				end
+			end
+		end
+		if util.win_is_valid(current_win) and vim.api.nvim_get_current_win() ~= current_win then
+			pcall(vim.api.nvim_set_current_win, current_win)
+		end
+	end
+
+	cleanup()
+	vim.schedule(cleanup)
+end
+
 local function handle_pending_transfer(target_bufnr)
 	local pending = state.peek_pending_transfer()
 	if not pending then
@@ -161,6 +190,7 @@ local function handle_pending_transfer(target_bufnr)
 		if replacement then
 			open_session(replacement)
 		else
+			close_failed_transfer_window(pending)
 			abort()
 		end
 	end)

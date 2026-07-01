@@ -55,6 +55,9 @@ local function supported_buffer(bufnr)
 	if #vim.fs.find(".svn", { path = vim.fs.dirname(path), upward = true, type = "directory" }) == 0 then
 		return nil
 	end
+	if not svn.is_versioned(path) then
+		return nil
+	end
 	return path
 end
 
@@ -161,6 +164,7 @@ function M.refresh(bufnr, reload_base)
 		end
 		live.root = result.root
 		live.relpath = result.relpath
+		live.base_label = result.base_label
 		live.base_lines = result.base_lines
 		live.loaded = true
 		render(bufnr)
@@ -186,6 +190,7 @@ function M.refresh_sync(bufnr)
 	state.generation = state.generation + 1
 	state.root = result.root
 	state.relpath = result.relpath
+	state.base_label = result.base_label
 	state.base_lines = result.base_lines
 	state.loaded = true
 	state.loading = false

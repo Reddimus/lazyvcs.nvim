@@ -136,6 +136,30 @@ function M.make_svn_fixture()
 	}
 end
 
+function M.make_svn_added_fixture()
+	if vim.fn.executable("svnadmin") ~= 1 then
+		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
+	end
+
+	local root = vim.fn.tempname()
+	local repo = join(root, "repo")
+	local wc = join(root, "wc")
+
+	vim.fn.mkdir(root, "p")
+	M.exec({ "svnadmin", "create", repo }, root)
+	M.exec({ "svn", "checkout", "file://" .. repo, wc }, root)
+
+	local wc_file = join(wc, "added.txt")
+	M.write_file(wc_file, "alpha\nbeta\n")
+	M.exec({ "svn", "add", "added.txt" }, wc)
+
+	return {
+		root = wc,
+		file = wc_file,
+		repo = repo,
+	}
+end
+
 function M.make_git_remote_fixture()
 	local root = vim.fn.tempname()
 	local origin = join(root, "origin.git")
@@ -244,13 +268,20 @@ function M.make_svn_transfer_fixture()
 
 	local wc_file1 = join(wc, "alpha.txt")
 	local wc_file2 = join(wc, "beta.txt")
+	local wc_added = join(wc, "added.txt")
+	local wc_untracked = join(wc, "scratch.txt")
 	M.write_file(wc_file1, "one\nchanged\nthree\nfour\nfive\n")
 	M.write_file(wc_file2, "red\nblue\ngreen\namber\norange\nviolet\n")
+	M.write_file(wc_added, "new\nfile\n")
+	M.write_file(wc_untracked, "scratch\nfile\n")
+	M.exec({ "svn", "add", "added.txt" }, wc)
 
 	return {
 		root = wc,
 		file1 = wc_file1,
 		file2 = wc_file2,
+		added = wc_added,
+		untracked = wc_untracked,
 		base1 = base1,
 		base2 = base2,
 	}

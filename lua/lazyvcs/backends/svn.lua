@@ -37,6 +37,54 @@ local function is_versioned(path)
 	return err == nil
 end
 
+local function status_code(path)
+	local lines, err = util.system_lines({ "svn", "status", "--depth", "empty", path }, { cwd = vim.fs.dirname(path) })
+	if not lines then
+		return nil, err
+	end
+	for _, line in ipairs(lines) do
+		if line ~= "" then
+			return line:sub(1, 1)
+		end
+	end
+	return " "
+end
+
+local function is_added_base_error(err)
+	return type(err) == "string" and (err:match("no committed revision") or err:match("no pristine version"))
+end
+
+local function uncommitted_blame_lines(path)
+	local ok, lines = pcall(vim.fn.readfile, path)
+	if not ok then
+		return nil, tostring(lines)
+	end
+	local out = {}
+	for _, line in ipairs(lines) do
+		out[#out + 1] = "     - - - " .. line
+	end
+	return out
+end
+
+local function load_base_lines(path, root)
+	local code, status_err = status_code(path)
+	if not code then
+		return nil, nil, status_err
+	end
+	if code == "A" then
+		return {}, "EMPTY"
+	end
+
+	local lines, load_err = util.system_lines({ "svn", "cat", "-r", "BASE", path }, { cwd = root })
+	if not lines then
+		if is_added_base_error(load_err) then
+			return {}, "EMPTY"
+		end
+		return nil, nil, load_err
+	end
+	return lines, "BASE"
+end
+
 local function status_label(code)
 	return ({
 		M = "modified",
@@ -69,12 +117,12 @@ function M.load(path)
 	local base_label = "EMPTY"
 
 	if tracked then
-		local loaded_lines, load_err = util.system_lines({ "svn", "cat", "-r", "BASE", path }, { cwd = root })
+		local loaded_lines, loaded_label, load_err = load_base_lines(path, root)
 		if not loaded_lines then
 			return nil, load_err or err
 		end
 		base_lines = loaded_lines
-		base_label = "BASE"
+		base_label = loaded_label or "EMPTY"
 	end
 
 	return {
@@ -110,13 +158,14 @@ function M.load_base(path)
 		return nil, "File is not tracked by SVN"
 	end
 
-	local lines, load_err = util.system_lines({ "svn", "cat", "-r", "BASE", path }, { cwd = root })
+	local lines, base_label, load_err = load_base_lines(path, root)
 	if not lines then
 		return nil, load_err
 	end
 	return {
 		root = root,
 		relpath = util.relpath(root, path),
+		base_label = base_label,
 		base_lines = lines,
 	}
 end
@@ -139,16 +188,56 @@ function M.load_base_async(path, on_done)
 			if tracked_err then
 				return on_done(nil, "File is not tracked by SVN")
 			end
-			util.system_lines_start({ "svn", "cat", "-r", "BASE", path }, { cwd = root }, function(lines, cat_err)
-				if not lines then
-					return on_done(nil, cat_err)
+			util.system_lines_start(
+				{ "svn", "status", "--depth", "empty", path },
+				{ cwd = vim.fs.dirname(path) },
+				function(status_lines, status_err)
+					if not status_lines then
+						return on_done(nil, status_err)
+					end
+
+					local code = " "
+					for _, line in ipairs(status_lines) do
+						if line ~= "" then
+							code = line:sub(1, 1)
+							break
+						end
+					end
+
+					if code == "A" then
+						return on_done({
+							root = root,
+							relpath = util.relpath(root, path),
+							base_label = "EMPTY",
+							base_lines = {},
+						})
+					end
+
+					util.system_lines_start(
+						{ "svn", "cat", "-r", "BASE", path },
+						{ cwd = root },
+						function(lines, cat_err)
+							if not lines then
+								if is_added_base_error(cat_err) then
+									return on_done({
+										root = root,
+										relpath = util.relpath(root, path),
+										base_label = "EMPTY",
+										base_lines = {},
+									})
+								end
+								return on_done(nil, cat_err)
+							end
+							on_done({
+								root = root,
+								relpath = util.relpath(root, path),
+								base_label = "BASE",
+								base_lines = lines,
+							})
+						end
+					)
 				end
-				on_done({
-					root = root,
-					relpath = util.relpath(root, path),
-					base_lines = lines,
-				})
-			end)
+			)
 		end)
 	end)
 end
@@ -189,7 +278,14 @@ function M.blame_lines(path)
 	if not root then
 		return nil, err or "Not an SVN working copy"
 	end
-	return util.system_lines({ "svn", "blame", "-v", path }, { cwd = root })
+	if status_code(path) == "A" then
+		return uncommitted_blame_lines(path)
+	end
+	local lines, blame_err = util.system_lines({ "svn", "blame", "-v", path }, { cwd = root })
+	if not lines and is_added_base_error(blame_err) then
+		return uncommitted_blame_lines(path)
+	end
+	return lines, blame_err
 end
 
 function M.blame_lines_async(path, on_done)
@@ -226,16 +322,40 @@ function M.blame_lines_async(path, on_done)
 			end
 			local root = util.trim(result.stdout)
 			job.handle = util.system_lines_start(
-				{ "svn", "blame", "-v", path },
-				{ cwd = root },
-				function(lines, blame_err)
+				{ "svn", "status", "--depth", "empty", path },
+				{ cwd = cwd },
+				function(status_lines, status_err)
 					if job.cancelled then
 						return
 					end
-					if not lines then
-						return on_done(nil, blame_err)
+					if not status_lines then
+						return on_done(nil, status_err)
 					end
-					on_done(lines, nil, root)
+
+					for _, line in ipairs(status_lines) do
+						if line ~= "" and line:sub(1, 1) == "A" then
+							local blame, read_err = uncommitted_blame_lines(path)
+							return on_done(blame, read_err, root)
+						end
+					end
+
+					job.handle = util.system_lines_start(
+						{ "svn", "blame", "-v", path },
+						{ cwd = root },
+						function(lines, blame_err)
+							if job.cancelled then
+								return
+							end
+							if not lines then
+								if is_added_base_error(blame_err) then
+									local blame, read_err = uncommitted_blame_lines(path)
+									return on_done(blame, read_err, root)
+								end
+								return on_done(nil, blame_err)
+							end
+							on_done(lines, nil, root)
+						end
+					)
 				end
 			)
 		end

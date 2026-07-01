@@ -26,7 +26,8 @@ The live diff shows the read-only VCS base (the old version) on the left and the
 real editable file (your new changes) on the right, matching the git/VS Code/
 vimdiff convention (old -> new reads left -> right). Git compares against the
 index with `git show :path`. SVN compares against working-copy BASE with
-`svn cat -r BASE path`.
+`svn cat -r BASE path`. Git untracked files and SVN added files use an empty
+base.
 
 The source-control sidebar is native Neovim UI. Neo-tree is not required.
 
@@ -138,6 +139,10 @@ Live diff buffer-local mappings:
     ]v           next hunk
     [v           previous hunk
 
+When the active editor window changes buffers, such as with AstroNvim ]b, [b,
+or tabline buffer picking, lazyvcs reopens live diff for supported Git/SVN
+buffers and closes the session cleanly for unsupported buffers.
+
 Source-control sidebar mappings:
 
     <CR>, l      focus repo, toggle Changes repo rows, run action, or open file
@@ -167,7 +172,8 @@ SVN INLINE SIGNS                                   *lazyvcs-svn-inline-signs*
 
 SVN file buffers get gutter signs automatically. lazyvcs compares the buffer
 against working-copy BASE with `svn cat -r BASE` in the background and updates
-signs after edits.
+signs after edits. SVN added files use an empty base, and inline blame renders
+their rows as uncommitted lines.
 
 Commands:
 
@@ -436,7 +442,7 @@ NOTES                                                           *lazyvcs-notes*
 - The Neo-tree adapter has been removed. Use |:LazyVCSSourceControlToggle|.
 - Git compares live diff buffers against the index.
 - SVN compares live diff buffers against working-copy BASE.
-- Untracked files show an empty base.
+- Git untracked files and SVN added files show an empty base.
 - Normal undo works after a hunk revert.
 - Live diff shows the VCS base (old) on the left and the editable file
   (new) on the right.
