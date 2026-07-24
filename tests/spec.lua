@@ -2716,6 +2716,7 @@ local function test_unknown_subcommand_reports_valid_options()
 	local util = require("lazyvcs.util")
 	local messages = {}
 	local real_notify = util.notify
+	---@diagnostic disable-next-line: duplicate-set-field
 	util.notify = function(msg)
 		messages[#messages + 1] = tostring(msg)
 	end
