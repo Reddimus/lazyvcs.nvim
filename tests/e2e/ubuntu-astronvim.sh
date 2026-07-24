@@ -339,8 +339,12 @@ local heartbeat = vim.uv.new_timer()
 local ticks = 0
 heartbeat:start(1000, 1000, function()
   ticks = ticks + 1
+  -- Capture the tick by value: if these callbacks are starved and then flush in a
+  -- batch, the recorded numbers must still show when each one was queued.
+  local tick = ticks
+  local queued_at = os.date("%H:%M:%S")
   vim.schedule(function()
-    append_log(string.format("heartbeat %d (last checkpoint: %s)", ticks, last_label))
+    append_log(string.format("heartbeat %d queued=%s (last checkpoint: %s)", tick, queued_at, last_label))
   end)
 end)
 
@@ -371,6 +375,22 @@ vim.schedule(function()
     vim.fn.writefile({}, log_path)
     local wc = assert(vim.env.LAZYVCS_E2E_SVN_NAV_WC, "missing LAZYVCS_E2E_SVN_NAV_WC")
     require("lazy").load({ plugins = { "lazyvcs.nvim" } })
+
+    -- Name any synchronous VCS call that stalls the UI thread. Blocking calls
+    -- starve vim.schedule callbacks, which is indistinguishable from a deadlock
+    -- from the outside.
+    local vcs_util = require("lazyvcs.util")
+    local real_system_result = vcs_util.system_result
+    vcs_util.system_result = function(args, sys_opts)
+      local started = vim.uv.hrtime()
+      local res = real_system_result(args, sys_opts)
+      local elapsed = (vim.uv.hrtime() - started) / 1e6
+      if elapsed > 250 then
+        append_log(string.format("SLOW sync call %.0fms code=%s cmd=%s",
+          elapsed, tostring(res and res.code), table.concat(args, " ")))
+      end
+      return res
+    end
 
     local files = {
       alpha = wc .. "/alpha.cpp",
