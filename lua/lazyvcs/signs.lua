@@ -60,11 +60,14 @@ local function supported_buffer(bufnr)
 		return nil
 	end
 
+	-- Backend resolution is cached per directory, so this is a table lookup once a
+	-- directory has been seen. Deliberately no is_versioned() check here: it spawns
+	-- `svn info` synchronously and this runs on every BufEnter, which froze Neovim
+	-- for tens of seconds whenever it contended with an in-flight async svn command
+	-- for the working-copy lock. load_base_async reports trackedness instead, and
+	-- M.refresh clears the buffer when the backend says the file has no base.
 	local backend_name = backends.name_for(path)
 	if not backend_name or defers_to_gitsigns(backend_name) then
-		return nil
-	end
-	if not backends.is_versioned(path) then
 		return nil
 	end
 	return path

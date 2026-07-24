@@ -108,6 +108,8 @@ jobs:
   # the SVN specs skip cleanly and Git coverage is what this job guards.
   windows:
     runs-on: windows-latest
+    env:
+      LAZYVCS_TEST_LAZY_ROOT: ${{ github.workspace }}/deps/lazy
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -125,6 +127,12 @@ jobs:
           git config --global user.name "lazyvcs ci"
           git config --global user.email "lazyvcs-ci@example.invalid"
           git config --global init.defaultBranch main
+
+      - name: Install test dependencies
+        run: |
+          New-Item -ItemType Directory -Force "${env:LAZYVCS_TEST_LAZY_ROOT}" | Out-Null
+          git clone --filter=blob:none https://github.com/nvim-lua/plenary.nvim "${env:LAZYVCS_TEST_LAZY_ROOT}/plenary.nvim"
+          git clone --filter=blob:none https://github.com/lewis6991/gitsigns.nvim "${env:LAZYVCS_TEST_LAZY_ROOT}/gitsigns.nvim"
 
       - name: Headless smoke
         run: nvim --headless -u NONE -l tests/native_smoke.lua
