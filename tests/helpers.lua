@@ -1,7 +1,16 @@
 local M = {}
 
 local function join(...)
-	return table.concat({ ... }, "/")
+	return vim.fs.normalize(table.concat({ ... }, "/"))
+end
+
+-- vim.fs.normalize(vim.fn.tempname()) returns a backslash path on Windows. The plugin normalizes
+-- every path it reports through vim.fs.normalize, so fixtures must do the same or
+-- comparisons fail with mixed separators (C:\a\b/c vs C:/a/b/c).
+local function tempdir()
+	local dir = vim.fs.normalize(vim.fn.tempname())
+	vim.fn.mkdir(dir, "p")
+	return dir
 end
 
 function M.write_file(path, text)
@@ -16,8 +25,7 @@ function M.exec(args, cwd)
 end
 
 function M.make_git_fixture()
-	local root = vim.fn.tempname()
-	vim.fn.mkdir(root, "p")
+	local root = tempdir()
 
 	M.exec({ "git", "init" }, root)
 	M.exec({ "git", "config", "user.name", "lazyvcs-test" }, root)
@@ -36,8 +44,7 @@ function M.make_git_fixture()
 end
 
 function M.make_git_transfer_fixture()
-	local root = vim.fn.tempname()
-	vim.fn.mkdir(root, "p")
+	local root = tempdir()
 
 	M.exec({ "git", "init" }, root)
 	M.exec({ "git", "config", "user.name", "lazyvcs-test" }, root)
@@ -64,7 +71,7 @@ function M.make_git_transfer_fixture()
 end
 
 function M.make_git_markdown_transfer_fixture()
-	local root = vim.fn.tempname()
+	local root = vim.fs.normalize(vim.fn.tempname())
 	local lua_root = join(root, "lua", "lazyvcs")
 	vim.fn.mkdir(lua_root, "p")
 
@@ -112,7 +119,7 @@ function M.make_svn_fixture()
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
-	local root = vim.fn.tempname()
+	local root = vim.fs.normalize(vim.fn.tempname())
 	local repo = join(root, "repo")
 	local seed = join(root, "seed")
 	local wc = join(root, "wc")
@@ -141,7 +148,7 @@ function M.make_svn_added_fixture()
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
-	local root = vim.fn.tempname()
+	local root = vim.fs.normalize(vim.fn.tempname())
 	local repo = join(root, "repo")
 	local wc = join(root, "wc")
 
@@ -161,7 +168,7 @@ function M.make_svn_added_fixture()
 end
 
 function M.make_git_remote_fixture()
-	local root = vim.fn.tempname()
+	local root = vim.fs.normalize(vim.fn.tempname())
 	local origin = join(root, "origin.git")
 	local seed = join(root, "seed")
 	local clone = join(root, "clone")
@@ -198,7 +205,7 @@ function M.make_git_remote_fixture()
 end
 
 function M.make_git_switch_fixture()
-	local root = vim.fn.tempname()
+	local root = vim.fs.normalize(vim.fn.tempname())
 	local origin = join(root, "origin.git")
 	local seed = join(root, "seed")
 	local clone = join(root, "clone")
@@ -248,7 +255,7 @@ function M.make_svn_transfer_fixture()
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
-	local root = vim.fn.tempname()
+	local root = vim.fs.normalize(vim.fn.tempname())
 	local repo = join(root, "repo")
 	local seed = join(root, "seed")
 	local wc = join(root, "wc")
@@ -292,7 +299,7 @@ function M.make_svn_update_fixture()
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
-	local root = vim.fn.tempname()
+	local root = vim.fs.normalize(vim.fn.tempname())
 	local repo = join(root, "repo")
 	local seed = join(root, "seed")
 	local wc = join(root, "wc")
@@ -325,7 +332,7 @@ function M.make_svn_switch_fixture()
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
-	local root = vim.fn.tempname()
+	local root = vim.fs.normalize(vim.fn.tempname())
 	local repo = join(root, "repo")
 	local seed = join(root, "seed")
 	local wc = join(root, "wc")
@@ -356,8 +363,7 @@ function M.make_source_control_fixture()
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
-	local root = vim.fn.tempname()
-	vim.fn.mkdir(root, "p")
+	local root = tempdir()
 
 	local git_dirty = join(root, "apps", "git-dirty")
 	vim.fn.mkdir(git_dirty, "p")

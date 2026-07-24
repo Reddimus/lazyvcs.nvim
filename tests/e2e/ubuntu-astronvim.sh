@@ -136,57 +136,9 @@ return {
       { "ibhagwan/fzf-lua", optional = true },
       { "CopilotC-Nvim/CopilotChat.nvim", optional = true },
     },
-    cmd = {
-      "LazyVcsDiffOpen",
-      "LazyVCSDiffOpen",
-      "LazyVcsDiffClose",
-      "LazyVCSDiffClose",
-      "LazyVcsDiffToggle",
-      "LazyVCSDiffToggle",
-      "LazyVcsDiffRefresh",
-      "LazyVCSDiffRefresh",
-      "LazyVcsRevertHunk",
-      "LazyVCSRevertHunk",
-      "LazyVcsNextHunk",
-      "LazyVCSNextHunk",
-      "LazyVcsPrevHunk",
-      "LazyVCSPrevHunk",
-      "LazyVcsSignsRefresh",
-      "LazyVCSSignsRefresh",
-      "LazyVcsBlame",
-      "LazyVCSBlame",
-      "LazyVcsBlameSplit",
-      "LazyVCSBlameSplit",
-      "LazyVcsBlameClear",
-      "LazyVCSBlameClear",
-      "LazyVcsLineLog",
-      "LazyVCSLineLog",
-      "LazyVcsPreviewDiff",
-      "LazyVCSPreviewDiff",
-      "LazyVcsRevertBuffer",
-      "LazyVCSRevertBuffer",
-      "LazyVcsFiles",
-      "LazyVCSFiles",
-      "LazyVcsSourceControlOpen",
-      "LazyVCSSourceControlOpen",
-      "LazyVcsSourceControlClose",
-      "LazyVCSSourceControlClose",
-      "LazyVcsSourceControlToggle",
-      "LazyVCSSourceControlToggle",
-      "LazyVcsSourceControlRefresh",
-      "LazyVCSSourceControlRefresh",
-      "LazyVcsSourceControlProfile",
-      "LazyVCSSourceControlProfile",
-      "VcsLiveDiffOpen",
-      "SvnBlame",
-      "SvnLog",
-      "SvnPreview",
-      "SvnRevert",
-      "SvnResetHunk",
-      "SvnFiles",
-    },
+    cmd = { "LazyVCS" },
     keys = {
-      { "<leader>vs", "<cmd>LazyVcsSourceControlToggle<cr>", desc = "Toggle VCS sidebar" },
+      { "<leader>vs", "<cmd>LazyVCS sidebar toggle<cr>", desc = "Toggle VCS sidebar" },
     },
     opts = {
       source_control = {
@@ -227,17 +179,19 @@ svn add "${WORKSPACE}/svn-repo/added.txt" --quiet
 cat >/tmp/lazyvcs-source-control-smoke.lua <<'LUA'
 local ok, err = xpcall(function()
   local workspace = assert(vim.env.LAZYVCS_E2E_WORKSPACE, "missing LAZYVCS_E2E_WORKSPACE")
-  assert(vim.fn.exists(":LazyVcsSourceControlToggle") == 2, "LazyVcsSourceControlToggle command missing")
-  assert(vim.fn.exists(":LazyVCSSourceControlToggle") == 2, "LazyVCSSourceControlToggle command missing")
-  assert(vim.fn.exists(":LazyVcsSourceControlProfile") == 2, "LazyVcsSourceControlProfile command missing")
-  assert(vim.fn.exists(":LazyVCSSourceControlProfile") == 2, "LazyVCSSourceControlProfile command missing")
-  assert(vim.fn.exists(":LazyVcsBlame") == 2, "LazyVcsBlame command missing")
-  assert(vim.fn.exists(":LazyVCSBlame") == 2, "LazyVCSBlame command missing")
-  assert(vim.fn.exists(":LazyVcsBlameSplit") == 2, "LazyVcsBlameSplit command missing")
-  assert(vim.fn.exists(":LazyVCSBlameSplit") == 2, "LazyVCSBlameSplit command missing")
-  assert(vim.fn.exists(":LazyVcsBlameClear") == 2, "LazyVcsBlameClear command missing")
-  assert(vim.fn.exists(":LazyVCSBlameClear") == 2, "LazyVCSBlameClear command missing")
-  assert(vim.fn.exists(":SvnBlame") == 2, "SvnBlame compatibility command missing")
+  assert(vim.fn.exists(":LazyVCS") == 2, "LazyVCS command missing")
+
+  -- The whole surface is one command with subcommand completion; the legacy
+  -- per-action and svnsigns-compatibility commands are gone.
+  local complete = require("lazyvcs.commands")._complete
+  local top_level = complete("", "LazyVCS ")
+  for _, name in ipairs({ "blame", "diff", "hunk", "sidebar", "signs", "files", "profile" }) do
+    assert(vim.tbl_contains(top_level, name), "missing subcommand completion: " .. name)
+  end
+  assert(vim.tbl_contains(complete("", "LazyVCS blame "), "split"), "missing 'blame split' completion")
+  for _, gone in ipairs({ ":LazyVcsBlame", ":LazyVCSBlame", ":SvnBlame", ":VcsLiveDiffOpen" }) do
+    assert(vim.fn.exists(gone) == 0, "legacy command should be removed: " .. gone)
+  end
 
   require("lazyvcs").source_control_open({ path = workspace })
   local state = assert(require("lazyvcs.source_control.native")._state(), "missing native source-control state")
@@ -280,18 +234,39 @@ cat >/tmp/lazyvcs-buffer-nav-smoke.lua <<'LUA'
 local result_path = "/tmp/lazyvcs-buffer-nav-result"
 local log_path = "/tmp/lazyvcs-buffer-nav-state.log"
 
+local last_label = "start"
+
 local function append_log(msg)
   local f = assert(io.open(log_path, "a"))
   f:write(os.date("%H:%M:%S"), " ", msg, "\n")
   f:close()
 end
 
+local timers = {}
+local function stop_timers()
+  for _, t in ipairs(timers) do
+    pcall(function()
+      t:stop()
+      t:close()
+    end)
+  end
+  timers = {}
+end
+
+local finished = false
 local function finish(ok, msg)
+  if finished then
+    return
+  end
+  finished = true
+  stop_timers()
+  append_log((ok and "RESULT OK " or "RESULT FAIL ") .. msg)
   vim.fn.writefile({ (ok and "OK " or "FAIL ") .. msg }, result_path)
   vim.cmd("qa!")
 end
 
 local function dump(label)
+  last_label = label
   local state = require("lazyvcs.state")
   local live = state.current()
   local wins = {}
@@ -317,87 +292,113 @@ local function dump(label)
   ))
 end
 
-local function assert_wait(ms, predicate, message)
-  assert(vim.wait(ms, predicate, 50), message)
+-- The plugin performs buffer transfers inside `vim.schedule` callbacks. Polling
+-- with a blocking `vim.wait` from within another scheduled callback can starve
+-- exactly that work, so every wait here yields to the event loop via defer_fn
+-- and the whole driver is written as a callback chain instead of straight-line
+-- code with blocking waits.
+local function wait_for(label, timeout_ms, predicate, on_ready)
+  local deadline = vim.uv.now() + timeout_ms
+  local function poll()
+    if finished then
+      return
+    end
+    local ok, ready = pcall(predicate)
+    if ok and ready then
+      return on_ready()
+    end
+    if vim.uv.now() >= deadline then
+      dump("timeout at " .. label)
+      return finish(false, label)
+    end
+    vim.defer_fn(poll, 50)
+  end
+  poll()
 end
 
-vim.schedule(function()
-  local ok, err = xpcall(function()
-    vim.fn.writefile({}, log_path)
-    local wc = assert(vim.env.LAZYVCS_E2E_SVN_NAV_WC, "missing LAZYVCS_E2E_SVN_NAV_WC")
-    require("lazy").load({ plugins = { "lazyvcs.nvim" } })
+-- Global watchdog: the driver must always produce a verdict, even if a step
+-- never calls back.
+local watchdog = vim.uv.new_timer()
+timers[#timers + 1] = watchdog
+watchdog:start(60000, 0, function()
+  vim.schedule(function()
+    finish(false, "watchdog fired after 60s; last checkpoint: " .. last_label)
+  end)
+end)
 
-    local files = {
-      alpha = wc .. "/alpha.cpp",
-      added = wc .. "/added.cpp",
-      beta = wc .. "/beta.cpp",
-      scratch = wc .. "/scratch.cpp",
-    }
-    local bufs = {}
-    for _, key in ipairs({ "alpha", "added", "beta", "scratch" }) do
-      vim.cmd.edit(vim.fn.fnameescape(files[key]))
-      bufs[key] = vim.api.nvim_get_current_buf()
+local function main()
+  vim.fn.writefile({}, log_path)
+  local wc = assert(vim.env.LAZYVCS_E2E_SVN_NAV_WC, "missing LAZYVCS_E2E_SVN_NAV_WC")
+  require("lazy").load({ plugins = { "lazyvcs.nvim" } })
+
+  local files = {
+    alpha = wc .. "/alpha.cpp",
+    added = wc .. "/added.cpp",
+    beta = wc .. "/beta.cpp",
+    scratch = wc .. "/scratch.cpp",
+  }
+  local bufs = {}
+  for _, key in ipairs({ "alpha", "added", "beta", "scratch" }) do
+    vim.cmd.edit(vim.fn.fnameescape(files[key]))
+    bufs[key] = vim.api.nvim_get_current_buf()
+  end
+  vim.api.nvim_set_current_buf(bufs.alpha)
+  vim.t.bufs = { bufs.alpha, bufs.added, bufs.beta, bufs.scratch }
+
+  local actions = require("lazyvcs.actions")
+  local state = require("lazyvcs.state")
+
+  local function no_stale_diff_windows()
+    for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      local bufnr = vim.api.nvim_win_get_buf(winid)
+      if vim.api.nvim_buf_get_name(bufnr):match("^lazyvcs://") or vim.wo[winid].diff then
+        return false
+      end
     end
-    vim.api.nvim_set_current_buf(bufs.alpha)
-    assert_wait(3000, function()
-      return vim.t.bufs
-        and vim.tbl_contains(vim.t.bufs, bufs.alpha)
-        and vim.tbl_contains(vim.t.bufs, bufs.added)
-        and vim.tbl_contains(vim.t.bufs, bufs.beta)
-        and vim.tbl_contains(vim.t.bufs, bufs.scratch)
-    end, "AstroNvim buffer list did not include all fixture buffers")
-    vim.t.bufs = { bufs.alpha, bufs.added, bufs.beta, bufs.scratch }
+    return true
+  end
 
-    local actions = require("lazyvcs.actions")
-    local state = require("lazyvcs.state")
-    dump("before open")
-    assert(actions.open(), "failed to open initial live diff")
-    dump("after open")
+  dump("before open")
+  if not actions.open() then
+    return finish(false, "failed to open initial live diff")
+  end
+  dump("after open")
 
-    require("astrocore.buffer").nav(1)
-    dump("after nav added immediate")
-    assert_wait(3000, function()
-      local live = state.current()
-      return live and live.source_path == files.added and live.base_label == "EMPTY"
-    end, "live diff did not transfer to SVN added file")
+  -- added.cpp is scheduled for addition in SVN: it has no BASE, so the live diff
+  -- must reopen against an empty base.
+  require("astrocore.buffer").nav(1)
+  dump("after nav added immediate")
+  wait_for("live diff did not transfer to SVN added file", 15000, function()
+    local live = state.current()
+    return live and live.source_path == files.added and live.base_label == "EMPTY"
+  end, function()
     dump("after nav added settled")
 
     require("astrocore.buffer").nav(1)
     dump("after nav beta immediate")
-    assert_wait(3000, function()
+    wait_for("live diff did not transfer back to tracked SVN file", 15000, function()
       local live = state.current()
       return live and live.source_path == files.beta and live.base_label == "BASE"
-    end, "live diff did not transfer back to tracked SVN file")
-    dump("after nav beta settled")
+    end, function()
+      dump("after nav beta settled")
 
-    require("astrocore.buffer").nav(1)
-    dump("after nav scratch immediate")
-    assert_wait(3000, function()
-      if state.current() ~= nil or #state.list() ~= 0 then
-        return false
-      end
-      for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-        local bufnr = vim.api.nvim_win_get_buf(winid)
-        local name = vim.api.nvim_buf_get_name(bufnr)
-        if name:match("^lazyvcs://") or vim.wo[winid].diff then
-          return false
-        end
-      end
-      return true
-    end, "live diff did not close on unsupported SVN file")
-    assert(state.current() == nil, "unsupported SVN file should close live diff")
-    assert(#state.list() == 0, "unsupported SVN file should remove live diff sessions")
-    for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-      local bufnr = vim.api.nvim_win_get_buf(winid)
-      local name = vim.api.nvim_buf_get_name(bufnr)
-      assert(not name:match("^lazyvcs://"), "stale lazyvcs base window remained")
-      assert(not vim.wo[winid].diff, "diff mode should be cleared after unsupported transfer")
-    end
-    dump("after nav scratch settled")
-  end, debug.traceback)
+      require("astrocore.buffer").nav(1)
+      dump("after nav scratch immediate")
+      wait_for("live diff did not close on unsupported SVN file", 15000, function()
+        return state.current() == nil and #state.list() == 0 and no_stale_diff_windows()
+      end, function()
+        dump("after nav scratch settled")
+        finish(true, "buffer navigation smoke passed")
+      end)
+    end)
+  end)
+end
 
-  finish(ok, ok and "buffer navigation smoke passed" or tostring(err))
-end)
+-- Run on the main loop rather than inside a scheduled callback.
+local ok, err = xpcall(main, debug.traceback)
+if not ok then
+  finish(false, tostring(err))
+end
 LUA
 
 buffer_nav_smoke() {

@@ -4,7 +4,22 @@ local M = {
 	name = "git",
 }
 
+-- Mirror the svn backend's executable cache: backends/init.lua probes every
+-- backend for each path, so an unguarded call here would spawn a failing process
+-- on machines without Git.
+local git_checked, git_present = false, false
+local function git_available()
+	if not git_checked then
+		git_checked = true
+		git_present = vim.fn.executable("git") == 1
+	end
+	return git_present
+end
+
 local function get_root(path)
+	if not git_available() then
+		return nil, "git executable not found"
+	end
 	local cwd = vim.fs.dirname(path)
 	local result, err = util.system({ "git", "rev-parse", "--show-toplevel" }, { cwd = cwd })
 	if not result then
@@ -16,6 +31,22 @@ end
 local function is_tracked(root, relpath)
 	local _, err = util.system({ "git", "ls-files", "--error-unmatch", "--", relpath }, { cwd = root })
 	return err == nil
+end
+
+-- `git status --porcelain` reports two status columns (index, worktree). Collapse
+-- them to the single most meaningful code so the sidebar and picker can share the
+-- svn presentation.
+local function status_label(code)
+	return ({
+		M = "modified",
+		A = "added",
+		D = "deleted",
+		R = "renamed",
+		C = "copied",
+		U = "conflicted",
+		["?"] = "untracked",
+		["!"] = "ignored",
+	})[code] or "changed"
 end
 
 local function short_revision(revision)
@@ -63,6 +94,146 @@ function M.load(path)
 		base_lines = base_lines,
 		impl = M,
 	}
+end
+
+function M.root(path)
+	return get_root(path)
+end
+
+function M.is_versioned(path)
+	local root = get_root(path)
+	if not root then
+		return false
+	end
+	return is_tracked(root, util.relpath(root, path))
+end
+
+-- Base content for gutter signs and previews: the index, matching what the live
+-- diff compares against. Untracked files have an empty base, the Git counterpart
+-- of an SVN file scheduled for addition.
+function M.load_base(path)
+	local root, err = get_root(path)
+	if not root then
+		return nil, err or "Not a Git working tree"
+	end
+
+	local relpath = util.relpath(root, path)
+	if not is_tracked(root, relpath) then
+		return {
+			root = root,
+			relpath = relpath,
+			base_label = "EMPTY",
+			base_lines = {},
+		}
+	end
+
+	local lines, load_err = util.system_lines({ "git", "show", ":" .. relpath }, { cwd = root })
+	if not lines then
+		return nil, load_err
+	end
+	return {
+		root = root,
+		relpath = relpath,
+		base_label = "INDEX",
+		base_lines = lines,
+	}
+end
+
+function M.load_base_async(path, on_done)
+	if not git_available() then
+		vim.schedule(function()
+			on_done(nil, "git executable not found")
+		end)
+		return nil
+	end
+
+	local cwd = vim.fs.dirname(path)
+	return util.system_start({ "git", "rev-parse", "--show-toplevel" }, { cwd = cwd }, function(result, err)
+		if err then
+			return on_done(nil, err)
+		end
+		local root = util.trim(result.stdout)
+		local relpath = util.relpath(root, path)
+
+		util.system_start(
+			{ "git", "ls-files", "--error-unmatch", "--", relpath },
+			{ cwd = root },
+			function(_, tracked_err)
+				if tracked_err then
+					-- Untracked: empty base rather than an error, so signs still render.
+					return on_done({
+						root = root,
+						relpath = relpath,
+						base_label = "EMPTY",
+						base_lines = {},
+					})
+				end
+
+				util.system_lines_start({ "git", "show", ":" .. relpath }, { cwd = root }, function(lines, show_err)
+					if not lines then
+						return on_done(nil, show_err)
+					end
+					on_done({
+						root = root,
+						relpath = relpath,
+						base_label = "INDEX",
+						base_lines = lines,
+					})
+				end)
+			end
+		)
+	end)
+end
+
+function M.parse_status_lines(lines, root)
+	local items = {}
+	for _, line in ipairs(lines or {}) do
+		if #line > 3 then
+			local index_code, worktree_code = line:sub(1, 1), line:sub(2, 2)
+			-- Prefer the worktree column; it is what the user sees on disk.
+			local code = worktree_code ~= " " and worktree_code or index_code
+			local path = util.trim(line:sub(4))
+			-- Renames are reported as `old -> new`; keep the destination.
+			local _, _, renamed = path:find("%s%->%s(.+)$")
+			path = renamed or path
+			-- Porcelain quotes paths containing special characters.
+			path = path:gsub('^"(.*)"$', "%1")
+			if code ~= "" and code ~= " " and path ~= "" then
+				items[#items + 1] = {
+					status = code,
+					label = status_label(code),
+					path = path,
+					absolute_path = root and vim.fs.normalize(root .. "/" .. path) or path,
+				}
+			end
+		end
+	end
+	return items
+end
+
+function M.changed_files(root)
+	if not git_available() then
+		return nil, "git executable not found"
+	end
+
+	local lines, err = util.system_lines({ "git", "status", "--porcelain", "--untracked-files=normal" }, { cwd = root })
+	if not lines then
+		return nil, err
+	end
+	return M.parse_status_lines(lines, root)
+end
+
+function M.revert_file(path)
+	local root, err = get_root(path)
+	if not root then
+		return nil, err or "Not a Git working tree"
+	end
+
+	local relpath = util.relpath(root, path)
+	if not is_tracked(root, relpath) then
+		return nil, "File is untracked; nothing to revert"
+	end
+	return util.system({ "git", "checkout", "--", relpath }, { cwd = root })
 end
 
 function M.revert_hunk(session, hunk)

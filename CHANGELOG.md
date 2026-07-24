@@ -8,13 +8,54 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the 47 user commands are replaced by a single `:LazyVCS` command
+  with two-level tab completion (`:LazyVCS diff open`, `:LazyVCS blame split`,
+  `:LazyVCS hunk next`, ...). Bare `:LazyVCS` toggles the source-control
+  sidebar. The `LazyVcs*` casing twins, `:VcsLiveDiffOpen`, and the `Svn*`
+  svnsigns.nvim aliases are removed, along with the `compat.svnsigns_commands`
+  option.
+- All buffer operations now dispatch through the backend registry, so `files`,
+  `preview`, `revert`, `signs refresh` and hunk revert work in Git repositories.
+  They previously did nothing outside an SVN working copy.
+- `use_gitsigns` (default true) now controls only whether Git gutter signs are
+  delegated to gitsigns.nvim; lazyvcs renders them natively when it is absent.
+- Removed the `source_control.ui = "neo-tree"` value. The Neo-tree adapter was
+  already gone, so the option is now rejected instead of silently ignored.
+
+### Added
+
+- `backends/init.lua` exposes the full backend interface (`resolve`, `root`,
+  `is_versioned`, `load_base`, `load_base_async`, `changed_files`,
+  `revert_file`, `blame_lines`) and caches backend probing per directory,
+  removing two subprocess spawns from every sign refresh.
+- Git backend gained `root`, `is_versioned`, `load_base`, `load_base_async`,
+  `changed_files` and `revert_file` to match the SVN backend.
+- `stylua.toml` and `.gitattributes`, so formatting and line endings are
+  identical on Windows and in CI.
+
 ### Fixed
 
-- SVN added files now use an empty base consistently for signs, live diff, and
+- Buffer-transfer failures no longer hang interactive Neovim. `open_session`
+  re-raised layout errors and `handle_pending_transfer` called it unprotected
+  inside `vim.schedule`; headless Neovim only logs such an error, but
+  interactive Neovim blocks on the hit-enter prompt.
+- `util.system_result` bounds `proc:wait()`, which previously had no timeout and
+  could freeze the UI thread indefinitely against an unreachable SVN server.
+- Gutter and blame highlights are re-applied on `ColorScheme`. They are defined
+  as `default = true` links, which `:colorscheme` clears, so every lazyvcs
+  highlight silently reverted after a theme switch.
+- Test fixtures normalize `vim.fn.tempname()`, fixing 10 spec failures on
+  Windows caused by mixed `\` and `/` separators.
+- SVN added files use an empty base consistently for signs, live diff, and
   inline blame. Inline blame renders added-file lines as uncommitted instead of
   surfacing `svn blame` errors while moving across buffers.
-- Live diff buffer transfer now handles AstroNvim-style buffer navigation across
-  tracked, added, and unsupported buffers without leaving stale diff state.
+
+### Removed
+
+- `lua/lazyvcs/svn_ui.lua`, a pass-through shim whose functions forwarded to
+  `blame` and `signs`. Use `lazyvcs.buffer_ops` or the public `lazyvcs` API.
 
 ## [0.3.0] - 2026-05-31
 

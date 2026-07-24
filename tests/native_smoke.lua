@@ -18,17 +18,21 @@ require("lazyvcs").setup({
 	},
 })
 
-assert(vim.fn.exists(":LazyVcsSourceControlToggle") == 2, "native source-control command was not created")
-assert(vim.fn.exists(":LazyVCSSourceControlToggle") == 2, "canonical source-control command was not created")
-assert(vim.fn.exists(":LazyVCSBlame") == 2, "canonical blame command was not created")
-assert(vim.fn.exists(":LazyVCSBlameSplit") == 2, "canonical blame split command was not created")
-assert(vim.fn.exists(":LazyVCSBlameClear") == 2, "canonical blame clear command was not created")
-assert(vim.fn.exists(":LazyVcsBlame") == 2, "legacy blame command was not created")
-assert(vim.fn.exists(":LazyVcsBlameSplit") == 2, "legacy blame split command was not created")
-assert(vim.fn.exists(":LazyVcsBlameClear") == 2, "legacy blame clear command was not created")
-assert(vim.fn.exists(":SvnBlame") == 2, "svnsigns compatibility command was not created")
+assert(vim.fn.exists(":LazyVCS") == 2, "LazyVCS command was not created")
 
-local root = vim.fn.tempname()
+-- The legacy surface (casing twins, svnsigns aliases, per-action commands) is gone.
+for _, gone in ipairs({
+	":LazyVcsSourceControlToggle",
+	":LazyVCSSourceControlToggle",
+	":LazyVCSBlame",
+	":LazyVcsBlame",
+	":SvnBlame",
+	":VcsLiveDiffOpen",
+}) do
+	assert(vim.fn.exists(gone) == 0, "legacy command should be removed: " .. gone)
+end
+
+local root = vim.fs.normalize(vim.fn.tempname())
 vim.fn.mkdir(root .. "/team-a/service/.git", "p")
 vim.fn.mkdir(root .. "/team-b/service/.git", "p")
 

@@ -1,11 +1,11 @@
+local backends = require("lazyvcs.backends")
 local config = require("lazyvcs.config")
 local diff = require("lazyvcs.diff")
-local svn = require("lazyvcs.backends.svn")
 local util = require("lazyvcs.util")
 
 local M = {}
 
-local ns_id = vim.api.nvim_create_namespace("lazyvcs_svn_signs")
+local ns_id = vim.api.nvim_create_namespace("lazyvcs_signs")
 local augroup
 local buffers = {}
 local timers = {}
@@ -14,6 +14,9 @@ local function opts()
 	return config.get().signs
 end
 
+-- All groups link to standard highlights so any colorscheme (TokyoNight, AstroDark,
+-- ...) themes them for free. `:colorscheme` clears these definitions, so they are
+-- re-applied on ColorScheme in M.setup.
 local function setup_highlights()
 	vim.api.nvim_set_hl(0, "LazyVcsSignAdd", { default = true, link = "DiffAdd" })
 	vim.api.nvim_set_hl(0, "LazyVcsSignChange", { default = true, link = "DiffChange" })
@@ -21,12 +24,6 @@ local function setup_highlights()
 	vim.api.nvim_set_hl(0, "LazyVcsBlame", { default = true, link = "Comment" })
 	vim.api.nvim_set_hl(0, "LazyVcsBlameRevision", { default = true, link = "Comment" })
 	vim.api.nvim_set_hl(0, "LazyVcsBlameAuthor", { default = true, link = "Comment" })
-	vim.api.nvim_set_hl(0, "SvnSignsAdd", { default = true, link = "LazyVcsSignAdd" })
-	vim.api.nvim_set_hl(0, "SvnSignsChange", { default = true, link = "LazyVcsSignChange" })
-	vim.api.nvim_set_hl(0, "SvnSignsDelete", { default = true, link = "LazyVcsSignDelete" })
-	vim.api.nvim_set_hl(0, "SvnSignsBlame", { default = true, link = "LazyVcsBlame" })
-	vim.api.nvim_set_hl(0, "SvnSignsBlameRevision", { default = true, link = "LazyVcsBlameRevision" })
-	vim.api.nvim_set_hl(0, "SvnSignsBlameAuthor", { default = true, link = "LazyVcsBlameAuthor" })
 end
 
 local function clear(bufnr)
@@ -41,8 +38,18 @@ local function clear(bufnr)
 	end
 end
 
+-- Rendering our own Git signs on top of gitsigns.nvim would double up the gutter,
+-- so defer to it when it is installed and enabled. SVN has no such plugin, so
+-- lazyvcs always owns those signs.
+local function defers_to_gitsigns(backend_name)
+	if backend_name ~= "git" or not config.get().use_gitsigns then
+		return false
+	end
+	return package.loaded["gitsigns"] ~= nil or pcall(require, "gitsigns")
+end
+
 local function supported_buffer(bufnr)
-	if not opts().enabled or vim.fn.executable("svn") ~= 1 then
+	if not opts().enabled then
 		return nil
 	end
 	if not util.is_real_file_buffer(bufnr) then
@@ -52,10 +59,12 @@ local function supported_buffer(bufnr)
 	if not path or util.file_size(path) > opts().max_file_bytes then
 		return nil
 	end
-	if #vim.fs.find(".svn", { path = vim.fs.dirname(path), upward = true, type = "directory" }) == 0 then
+
+	local backend_name = backends.name_for(path)
+	if not backend_name or defers_to_gitsigns(backend_name) then
 		return nil
 	end
-	if not svn.is_versioned(path) then
+	if not backends.is_versioned(path) then
 		return nil
 	end
 	return path
@@ -149,7 +158,7 @@ function M.refresh(bufnr, reload_base)
 	state.generation = state.generation + 1
 	local generation = state.generation
 	state.loading = true
-	svn.load_base_async(path, function(result, err)
+	backends.load_base_async(path, function(result, err)
 		local live = buffers[bufnr]
 		if not live or live.generation ~= generation or not util.buf_is_valid(bufnr) then
 			return
@@ -181,7 +190,7 @@ function M.refresh_sync(bufnr)
 		clear(bufnr)
 		return nil
 	end
-	local result, err = svn.load_base(path)
+	local result, err = backends.load_base(path)
 	if not result then
 		clear(bufnr)
 		return nil, err
@@ -229,7 +238,7 @@ end
 function M.revert_hunk()
 	local state, err = current_state_or_load()
 	if not state then
-		util.notify(err or "No SVN signs state for the current buffer", vim.log.levels.WARN)
+		util.notify(err or "No VCS signs state for the current buffer", vim.log.levels.WARN)
 		return false
 	end
 	local bufnr = vim.api.nvim_get_current_buf()
@@ -247,7 +256,7 @@ end
 function M.jump_to_hunk(direction)
 	local state, err = current_state_or_load()
 	if not state then
-		util.notify(err or "No SVN signs state for the current buffer", vim.log.levels.WARN)
+		util.notify(err or "No VCS signs state for the current buffer", vim.log.levels.WARN)
 		return false
 	end
 	local hunks = state.hunks or {}
@@ -263,7 +272,7 @@ end
 function M.preview_diff()
 	local state, err = current_state_or_load()
 	if not state then
-		util.notify(err or "No SVN signs state for the current buffer", vim.log.levels.WARN)
+		util.notify(err or "No VCS signs state for the current buffer", vim.log.levels.WARN)
 		return false
 	end
 
@@ -293,7 +302,7 @@ function M.preview_diff()
 		col = math.max(1, math.floor((vim.o.columns - width) / 2)),
 		style = "minimal",
 		border = "rounded",
-		title = " LazyVCS SVN Diff ",
+		title = " LazyVCS Diff ",
 	})
 	vim.keymap.set("n", "q", function()
 		if util.win_is_valid(win) then
@@ -308,25 +317,8 @@ function M.preview_diff()
 	return true
 end
 
-function M.revert_buffer()
-	local path = supported_buffer(vim.api.nvim_get_current_buf())
-	if not path then
-		util.notify("Current buffer is not an SVN file", vim.log.levels.WARN)
-		return
-	end
-	vim.ui.select({ "No", "Yes" }, { prompt = "Revert all SVN changes in this file?" }, function(choice)
-		if choice ~= "Yes" then
-			return
-		end
-		local result, err = util.system({ "svn", "revert", path }, { cwd = vim.fs.dirname(path) })
-		if not result then
-			util.notify(err or "SVN revert failed", vim.log.levels.ERROR)
-			return
-		end
-		vim.cmd("checktime " .. vim.api.nvim_get_current_buf())
-		M.refresh(vim.api.nvim_get_current_buf(), true)
-	end)
-end
+-- Whole-buffer revert lives in `lazyvcs.buffer_ops`, which dispatches through the
+-- backend registry instead of shelling out to `svn` directly.
 
 function M.setup()
 	setup_highlights()
@@ -340,11 +332,21 @@ function M.setup()
 		clear(bufnr)
 	end
 
+	-- Highlight groups must be re-registered even when signs are disabled, since
+	-- blame uses them too. `:colorscheme` wipes `default = true` links, so without
+	-- this every lazyvcs highlight silently falls back to Normal after a theme
+	-- switch.
+	local hl_group = vim.api.nvim_create_augroup("lazyvcs_highlights", { clear = true })
+	vim.api.nvim_create_autocmd("ColorScheme", {
+		group = hl_group,
+		callback = setup_highlights,
+	})
+
 	if not opts().enabled then
 		return
 	end
 
-	augroup = vim.api.nvim_create_augroup("lazyvcs_svn_signs", { clear = true })
+	augroup = vim.api.nvim_create_augroup("lazyvcs_signs", { clear = true })
 	vim.api.nvim_create_autocmd({ "BufReadPost", "BufEnter" }, {
 		group = augroup,
 		callback = function(args)

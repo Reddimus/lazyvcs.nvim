@@ -118,7 +118,7 @@ def write_width(name):
     return int(wait_file(name))
 
 try:
-    ex("LazyVcsSourceControlOpen " + workspace)
+    ex("LazyVCS sidebar open " + workspace)
     child.expect("integrated", timeout=30)
 
     before = write_width("pty-width-before.txt")

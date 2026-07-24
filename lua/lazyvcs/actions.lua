@@ -18,9 +18,18 @@ local schedule_rebalance
 local rebalance_tab
 local scroll_event_source
 
+-- Collapse an error (often a multi-line Lua traceback) into a single short line.
+-- Multi-line messages overflow the command area and make interactive Neovim wait
+-- on the hit-enter prompt, which turns a recoverable failure into a hang.
+local function one_line(err)
+	local text = type(err) == "string" and err or vim.inspect(err)
+	text = text:gsub("%s*\n%s*", " ")
+	return util.truncate(util.trim(text), 200)
+end
+
 local function notify_open_error(err, opts)
 	if not opts.silent then
-		util.notify(err, vim.log.levels.ERROR)
+		util.notify(one_line(err), vim.log.levels.ERROR)
 	end
 end
 
@@ -53,13 +62,20 @@ local function build_session(bufnr)
 	}
 end
 
+-- Returns the session on success, or `nil, err` on failure. This must never raise:
+-- callers run inside autocmd and `vim.schedule` callbacks, where an uncaught error
+-- prints a multi-line traceback and blocks interactive Neovim on the hit-enter
+-- prompt (headless only logs it, which is why this hid behind passing spec tests).
 local function open_session(session)
 	editor.guard_markdown_buffer(session.editable_bufnr, session.source_path)
 	local editable_aerial_state = aerial.disable_buffer(session.editable_bufnr, { detach = true })
 	local ok, err = pcall(layout.open, session)
 	aerial.restore_buffer(editable_aerial_state)
 	if not ok then
-		error(err)
+		-- layout.open may have already created the base buffer/window; tear the
+		-- half-built session down so no orphaned `lazyvcs://` window survives.
+		pcall(layout.close, session, { reset_tab_diff = not session.editable_had_diff })
+		return nil, tostring(err)
 	end
 	state.register(session)
 	set_session_maps(session)
@@ -177,21 +193,45 @@ local function handle_pending_transfer(target_bufnr)
 			return abort()
 		end
 
-		editor.guard_markdown_buffer(target_bufnr, vim.api.nvim_buf_get_name(target_bufnr))
-		local replacement = build_session(target_bufnr)
-		local live = state.get(pending.editable_bufnr)
-		if live then
-			close_session(live, {
-				keep_pending_transfer = true,
-				reset_tab_diff = true,
-			})
+		-- Anything below can touch windows, buffers and VCS backends. Failures are
+		-- reported as a notification and always leave the transfer cleaned up: an
+		-- uncaught error here blocks interactive Neovim on the hit-enter prompt.
+		local failure
+		local ok, err = pcall(function()
+			editor.guard_markdown_buffer(target_bufnr, vim.api.nvim_buf_get_name(target_bufnr))
+			local replacement = build_session(target_bufnr)
+			local live = state.get(pending.editable_bufnr)
+			if live then
+				close_session(live, {
+					keep_pending_transfer = true,
+					reset_tab_diff = true,
+				})
+			end
+
+			if not replacement then
+				-- Unsupported buffer (no VCS backend): close the diff cleanly and
+				-- stay quiet, this is a normal outcome of navigating to a plain file.
+				close_failed_transfer_window(pending)
+				return abort()
+			end
+
+			local _, open_err = open_session(replacement)
+			if open_err then
+				failure = open_err
+			end
+		end)
+
+		if not ok then
+			failure = err
 		end
 
-		if replacement then
-			open_session(replacement)
-		else
+		if failure then
 			close_failed_transfer_window(pending)
 			abort()
+			util.notify(
+				"lazyvcs: could not reopen diff after buffer change: " .. one_line(failure),
+				vim.log.levels.ERROR
+			)
 		end
 	end)
 end
@@ -205,7 +245,13 @@ local function ensure_global_autocmds()
 	vim.api.nvim_create_autocmd("BufEnter", {
 		group = global_augroup,
 		callback = function(args)
-			handle_pending_transfer(args.buf)
+			-- Errors escaping an autocmd callback block interactive Neovim on the
+			-- hit-enter prompt; report them instead so navigation always continues.
+			local ok, err = pcall(handle_pending_transfer, args.buf)
+			if not ok then
+				state.clear_pending_transfer()
+				util.notify("lazyvcs: buffer transfer failed: " .. one_line(err), vim.log.levels.ERROR)
+			end
 		end,
 	})
 	vim.api.nvim_create_autocmd({ "BufReadPre", "BufNewFile" }, {
@@ -503,7 +549,13 @@ function M.open(opts)
 		return nil
 	end
 
-	return open_session(session)
+	local opened, open_err = open_session(session)
+	if not opened then
+		notify_open_error(open_err, opts)
+		return nil
+	end
+
+	return opened
 end
 
 function M.close(target)

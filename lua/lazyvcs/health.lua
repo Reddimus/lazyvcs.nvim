@@ -1,76 +1,88 @@
 local M = {}
 
+local health = vim.health
+
 function M.check()
-	local health = vim.health or require("health")
-	local ok = health.ok or health.report_ok
-	local warn = health.warn or health.report_warn
-	local start = health.start or health.report_start
+	health.start("lazyvcs.nvim")
 
-	start("lazyvcs.nvim")
-
+	-- Requirements ----------------------------------------------------------
 	if vim.fn.has("nvim-0.10") == 1 then
-		ok("Neovim version supports vim.system, vim.diff, and modern Lua APIs")
+		health.ok("Neovim 0.10+ (vim.system, vim.diff and vim.uv are available)")
 	else
-		warn("Neovim 0.10+ is recommended")
+		health.error("Neovim 0.10+ is required (vim.system and vim.diff are unavailable)")
 	end
 
-	if vim.fn.executable("git") == 1 then
-		ok("git executable found")
+	local git = vim.fn.executable("git") == 1
+	local svn = vim.fn.executable("svn") == 1
+	if git then
+		health.ok("git executable found")
 	else
-		warn("git executable not found; Git backend will be unavailable")
+		health.warn("git executable not found; the Git backend is unavailable")
+	end
+	if svn then
+		health.ok("svn executable found")
+	else
+		health.warn("svn executable not found; the SVN backend is unavailable")
+	end
+	if not git and not svn then
+		health.error("Neither git nor svn is available; lazyvcs cannot detect any working copy")
 	end
 
-	if vim.fn.executable("svn") == 1 then
-		ok("svn executable found")
-	else
-		warn("svn executable not found; SVN backend will be unavailable")
-	end
-
+	-- Configuration ---------------------------------------------------------
+	health.start("lazyvcs.nvim: configuration")
 	local cfg = require("lazyvcs.config").get()
+
 	if cfg.signs.enabled then
-		ok("SVN inline signs are enabled")
+		health.ok("Gutter signs are enabled")
+		if cfg.use_gitsigns then
+			local has_gitsigns = package.loaded["gitsigns"] ~= nil or pcall(require, "gitsigns")
+			if has_gitsigns then
+				health.ok("gitsigns.nvim detected; Git gutter signs are delegated to it")
+			else
+				health.ok("gitsigns.nvim not installed; lazyvcs renders Git signs natively")
+			end
+		else
+			health.ok("use_gitsigns is false; lazyvcs renders Git signs natively")
+		end
 	else
-		ok("SVN inline signs are disabled by config")
-	end
-	if cfg.compat.svnsigns_commands then
-		ok("svnsigns.nvim compatibility commands are enabled")
-	else
-		ok("svnsigns.nvim compatibility commands are disabled")
+		health.warn("Gutter signs are disabled by config (signs.enabled = false)")
 	end
 
+	health.ok("Inline blame mode: " .. cfg.blame.mode)
 	if cfg.blame.persist then
-		ok("Git/SVN inline blame state is persisted across sessions (" .. require("lazyvcs.store").path() .. ")")
+		health.ok("Blame state persists across sessions (" .. require("lazyvcs.store").path() .. ")")
 	else
-		ok("Git/SVN inline blame state persistence is disabled by config")
+		health.ok("Blame state persistence is disabled by config")
 	end
 
+	-- Integrations ----------------------------------------------------------
+	health.start("lazyvcs.nvim: integrations")
 	local optional = require("lazyvcs.integrations.optional").status()
-	ok("integration mode: " .. optional.mode)
+	health.ok("Integration mode: " .. optional.mode)
 	for _, item in ipairs(optional.items) do
 		if item.available then
-			ok(string.format("%s available for %s", item.label, item.feature))
+			health.ok(string.format("%s available for %s", item.label, item.feature))
 		else
-			ok(string.format("%s not installed; using %s", item.label, item.fallback))
+			health.ok(string.format("%s not installed; using %s", item.label, item.fallback))
 		end
 	end
 
+	-- AI commit messages ----------------------------------------------------
+	health.start("lazyvcs.nvim: AI commit messages")
 	local ai = require("lazyvcs.source_control.ai")
-	ok("AI commit-message provider: " .. cfg.ai.commit_message.provider)
+	health.ok("Provider: " .. cfg.ai.commit_message.provider)
 	if cfg.ai.commit_message.provider == "auto" then
-		ok("AI auto provider order: " .. table.concat(cfg.ai.commit_message.provider_order, ", "))
+		health.ok("Auto provider order: " .. table.concat(cfg.ai.commit_message.provider_order, ", "))
 	end
 	for _, item in ipairs(ai.status()) do
 		if item.available then
-			ok(string.format("AI provider %s available", item.provider))
+			health.ok(string.format("Provider %s available", item.provider))
 		elseif item.last_error then
-			warn(string.format("AI provider %s unavailable: %s", item.provider, item.last_error))
+			health.warn(string.format("Provider %s unavailable: %s", item.provider, item.last_error))
 		else
-			ok(string.format("AI provider %s not available", item.provider))
+			health.ok(string.format("Provider %s not available", item.provider))
 		end
 	end
-
-	ok("native source-control sidebar is available without UI plugin dependencies")
-	ok("legacy Neo-tree source-control adapter has been removed")
 end
 
 return M

@@ -27,15 +27,35 @@ function M.join_lines(lines)
 	return table.concat(lines, "\n") .. "\n"
 end
 
+-- Upper bound for any synchronous VCS call. `proc:wait()` with no timeout blocks
+-- the UI thread indefinitely, so a hung `svn` against an unreachable server would
+-- freeze Neovim outright. Callers may override via `opts.timeout`.
+M.SYNC_TIMEOUT_MS = 30000
+
 function M.system_result(args, opts)
+	opts = vim.tbl_extend("keep", opts or {}, { text = true })
+	local timeout_ms = opts.timeout or M.SYNC_TIMEOUT_MS
+	opts.timeout = nil
+
 	-- vim.system raises synchronously when the executable is missing (ENOENT).
 	-- Convert that into a normal non-zero result so callers can handle it via
 	-- the usual result.code path instead of crashing.
-	local ok, proc = pcall(vim.system, args, vim.tbl_extend("keep", opts or {}, { text = true }))
+	local ok, proc = pcall(vim.system, args, opts)
 	if not ok then
 		return { code = 127, stdout = "", stderr = tostring(proc) }
 	end
-	return proc:wait()
+
+	-- On timeout `wait()` kills the process and returns nil rather than raising.
+	local completed, result = pcall(proc.wait, proc, timeout_ms)
+	if not completed or result == nil then
+		pcall(proc.kill, proc, "sigkill")
+		return {
+			code = 124,
+			stdout = "",
+			stderr = string.format("Timed out after %dms: %s", timeout_ms, table.concat(args, " ")),
+		}
+	end
+	return result
 end
 
 function M.system_error(result)
