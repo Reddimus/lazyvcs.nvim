@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+
+  # Prettier is the only runtime dependency; grouped so markdown tooling bumps
+  # arrive as a single PR.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "chore"
+    groups:
+      markdown-tooling:
+        patterns:
+          - "*"

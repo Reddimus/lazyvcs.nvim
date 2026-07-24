@@ -79,10 +79,14 @@ jobs:
         run: stylua --check lua tests
 
       - name: Lua diagnostics
-        run: lua-language-server --check=. --check_format=pretty --checklevel=Warning
+        run:
+          lua-language-server --check=. --check_format=pretty
+          --checklevel=Warning
 
       - name: Shell syntax
-        run: bash -n tests/minitest.sh tests/e2e/ubuntu-native.sh tests/e2e/ubuntu-astronvim.sh
+        run:
+          bash -n tests/minitest.sh tests/e2e/ubuntu-native.sh
+          tests/e2e/ubuntu-astronvim.sh
 
       - name: Whitespace
         run: git diff-tree --check --no-commit-id --root -r HEAD
@@ -100,7 +104,47 @@ jobs:
         run: nvim --headless -u NONE -c 'helptags doc' -c 'quitall'
 
       - name: Health check
-        run: nvim --headless -u NONE -c 'set rtp+=.' -c 'runtime plugin/lazyvcs.lua' -c 'checkhealth lazyvcs' -c 'quitall'
+        run:
+          nvim --headless -u NONE -c 'set rtp+=.' -c 'runtime
+          plugin/lazyvcs.lua' -c 'checkhealth lazyvcs' -c 'quitall'
+
+  # Windows is a first-class target: the plugin normalizes every path through
+  # vim.fs.normalize, and mixed `\` / `/` separators produced 10 spec failures
+  # that an Ubuntu-only matrix could never surface. SVN is not installed here, so
+  # the SVN specs skip cleanly and Git coverage is what this job guards.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Neovim
+        run: |
+          choco install neovim --version=0.12.2 -y --no-progress
+          echo "C:\tools\neovim\nvim-win64\bin" >> $env:GITHUB_PATH
+
+      - name: Neovim version
+        run: nvim --version
+
+      - name: Configure Git identity
+        run: |
+          git config --global user.name "lazyvcs ci"
+          git config --global user.email "lazyvcs-ci@example.invalid"
+          git config --global init.defaultBranch main
+
+      - name: Headless smoke
+        run: nvim --headless -u NONE -l tests/native_smoke.lua
+
+      - name: Lua tests
+        run: nvim --headless -u NONE -l tests/run.lua
+
+      - name: Help tags
+        run: nvim --headless -u NONE -c 'helptags doc' -c 'quitall'
+
+      - name: Health check
+        run:
+          nvim --headless -u NONE -c 'set rtp+=.' -c 'runtime
+          plugin/lazyvcs.lua' -c 'checkhealth lazyvcs' -c 'quitall'
 
   e2e:
     runs-on: ubuntu-24.04
