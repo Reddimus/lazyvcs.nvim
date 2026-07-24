@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-07-24
 
 ### Changed
 
@@ -43,6 +43,10 @@ and this project adheres to
   interactive Neovim blocks on the hit-enter prompt.
 - `util.system_result` bounds `proc:wait()`, which previously had no timeout and
   could freeze the UI thread indefinitely against an unreachable SVN server.
+- Buffer transfers are fully asynchronous. Navigating to a tracked SVN file ran
+  `svn info` and `svn cat` on the UI thread while the signs autocmd ran its own
+  commands against the same working copy; contending on the SVN working-copy
+  lock froze Neovim for ~60s until both synchronous calls timed out.
 - Gutter and blame highlights are re-applied on `ColorScheme`. They are defined
   as `default = true` links, which `:colorscheme` clears, so every lazyvcs
   highlight silently reverted after a theme switch.
