@@ -79,14 +79,10 @@ jobs:
         run: stylua --check lua tests
 
       - name: Lua diagnostics
-        run:
-          lua-language-server --check=. --check_format=pretty
-          --checklevel=Warning
+        run: lua-language-server --check=. --check_format=pretty --checklevel=Warning
 
       - name: Shell syntax
-        run:
-          bash -n tests/minitest.sh tests/e2e/ubuntu-native.sh
-          tests/e2e/ubuntu-astronvim.sh
+        run: bash -n tests/minitest.sh tests/e2e/ubuntu-native.sh tests/e2e/ubuntu-astronvim.sh
 
       - name: Whitespace
         run: git diff-tree --check --no-commit-id --root -r HEAD
@@ -104,9 +100,7 @@ jobs:
         run: nvim --headless -u NONE -c 'helptags doc' -c 'quitall'
 
       - name: Health check
-        run:
-          nvim --headless -u NONE -c 'set rtp+=.' -c 'runtime
-          plugin/lazyvcs.lua' -c 'checkhealth lazyvcs' -c 'quitall'
+        run: nvim --headless -u NONE -c 'set rtp+=.' -c 'runtime plugin/lazyvcs.lua' -c 'checkhealth lazyvcs' -c 'quitall'
 
   # Windows is a first-class target: the plugin normalizes every path through
   # vim.fs.normalize, and mixed `\` / `/` separators produced 10 spec failures
@@ -142,9 +136,7 @@ jobs:
         run: nvim --headless -u NONE -c 'helptags doc' -c 'quitall'
 
       - name: Health check
-        run:
-          nvim --headless -u NONE -c 'set rtp+=.' -c 'runtime
-          plugin/lazyvcs.lua' -c 'checkhealth lazyvcs' -c 'quitall'
+        run: nvim --headless -u NONE -c 'set rtp+=.' -c 'runtime plugin/lazyvcs.lua' -c 'checkhealth lazyvcs' -c 'quitall'
 
   e2e:
     runs-on: ubuntu-24.04
