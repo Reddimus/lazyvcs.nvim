@@ -1,0 +1,13 @@
+# CI enforces `stylua --check lua tests`, but the repo had no StyLua config, so
+# formatting depended on StyLua's built-in defaults plus .editorconfig. Pin it
+# explicitly so a StyLua upgrade cannot silently reformat the whole tree.
+column_width = 120
+line_endings = "Unix"
+indent_type = "Tabs"
+indent_width = 4
+quote_style = "AutoPreferDouble"
+call_parentheses = "Always"
+collapse_simple_statement = "Never"
+
+[sort_requires]
+enabled = false

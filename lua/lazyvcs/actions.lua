@@ -228,7 +228,10 @@ local function handle_pending_transfer(target_bufnr)
 		if failure then
 			close_failed_transfer_window(pending)
 			abort()
-			util.notify("lazyvcs: could not reopen diff after buffer change: " .. one_line(failure), vim.log.levels.ERROR)
+			util.notify(
+				"lazyvcs: could not reopen diff after buffer change: " .. one_line(failure),
+				vim.log.levels.ERROR
+			)
 		end
 	end)
 end
