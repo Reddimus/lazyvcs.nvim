@@ -280,18 +280,26 @@ cat >/tmp/lazyvcs-buffer-nav-smoke.lua <<'LUA'
 local result_path = "/tmp/lazyvcs-buffer-nav-result"
 local log_path = "/tmp/lazyvcs-buffer-nav-state.log"
 
+-- Declared before `dump` so both it and the watchdog close over the same local.
+local last_label = "start"
+
 local function append_log(msg)
   local f = assert(io.open(log_path, "a"))
   f:write(os.date("%H:%M:%S"), " ", msg, "\n")
   f:close()
 end
 
+-- Set once the diagnostic timers exist; stopped so they cannot fire after a verdict.
+local stop_timers = function() end
+
 local function finish(ok, msg)
+  stop_timers()
   vim.fn.writefile({ (ok and "OK " or "FAIL ") .. msg }, result_path)
   vim.cmd("qa!")
 end
 
 local function dump(label)
+  last_label = label
   local state = require("lazyvcs.state")
   local live = state.current()
   local wins = {}
@@ -319,6 +327,43 @@ end
 
 local function assert_wait(ms, predicate, message)
   assert(vim.wait(ms, predicate, 50), message)
+end
+
+-- Diagnostics. A test that hangs and reports nothing tells us only that it hung,
+-- so always produce a verdict and always leave a trace of how far we got.
+--
+-- Heartbeat on the libuv loop rather than the Lua coroutine: if these entries
+-- stop while the script is still running, Neovim is blocked on a modal prompt
+-- (hit-enter, swapfile, ...) rather than merely waiting on a predicate.
+local heartbeat = vim.uv.new_timer()
+local ticks = 0
+heartbeat:start(1000, 1000, function()
+  ticks = ticks + 1
+  vim.schedule(function()
+    append_log(string.format("heartbeat %d (last checkpoint: %s)", ticks, last_label))
+  end)
+end)
+
+-- Watchdog: guarantees the shell driver gets a result file instead of timing out
+-- with no verdict at all.
+local watchdog = vim.uv.new_timer()
+watchdog:start(30000, 0, function()
+  vim.schedule(function()
+    vim.fn.writefile(
+      { "FAIL watchdog fired after 30s; last checkpoint: " .. last_label },
+      result_path
+    )
+    vim.cmd("qa!")
+  end)
+end)
+
+stop_timers = function()
+  pcall(function()
+    heartbeat:stop()
+    heartbeat:close()
+    watchdog:stop()
+    watchdog:close()
+  end)
 end
 
 vim.schedule(function()
