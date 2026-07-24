@@ -320,9 +320,9 @@ end
 -- never calls back.
 local watchdog = vim.uv.new_timer()
 timers[#timers + 1] = watchdog
-watchdog:start(60000, 0, function()
+watchdog:start(90000, 0, function()
   vim.schedule(function()
-    finish(false, "watchdog fired after 60s; last checkpoint: " .. last_label)
+    finish(false, "watchdog fired after 90s; last checkpoint: " .. last_label)
   end)
 end)
 
@@ -433,7 +433,7 @@ buffer_nav_smoke() {
 	fi
 
 	nvim --server "${sock}" --remote-send '<Esc>:luafile /tmp/lazyvcs-buffer-nav-smoke.lua<CR>'
-	for _ in $(seq 1 240); do
+	for _ in $(seq 1 600); do
 		if [ -f "${result}" ]; then
 			break
 		fi

@@ -62,6 +62,49 @@ local function build_session(bufnr)
 	}
 end
 
+-- Asynchronous counterpart of build_session, used by buffer transfers.
+--
+-- The synchronous path spawns `svn info` + `svn cat` (or `git show`) on the UI
+-- thread. Buffer navigation also triggers the signs autocmd, which runs its own
+-- VCS commands against the same working copy; when those contend on the SVN
+-- working-copy lock the synchronous call blocks until it times out, freezing
+-- Neovim for tens of seconds. Everything on the navigation path is async.
+local function build_session_async(bufnr, on_done)
+	if not util.is_real_file_buffer(bufnr) then
+		return on_done(nil, "lazyvcs only opens on normal file buffers")
+	end
+
+	local path = util.buf_path(bufnr)
+	if not path then
+		return on_done(nil, "Current buffer has no file path")
+	end
+
+	-- Backend resolution is cached per directory, so this is a table lookup for
+	-- any buffer in an already-visited directory.
+	local backend, _, resolve_err = backends.resolve(path)
+	if not backend then
+		return on_done(nil, resolve_err or "Unable to detect VCS backend")
+	end
+
+	backend.load_base_async(path, function(result, err)
+		if not result then
+			return on_done(nil, err or "Unable to load VCS base")
+		end
+		on_done({
+			editable_bufnr = bufnr,
+			source_path = path,
+			backend = backend.name,
+			backend_impl = backend,
+			root = result.root,
+			relpath = result.relpath,
+			tracked = result.tracked,
+			base_label = result.base_label,
+			base_lines = result.base_lines,
+			opts = vim.deepcopy(config.get()),
+		})
+	end)
+end
+
 -- Returns the session on success, or `nil, err` on failure. This must never raise:
 -- callers run inside autocmd and `vim.schedule` callbacks, where an uncaught error
 -- prints a multi-line traceback and blocks interactive Neovim on the hit-enter
@@ -193,46 +236,64 @@ local function handle_pending_transfer(target_bufnr)
 			return abort()
 		end
 
-		-- Anything below can touch windows, buffers and VCS backends. Failures are
-		-- reported as a notification and always leave the transfer cleaned up: an
-		-- uncaught error here blocks interactive Neovim on the hit-enter prompt.
-		local failure
-		local ok, err = pcall(function()
-			editor.guard_markdown_buffer(target_bufnr, vim.api.nvim_buf_get_name(target_bufnr))
-			local replacement = build_session(target_bufnr)
-			local live = state.get(pending.editable_bufnr)
-			if live then
-				close_session(live, {
-					keep_pending_transfer = true,
-					reset_tab_diff = true,
-				})
+		-- Failures below are reported as a notification and always leave the
+		-- transfer cleaned up: an uncaught error inside a scheduled callback
+		-- blocks interactive Neovim on the hit-enter prompt.
+		local function fail_transfer(err)
+			close_failed_transfer_window(pending)
+			abort()
+			if err then
+				util.notify(
+					"lazyvcs: could not reopen diff after buffer change: " .. one_line(err),
+					vim.log.levels.ERROR
+				)
 			end
+		end
 
-			if not replacement then
-				-- Unsupported buffer (no VCS backend): close the diff cleanly and
-				-- stay quiet, this is a normal outcome of navigating to a plain file.
-				close_failed_transfer_window(pending)
+		local guard_ok, guard_err =
+			pcall(editor.guard_markdown_buffer, target_bufnr, vim.api.nvim_buf_get_name(target_bufnr))
+		if not guard_ok then
+			return fail_transfer(guard_err)
+		end
+
+		build_session_async(target_bufnr, function(replacement)
+			-- The user may have navigated again while the backend was loading, so
+			-- re-validate before touching any window.
+			if
+				not vim.api.nvim_tabpage_is_valid(pending.tabpage)
+				or pending.tabpage ~= vim.api.nvim_get_current_tabpage()
+				or pending.editable_win ~= vim.api.nvim_get_current_win()
+				or vim.api.nvim_get_current_buf() ~= target_bufnr
+			then
 				return abort()
 			end
 
-			local _, open_err = open_session(replacement)
-			if open_err then
-				failure = open_err
+			local ok, err = pcall(function()
+				local live = state.get(pending.editable_bufnr)
+				if live then
+					close_session(live, {
+						keep_pending_transfer = true,
+						reset_tab_diff = true,
+					})
+				end
+
+				if not replacement then
+					-- Unsupported buffer (no VCS backend, or an untracked file the
+					-- backend cannot base a diff on): close cleanly and stay quiet,
+					-- this is a normal outcome of navigating to a plain file.
+					return fail_transfer(nil)
+				end
+
+				local _, open_err = open_session(replacement)
+				if open_err then
+					fail_transfer(open_err)
+				end
+			end)
+
+			if not ok then
+				fail_transfer(err)
 			end
 		end)
-
-		if not ok then
-			failure = err
-		end
-
-		if failure then
-			close_failed_transfer_window(pending)
-			abort()
-			util.notify(
-				"lazyvcs: could not reopen diff after buffer change: " .. one_line(failure),
-				vim.log.levels.ERROR
-			)
-		end
 	end)
 end
 

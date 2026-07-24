@@ -164,6 +164,7 @@ function M.load_base_async(path, on_done)
 					return on_done({
 						root = root,
 						relpath = relpath,
+						tracked = false,
 						base_label = "EMPTY",
 						base_lines = {},
 					})
@@ -176,6 +177,7 @@ function M.load_base_async(path, on_done)
 					on_done({
 						root = root,
 						relpath = relpath,
+						tracked = true,
 						base_label = "INDEX",
 						base_lines = lines,
 					})
