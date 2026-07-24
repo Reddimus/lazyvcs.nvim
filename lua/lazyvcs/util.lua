@@ -130,6 +130,50 @@ function M.system_start(args, opts, on_exit)
 	return handle
 end
 
+--- Run async jobs one at a time per key.
+---
+--- Subversion takes an exclusive working-copy lock, so concurrent `svn`
+--- processes against one working copy serialize inside svn itself — each waiting
+--- one holds the lock for as long as its peer runs. Buffer navigation fires the
+--- signs, blame and live-diff paths at once, so without this they pile up and a
+--- single slow command stalls all of them. Git has no such lock and is unqueued.
+---@param key string
+---@param start fun(done: fun()) spawns the job; must call `done` exactly once
+function M.enqueue(key, start)
+	local queue = M._queues[key]
+	if not queue then
+		queue = { running = false, pending = {} }
+		M._queues[key] = queue
+	end
+
+	local function run_next()
+		local next_job = table.remove(queue.pending, 1)
+		if not next_job then
+			queue.running = false
+			-- Drop the empty queue so long-lived sessions do not accumulate one
+			-- table per working copy ever visited.
+			M._queues[key] = nil
+			return
+		end
+		queue.running = true
+		local finished = false
+		next_job(function()
+			if finished then
+				return
+			end
+			finished = true
+			vim.schedule(run_next)
+		end)
+	end
+
+	queue.pending[#queue.pending + 1] = start
+	if not queue.running then
+		run_next()
+	end
+end
+
+M._queues = {}
+
 function M.system_lines(args, opts)
 	local result, err = M.system(args, opts)
 	if not result then

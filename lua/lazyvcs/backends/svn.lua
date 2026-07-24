@@ -37,6 +37,30 @@ local function is_versioned(path)
 	return err == nil
 end
 
+-- Serialize async svn work per working copy. Subversion holds an exclusive
+-- working-copy lock, so concurrent invocations block each other inside svn; when
+-- buffer navigation fires signs, blame and the live diff together, that turns
+-- into tens of seconds of apparent freeze. Git has no such lock and stays
+-- unqueued.
+local function queue_key(path)
+	return "svn:" .. (vim.fs.dirname(path) or path)
+end
+
+--- Wrap an async entry point so its whole command chain holds one queue slot.
+--- Returns a `complete` function that releases the slot and forwards to `on_done`
+--- exactly once.
+local function with_queue_slot(finish, on_done)
+	local done = false
+	return function(result, err)
+		if done then
+			return
+		end
+		done = true
+		finish()
+		return on_done(result, err)
+	end
+end
+
 local function status_code(path)
 	local lines, err = util.system_lines({ "svn", "status", "--depth", "empty", path }, { cwd = vim.fs.dirname(path) })
 	if not lines then
@@ -178,69 +202,72 @@ function M.load_base_async(path, on_done)
 		return nil
 	end
 
-	local cwd = vim.fs.dirname(path)
-	util.system_start({ "svn", "info", "--show-item", "wc-root", path }, { cwd = cwd }, function(result, err)
-		if err then
-			return on_done(nil, err)
-		end
-		local root = util.trim(result.stdout)
-		util.system_start({ "svn", "info", path }, { cwd = cwd }, function(_, tracked_err)
-			if tracked_err then
-				return on_done(nil, "File is not tracked by SVN")
+	util.enqueue(queue_key(path), function(finish)
+		local on_done = with_queue_slot(finish, on_done)
+		local cwd = vim.fs.dirname(path)
+		util.system_start({ "svn", "info", "--show-item", "wc-root", path }, { cwd = cwd }, function(result, err)
+			if err then
+				return on_done(nil, err)
 			end
-			util.system_lines_start(
-				{ "svn", "status", "--depth", "empty", path },
-				{ cwd = vim.fs.dirname(path) },
-				function(status_lines, status_err)
-					if not status_lines then
-						return on_done(nil, status_err)
-					end
-
-					local code = " "
-					for _, line in ipairs(status_lines) do
-						if line ~= "" then
-							code = line:sub(1, 1)
-							break
+			local root = util.trim(result.stdout)
+			util.system_start({ "svn", "info", path }, { cwd = cwd }, function(_, tracked_err)
+				if tracked_err then
+					return on_done(nil, "File is not tracked by SVN")
+				end
+				util.system_lines_start(
+					{ "svn", "status", "--depth", "empty", path },
+					{ cwd = vim.fs.dirname(path) },
+					function(status_lines, status_err)
+						if not status_lines then
+							return on_done(nil, status_err)
 						end
-					end
 
-					if code == "A" then
-						return on_done({
-							root = root,
-							relpath = util.relpath(root, path),
-							tracked = true,
-							base_label = "EMPTY",
-							base_lines = {},
-						})
-					end
-
-					util.system_lines_start(
-						{ "svn", "cat", "-r", "BASE", path },
-						{ cwd = root },
-						function(lines, cat_err)
-							if not lines then
-								if is_added_base_error(cat_err) then
-									return on_done({
-										root = root,
-										relpath = util.relpath(root, path),
-										tracked = true,
-										base_label = "EMPTY",
-										base_lines = {},
-									})
-								end
-								return on_done(nil, cat_err)
+						local code = " "
+						for _, line in ipairs(status_lines) do
+							if line ~= "" then
+								code = line:sub(1, 1)
+								break
 							end
-							on_done({
+						end
+
+						if code == "A" then
+							return on_done({
 								root = root,
 								relpath = util.relpath(root, path),
 								tracked = true,
-								base_label = "BASE",
-								base_lines = lines,
+								base_label = "EMPTY",
+								base_lines = {},
 							})
 						end
-					)
-				end
-			)
+
+						util.system_lines_start(
+							{ "svn", "cat", "-r", "BASE", path },
+							{ cwd = root },
+							function(lines, cat_err)
+								if not lines then
+									if is_added_base_error(cat_err) then
+										return on_done({
+											root = root,
+											relpath = util.relpath(root, path),
+											tracked = true,
+											base_label = "EMPTY",
+											base_lines = {},
+										})
+									end
+									return on_done(nil, cat_err)
+								end
+								on_done({
+									root = root,
+									relpath = util.relpath(root, path),
+									tracked = true,
+									base_label = "BASE",
+									base_lines = lines,
+								})
+							end
+						)
+					end
+				)
+			end)
 		end)
 	end)
 end
@@ -318,58 +345,81 @@ function M.blame_lines_async(path, on_done)
 		if self.handle then
 			pcall(self.handle.kill, self.handle, signal or 15)
 		end
+		if self.on_cancel then
+			self.on_cancel()
+		end
 	end
 
-	job.handle = util.system_start(
-		{ "svn", "info", "--show-item", "wc-root", path },
-		{ cwd = cwd },
-		function(result, err)
-			if job.cancelled then
+	util.enqueue(queue_key(path), function(finish)
+		-- Cancellation must release the slot too, or the working copy stays blocked.
+		local released = false
+		local function release()
+			if released then
 				return
 			end
-			if err then
-				return on_done(nil, err)
-			end
-			local root = util.trim(result.stdout)
-			job.handle = util.system_lines_start(
-				{ "svn", "status", "--depth", "empty", path },
-				{ cwd = cwd },
-				function(status_lines, status_err)
-					if job.cancelled then
-						return
-					end
-					if not status_lines then
-						return on_done(nil, status_err)
-					end
-
-					for _, line in ipairs(status_lines) do
-						if line ~= "" and line:sub(1, 1) == "A" then
-							local blame, read_err = uncommitted_blame_lines(path)
-							return on_done(blame, read_err, root)
-						end
-					end
-
-					job.handle = util.system_lines_start(
-						{ "svn", "blame", "-v", path },
-						{ cwd = root },
-						function(lines, blame_err)
-							if job.cancelled then
-								return
-							end
-							if not lines then
-								if is_added_base_error(blame_err) then
-									local blame, read_err = uncommitted_blame_lines(path)
-									return on_done(blame, read_err, root)
-								end
-								return on_done(nil, blame_err)
-							end
-							on_done(lines, nil, root)
-						end
-					)
-				end
-			)
+			released = true
+			finish()
 		end
-	)
+		local function done(lines, err, root)
+			release()
+			return done(lines, err, root)
+		end
+		if job.cancelled then
+			return release()
+		end
+		job.on_cancel = release
+
+		job.handle = util.system_start(
+			{ "svn", "info", "--show-item", "wc-root", path },
+			{ cwd = cwd },
+			function(result, err)
+				if job.cancelled then
+					return release()
+				end
+				if err then
+					return done(nil, err)
+				end
+				local root = util.trim(result.stdout)
+				job.handle = util.system_lines_start(
+					{ "svn", "status", "--depth", "empty", path },
+					{ cwd = cwd },
+					function(status_lines, status_err)
+						if job.cancelled then
+							return release()
+						end
+						if not status_lines then
+							return done(nil, status_err)
+						end
+
+						for _, line in ipairs(status_lines) do
+							if line ~= "" and line:sub(1, 1) == "A" then
+								local blame, read_err = uncommitted_blame_lines(path)
+								return done(blame, read_err, root)
+							end
+						end
+
+						job.handle = util.system_lines_start(
+							{ "svn", "blame", "-v", path },
+							{ cwd = root },
+							function(lines, blame_err)
+								if job.cancelled then
+									return release()
+								end
+								if not lines then
+									if is_added_base_error(blame_err) then
+										local blame, read_err = uncommitted_blame_lines(path)
+										return done(blame, read_err, root)
+									end
+									return done(nil, blame_err)
+								end
+								done(lines, nil, root)
+							end
+						)
+					end
+				)
+			end
+		)
+	end)
 	return job
 end
 
