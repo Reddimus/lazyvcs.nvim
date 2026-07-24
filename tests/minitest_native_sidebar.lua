@@ -61,7 +61,7 @@ T["native sidebar"] = MiniTest.new_set({
 
 T["native sidebar"]["opens with command"] = function()
 	local workspace = make_workspace()
-	child.cmd("LazyVcsSourceControlOpen " .. vim.fn.fnameescape(workspace))
+	child.cmd("LazyVCS sidebar open " .. vim.fn.fnameescape(workspace))
 
 	local state = sidebar_state()
 	eq(type(state.winid), "number")
@@ -72,7 +72,7 @@ end
 
 T["native sidebar"]["opens from leader mapping"] = function()
 	local workspace = make_workspace()
-	child.cmd("nnoremap <leader>vs <cmd>LazyVcsSourceControlToggle " .. vim.fn.fnameescape(workspace) .. "<cr>")
+	child.cmd("nnoremap <leader>vs <cmd>LazyVCS sidebar toggle " .. vim.fn.fnameescape(workspace) .. "<cr>")
 	child.type_keys("<Space>vs")
 
 	local state = sidebar_state()
@@ -82,7 +82,7 @@ end
 
 T["native sidebar"]["e toggles auto width and preserves cursor"] = function()
 	local workspace = make_workspace()
-	child.cmd("LazyVcsSourceControlOpen " .. vim.fn.fnameescape(workspace))
+	child.cmd("LazyVCS sidebar open " .. vim.fn.fnameescape(workspace))
 	child.lua([[
 local state = require("lazyvcs.source_control.native")._state()
 vim.api.nvim_win_set_width(state.winid, 24)
@@ -104,7 +104,7 @@ end
 
 T["native sidebar"]["space toggles section rows without repo lookup errors"] = function()
 	local workspace = make_workspace()
-	child.cmd("LazyVcsSourceControlOpen " .. vim.fn.fnameescape(workspace))
+	child.cmd("LazyVCS sidebar open " .. vim.fn.fnameescape(workspace))
 	child.lua([[
 local state = require("lazyvcs.source_control.native")._state()
 vim.api.nvim_set_current_win(state.winid)
@@ -128,7 +128,7 @@ end
 
 T["native sidebar"]["render preserves editor focus and metadata spacing"] = function()
 	local workspace = make_workspace()
-	child.cmd("LazyVcsSourceControlOpen " .. vim.fn.fnameescape(workspace))
+	child.cmd("LazyVCS sidebar open " .. vim.fn.fnameescape(workspace))
 	local result = child.lua_get([[(function()
 local native = require("lazyvcs.source_control.native")
 local state = native._state()
@@ -174,7 +174,7 @@ end
 
 T["native sidebar"]["confirmation popup supports numeric keys and restores focus"] = function()
 	local workspace = make_workspace()
-	child.cmd("LazyVcsSourceControlOpen " .. vim.fn.fnameescape(workspace))
+	child.cmd("LazyVCS sidebar open " .. vim.fn.fnameescape(workspace))
 	local before = child.lua_get([[(function()
 local state = require("lazyvcs.source_control.native")._state()
 vim.api.nvim_set_current_win(state.winid)
@@ -215,7 +215,7 @@ end
 
 T["native sidebar"]["confirmation popup supports navigation and escape"] = function()
 	local workspace = make_workspace()
-	child.cmd("LazyVcsSourceControlOpen " .. vim.fn.fnameescape(workspace))
+	child.cmd("LazyVCS sidebar open " .. vim.fn.fnameescape(workspace))
 	child.lua([[
 local state = require("lazyvcs.source_control.native")._state()
 vim.api.nvim_set_current_win(state.winid)

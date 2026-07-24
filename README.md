@@ -33,42 +33,15 @@ Use the same plugin spec in lazy.nvim or AstroNvim. This is the vanilla install:
     { "ibhagwan/fzf-lua", optional = true },
     { "CopilotC-Nvim/CopilotChat.nvim", optional = true },
   },
-  cmd = {
-    "LazyVCSDiffOpen",
-    "LazyVCSDiffClose",
-    "LazyVCSDiffToggle",
-    "LazyVCSDiffRefresh",
-    "LazyVCSRevertHunk",
-    "LazyVCSNextHunk",
-    "LazyVCSPrevHunk",
-    "LazyVCSSignsRefresh",
-    "LazyVCSBlame",
-    "LazyVCSBlameSplit",
-    "LazyVCSBlameClear",
-    "LazyVCSLineLog",
-    "LazyVCSPreviewDiff",
-    "LazyVCSRevertBuffer",
-    "LazyVCSFiles",
-    "LazyVCSSourceControlOpen",
-    "LazyVCSSourceControlClose",
-    "LazyVCSSourceControlToggle",
-    "LazyVCSSourceControlRefresh",
-    "LazyVCSSourceControlProfile",
-    "VcsLiveDiffOpen",
-    "SvnBlame",
-    "SvnLog",
-    "SvnPreview",
-    "SvnRevert",
-    "SvnResetHunk",
-    "SvnFiles",
-  },
+  cmd = { "LazyVCS" },
   keys = {
-    { "<leader>vo", "<cmd>LazyVCSDiffOpen<cr>", desc = "Open VCS diff" },
-    { "<leader>vq", "<cmd>LazyVCSDiffClose<cr>", desc = "Close VCS diff" },
-    { "<leader>vr", "<cmd>LazyVCSRevertHunk<cr>", desc = "Revert VCS hunk" },
-    { "<leader>vs", "<cmd>LazyVCSSourceControlToggle<cr>", desc = "Toggle VCS sidebar" },
-    { "]v", "<cmd>LazyVCSNextHunk<cr>", desc = "Next VCS hunk" },
-    { "[v", "<cmd>LazyVCSPrevHunk<cr>", desc = "Previous VCS hunk" },
+    { "<leader>vv", "<cmd>LazyVCS<cr>", desc = "Toggle VCS sidebar" },
+    { "<leader>vo", "<cmd>LazyVCS diff open<cr>", desc = "Open VCS diff" },
+    { "<leader>vq", "<cmd>LazyVCS diff close<cr>", desc = "Close VCS diff" },
+    { "<leader>vr", "<cmd>LazyVCS hunk revert<cr>", desc = "Revert VCS hunk" },
+    { "<leader>vb", "<cmd>LazyVCS blame toggle<cr>", desc = "Toggle VCS blame" },
+    { "]v", "<cmd>LazyVCS hunk next<cr>", desc = "Next VCS hunk" },
+    { "[v", "<cmd>LazyVCS hunk prev<cr>", desc = "Previous VCS hunk" },
   },
   opts = {
     source_control = {
@@ -144,29 +117,26 @@ flowchart LR
 
 Useful commands:
 
-| Command                | Description                           |
-| ---------------------- | ------------------------------------- |
-| `:LazyVCSSignsRefresh` | Reload SVN BASE and refresh signs     |
-| `:LazyVCSBlame`        | Toggle global inline Git/SVN blame    |
-| `:LazyVCSBlameSplit`   | Toggle full-file Git/SVN blame split  |
-| `:LazyVCSBlameClear`   | Disable global inline blame           |
-| `:LazyVCSLineLog`      | Show Git/SVN log for the current line |
-| `:LazyVCSPreviewDiff`  | Preview current SVN buffer diff       |
-| `:LazyVCSRevertBuffer` | Revert the current SVN file           |
-| `:LazyVCSFiles`        | Pick from modified SVN files          |
-| `:LazyVCSRevertHunk`   | Revert current hunk                   |
-| `:LazyVCSNextHunk`     | Jump to next hunk                     |
-| `:LazyVCSPrevHunk`     | Jump to previous hunk                 |
-
-`svnsigns.nvim` command aliases are enabled by default: `:SvnBlame`, `:SvnLog`,
-`:SvnPreview`, `:SvnRevert`, `:SvnResetHunk`, and `:SvnFiles`.
+| Command                  | Description                           |
+| ------------------------ | ------------------------------------- |
+| `:LazyVCS signs refresh` | Reload the VCS base and refresh signs |
+| `:LazyVCS blame toggle`  | Toggle global inline Git/SVN blame    |
+| `:LazyVCS blame split`   | Toggle full-file Git/SVN blame split  |
+| `:LazyVCS blame clear`   | Disable global inline blame           |
+| `:LazyVCS blame log`     | Show Git/SVN log for the current line |
+| `:LazyVCS preview`       | Preview the current buffer diff       |
+| `:LazyVCS revert`        | Revert the current file               |
+| `:LazyVCS files`         | Pick from changed files               |
+| `:LazyVCS hunk revert`   | Revert current hunk                   |
+| `:LazyVCS hunk next`     | Jump to next hunk                     |
+| `:LazyVCS hunk prev`     | Jump to previous hunk                 |
 
 ## Source-Control Sidebar
 
 Open it with:
 
 ```vim
-:LazyVCSSourceControlToggle
+:LazyVCS
 ```
 
 The sidebar:
@@ -243,7 +213,7 @@ opts = {
 Open a live diff for the current file:
 
 ```vim
-:LazyVCSDiffOpen
+:LazyVCS diff open
 ```
 
 The left window is a read-only scratch buffer holding the VCS base (the **old**
@@ -255,7 +225,7 @@ on the left, new on the right, so the diff reads old → new left → right:
 - SVN compares against working-copy `BASE` with `svn cat -r BASE`
 - Git untracked files and SVN added files show an empty base
 - `]v` and `[v` move between hunks
-- `:LazyVCSRevertHunk` or `<leader>vr` reverts the current hunk
+- `:LazyVCS hunk revert` or `<leader>vr` reverts the current hunk
 - normal undo still works if you revert the wrong hunk
 
 When the active editor window changes buffers, such as with AstroNvim `]b`,
@@ -273,28 +243,32 @@ flowchart LR
 
 ## Commands
 
-| Command                                 | Description                        |
-| --------------------------------------- | ---------------------------------- |
-| `:LazyVCSDiffOpen`                      | Open live diff                     |
-| `:LazyVCSDiffClose`                     | Close live diff                    |
-| `:LazyVCSDiffToggle`                    | Toggle live diff                   |
-| `:LazyVCSDiffRefresh`                   | Refresh live diff                  |
-| `:LazyVCSRevertHunk`                    | Revert current hunk                |
-| `:LazyVCSNextHunk` / `:LazyVCSPrevHunk` | Move between hunks                 |
-| `:LazyVCSSignsRefresh`                  | Refresh SVN signs                  |
-| `:LazyVCSBlame`                         | Toggle global inline Git/SVN blame |
-| `:LazyVCSBlameSplit`                    | Toggle aligned Git/SVN blame split |
-| `:LazyVCSBlameClear`                    | Disable global inline blame        |
-| `:LazyVCSLineLog`                       | Show Git/SVN log for current line  |
-| `:LazyVCSPreviewDiff`                   | Preview SVN buffer diff            |
-| `:LazyVCSRevertBuffer`                  | Revert current SVN file            |
-| `:LazyVCSFiles`                         | Browse modified SVN files          |
-| `:LazyVCSSourceControlOpen [path]`      | Open sidebar                       |
-| `:LazyVCSSourceControlClose`            | Close sidebar                      |
-| `:LazyVCSSourceControlToggle [path]`    | Toggle sidebar                     |
-| `:LazyVCSSourceControlRefresh`          | Refresh sidebar                    |
-| `:LazyVCSSourceControlProfile [clear]`  | Show or clear job timings          |
-| `:VcsLiveDiffOpen`                      | Alias for `:LazyVCSDiffOpen`       |
+| Command                            | Description                        |
+| ---------------------------------- | ---------------------------------- |
+| `:LazyVCS`                         | Toggle the source-control sidebar  |
+| `:LazyVCS sidebar open [path]`     | Open sidebar                       |
+| `:LazyVCS sidebar close`           | Close sidebar                      |
+| `:LazyVCS sidebar toggle [path]`   | Toggle sidebar                     |
+| `:LazyVCS sidebar refresh`         | Refresh sidebar                    |
+| `:LazyVCS diff open`               | Open live diff                     |
+| `:LazyVCS diff close`              | Close live diff                    |
+| `:LazyVCS diff toggle`             | Toggle live diff                   |
+| `:LazyVCS diff refresh`            | Refresh live diff                  |
+| `:LazyVCS hunk next` / `hunk prev` | Move between hunks                 |
+| `:LazyVCS hunk revert`             | Revert current hunk                |
+| `:LazyVCS blame toggle`            | Toggle global inline Git/SVN blame |
+| `:LazyVCS blame split`             | Toggle aligned Git/SVN blame split |
+| `:LazyVCS blame clear`             | Disable global inline blame        |
+| `:LazyVCS blame log`               | Show Git/SVN log for current line  |
+| `:LazyVCS signs refresh`           | Refresh gutter signs               |
+| `:LazyVCS preview`                 | Preview the current buffer diff    |
+| `:LazyVCS revert`                  | Revert the current file            |
+| `:LazyVCS files`                   | Browse changed files               |
+| `:LazyVCS profile [show\|clear]`   | Show or clear job timings          |
+| `:LazyVCS health`                  | Run `:checkhealth lazyvcs`         |
+
+Every subcommand works in both Git and SVN working copies. Press `<Tab>` after
+`:LazyVCS ` to complete subcommands, and again to complete each one's verbs.
 
 ## Configuration
 
@@ -420,7 +394,7 @@ Neo-tree source config and any `lazyvcs_source_control` selector entry.
 Use:
 
 ```vim
-:LazyVCSSourceControlToggle
+:LazyVCS
 ```
 
 ## Health

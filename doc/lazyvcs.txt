@@ -7,7 +7,7 @@ CONTENTS                                                   *lazyvcs-contents*
 2. Requirements .......................................... |lazyvcs-requirements|
 3. Commands .................................................. |lazyvcs-commands|
 4. Mappings .................................................. |lazyvcs-mappings|
-5. SVN Inline Signs ............................... |lazyvcs-svn-inline-signs|
+5. Inline Signs ....................................... |lazyvcs-inline-signs|
 6. Source Control ...................................... |lazyvcs-source-control|
 7. Configuration ........................................ |lazyvcs-configuration|
 8. Testing ..................................................... |lazyvcs-testing|
@@ -42,82 +42,49 @@ REQUIREMENTS                                           *lazyvcs-requirements*
 ==============================================================================
 COMMANDS                                                     *lazyvcs-commands*
 
-                                                           *:LazyVCSDiffOpen*
-:LazyVCSDiffOpen      Open the live diff view for the current file.
+lazyvcs exposes a single command with subcommand completion. Press <Tab> after
+`:LazyVCS ` to list subcommands, and again to list the verbs each one accepts.
 
-                                                          *:LazyVCSDiffClose*
-:LazyVCSDiffClose     Close the current live diff view.
+                                                                    *:LazyVCS*
+:LazyVCS              Toggle the source-control sidebar (the default action).
 
-                                                         *:LazyVCSDiffToggle*
-:LazyVCSDiffToggle    Toggle the live diff view.
+:LazyVCS sidebar {open|close|toggle|refresh} [path]
+                      Control the source-control sidebar. `open` and `toggle`
+                      accept an optional directory to scan.
 
-                                                        *:LazyVCSDiffRefresh*
-:LazyVCSDiffRefresh   Refresh the current live diff view.
+:LazyVCS diff {open|close|toggle|refresh}
+                      Control the live diff view for the current file.
+                      Defaults to `toggle`.
 
-                                                          *:LazyVCSRevertHunk*
-:LazyVCSRevertHunk    Revert the hunk under the cursor.
+:LazyVCS hunk {next|prev|revert}
+                      Move between hunks or revert the hunk under the cursor.
+                      Defaults to `next`.
 
-                                                            *:LazyVCSNextHunk*
-:LazyVCSNextHunk      Jump to the next changed hunk.
+:LazyVCS blame {toggle|split|clear|log}
+                      `toggle` switches global inline blame using `blame.mode`,
+                      `split` shows full-file blame in a fixed-width split,
+                      `clear` disables inline blame, and `log` shows the
+                      Git/SVN log for the current line. Defaults to `toggle`.
 
-                                                            *:LazyVCSPrevHunk*
-:LazyVCSPrevHunk      Jump to the previous changed hunk.
+:LazyVCS signs refresh
+                      Reload the VCS base and refresh gutter signs for the
+                      current buffer.
 
-                                                        *:LazyVCSSignsRefresh*
-:LazyVCSSignsRefresh  Reload SVN BASE and refresh signs for the current buffer.
+:LazyVCS files        Pick from the changed files in the current working copy.
 
-                                                               *:LazyVCSBlame*
-:LazyVCSBlame         Toggle global inline Git/SVN blame using `blame.mode`.
+:LazyVCS preview      Preview the current buffer diff in a floating window.
 
-                                                          *:LazyVCSBlameSplit*
-:LazyVCSBlameSplit    Toggle full-file Git/SVN blame in a fixed-width split.
+:LazyVCS revert       Revert all changes in the current file, after confirming.
 
-                                                          *:LazyVCSBlameClear*
-:LazyVCSBlameClear    Disable global inline blame.
-
-                                                             *:LazyVCSLineLog*
-:LazyVCSLineLog       Show Git/SVN log for the current line.
-
-                                                         *:LazyVCSPreviewDiff*
-:LazyVCSPreviewDiff   Preview the current SVN buffer diff.
-
-                                                        *:LazyVCSRevertBuffer*
-:LazyVCSRevertBuffer  Revert the current SVN file.
-
-                                                               *:LazyVCSFiles*
-:LazyVCSFiles         Pick from modified SVN files.
-
-                                                   *:LazyVCSSourceControlOpen*
-:LazyVCSSourceControlOpen [path]
-                      Open the source-control sidebar.
-
-                                                  *:LazyVCSSourceControlClose*
-:LazyVCSSourceControlClose
-                      Close the source-control sidebar.
-
-                                                 *:LazyVCSSourceControlToggle*
-:LazyVCSSourceControlToggle [path]
-                      Toggle the source-control sidebar.
-
-                                                *:LazyVCSSourceControlRefresh*
-:LazyVCSSourceControlRefresh
-                      Refresh the source-control sidebar.
-
-                                                *:LazyVCSSourceControlProfile*
-:LazyVCSSourceControlProfile [clear]
+:LazyVCS profile {show|clear}
                       Show or clear recent source-control job timings.
+                      Defaults to `show`.
 
-                                                             *:VcsLiveDiffOpen*
-:VcsLiveDiffOpen      Alias for |:LazyVCSDiffOpen|.
+:LazyVCS health       Run |:checkhealth| for lazyvcs.
 
-svnsigns.nvim compatibility aliases are enabled by default:
-
-    :SvnBlame
-    :SvnLog
-    :SvnPreview
-    :SvnRevert
-    :SvnResetHunk
-    :SvnFiles
+All subcommands work in both Git and SVN working copies; the backend is
+detected from the current file. See |lazyvcs-notes| for the base each backend
+compares against.
 
 ==============================================================================
 MAPPINGS                                                     *lazyvcs-mappings*
@@ -168,29 +135,34 @@ commands pinned first, current branch marked, and no numeric prefixes. Without
 Snacks, lazyvcs falls back to the built-in vim.ui.select.
 
 ==============================================================================
-SVN INLINE SIGNS                                   *lazyvcs-svn-inline-signs*
+INLINE SIGNS                                           *lazyvcs-inline-signs*
 
-SVN file buffers get gutter signs automatically. lazyvcs compares the buffer
-against working-copy BASE with `svn cat -r BASE` in the background and updates
-signs after edits. SVN added files use an empty base, and inline blame renders
-their rows as uncommitted lines.
+Git and SVN file buffers get gutter signs automatically. lazyvcs compares the
+buffer against the backend base in the background and updates signs after edits:
+the index for Git (`git show :path`) and working-copy BASE for SVN
+(`svn cat -r BASE`). Git untracked files and SVN added files use an empty base,
+and inline blame renders their rows as uncommitted lines.
+
+When `use_gitsigns` is true (the default) and gitsigns.nvim is installed, Git
+gutter signs are left to gitsigns.nvim to avoid a doubled-up sign column.
+lazyvcs always renders SVN signs.
 
 Commands:
 
-    :LazyVCSSignsRefresh   reload BASE and refresh signs
-    :LazyVCSBlame          toggle global inline blame by default
-    :LazyVCSBlameSplit     toggle aligned full-file blame audit split
-    :LazyVCSBlameClear     disable global inline blame
-    :LazyVCSLineLog        show Git/SVN log for the current line
-    :LazyVCSPreviewDiff    preview current SVN buffer diff
-    :LazyVCSRevertBuffer   revert the current SVN file
-    :LazyVCSFiles          pick from modified SVN files
+    :LazyVCS signs refresh   reload the base and refresh signs
+    :LazyVCS blame toggle    toggle global inline blame by default
+    :LazyVCS blame split     toggle aligned full-file blame audit split
+    :LazyVCS blame clear     disable global inline blame
+    :LazyVCS blame log       show Git/SVN log for the current line
+    :LazyVCS preview         preview the current buffer diff
+    :LazyVCS revert          revert the current file
+    :LazyVCS files           pick from changed files
 
-Hunk commands work in normal SVN buffers too:
+Hunk commands work in normal Git and SVN buffers too:
 
-    :LazyVCSRevertHunk
-    :LazyVCSNextHunk
-    :LazyVCSPrevHunk
+    :LazyVCS hunk revert
+    :LazyVCS hunk next
+    :LazyVCS hunk prev
 
 ==============================================================================
 SOURCE CONTROL                                       *lazyvcs-source-control*
@@ -198,7 +170,7 @@ SOURCE CONTROL                                       *lazyvcs-source-control*
 Open the sidebar with:
 
 >
-  :LazyVCSSourceControlToggle
+  :LazyVCS
 <
 
 Behavior:
@@ -236,42 +208,15 @@ Minimal lazy.nvim or AstroNvim spec:
       { "ibhagwan/fzf-lua", optional = true },
       { "CopilotC-Nvim/CopilotChat.nvim", optional = true },
     },
-    cmd = {
-      "LazyVCSDiffOpen",
-      "LazyVCSDiffClose",
-      "LazyVCSDiffToggle",
-      "LazyVCSDiffRefresh",
-      "LazyVCSRevertHunk",
-      "LazyVCSNextHunk",
-      "LazyVCSPrevHunk",
-      "LazyVCSSignsRefresh",
-      "LazyVCSBlame",
-      "LazyVCSBlameSplit",
-      "LazyVCSBlameClear",
-      "LazyVCSLineLog",
-      "LazyVCSPreviewDiff",
-      "LazyVCSRevertBuffer",
-      "LazyVCSFiles",
-      "LazyVCSSourceControlOpen",
-      "LazyVCSSourceControlClose",
-      "LazyVCSSourceControlToggle",
-      "LazyVCSSourceControlRefresh",
-      "LazyVCSSourceControlProfile",
-      "VcsLiveDiffOpen",
-      "SvnBlame",
-      "SvnLog",
-      "SvnPreview",
-      "SvnRevert",
-      "SvnResetHunk",
-      "SvnFiles",
-    },
+    cmd = { "LazyVCS" },
     keys = {
-      { "<leader>vo", "<cmd>LazyVCSDiffOpen<cr>", desc = "Open VCS diff" },
-      { "<leader>vq", "<cmd>LazyVCSDiffClose<cr>", desc = "Close VCS diff" },
-      { "<leader>vr", "<cmd>LazyVCSRevertHunk<cr>", desc = "Revert VCS hunk" },
-      { "<leader>vs", "<cmd>LazyVCSSourceControlToggle<cr>", desc = "Toggle VCS sidebar" },
-      { "]v", "<cmd>LazyVCSNextHunk<cr>", desc = "Next VCS hunk" },
-      { "[v", "<cmd>LazyVCSPrevHunk<cr>", desc = "Previous VCS hunk" },
+      { "<leader>vv", "<cmd>LazyVCS<cr>", desc = "Toggle VCS sidebar" },
+      { "<leader>vo", "<cmd>LazyVCS diff open<cr>", desc = "Open VCS diff" },
+      { "<leader>vq", "<cmd>LazyVCS diff close<cr>", desc = "Close VCS diff" },
+      { "<leader>vr", "<cmd>LazyVCS hunk revert<cr>", desc = "Revert VCS hunk" },
+      { "<leader>vb", "<cmd>LazyVCS blame toggle<cr>", desc = "Toggle VCS blame" },
+      { "]v", "<cmd>LazyVCS hunk next<cr>", desc = "Next VCS hunk" },
+      { "[v", "<cmd>LazyVCS hunk prev<cr>", desc = "Previous VCS hunk" },
     },
     opts = {
       source_control = {
@@ -357,7 +302,7 @@ SVN signs options:
 
 Git/SVN blame options:
 
-    blame.mode         `inline`, `split`, or `off` for :LazyVCSBlame.
+    blame.mode         `inline`, `split`, or `off` for :LazyVCS blame.
     blame.persist      Remember the inline blame toggle across sessions.
     blame.delay_ms     Debounce before the first blame fetch; the
                        overlay then tracks the cursor instantly.
@@ -378,16 +323,10 @@ theme-aware Comment highlights for blame text. Inline blame stays quiet during
 fast loads, shows `Blame loading...` only for slow SVN calls, and labels local
 SVN rows as `Uncommitted line` instead of displaying raw `- - -` placeholders.
 
-Compatibility options:
-
-    compat.svnsigns_commands
-                       Register :SvnBlame, :SvnLog, :SvnPreview, :SvnRevert,
-                       :SvnResetHunk, and :SvnFiles aliases.
-
 Source-control options:
 
     enabled            Enable the source-control sidebar.
-    ui                 `auto` or `native`. Legacy `neo-tree` routes native.
+    ui                 `auto` or `native`.
     scan_depth         Nested repo discovery depth.
     width              Initial sidebar width.
     auto_expand_width  Start sidebar in auto-fit mode.
@@ -439,7 +378,7 @@ runs a fixed-size `pexpect` terminal smoke test for the sidebar.
 ==============================================================================
 NOTES                                                           *lazyvcs-notes*
 
-- The Neo-tree adapter has been removed. Use |:LazyVCSSourceControlToggle|.
+- The Neo-tree adapter has been removed. Use |:LazyVCS| or `:LazyVCS sidebar`.
 - Git compares live diff buffers against the index.
 - SVN compares live diff buffers against working-copy BASE.
 - Git untracked files and SVN added files show an empty base.

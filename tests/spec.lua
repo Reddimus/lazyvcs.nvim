@@ -3,7 +3,7 @@ local helpers = require("helpers")
 -- Redirect persisted UI state to a throwaway dir so tests never touch the real
 -- stdpath("state") file and cannot leak the inline-blame toggle between runs.
 local store = require("lazyvcs.store")
-local STORE_DIR = vim.fn.tempname()
+local STORE_DIR = vim.fs.normalize(vim.fn.tempname())
 store._test_set_dir(STORE_DIR)
 
 local function eq(left, right, msg)
@@ -20,7 +20,7 @@ local function feed(keys)
 end
 
 local function inline_blame_text(bufnr)
-	local test_state = require("lazyvcs.svn_ui")._test_inline_state()
+	local test_state = require("lazyvcs.blame")._test_inline_state()
 	local marks = vim.api.nvim_buf_get_extmarks(bufnr, test_state.namespace, 0, -1, { details = true })
 	if #marks == 0 then
 		return nil
@@ -225,7 +225,6 @@ local function test_config_normalization()
 	eq(opts.blame.max_width, 80)
 	eq(opts.blame.split_min_width, 20)
 	eq(opts.blame.split_max_width, 34)
-	eq(opts.compat.svnsigns_commands, true)
 
 	local ok, err = pcall(config.setup, {
 		base_window = {
@@ -280,15 +279,21 @@ local function test_source_control_auto_remote_refresh_is_throttled_per_root()
 	eq(source._test_should_remote_refresh(state), false)
 end
 
-local function test_source_control_legacy_neotree_ui_routes_to_native()
+local function test_source_control_rejects_removed_neotree_ui()
 	local config = require("lazyvcs.config")
-	local opts = config.setup({
+	-- The Neo-tree adapter was removed; the option value must be rejected outright
+	-- rather than silently accepted and ignored.
+	local ok, err = pcall(config.setup, {
 		source_control = {
 			ui = "neo-tree",
 			remote_refresh = "manual",
 		},
 	})
-	eq(opts.source_control.ui, "neo-tree")
+	assert(not ok, "source_control.ui = 'neo-tree' should be rejected")
+	assert(tostring(err):match("'auto' or 'native'"), tostring(err))
+
+	local opts = config.setup({ source_control = { ui = "native", remote_refresh = "manual" } })
+	eq(opts.source_control.ui, "native")
 	assert(require("lazyvcs.source_control.native")._test_should_remote_refresh({ path = "/tmp/workspace" }) == false)
 end
 
@@ -407,7 +412,7 @@ local function test_ai_commit_message_auto_falls_back_to_next_cli_provider()
 	local provider
 	local ok = ai.generate({
 		vcs = "git",
-		root = vim.fn.tempname(),
+		root = vim.fs.normalize(vim.fn.tempname()),
 	}, function(generated, generate_err, used_provider)
 		message = generated
 		err = generate_err
@@ -908,7 +913,7 @@ local function test_source_control_duplicate_repo_names_use_root_identity()
 		},
 	})
 
-	local workspace = vim.fn.tempname()
+	local workspace = vim.fs.normalize(vim.fn.tempname())
 	local repo_a = workspace .. "/team-a/service"
 	local repo_b = workspace .. "/team-b/service"
 	vim.fn.mkdir(repo_a .. "/.git", "p")
@@ -1143,7 +1148,7 @@ local function test_source_control_confirm_session_choice_disables_more_prompts(
 		},
 	})
 
-	local root = vim.fn.tempname()
+	local root = vim.fs.normalize(vim.fn.tempname())
 	vim.fn.mkdir(root, "p")
 	helpers.exec({ "git", "init" }, root)
 	helpers.write_file(root .. "/changed.txt", "changed\n")
@@ -1188,7 +1193,7 @@ local function test_source_control_tree_view_groups_files_into_folders()
 		},
 	})
 
-	local root = vim.fn.tempname()
+	local root = vim.fs.normalize(vim.fn.tempname())
 	vim.fn.mkdir(root, "p")
 	helpers.exec({ "git", "init" }, root)
 	helpers.exec({ "git", "config", "user.name", "lazyvcs-test" }, root)
@@ -2110,17 +2115,17 @@ local function test_svn_blame_inline_virtual_text()
 	local source_buf = vim.api.nvim_get_current_buf()
 	vim.api.nvim_win_set_cursor(source_win, { 2, 0 })
 
-	assert(require("lazyvcs.svn_ui").blame())
+	assert(require("lazyvcs.blame").blame())
 	wait_for(function()
-		local test_state = require("lazyvcs.svn_ui")._test_inline_state()
+		local test_state = require("lazyvcs.blame")._test_inline_state()
 		local marks = vim.api.nvim_buf_get_extmarks(source_buf, test_state.namespace, 0, -1, { details = true })
 		return #marks == 1 and marks[1][4].virt_text and marks[1][4].virt_text[1][2] == "LazyVcsBlame"
 	end, "inline blame virtual text should render", 5000)
 	eq(vim.api.nvim_get_current_win(), source_win)
 	eq(vim.api.nvim_win_get_cursor(source_win), { 2, 0 })
 
-	require("lazyvcs.svn_ui").blame_clear()
-	local test_state = require("lazyvcs.svn_ui")._test_inline_state()
+	require("lazyvcs.blame").blame_clear()
+	local test_state = require("lazyvcs.blame")._test_inline_state()
 	local marks = vim.api.nvim_buf_get_extmarks(source_buf, test_state.namespace, 0, -1, { details = true })
 	eq(#marks, 0)
 end
@@ -2148,9 +2153,9 @@ local function test_svn_blame_inline_delays_loading_indicator()
 	local fixture = helpers.make_svn_fixture()
 	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
 	local source_buf = vim.api.nvim_get_current_buf()
-	assert(require("lazyvcs.svn_ui").blame())
+	assert(require("lazyvcs.blame").blame())
 	wait_for(function()
-		local view = require("lazyvcs.svn_ui")._test_inline_state().views[source_buf]
+		local view = require("lazyvcs.blame")._test_inline_state().views[source_buf]
 		return view and view.loading and callback
 	end, "inline blame should start loading")
 	eq(inline_blame_text(source_buf), nil, "inline blame should stay quiet before loading delay")
@@ -2160,7 +2165,7 @@ local function test_svn_blame_inline_delays_loading_indicator()
 		return inline_blame_text(source_buf) ~= nil
 	end, "inline blame result should render")
 
-	require("lazyvcs.svn_ui").blame_clear()
+	require("lazyvcs.blame").blame_clear()
 	backend.blame_lines_async = original_blame_lines_async
 end
 
@@ -2192,7 +2197,7 @@ local function test_svn_blame_inline_loading_indicator_and_uncommitted_line()
 	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
 	local source_buf = vim.api.nvim_get_current_buf()
 	vim.api.nvim_win_set_cursor(0, { 2, 0 })
-	assert(require("lazyvcs.svn_ui").blame())
+	assert(require("lazyvcs.blame").blame())
 	wait_for(function()
 		return inline_blame_text(source_buf) == "  Blame loading..."
 	end, "inline blame loading indicator should render after delay")
@@ -2205,7 +2210,7 @@ local function test_svn_blame_inline_loading_indicator_and_uncommitted_line()
 		return inline_blame_text(source_buf) == "  Uncommitted line"
 	end, "inline blame should render a friendly uncommitted label")
 
-	require("lazyvcs.svn_ui").blame_clear()
+	require("lazyvcs.blame").blame_clear()
 	backend.blame_lines_async = original_blame_lines_async
 end
 
@@ -2233,19 +2238,19 @@ local function test_svn_blame_inline_loading_indicator_follows_cursor()
 	local source_buf = vim.api.nvim_get_current_buf()
 	local source_win = vim.api.nvim_get_current_win()
 	vim.api.nvim_win_set_cursor(source_win, { 1, 0 })
-	assert(require("lazyvcs.svn_ui").blame())
+	assert(require("lazyvcs.blame").blame())
 	wait_for(function()
 		return inline_blame_text(source_buf) == "  Blame loading..."
 	end, "inline blame loading indicator should render after delay")
 
 	vim.api.nvim_win_set_cursor(source_win, { 3, 0 })
 	vim.api.nvim_exec_autocmds("CursorMoved", { buffer = source_buf })
-	local test_state = require("lazyvcs.svn_ui")._test_inline_state()
+	local test_state = require("lazyvcs.blame")._test_inline_state()
 	local marks = vim.api.nvim_buf_get_extmarks(source_buf, test_state.namespace, 0, -1, {})
 	eq(#marks, 1)
 	eq(marks[1][2] + 1, 3, "loading inline blame should follow the cursor immediately once visible")
 
-	require("lazyvcs.svn_ui").blame_clear()
+	require("lazyvcs.blame").blame_clear()
 	backend.blame_lines_async = original_blame_lines_async
 end
 
@@ -2279,9 +2284,9 @@ local function test_svn_blame_inline_failure_does_not_retry_on_cursor_move()
 	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
 	local source_buf = vim.api.nvim_get_current_buf()
 	local source_win = vim.api.nvim_get_current_win()
-	assert(require("lazyvcs.svn_ui").blame())
+	assert(require("lazyvcs.blame").blame())
 	wait_for(function()
-		local view = require("lazyvcs.svn_ui")._test_inline_state().views[source_buf]
+		local view = require("lazyvcs.blame")._test_inline_state().views[source_buf]
 		return view and view.error
 	end, "inline blame failure should be recorded")
 	eq(calls, 1)
@@ -2293,7 +2298,7 @@ local function test_svn_blame_inline_failure_does_not_retry_on_cursor_move()
 	vim.wait(50)
 	eq(calls, 1, "failed inline blame should not refetch until the buffer is invalidated")
 
-	require("lazyvcs.svn_ui").blame_clear()
+	require("lazyvcs.blame").blame_clear()
 	backend.blame_lines_async = original_blame_lines_async
 	util.notify = original_notify
 end
@@ -2314,14 +2319,14 @@ local function test_svn_blame_split_is_fixed_width_and_muted()
 	local source_buf = vim.api.nvim_get_current_buf()
 	vim.wo[source_win].scrollbind = false
 	vim.wo[source_win].cursorbind = false
-	require("lazyvcs.svn_ui").blame_split()
+	require("lazyvcs.blame").blame_split()
 
 	wait_for(function()
-		local view = require("lazyvcs.svn_ui")._test_blame_views()[source_buf]
+		local view = require("lazyvcs.blame")._test_blame_views()[source_buf]
 		return view and not view.loading and vim.api.nvim_win_is_valid(view.winid)
 	end, "split blame should open", 5000)
 
-	local view = require("lazyvcs.svn_ui")._test_blame_views()[source_buf]
+	local view = require("lazyvcs.blame")._test_blame_views()[source_buf]
 	eq(vim.api.nvim_get_current_win(), source_win)
 	assert(vim.wo[view.winid].winfixwidth, "split blame should use fixed width")
 	assert(vim.api.nvim_win_get_width(view.winid) <= 24, "split blame should respect max width")
@@ -2342,7 +2347,7 @@ local function test_svn_blame_split_is_fixed_width_and_muted()
 	end)
 	local blame_lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
 	assert(vim.tbl_contains(blame_lines, "Uncommitted line"), "split blame should label uncommitted rows")
-	require("lazyvcs.svn_ui").blame_split()
+	require("lazyvcs.blame").blame_split()
 	eq(vim.wo[source_win].scrollbind, false)
 	eq(vim.wo[source_win].cursorbind, false)
 end
@@ -2372,7 +2377,7 @@ local function test_live_diff_scrollbinds_panes_and_restores_editable_window()
 	vim.cmd.enew()
 	local editable_buf = vim.api.nvim_get_current_buf()
 	local editable_win = vim.api.nvim_get_current_win()
-	vim.api.nvim_buf_set_name(editable_buf, vim.fn.tempname() .. "/scrollbind-sample.txt")
+	vim.api.nvim_buf_set_name(editable_buf, vim.fs.normalize(vim.fn.tempname()) .. "/scrollbind-sample.txt")
 	vim.api.nvim_buf_set_lines(editable_buf, 0, -1, false, {
 		"one",
 		"two changed",
@@ -2388,7 +2393,7 @@ local function test_live_diff_scrollbinds_panes_and_restores_editable_window()
 		editable_bufnr = editable_buf,
 		editable_win = editable_win,
 		backend = "git",
-		root = vim.fn.tempname(),
+		root = vim.fs.normalize(vim.fn.tempname()),
 		relpath = "scrollbind-sample.txt",
 		base_label = "base",
 		base_lines = {
@@ -2414,7 +2419,7 @@ local function test_live_diff_sync_scroll_catches_unfocused_pane()
 
 	local session
 	local ok, err = pcall(function()
-		local root = vim.fn.tempname()
+		local root = vim.fs.normalize(vim.fn.tempname())
 		vim.fn.mkdir(root, "p")
 		helpers.exec({ "git", "init" }, root)
 		helpers.exec({ "git", "config", "user.name", "lazyvcs-test" }, root)
@@ -2504,17 +2509,17 @@ local function test_blame_inline_toggle_persists_across_setup()
 	store.set("blame_inline_enabled", true)
 
 	require("lazyvcs").setup({})
-	local svn_ui = require("lazyvcs.svn_ui")
-	assert(svn_ui._test_inline_enabled(), "persisted inline blame should be restored on setup")
+	local blame = require("lazyvcs.blame")
+	assert(blame._test_inline_enabled(), "persisted inline blame should be restored on setup")
 
 	-- A non-inline mode must ignore the persisted flag.
 	require("lazyvcs").setup({ blame = { mode = "off" } })
-	assert(not svn_ui._test_inline_enabled(), "non-inline blame mode should not restore the toggle")
+	assert(not blame._test_inline_enabled(), "non-inline blame mode should not restore the toggle")
 
 	-- Reset shared state so later tests start with blame off.
 	store.set("blame_inline_enabled", nil)
 	require("lazyvcs").setup({})
-	assert(not svn_ui._test_inline_enabled(), "inline blame should be off once the flag is cleared")
+	assert(not blame._test_inline_enabled(), "inline blame should be off once the flag is cleared")
 end
 
 local function test_blame_inline_follows_cursor_without_waiting()
@@ -2533,16 +2538,16 @@ local function test_blame_inline_follows_cursor_without_waiting()
 	local source_win = vim.api.nvim_get_current_win()
 	vim.api.nvim_win_set_cursor(source_win, { 1, 0 })
 
-	local svn_ui = require("lazyvcs.svn_ui")
-	assert(svn_ui.blame())
+	local blame = require("lazyvcs.blame")
+	assert(blame.blame())
 
 	-- Wait once for the initial async `svn blame` fetch to populate the cache.
 	wait_for(function()
-		local view = svn_ui._test_inline_state().views[source_buf]
+		local view = blame._test_inline_state().views[source_buf]
 		return view and view.entries ~= nil
 	end, "inline blame data should load", 5000)
 
-	local ns = svn_ui._test_inline_state().namespace
+	local ns = blame._test_inline_state().namespace
 	local function mark_lines()
 		local out = {}
 		for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(source_buf, ns, 0, -1, {})) do
@@ -2557,7 +2562,7 @@ local function test_blame_inline_follows_cursor_without_waiting()
 	vim.api.nvim_exec_autocmds("CursorMoved", { buffer = source_buf })
 	eq(mark_lines(), { 3 }, "cached inline blame should follow the cursor immediately")
 
-	svn_ui.blame_clear()
+	blame.blame_clear()
 	eq(#mark_lines(), 0)
 end
 
@@ -2655,27 +2660,72 @@ local function test_svn_signs_ignore_untracked_files()
 	eq(#marks, 0, "SVN untracked files should not render signs or load a base")
 end
 
-local function test_svnsigns_compat_commands_follow_config()
-	require("lazyvcs").setup({
-		compat = {
-			svnsigns_commands = true,
-		},
-	})
-	eq(vim.fn.exists(":SvnBlame"), 2)
+local function test_single_command_replaces_legacy_surface()
+	require("lazyvcs").setup({})
 
-	require("lazyvcs").setup({
-		compat = {
-			svnsigns_commands = false,
-		},
-	})
-	eq(vim.fn.exists(":SvnBlame"), 0)
+	eq(vim.fn.exists(":LazyVCS"), 2)
 
-	require("lazyvcs").setup({
-		compat = {
-			svnsigns_commands = true,
-		},
-	})
-	eq(vim.fn.exists(":SvnBlame"), 2)
+	-- The 47-command surface (casing twins, svnsigns aliases, per-action
+	-- commands) collapsed into one dispatcher.
+	for _, gone in ipairs({
+		":LazyVcsBlame",
+		":LazyVCSBlame",
+		":LazyVCSBlameSplit",
+		":LazyVCSDiffOpen",
+		":LazyVCSSourceControlToggle",
+		":LazyVcsSourceControlToggle",
+		":VcsLiveDiffOpen",
+		":SvnBlame",
+		":SvnFiles",
+	}) do
+		eq(vim.fn.exists(gone), 0)
+	end
+end
+
+local function test_command_completion_is_two_level()
+	require("lazyvcs").setup({})
+	local complete = require("lazyvcs.commands")._complete
+
+	local top = complete("", "LazyVCS ")
+	for _, name in ipairs({ "blame", "diff", "files", "hunk", "preview", "profile", "revert", "sidebar", "signs" }) do
+		assert(vim.tbl_contains(top, name), "missing top-level completion: " .. name)
+	end
+
+	-- Prefix filtering.
+	eq(complete("bl", "LazyVCS bl"), { "blame" })
+
+	-- Second level.
+	local blame_verbs = complete("", "LazyVCS blame ")
+	for _, verb in ipairs({ "clear", "log", "split", "toggle" }) do
+		assert(vim.tbl_contains(blame_verbs, verb), "missing blame verb: " .. verb)
+	end
+	eq(complete("", "LazyVCS hunk "), { "next", "prev", "revert" })
+
+	-- Leaf subcommands take no verbs.
+	eq(complete("", "LazyVCS files "), {})
+
+	-- Unknown subcommand yields nothing rather than erroring.
+	eq(complete("", "LazyVCS nope "), {})
+end
+
+local function test_unknown_subcommand_reports_valid_options()
+	require("lazyvcs").setup({})
+
+	-- Stub util.notify rather than vim.notify: it is what the dispatcher calls,
+	-- and it stays intercepted even if an earlier test left its own stub behind.
+	local util = require("lazyvcs.util")
+	local messages = {}
+	local real_notify = util.notify
+	util.notify = function(msg)
+		messages[#messages + 1] = tostring(msg)
+	end
+	local ok = pcall(vim.cmd, "LazyVCS definitely-not-a-subcommand")
+	util.notify = real_notify
+
+	assert(ok, "an unknown subcommand must not raise")
+	local joined = table.concat(messages, "\n")
+	assert(joined:match("Unknown subcommand"), joined)
+	assert(joined:match("blame"), "the error should list valid subcommands: " .. joined)
 end
 
 local function test_setup_is_idempotent_and_respects_sign_toggle()
@@ -2683,37 +2733,21 @@ local function test_setup_is_idempotent_and_respects_sign_toggle()
 		signs = {
 			enabled = true,
 		},
-		compat = {
-			svnsigns_commands = true,
-		},
 	})
 	require("lazyvcs").setup({
 		signs = {
 			enabled = false,
 		},
-		compat = {
-			svnsigns_commands = false,
-		},
 	})
 
-	eq(vim.fn.exists(":LazyVcsBlame"), 2)
-	eq(vim.fn.exists(":LazyVcsBlameSplit"), 2)
-	eq(vim.fn.exists(":LazyVcsBlameClear"), 2)
-	eq(vim.fn.exists(":LazyVCSBlame"), 2)
-	eq(vim.fn.exists(":LazyVCSBlameSplit"), 2)
-	eq(vim.fn.exists(":LazyVCSBlameClear"), 2)
-	eq(vim.fn.exists(":LazyVCSSourceControlToggle"), 2)
-	eq(vim.fn.exists(":SvnBlame"), 0)
+	eq(vim.fn.exists(":LazyVCS"), 2)
 
 	require("lazyvcs").setup({
 		signs = {
 			enabled = true,
 		},
-		compat = {
-			svnsigns_commands = true,
-		},
 	})
-	eq(vim.fn.exists(":SvnBlame"), 2)
+	eq(vim.fn.exists(":LazyVCS"), 2)
 end
 
 local function test_git_integration()
@@ -3108,7 +3142,7 @@ local function test_source_control_git_sync_uses_explicit_upstream_fast_forward(
 	local session_state = require("lazyvcs.state")
 	local previous_system_start = util.system_start
 	local calls = {}
-	local repo_root = vim.fn.tempname()
+	local repo_root = vim.fs.normalize(vim.fn.tempname())
 	local state = {
 		path = repo_root,
 		lazyvcs_commit_drafts = {},
@@ -3169,7 +3203,7 @@ local function test_source_control_git_pull_action_uses_explicit_upstream_fast_f
 	local session_state = require("lazyvcs.state")
 	local previous_system_start = util.system_start
 	local calls = {}
-	local repo_root = vim.fn.tempname()
+	local repo_root = vim.fs.normalize(vim.fn.tempname())
 	local state = {
 		path = repo_root,
 		lazyvcs_commit_drafts = {},
@@ -3237,7 +3271,7 @@ local function test_source_control_git_sync_pushes_to_configured_upstream()
 	local session_state = require("lazyvcs.state")
 	local previous_system_start = util.system_start
 	local calls = {}
-	local repo_root = vim.fn.tempname()
+	local repo_root = vim.fs.normalize(vim.fn.tempname())
 	local state = {
 		path = repo_root,
 		lazyvcs_commit_drafts = {},
@@ -3297,7 +3331,7 @@ local function test_source_control_git_publish_branch_sets_upstream_to_origin()
 	local session_state = require("lazyvcs.state")
 	local previous_system_start = util.system_start
 	local calls = {}
-	local repo_root = vim.fn.tempname()
+	local repo_root = vim.fs.normalize(vim.fn.tempname())
 	local state = {
 		path = repo_root,
 		lazyvcs_commit_drafts = {},
@@ -3365,7 +3399,7 @@ local function test_source_control_git_sync_without_upstream_publishes_branch()
 	local session_state = require("lazyvcs.state")
 	local previous_system_start = util.system_start
 	local calls = {}
-	local repo_root = vim.fn.tempname()
+	local repo_root = vim.fs.normalize(vim.fn.tempname())
 	local state = {
 		path = repo_root,
 		lazyvcs_commit_drafts = {},
@@ -3426,7 +3460,7 @@ local function test_source_control_git_push_uses_configured_upstream()
 	local session_state = require("lazyvcs.state")
 	local previous_system_start = util.system_start
 	local calls = {}
-	local repo_root = vim.fn.tempname()
+	local repo_root = vim.fs.normalize(vim.fn.tempname())
 	local state = {
 		path = repo_root,
 		lazyvcs_commit_drafts = {},
@@ -3485,7 +3519,7 @@ local function test_source_control_git_publish_falls_back_to_single_remote()
 	local session_state = require("lazyvcs.state")
 	local previous_system_start = util.system_start
 	local calls = {}
-	local repo_root = vim.fn.tempname()
+	local repo_root = vim.fs.normalize(vim.fn.tempname())
 	local state = {
 		path = repo_root,
 		lazyvcs_commit_drafts = {},
@@ -3551,7 +3585,7 @@ local function test_source_control_git_publish_requires_unambiguous_remote()
 	local previous_notify = util.notify
 	local calls = {}
 	local notifications = {}
-	local repo_root = vim.fn.tempname()
+	local repo_root = vim.fs.normalize(vim.fn.tempname())
 	local state = {
 		path = repo_root,
 		lazyvcs_commit_drafts = {},
@@ -3622,7 +3656,7 @@ local function test_source_control_git_publish_requires_a_remote()
 	local previous_notify = util.notify
 	local calls = {}
 	local notifications = {}
-	local repo_root = vim.fn.tempname()
+	local repo_root = vim.fs.normalize(vim.fn.tempname())
 	local state = {
 		path = repo_root,
 		lazyvcs_commit_drafts = {},
@@ -3693,7 +3727,7 @@ local function test_source_control_git_publish_rejects_detached_head()
 	local previous_notify = util.notify
 	local calls = {}
 	local notifications = {}
-	local repo_root = vim.fn.tempname()
+	local repo_root = vim.fs.normalize(vim.fn.tempname())
 	local state = {
 		path = repo_root,
 		lazyvcs_commit_drafts = {},
@@ -4338,8 +4372,8 @@ local cases = {
 		test_source_control_auto_remote_refresh_is_throttled_per_root,
 	},
 	{
-		"test_source_control_legacy_neotree_ui_routes_to_native",
-		test_source_control_legacy_neotree_ui_routes_to_native,
+		"test_source_control_rejects_removed_neotree_ui",
+		test_source_control_rejects_removed_neotree_ui,
 	},
 	{
 		"test_optional_integrations_detect_vanilla_and_enhanced_modes",
@@ -4396,7 +4430,9 @@ local cases = {
 	{ "test_svn_signs_preview_diff_window", test_svn_signs_preview_diff_window },
 	{ "test_svn_added_file_signs_and_live_diff", test_svn_added_file_signs_and_live_diff },
 	{ "test_svn_signs_ignore_untracked_files", test_svn_signs_ignore_untracked_files },
-	{ "test_svnsigns_compat_commands_follow_config", test_svnsigns_compat_commands_follow_config },
+	{ "test_single_command_replaces_legacy_surface", test_single_command_replaces_legacy_surface },
+	{ "test_command_completion_is_two_level", test_command_completion_is_two_level },
+	{ "test_unknown_subcommand_reports_valid_options", test_unknown_subcommand_reports_valid_options },
 	{ "test_setup_is_idempotent_and_respects_sign_toggle", test_setup_is_idempotent_and_respects_sign_toggle },
 	{ "test_source_control_collects_dirty_nested_repos", test_source_control_collects_dirty_nested_repos },
 	{

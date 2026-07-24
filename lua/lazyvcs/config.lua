@@ -39,9 +39,6 @@ local defaults = {
 		split_min_width = 20,
 		split_max_width = 34,
 	},
-	compat = {
-		svnsigns_commands = true,
-	},
 	source_control = {
 		enabled = true,
 		ui = "auto",
@@ -113,7 +110,6 @@ local function normalize(opts)
 		source_control = { opts.source_control, "table" },
 		signs = { opts.signs, "table" },
 		blame = { opts.blame, "table" },
-		compat = { opts.compat, "table" },
 		ai = { opts.ai, "table" },
 	})
 
@@ -138,7 +134,6 @@ local function normalize(opts)
 		blame_max_width = { opts.blame.max_width, "number" },
 		blame_split_min_width = { opts.blame.split_min_width, "number" },
 		blame_split_max_width = { opts.blame.split_max_width, "number" },
-		compat_svnsigns_commands = { opts.compat.svnsigns_commands, "boolean" },
 		enabled = { opts.source_control.enabled, "boolean" },
 		ui = { opts.source_control.ui, "string" },
 		scan_depth = { opts.source_control.scan_depth, "number" },
@@ -200,8 +195,8 @@ local function normalize(opts)
 	opts.blame.max_width = math.max(10, math.floor(opts.blame.max_width))
 	opts.blame.split_min_width = math.max(10, math.floor(opts.blame.split_min_width))
 	opts.blame.split_max_width = math.max(opts.blame.split_min_width, math.floor(opts.blame.split_max_width))
-	if not vim.tbl_contains({ "auto", "native", "neo-tree" }, opts.source_control.ui) then
-		error("lazyvcs source_control.ui must be 'auto', 'native', or legacy 'neo-tree'")
+	if not vim.tbl_contains({ "auto", "native" }, opts.source_control.ui) then
+		error("lazyvcs source_control.ui must be 'auto' or 'native'")
 	end
 	opts.source_control.scan_depth = math.max(1, math.floor(opts.source_control.scan_depth))
 	opts.source_control.width = math.max(20, math.floor(opts.source_control.width))

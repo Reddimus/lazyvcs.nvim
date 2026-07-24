@@ -242,6 +242,13 @@ function M.load_base_async(path, on_done)
 	end)
 end
 
+function M.revert_file(path)
+	if not svn_available() then
+		return nil, "svn executable not found"
+	end
+	return util.system({ "svn", "revert", path }, { cwd = vim.fs.dirname(path) })
+end
+
 function M.parse_status_lines(lines, root)
 	local items = {}
 	for _, line in ipairs(lines or {}) do
