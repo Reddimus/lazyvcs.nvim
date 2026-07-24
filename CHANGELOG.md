@@ -14,11 +14,11 @@ and this project adheres to
   with two-level tab completion (`:LazyVCS diff open`, `:LazyVCS blame split`,
   `:LazyVCS hunk next`, ...). Bare `:LazyVCS` toggles the source-control
   sidebar. The `LazyVcs*` casing twins, `:VcsLiveDiffOpen`, and the `Svn*`
-  svnsigns.nvim aliases are removed, along with the
-  `compat.svnsigns_commands` option.
-- All buffer operations now dispatch through the backend registry, so
-  `files`, `preview`, `revert`, `signs refresh` and hunk revert work in Git
-  repositories. They previously did nothing outside an SVN working copy.
+  svnsigns.nvim aliases are removed, along with the `compat.svnsigns_commands`
+  option.
+- All buffer operations now dispatch through the backend registry, so `files`,
+  `preview`, `revert`, `signs refresh` and hunk revert work in Git repositories.
+  They previously did nothing outside an SVN working copy.
 - `use_gitsigns` (default true) now controls only whether Git gutter signs are
   delegated to gitsigns.nvim; lazyvcs renders them natively when it is absent.
 - Removed the `source_control.ui = "neo-tree"` value. The Neo-tree adapter was
