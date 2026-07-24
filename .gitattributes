@@ -1,0 +1,25 @@
+# Normalize all text to LF in the repository AND in the working tree.
+#
+# Without this, a Windows clone with `core.autocrlf=true` checks out CRLF while
+# `.editorconfig` mandates LF. StyLua and lua-language-server then report a
+# whole-file diff locally that CI (Linux, LF) never sees, so formatting drift is
+# invisible until it breaks the build.
+* text=auto eol=lf
+
+# Shell scripts must keep LF or they will not execute in the E2E containers.
+*.sh text eol=lf
+
+*.lua text eol=lf
+*.md  text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+
+# Keep generated help tags out of diffs.
+doc/tags -diff
+
+*.png binary
+*.jpg binary
+*.gif binary
