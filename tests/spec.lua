@@ -2660,6 +2660,23 @@ local function test_svn_signs_ignore_untracked_files()
 	eq(#marks, 0, "SVN untracked files should not render signs or load a base")
 end
 
+local function test_relpath_never_returns_nil()
+	local util = require("lazyvcs.util")
+
+	eq(util.relpath("/repo", "/repo/a.txt"), "a.txt")
+	eq(util.relpath("/repo", "/repo/sub/a.txt"), "sub/a.txt")
+
+	-- vim.fs.relpath returns nil when the paths share no prefix, which happens on
+	-- Windows when one side is an 8.3 short name (C:/Users/RUNNER~1/...) and the
+	-- other is the long form. Callers concatenate this into buffer names and VCS
+	-- arguments, so it must always be a string.
+	local unrelated = util.relpath("/somewhere/else", "/repo/a.txt")
+	eq(type(unrelated), "string")
+	assert(unrelated ~= "", "relpath must not return an empty string")
+
+	eq(type(util.relpath("", "/repo/a.txt")), "string")
+end
+
 local function test_single_command_replaces_legacy_surface()
 	require("lazyvcs").setup({})
 
@@ -4431,6 +4448,7 @@ local cases = {
 	{ "test_svn_signs_preview_diff_window", test_svn_signs_preview_diff_window },
 	{ "test_svn_added_file_signs_and_live_diff", test_svn_added_file_signs_and_live_diff },
 	{ "test_svn_signs_ignore_untracked_files", test_svn_signs_ignore_untracked_files },
+	{ "test_relpath_never_returns_nil", test_relpath_never_returns_nil },
 	{ "test_single_command_replaces_legacy_surface", test_single_command_replaces_legacy_surface },
 	{ "test_command_completion_is_two_level", test_command_completion_is_two_level },
 	{ "test_unknown_subcommand_reports_valid_options", test_unknown_subcommand_reports_valid_options },
