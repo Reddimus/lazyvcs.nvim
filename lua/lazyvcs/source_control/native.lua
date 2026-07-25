@@ -790,7 +790,16 @@ function M.close()
 	local state = states[tabid()]
 	if state and valid_win(state.winid) then
 		save_state(state)
-		vim.api.nvim_win_close(state.winid, true)
+		-- Closing the last window in a tab raises E444, which used to escape the `q`
+		-- keymap and leave state.winid set, permanently wedging the toggle. Replace
+		-- the sidebar with an empty buffer instead.
+		if #vim.api.nvim_tabpage_list_wins(0) == 1 then
+			pcall(vim.api.nvim_win_call, state.winid, function()
+				vim.cmd("enew")
+			end)
+		else
+			pcall(vim.api.nvim_win_close, state.winid, true)
+		end
 		state.winid = nil
 	end
 end

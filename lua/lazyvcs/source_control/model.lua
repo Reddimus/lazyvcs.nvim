@@ -250,6 +250,25 @@ function M.discover(root, max_depth)
 	root = normalize(root)
 	local repos = {}
 	scan_repos(root, max_depth, 0, repos, {})
+
+	-- The scan only walks downward, so opening the sidebar from anywhere inside a
+	-- working copy (the common case: `cd repo/src && nvim`) found nothing at all.
+	-- Fall back to the enclosing working copy.
+	if #repos == 0 then
+		local enclosing = require("lazyvcs.backends").root(root)
+		if enclosing then
+			local kind = repo_kind(enclosing)
+			if kind then
+				repos[#repos + 1] = {
+					kind = kind,
+					root = normalize(enclosing),
+					name = vim.fs.basename(enclosing),
+					order = 1,
+				}
+			end
+		end
+	end
+
 	annotate_repos(root, repos)
 	table.sort(repos, function(a, b)
 		return a.order < b.order
