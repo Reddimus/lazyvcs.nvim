@@ -2655,7 +2655,17 @@ local function test_svn_signs_ignore_untracked_files()
 	local signs = require("lazyvcs.signs")
 	local state, err = signs.refresh_sync(0)
 	eq(state, nil)
-	eq(err, nil)
+	-- supported_buffer no longer runs a synchronous is_versioned() probe (it ran on
+	-- every BufEnter and blocked the UI thread), so trackedness is now decided by
+	-- the backend load. An untracked file therefore reports the backend's error
+	-- rather than being filtered out beforehand. What matters is unchanged: no
+	-- state is cached and no signs are placed.
+	if err ~= nil then
+		assert(
+			err:match("not found") or err:match("not tracked") or err:match("E200009"),
+			"unexpected error for an untracked SVN file: " .. tostring(err)
+		)
+	end
 	local marks = vim.api.nvim_buf_get_extmarks(0, signs._test_state().namespace, 0, -1, { details = true })
 	eq(#marks, 0, "SVN untracked files should not render signs or load a base")
 end
