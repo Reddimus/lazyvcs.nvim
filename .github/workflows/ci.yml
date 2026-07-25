@@ -17,7 +17,7 @@ jobs:
       LAZYVCS_TEST_LAZY_ROOT: ${{ github.workspace }}/deps/lazy
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install system packages
         run: |
@@ -112,7 +112,7 @@ jobs:
       LAZYVCS_TEST_LAZY_ROOT: ${{ github.workspace }}/deps/lazy
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install Neovim
         run: |
@@ -151,7 +151,7 @@ jobs:
     needs: checks
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Native container E2E
         run: tests/e2e/ubuntu-native.sh
