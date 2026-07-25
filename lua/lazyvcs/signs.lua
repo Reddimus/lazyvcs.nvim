@@ -60,6 +60,8 @@ local function supported_buffer(bufnr)
 		return nil
 	end
 
+	-- Backend resolution is cached per directory, so this is a table lookup once a
+	-- directory has been seen.
 	local backend_name = backends.name_for(path)
 	if not backend_name or defers_to_gitsigns(backend_name) then
 		return nil

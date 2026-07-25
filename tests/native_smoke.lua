@@ -51,7 +51,12 @@ local opened_file = root .. "/target.txt"
 vim.fn.writefile({ "target" }, opened_file)
 vim.api.nvim_set_current_win(sidebar_winid)
 state.lazyvcs_open_file(state, opened_file)
-assert(vim.api.nvim_buf_get_name(0) == opened_file, "native file open should target an editor window")
+-- nvim_buf_get_name returns the OS-native path, so normalize before comparing:
+-- on Windows it comes back with backslashes.
+assert(
+	vim.fs.normalize(vim.api.nvim_buf_get_name(0)) == vim.fs.normalize(opened_file),
+	"native file open should target an editor window"
+)
 assert(
 	vim.api.nvim_win_get_buf(sidebar_winid) == sidebar_bufnr,
 	"native file open should not replace the sidebar buffer"

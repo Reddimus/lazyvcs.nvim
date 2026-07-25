@@ -147,17 +147,50 @@ function M.system_lines_start(args, opts, on_exit)
 	end)
 end
 
+--- Path of `path` relative to `root`.
+---
+--- Never returns nil: callers concatenate the result into buffer names and VCS
+--- arguments. `vim.fs.relpath` returns nil whenever the two paths share no
+--- textual prefix, which happens on Windows when one side is an 8.3 short name
+--- (`C:/Users/RUNNER~1/...`) and the other is the long form
+--- (`C:/Users/runneradmin/...`) — the same directory, spelled differently.
+---@return string
 function M.relpath(root, path)
-	if vim.fs.relpath then
-		return vim.fs.relpath(root, path)
+	if not root or root == "" then
+		return path
 	end
 
-	if path:sub(1, #root) == root then
-		local rel = path:sub(#root + 2)
-		return rel ~= "" and rel or vim.fs.basename(path)
+	local rel = vim.fs.relpath and vim.fs.relpath(root, path)
+	if rel then
+		return rel
 	end
 
-	return path
+	local function strip_prefix(base, target)
+		if target:sub(1, #base) == base then
+			local out = target:sub(#base + 2)
+			if out ~= "" then
+				return out
+			end
+		end
+		return nil
+	end
+
+	-- Resolve symlinks and short names, then retry.
+	local real_root = vim.uv.fs_realpath(root)
+	local real_path = vim.uv.fs_realpath(path)
+	if real_root and real_path then
+		real_root, real_path = vim.fs.normalize(real_root), vim.fs.normalize(real_path)
+		rel = vim.fs.relpath and vim.fs.relpath(real_root, real_path)
+		if rel then
+			return rel
+		end
+		rel = strip_prefix(real_root, real_path)
+		if rel then
+			return rel
+		end
+	end
+
+	return strip_prefix(root, path) or vim.fs.basename(path)
 end
 
 function M.slice(lines, start_line, count)
