@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-07-25
+
+Bug-fix release. An exhaustive audit of the 0.4.0 tree produced 69 findings, 43
+of which survived adversarial verification; this release fixes the ones that
+break the editor or block the UI thread. The remainder are tracked in #17-#24.
+
+### Fixed
+
+- **Inline blame no longer probes the VCS on every cursor movement.**
+  `blame.lua` re-implemented backend probing locally instead of dispatching
+  through `backends`, bypassing the probe cache, so every `CursorMoved` spawned
+  `git rev-parse` (and `svn info`) synchronously.
+- **`:q` no longer aborts with E937.** `layout.close` deleted the base buffer
+  from inside that buffer's own `BufWipeout` autocmd; the surrounding `pcall`
+  catches a Lua error but not an `emsg`.
+- **Closing the sidebar as the last window no longer wedges the toggle.**
+  `nvim_win_close` raised E444 out of the `q` keymap and left the window id set.
+- **The sidebar finds the repository when opened from a subdirectory.**
+  Discovery only scanned downward, so `cd repo/src && nvim` found nothing.
+- **Backend resolution handles directory arguments.** The probe cwd and cache
+  key came from `vim.fs.dirname`, so a repo root was probed against its parent
+  and reported "No Git or SVN working copy found" — reached whenever the current
+  buffer is not a real file, e.g. `:LazyVCS files` from a no-name buffer.
+- **Negative backend probes expire after 5s** instead of being cached for the
+  session, so a directory that becomes a working copy (`git init`, a clone)
+  starts showing signs and diffs without restarting Neovim.
+- **Non-ASCII filenames work in `:LazyVCS files`.** `git status --porcelain`
+  C-quotes such paths; the quotes were stripped but the backslash escapes were
+  not decoded, and `vim.fs.normalize` then turned them into path separators. A
+  file legitimately named `a -> b.txt` is also no longer truncated.
+- **Buffer-transfer failures are reported.** The async callback dropped its
+  error argument, so a real backend failure (git mid-rebase, an `index.lock`, a
+  timed-out `svn cat`) tore the diff down silently.
+- **No orphaned diff window** when the transfer's target window has since moved
+  to a third buffer; the unreachable session is now closed.
+- Removed the synchronous `is_versioned()` probe from the signs hot path, which
+  ran on every `BufEnter`/`BufReadPost`/`TextChanged`.
+
+### Changed
+
+- `vim.validate` migrated to the current `(name, value, validator)` signature;
+  the documented minimum is now **Neovim 0.11**.
+
+### Added
+
+- Windows CI job. CI was Ubuntu-only while the primary development platform is
+  Windows, which hid 10 spec failures and a `util.relpath` nil return.
+- Issue forms, PR template, CODEOWNERS, dependabot.
+
 ## [0.4.0] - 2026-07-24
 
 ### Changed
