@@ -1,7 +1,6 @@
+local backends = require("lazyvcs.backends")
 local config = require("lazyvcs.config")
-local git = require("lazyvcs.backends.git")
 local store = require("lazyvcs.store")
-local svn = require("lazyvcs.backends.svn")
 local util = require("lazyvcs.util")
 
 local M = {}
@@ -12,7 +11,6 @@ local blame_views = {}
 local inline_views = {}
 local inline_enabled = false
 local STORE_KEY = "blame_inline_enabled"
-local backends = { git, svn }
 
 local function capture_win_options(winid, names)
 	local out = {}
@@ -35,17 +33,16 @@ local function apply_win_options(winid, opts)
 	end
 end
 
+-- Resolve through the shared dispatcher, which caches the probe per directory.
+-- This used to re-implement probing locally, so it spawned `git rev-parse` (and
+-- `svn info`) on every CursorMoved/CursorMovedI -- two blocking subprocesses per
+-- cursor movement while inline blame was on.
 local function backend_for_path(path)
-	local best
-	for _, backend in ipairs(backends) do
-		if backend.blame_lines_async then
-			local info = backend.probe(path)
-			if info and (not best or #info.root > #best.root) then
-				best = { backend = backend, root = info.root }
-			end
-		end
+	local backend = backends.resolve(path)
+	if backend and backend.blame_lines_async then
+		return backend
 	end
-	return best and best.backend or nil
+	return nil
 end
 
 local function supported_blame_buffer(bufnr)

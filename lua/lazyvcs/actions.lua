@@ -554,6 +554,11 @@ attach_session = function(session)
 		group = session.augroup,
 		buffer = session.base_bufnr,
 		callback = function()
+			-- Neovim is already wiping this buffer. Deleting it again from inside its
+			-- own BufWipeout raises E937, which aborts the user's :q / :only /
+			-- :tabclose -- and the surrounding pcall does not catch an emsg. Mark it
+			-- so layout.close skips the delete.
+			session.base_wiping = true
 			if state.get(session.base_bufnr) then
 				M.close(session.base_bufnr)
 			end

@@ -111,6 +111,17 @@ local function restore_window_option(winid, name, value)
 	end
 end
 
+--- Reset diff mode for the tab page containing `winid`.
+---
+--- KNOWN ISSUE: `diffoff!` is tab-page-global, so this also tears down unrelated
+--- diff windows the user has open in the same tab (a manual `:diffthis` pair,
+--- another plugin's diff). Scoping it to just this session's two windows -- via
+--- `diffoff` without the bang, or by assigning `vim.wo[win].diff = false` --
+--- breaks the buffer-transfer diff state: the reopened session then highlights
+--- unchanged lines (test_git_buffer_transfer_reopens_session). The transfer flow
+--- evidently relies on the group-wide reset, so fixing this properly means
+--- reworking how a transferred session re-enters diff mode, not just narrowing
+--- the scope here.
 function M.reset_tab_diff(winid)
 	local target = winid
 	if not util.win_is_valid(target) then
@@ -269,7 +280,11 @@ function M.close(session, opts)
 
 	if util.buf_is_valid(session.base_bufnr) then
 		aerial.restore_buffer(session.aerial_base_state)
-		pcall(vim.api.nvim_buf_delete, session.base_bufnr, { force = true })
+		-- Skip when Neovim is already wiping this buffer (we were called from its own
+		-- BufWipeout): deleting it again raises E937, which aborts the user's :q.
+		if not session.base_wiping then
+			pcall(vim.api.nvim_buf_delete, session.base_bufnr, { force = true })
+		end
 	end
 end
 
