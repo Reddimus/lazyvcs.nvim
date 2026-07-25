@@ -35,7 +35,7 @@ Use the same plugin spec in lazy.nvim or AstroNvim. This is the vanilla install:
   },
   cmd = { "LazyVCS" },
   keys = {
-    { "<leader>vv", "<cmd>LazyVCS<cr>", desc = "Toggle VCS sidebar" },
+    { "<leader>vs", "<cmd>LazyVCS<cr>", desc = "Toggle VCS sidebar" },
     { "<leader>vo", "<cmd>LazyVCS diff open<cr>", desc = "Open VCS diff" },
     { "<leader>vq", "<cmd>LazyVCS diff close<cr>", desc = "Close VCS diff" },
     { "<leader>vr", "<cmd>LazyVCS hunk revert<cr>", desc = "Revert VCS hunk" },
@@ -266,6 +266,22 @@ flowchart LR
 | `:LazyVCS files`                   | Browse changed files               |
 | `:LazyVCS profile [show\|clear]`   | Show or clear job timings          |
 | `:LazyVCS health`                  | Run `:checkhealth lazyvcs`         |
+
+## Suggested keymaps
+
+These are the bindings used by the install snippet above and by the test suite.
+Nothing is mapped unless you declare it in your own `keys` table, so change them
+freely.
+
+| Key          | Action                        |
+| ------------ | ----------------------------- |
+| `<leader>vs` | Toggle source-control sidebar |
+| `<leader>vo` | Open live diff                |
+| `<leader>vq` | Close live diff               |
+| `<leader>vr` | Revert the current hunk       |
+| `<leader>vb` | Toggle inline blame           |
+| `<leader>vf` | Browse changed files          |
+| `]v` / `[v`  | Next / previous hunk          |
 
 Every subcommand works in both Git and SVN working copies. Press `<Tab>` after
 `:LazyVCS ` to complete subcommands, and again to complete each one's verbs.

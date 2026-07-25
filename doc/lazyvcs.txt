@@ -210,7 +210,7 @@ Minimal lazy.nvim or AstroNvim spec:
     },
     cmd = { "LazyVCS" },
     keys = {
-      { "<leader>vv", "<cmd>LazyVCS<cr>", desc = "Toggle VCS sidebar" },
+      { "<leader>vs", "<cmd>LazyVCS<cr>", desc = "Toggle VCS sidebar" },
       { "<leader>vo", "<cmd>LazyVCS diff open<cr>", desc = "Open VCS diff" },
       { "<leader>vq", "<cmd>LazyVCS diff close<cr>", desc = "Close VCS diff" },
       { "<leader>vr", "<cmd>LazyVCS hunk revert<cr>", desc = "Revert VCS hunk" },
