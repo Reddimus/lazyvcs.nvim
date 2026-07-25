@@ -13,7 +13,7 @@ AstroNvim.
 
 ## Requirements
 
-- Neovim 0.10+
+- Neovim 0.11+
 - `git` for Git repositories
 - `svn` for SVN working copies
 - A Nerd Font is recommended for sidebar icons

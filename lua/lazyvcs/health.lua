@@ -6,10 +6,10 @@ function M.check()
 	health.start("lazyvcs.nvim")
 
 	-- Requirements ----------------------------------------------------------
-	if vim.fn.has("nvim-0.10") == 1 then
-		health.ok("Neovim 0.10+ (vim.system, vim.diff and vim.uv are available)")
+	if vim.fn.has("nvim-0.11") == 1 then
+		health.ok("Neovim 0.11+ (vim.system, vim.diff, vim.uv and the current vim.validate signature)")
 	else
-		health.error("Neovim 0.10+ is required (vim.system and vim.diff are unavailable)")
+		health.error("Neovim 0.11+ is required (config validation uses the 0.11 vim.validate signature)")
 	end
 
 	local git = vim.fn.executable("git") == 1

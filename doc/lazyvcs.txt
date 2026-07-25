@@ -34,7 +34,7 @@ The source-control sidebar is native Neovim UI. Neo-tree is not required.
 ==============================================================================
 REQUIREMENTS                                           *lazyvcs-requirements*
 
-- Neovim 0.10 or newer.
+- Neovim 0.11 or newer.
 - `git` for Git repositories.
 - `svn` for SVN working copies.
 - A Nerd Font is recommended for sidebar icons.

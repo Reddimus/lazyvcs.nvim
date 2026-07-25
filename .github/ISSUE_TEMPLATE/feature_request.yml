@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest a capability for lazyvcs.nvim
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the workflow, not just the feature.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: |
+        The plugin exposes exactly one command, `:LazyVCS`, with subcommands. New
+        functionality should fit as a subcommand rather than a new top-level command.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backends
+    attributes:
+      label: Which backends should this cover?
+      options: [Both Git and SVN, Git only, SVN only]
+    validations:
+      required: true
