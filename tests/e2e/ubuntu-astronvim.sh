@@ -316,6 +316,21 @@ local function wait_for(label, timeout_ms, predicate, on_ready)
   poll()
 end
 
+-- Heartbeat on the libuv loop. If these entries keep their queued= and written=
+-- timestamps close together, the main loop is healthy. If they all flush at once
+-- with old queued= stamps, vim.schedule was starved -- which, while libuv timers
+-- kept firing, means Neovim was sitting on a modal prompt rather than busy.
+local heartbeat = vim.uv.new_timer()
+timers[#timers + 1] = heartbeat
+local ticks = 0
+heartbeat:start(2000, 2000, function()
+  ticks = ticks + 1
+  local tick, queued_at = ticks, os.date("%H:%M:%S")
+  vim.schedule(function()
+    append_log(string.format("heartbeat %d queued=%s checkpoint=%s", tick, queued_at, last_label))
+  end)
+end)
+
 -- Global watchdog: the driver must always produce a verdict, even if a step
 -- never calls back.
 local watchdog = vim.uv.new_timer()
@@ -409,8 +424,23 @@ buffer_nav_smoke() {
 
 	export LAZYVCS_E2E_SVN_NAV_WC="${SVN_NAV_WC}"
 	rm -f "${sock}" "${result}" /tmp/lazyvcs-buffer-nav-state.log
+	# The pty must have a real size and Neovim must never open a modal prompt.
+	#
+	# `script` runs without a controlling terminal in CI, so the pty it allocates
+	# has a degenerate size. With a ~0-row message area every message overflows and
+	# Neovim stops at the hit-enter prompt, which blocks vim.schedule callbacks
+	# while libuv timers keep running -- indistinguishable from a deadlock, and
+	# intermittent because it depends on whether anything printed a message.
+	# `stty` fixes the geometry; the --cmd flags remove the remaining modal
+	# prompts (swapfile ATTENTION, hit-enter, more-prompt) so a stray message can
+	# never wedge the run.
 	timeout 180s script -qefc \
-		"nvim --listen '${sock}' '${SVN_NAV_WC}/alpha.cpp'" \
+		"stty rows 60 cols 200; nvim \
+			--cmd 'set noswapfile' \
+			--cmd 'set shortmess+=aoOtTAIcF' \
+			--cmd 'set nomore' \
+			--cmd 'set cmdheight=10' \
+			--listen '${sock}' '${SVN_NAV_WC}/alpha.cpp'" \
 		"${typescript}" >"${ui_log}" 2>&1 &
 	local nvim_pid=$!
 
