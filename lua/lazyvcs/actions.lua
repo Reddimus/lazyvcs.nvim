@@ -256,15 +256,28 @@ local function handle_pending_transfer(target_bufnr)
 			return fail_transfer(guard_err)
 		end
 
-		build_session_async(target_bufnr, function(replacement)
+		build_session_async(target_bufnr, function(replacement, build_err)
 			-- The user may have navigated again while the backend was loading, so
 			-- re-validate before touching any window.
-			if
-				not vim.api.nvim_tabpage_is_valid(pending.tabpage)
-				or pending.tabpage ~= vim.api.nvim_get_current_tabpage()
-				or pending.editable_win ~= vim.api.nvim_get_current_win()
-				or vim.api.nvim_get_current_buf() ~= target_bufnr
-			then
+			local tab_ok = vim.api.nvim_tabpage_is_valid(pending.tabpage)
+				and pending.tabpage == vim.api.nvim_get_current_tabpage()
+			local win_ok = tab_ok and pending.editable_win == vim.api.nvim_get_current_win()
+
+			if not win_ok then
+				-- The user moved to another window or tab: the old session is still
+				-- coherent where it lives, so leave it alone.
+				return abort()
+			end
+
+			if vim.api.nvim_get_current_buf() ~= target_bufnr then
+				-- Same window, but it now holds a third buffer: the old session can
+				-- never be reached again. Tear it down instead of leaving an orphaned
+				-- lazyvcs:// window diffed against the wrong file.
+				local stale = state.get(pending.editable_bufnr)
+				if stale then
+					pcall(close_session, stale, { reset_tab_diff = true })
+				end
+				close_failed_transfer_window(pending)
 				return abort()
 			end
 
@@ -278,10 +291,15 @@ local function handle_pending_transfer(target_bufnr)
 				end
 
 				if not replacement then
-					-- Unsupported buffer (no VCS backend, or an untracked file the
-					-- backend cannot base a diff on): close cleanly and stay quiet,
-					-- this is a normal outcome of navigating to a plain file.
-					return fail_transfer(nil)
+					-- No backend for this buffer is a normal outcome of navigating to a
+					-- plain file, so close quietly. A real backend failure (git mid-rebase,
+					-- an index.lock, a timed-out `svn cat`) must not be silent, or the user
+					-- cannot tell the plugin failed from the file being unsupported.
+					local unsupported = not build_err
+						or build_err:match("No Git or SVN working copy")
+						or build_err:match("not tracked")
+						or build_err:match("only opens on normal file buffers")
+					return fail_transfer(not unsupported and build_err or nil)
 				end
 
 				local _, open_err = open_session(replacement)

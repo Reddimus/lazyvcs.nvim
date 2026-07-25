@@ -21,7 +21,7 @@ local function get_root(path)
 	if not svn_available() then
 		return nil, "svn executable not found"
 	end
-	local cwd = vim.fs.dirname(path)
+	local cwd = util.dir_of(path)
 	local result, err = util.system({ "svn", "info", "--show-item", "wc-root", path }, { cwd = cwd })
 	if not result then
 		return nil, err
@@ -33,12 +33,12 @@ local function is_versioned(path)
 	if not svn_available() then
 		return false
 	end
-	local _, err = util.system({ "svn", "info", path }, { cwd = vim.fs.dirname(path) })
+	local _, err = util.system({ "svn", "info", path }, { cwd = util.dir_of(path) })
 	return err == nil
 end
 
 local function status_code(path)
-	local lines, err = util.system_lines({ "svn", "status", "--depth", "empty", path }, { cwd = vim.fs.dirname(path) })
+	local lines, err = util.system_lines({ "svn", "status", "--depth", "empty", path }, { cwd = util.dir_of(path) })
 	if not lines then
 		return nil, err
 	end
@@ -178,7 +178,7 @@ function M.load_base_async(path, on_done)
 		return nil
 	end
 
-	local cwd = vim.fs.dirname(path)
+	local cwd = util.dir_of(path)
 	util.system_start({ "svn", "info", "--show-item", "wc-root", path }, { cwd = cwd }, function(result, err)
 		if err then
 			return on_done(nil, err)
@@ -190,7 +190,7 @@ function M.load_base_async(path, on_done)
 			end
 			util.system_lines_start(
 				{ "svn", "status", "--depth", "empty", path },
-				{ cwd = vim.fs.dirname(path) },
+				{ cwd = util.dir_of(path) },
 				function(status_lines, status_err)
 					if not status_lines then
 						return on_done(nil, status_err)
@@ -249,7 +249,7 @@ function M.revert_file(path)
 	if not svn_available() then
 		return nil, "svn executable not found"
 	end
-	return util.system({ "svn", "revert", path }, { cwd = vim.fs.dirname(path) })
+	return util.system({ "svn", "revert", path }, { cwd = util.dir_of(path) })
 end
 
 function M.parse_status_lines(lines, root)
@@ -308,7 +308,7 @@ function M.blame_lines_async(path, on_done)
 		}
 	end
 
-	local cwd = vim.fs.dirname(path)
+	local cwd = util.dir_of(path)
 	local job = {
 		handle = nil,
 		cancelled = false,

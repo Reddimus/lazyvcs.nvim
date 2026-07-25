@@ -20,7 +20,7 @@ local function get_root(path)
 	if not git_available() then
 		return nil, "git executable not found"
 	end
-	local cwd = vim.fs.dirname(path)
+	local cwd = util.dir_of(path)
 	local result, err = util.system({ "git", "rev-parse", "--show-toplevel" }, { cwd = cwd })
 	if not result then
 		return nil, err
@@ -147,7 +147,7 @@ function M.load_base_async(path, on_done)
 		return nil
 	end
 
-	local cwd = vim.fs.dirname(path)
+	local cwd = util.dir_of(path)
 	return util.system_start({ "git", "rev-parse", "--show-toplevel" }, { cwd = cwd }, function(result, err)
 		if err then
 			return on_done(nil, err)
@@ -187,6 +187,24 @@ function M.load_base_async(path, on_done)
 	end)
 end
 
+-- `git status --porcelain` C-quotes any path with non-ASCII or special bytes:
+-- `caf<e9>.txt` is reported as `"caf\303\251.txt"`. Stripping only the quotes
+-- leaves literal backslash escapes, and vim.fs.normalize then turns those
+-- backslashes into path separators, so the file could never be opened.
+local function unquote_path(path)
+	if not path:match('^".*"$') then
+		return path
+	end
+	path = path:sub(2, -2)
+	return (
+		path:gsub("\\(%d%d%d)", function(octal)
+			return string.char(tonumber(octal, 8))
+		end):gsub("\\(.)", function(char)
+			return ({ a = "\a", b = "\b", f = "\f", n = "\n", r = "\r", t = "\t", v = "\v" })[char] or char
+		end)
+	)
+end
+
 function M.parse_status_lines(lines, root)
 	local items = {}
 	for _, line in ipairs(lines or {}) do
@@ -195,11 +213,13 @@ function M.parse_status_lines(lines, root)
 			-- Prefer the worktree column; it is what the user sees on disk.
 			local code = worktree_code ~= " " and worktree_code or index_code
 			local path = util.trim(line:sub(4))
-			-- Renames are reported as `old -> new`; keep the destination.
-			local _, _, renamed = path:find("%s%->%s(.+)$")
-			path = renamed or path
-			-- Porcelain quotes paths containing special characters.
-			path = path:gsub('^"(.*)"$', "%1")
+			-- Only rename/copy entries use `old -> new`; splitting unconditionally
+			-- would truncate a file legitimately named `a -> b.txt`.
+			if index_code == "R" or index_code == "C" then
+				local _, _, renamed = path:find("%s%->%s(.+)$")
+				path = renamed or path
+			end
+			path = unquote_path(path)
 			if code ~= "" and code ~= " " and path ~= "" then
 				items[#items + 1] = {
 					status = code,
@@ -281,7 +301,7 @@ function M.blame_lines(path)
 end
 
 function M.blame_lines_async(path, on_done)
-	local cwd = vim.fs.dirname(path)
+	local cwd = util.dir_of(path)
 	local job = {
 		handle = nil,
 		cancelled = false,

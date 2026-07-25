@@ -62,11 +62,14 @@ local function supported_buffer(bufnr)
 
 	-- Backend resolution is cached per directory, so this is a table lookup once a
 	-- directory has been seen.
+	--
+	-- Deliberately no is_versioned() check: it spawns `git ls-files` / `svn info`
+	-- synchronously, and this runs on every BufEnter, BufReadPost and TextChanged.
+	-- load_base_async already reports trackedness, and M.refresh clears the buffer
+	-- when the backend reports no base, so the check was redundant as well as
+	-- blocking.
 	local backend_name = backends.name_for(path)
 	if not backend_name or defers_to_gitsigns(backend_name) then
-		return nil
-	end
-	if not backends.is_versioned(path) then
 		return nil
 	end
 	return path

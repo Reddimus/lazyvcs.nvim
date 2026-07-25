@@ -147,6 +147,21 @@ function M.system_lines_start(args, opts, on_exit)
 	end)
 end
 
+--- Directory to run a VCS command in for `path`.
+---
+--- `path` is usually a file, but callers also pass directories (for example
+--- `buffer_ops` falls back to the cwd when the current buffer is not a real
+--- file). Blindly taking `vim.fs.dirname` would then probe the PARENT of a
+--- working copy, so a repo root resolves to "no working copy found".
+---@return string
+function M.dir_of(path)
+	local stat = path and vim.uv.fs_stat(path)
+	if stat and stat.type == "directory" then
+		return vim.fs.normalize(path)
+	end
+	return vim.fs.dirname(path)
+end
+
 --- Path of `path` relative to `root`.
 ---
 --- Never returns nil: callers concatenate the result into buffer names and VCS

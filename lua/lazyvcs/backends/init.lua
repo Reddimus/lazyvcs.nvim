@@ -2,6 +2,8 @@
 --
 -- Callers must go through this module rather than requiring `backends.git` or
 -- `backends.svn` directly, so every feature works identically in both VCSes.
+local util = require("lazyvcs.util")
+
 local git = require("lazyvcs.backends.git")
 local svn = require("lazyvcs.backends.svn")
 
@@ -14,6 +16,9 @@ local backends = { git, svn }
 -- the answer per directory; `M.invalidate` clears it on directory changes.
 local probe_cache = {}
 
+-- How long a "no working copy here" answer stays cached.
+local NEGATIVE_TTL_MS = 5000
+
 function M.invalidate()
 	probe_cache = {}
 end
@@ -23,18 +28,28 @@ end
 --- (or vice versa) resolves to the inner one.
 ---@return table|nil backend, string|nil root, string|nil err
 function M.resolve(path)
-	local key = vim.fs.dirname(path)
+	-- dir_of, not dirname: callers also pass directories (buffer_ops falls back to
+	-- the cwd for non-file buffers), and dirname would probe the PARENT of a
+	-- working copy, so a repo root resolved to "no working copy found".
+	local key = util.dir_of(path)
 	local hit = probe_cache[key]
 	if hit ~= nil then
 		if hit.backend then
 			return hit.backend, hit.root
 		end
-		return nil, nil, hit.err
+		-- Negative results expire: a directory can become a working copy mid-session
+		-- (`git init`, a clone, a checkout). Caching those forever left signs, diff
+		-- and blame dead there until :cd or a restart, while re-probing every time
+		-- would spawn git+svn on each BufEnter in non-repo directories.
+		if vim.uv.now() - hit.at < NEGATIVE_TTL_MS then
+			return nil, nil, hit.err
+		end
+		probe_cache[key] = nil
 	end
 
 	local best
 	for _, backend in ipairs(backends) do
-		local info = backend.probe(path)
+		local info = backend.probe(key)
 		if info and (not best or #info.root > #best.root) then
 			best = { backend = backend, root = info.root }
 		end
@@ -42,7 +57,7 @@ function M.resolve(path)
 
 	if not best then
 		local err = "No Git or SVN working copy found for " .. path
-		probe_cache[key] = { err = err }
+		probe_cache[key] = { err = err, at = vim.uv.now() }
 		return nil, nil, err
 	end
 
