@@ -2660,6 +2660,50 @@ local function test_svn_signs_ignore_untracked_files()
 	eq(#marks, 0, "SVN untracked files should not render signs or load a base")
 end
 
+local function test_backend_resolves_directory_arguments()
+	local helpers_fixture = helpers.make_git_fixture()
+	local backends = require("lazyvcs.backends")
+	backends.invalidate()
+
+	-- Callers pass directories too (buffer_ops falls back to the cwd for non-file
+	-- buffers). Resolving via dirname probed the PARENT, so a repo root reported
+	-- "no working copy found".
+	local backend, root = backends.resolve(helpers_fixture.root)
+	assert(backend, "a repository root directory should resolve to a backend")
+	eq(backend.name, "git")
+	assert(root and root ~= "", "resolving a directory should yield a root")
+
+	-- A file inside it must resolve to the same backend and root.
+	local file_backend, file_root = backends.resolve(helpers_fixture.file)
+	eq(file_backend.name, "git")
+	eq(file_root, root)
+end
+
+local function test_git_status_decodes_quoted_paths()
+	local git = require("lazyvcs.backends.git")
+
+	-- git C-quotes non-ASCII paths: a file named "cafe" with an acute accent is
+	-- reported with LITERAL backslash-escaped octal bytes inside quotes. Stripping
+	-- the quotes left those backslashes, and vim.fs.normalize then turned them
+	-- into path separators, so the file could never be opened.
+	local bs = string.char(92)
+	local quoted = '?? "caf' .. bs .. "303" .. bs .. '251.txt"'
+	local items = git.parse_status_lines({ quoted }, "/repo")
+	eq(#items, 1)
+	eq(items[1].path, "caf" .. string.char(195, 169) .. ".txt")
+	assert(not items[1].absolute_path:match("/303/"), "octal escapes must not become path separators")
+
+	-- A file legitimately named `a -> b.txt` must not be truncated: only R/C
+	-- entries use the rename arrow.
+	local plain = git.parse_status_lines({ " M a -> b.txt" }, "/repo")
+	eq(#plain, 1)
+	eq(plain[1].path, "a -> b.txt")
+
+	local renamed = git.parse_status_lines({ "R  old.txt -> new.txt" }, "/repo")
+	eq(#renamed, 1)
+	eq(renamed[1].path, "new.txt")
+end
+
 local function test_relpath_never_returns_nil()
 	local util = require("lazyvcs.util")
 
@@ -4449,6 +4493,8 @@ local cases = {
 	{ "test_svn_added_file_signs_and_live_diff", test_svn_added_file_signs_and_live_diff },
 	{ "test_svn_signs_ignore_untracked_files", test_svn_signs_ignore_untracked_files },
 	{ "test_relpath_never_returns_nil", test_relpath_never_returns_nil },
+	{ "test_backend_resolves_directory_arguments", test_backend_resolves_directory_arguments },
+	{ "test_git_status_decodes_quoted_paths", test_git_status_decodes_quoted_paths },
 	{ "test_single_command_replaces_legacy_surface", test_single_command_replaces_legacy_surface },
 	{ "test_command_completion_is_two_level", test_command_completion_is_two_level },
 	{ "test_unknown_subcommand_reports_valid_options", test_unknown_subcommand_reports_valid_options },
