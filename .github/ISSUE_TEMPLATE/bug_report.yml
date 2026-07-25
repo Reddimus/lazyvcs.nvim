@@ -1,0 +1,63 @@
+name: Bug report
+description: Something in lazyvcs.nvim does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please run `:checkhealth lazyvcs` first — it reports your Neovim version,
+        which backends are available, and how signs and blame are configured.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Minimal steps from a clean Neovim. A minimal config that reproduces it is
+        the single most useful thing you can provide.
+      placeholder: |
+        1. Open a file in a Git (or SVN) working copy
+        2. Run `:LazyVCS diff open`
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: checkhealth
+    attributes:
+      label: ":checkhealth lazyvcs" output
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options: [Git, SVN, Both, Not sure]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Linux, macOS, Windows, WSL, Other]
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: |
+        If Neovim froze, note roughly how long for — a stall of exactly 30s or 60s
+        points at a VCS command timing out rather than a logic bug.

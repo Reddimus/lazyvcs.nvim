@@ -100,87 +100,79 @@ local function normalize_width(width)
 end
 
 local function normalize(opts)
-	vim.validate({
-		debounce_ms = { opts.debounce_ms, "number" },
-		use_gitsigns = { opts.use_gitsigns, "boolean" },
-		set_winbar = { opts.set_winbar, "boolean" },
-		session_keymaps = { opts.session_keymaps, "boolean" },
-		keymaps = { opts.keymaps, "table" },
-		base_window = { opts.base_window, "table" },
-		source_control = { opts.source_control, "table" },
-		signs = { opts.signs, "table" },
-		blame = { opts.blame, "table" },
-		ai = { opts.ai, "table" },
-	})
+	vim.validate("debounce_ms", opts.debounce_ms, "number")
+	vim.validate("use_gitsigns", opts.use_gitsigns, "boolean")
+	vim.validate("set_winbar", opts.set_winbar, "boolean")
+	vim.validate("session_keymaps", opts.session_keymaps, "boolean")
+	vim.validate("keymaps", opts.keymaps, "table")
+	vim.validate("base_window", opts.base_window, "table")
+	vim.validate("source_control", opts.source_control, "table")
+	vim.validate("signs", opts.signs, "table")
+	vim.validate("blame", opts.blame, "table")
+	vim.validate("ai", opts.ai, "table")
 
-	vim.validate({
-		close = { opts.keymaps.close, "string" },
-		next_hunk = { opts.keymaps.next_hunk, "string" },
-		prev_hunk = { opts.keymaps.prev_hunk, "string" },
-		revert_hunk = { opts.keymaps.revert_hunk, "string" },
-		width = { opts.base_window.width, "number" },
-		signs_enabled = { opts.signs.enabled, "boolean" },
-		signs_debounce_ms = { opts.signs.debounce_ms, "number" },
-		signs_sign_priority = { opts.signs.sign_priority, "number" },
-		signs_max_file_bytes = { opts.signs.max_file_bytes, "number" },
-		signs_text = { opts.signs.text, "table" },
-		blame_mode = { opts.blame.mode, "string" },
-		blame_persist = { opts.blame.persist, "boolean" },
-		blame_delay_ms = { opts.blame.delay_ms, "number" },
-		blame_loading_delay_ms = { opts.blame.loading_delay_ms, "number" },
-		blame_loading_text = { opts.blame.loading_text, "string" },
-		blame_uncommitted_text = { opts.blame.uncommitted_text, "string" },
-		blame_format = { opts.blame.format, "string" },
-		blame_max_width = { opts.blame.max_width, "number" },
-		blame_split_min_width = { opts.blame.split_min_width, "number" },
-		blame_split_max_width = { opts.blame.split_max_width, "number" },
-		enabled = { opts.source_control.enabled, "boolean" },
-		ui = { opts.source_control.ui, "string" },
-		scan_depth = { opts.source_control.scan_depth, "number" },
-		source_control_width = { opts.source_control.width, "number" },
-		auto_expand_width = { opts.source_control.auto_expand_width, "boolean" },
-		auto_expand_max_width_ratio = { opts.source_control.auto_expand_max_width_ratio, "number" },
-		show_clean = { opts.source_control.show_clean, "boolean" },
-		confirm_mutations = { opts.source_control.confirm_mutations, "boolean" },
-		remote_refresh = { opts.source_control.remote_refresh, "string" },
-		remote_refresh_interval_ms = { opts.source_control.remote_refresh_interval_ms, "number" },
-		sync_button_behavior = { opts.source_control.sync_button_behavior, "string" },
-		always_show_repositories = { opts.source_control.always_show_repositories, "boolean" },
-		selection_mode = { opts.source_control.selection_mode, "string" },
-		repositories_sort = { opts.source_control.repositories_sort, "string" },
-		changes_view_mode = { opts.source_control.changes_view_mode, "string" },
-		changes_sort = { opts.source_control.changes_sort, "string" },
-		compact_folders = { opts.source_control.compact_folders, "boolean" },
-		show_action_button = { opts.source_control.show_action_button, "boolean" },
-		show_input_action_button = { opts.source_control.show_input_action_button, "boolean" },
-		remote_error_notifications = { opts.source_control.remote_error_notifications, "string" },
-		background = { opts.source_control.background, "table" },
-		commit_provider = { opts.ai.commit_message.provider, "string" },
-		commit_provider_order = { opts.ai.commit_message.provider_order, "table" },
-		commit_instructions = { opts.ai.commit_message.instructions, "string" },
-		commit_timeout_ms = { opts.ai.commit_message.timeout_ms, "number" },
-		commit_max_context_chars = { opts.ai.commit_message.max_context_chars, "number" },
-		commit_context = { opts.ai.commit_message.context, "string" },
-		commit_generate_key = { opts.ai.commit_message.generate_key, "string" },
-		commit_insert_generate_key = { opts.ai.commit_message.insert_generate_key, "string" },
-		commit_confirm_privacy = { opts.ai.commit_message.confirm_privacy, "boolean" },
-	})
-	vim.validate({
-		sign_add = { opts.signs.text.add, "string" },
-		sign_change = { opts.signs.text.change, "string" },
-		sign_delete = { opts.signs.text.delete, "string" },
-		sign_topdelete = { opts.signs.text.topdelete, "string" },
-		sign_changedelete = { opts.signs.text.changedelete, "string" },
-	})
-	vim.validate({
-		git_workers = { opts.source_control.background.git_workers, "number" },
-		svn_workers = { opts.source_control.background.svn_workers, "number" },
-		status_timeout_ms = { opts.source_control.background.status_timeout_ms, "number" },
-		remote_timeout_ms = { opts.source_control.background.remote_timeout_ms, "number" },
-		switch_timeout_ms = { opts.source_control.background.switch_timeout_ms, "number" },
-		mutation_timeout_ms = { opts.source_control.background.mutation_timeout_ms, "number" },
-		history_limit = { opts.source_control.background.history_limit, "number" },
-	})
+	vim.validate("close", opts.keymaps.close, "string")
+	vim.validate("next_hunk", opts.keymaps.next_hunk, "string")
+	vim.validate("prev_hunk", opts.keymaps.prev_hunk, "string")
+	vim.validate("revert_hunk", opts.keymaps.revert_hunk, "string")
+	vim.validate("width", opts.base_window.width, "number")
+	vim.validate("signs_enabled", opts.signs.enabled, "boolean")
+	vim.validate("signs_debounce_ms", opts.signs.debounce_ms, "number")
+	vim.validate("signs_sign_priority", opts.signs.sign_priority, "number")
+	vim.validate("signs_max_file_bytes", opts.signs.max_file_bytes, "number")
+	vim.validate("signs_text", opts.signs.text, "table")
+	vim.validate("blame_mode", opts.blame.mode, "string")
+	vim.validate("blame_persist", opts.blame.persist, "boolean")
+	vim.validate("blame_delay_ms", opts.blame.delay_ms, "number")
+	vim.validate("blame_loading_delay_ms", opts.blame.loading_delay_ms, "number")
+	vim.validate("blame_loading_text", opts.blame.loading_text, "string")
+	vim.validate("blame_uncommitted_text", opts.blame.uncommitted_text, "string")
+	vim.validate("blame_format", opts.blame.format, "string")
+	vim.validate("blame_max_width", opts.blame.max_width, "number")
+	vim.validate("blame_split_min_width", opts.blame.split_min_width, "number")
+	vim.validate("blame_split_max_width", opts.blame.split_max_width, "number")
+	vim.validate("enabled", opts.source_control.enabled, "boolean")
+	vim.validate("ui", opts.source_control.ui, "string")
+	vim.validate("scan_depth", opts.source_control.scan_depth, "number")
+	vim.validate("source_control_width", opts.source_control.width, "number")
+	vim.validate("auto_expand_width", opts.source_control.auto_expand_width, "boolean")
+	vim.validate("auto_expand_max_width_ratio", opts.source_control.auto_expand_max_width_ratio, "number")
+	vim.validate("show_clean", opts.source_control.show_clean, "boolean")
+	vim.validate("confirm_mutations", opts.source_control.confirm_mutations, "boolean")
+	vim.validate("remote_refresh", opts.source_control.remote_refresh, "string")
+	vim.validate("remote_refresh_interval_ms", opts.source_control.remote_refresh_interval_ms, "number")
+	vim.validate("sync_button_behavior", opts.source_control.sync_button_behavior, "string")
+	vim.validate("always_show_repositories", opts.source_control.always_show_repositories, "boolean")
+	vim.validate("selection_mode", opts.source_control.selection_mode, "string")
+	vim.validate("repositories_sort", opts.source_control.repositories_sort, "string")
+	vim.validate("changes_view_mode", opts.source_control.changes_view_mode, "string")
+	vim.validate("changes_sort", opts.source_control.changes_sort, "string")
+	vim.validate("compact_folders", opts.source_control.compact_folders, "boolean")
+	vim.validate("show_action_button", opts.source_control.show_action_button, "boolean")
+	vim.validate("show_input_action_button", opts.source_control.show_input_action_button, "boolean")
+	vim.validate("remote_error_notifications", opts.source_control.remote_error_notifications, "string")
+	vim.validate("background", opts.source_control.background, "table")
+	vim.validate("commit_provider", opts.ai.commit_message.provider, "string")
+	vim.validate("commit_provider_order", opts.ai.commit_message.provider_order, "table")
+	vim.validate("commit_instructions", opts.ai.commit_message.instructions, "string")
+	vim.validate("commit_timeout_ms", opts.ai.commit_message.timeout_ms, "number")
+	vim.validate("commit_max_context_chars", opts.ai.commit_message.max_context_chars, "number")
+	vim.validate("commit_context", opts.ai.commit_message.context, "string")
+	vim.validate("commit_generate_key", opts.ai.commit_message.generate_key, "string")
+	vim.validate("commit_insert_generate_key", opts.ai.commit_message.insert_generate_key, "string")
+	vim.validate("commit_confirm_privacy", opts.ai.commit_message.confirm_privacy, "boolean")
+	vim.validate("sign_add", opts.signs.text.add, "string")
+	vim.validate("sign_change", opts.signs.text.change, "string")
+	vim.validate("sign_delete", opts.signs.text.delete, "string")
+	vim.validate("sign_topdelete", opts.signs.text.topdelete, "string")
+	vim.validate("sign_changedelete", opts.signs.text.changedelete, "string")
+	vim.validate("git_workers", opts.source_control.background.git_workers, "number")
+	vim.validate("svn_workers", opts.source_control.background.svn_workers, "number")
+	vim.validate("status_timeout_ms", opts.source_control.background.status_timeout_ms, "number")
+	vim.validate("remote_timeout_ms", opts.source_control.background.remote_timeout_ms, "number")
+	vim.validate("switch_timeout_ms", opts.source_control.background.switch_timeout_ms, "number")
+	vim.validate("mutation_timeout_ms", opts.source_control.background.mutation_timeout_ms, "number")
+	vim.validate("history_limit", opts.source_control.background.history_limit, "number")
 
 	opts.debounce_ms = math.max(0, math.floor(opts.debounce_ms))
 	opts.base_window.width = normalize_width(opts.base_window.width)

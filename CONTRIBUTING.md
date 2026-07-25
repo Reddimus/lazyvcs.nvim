@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Neovim 0.10+ (CI pins 0.12.2)
+- Neovim 0.11+ (CI pins 0.12.2)
 - `git`, and `svn` if you want the Subversion specs to run instead of skip
 - [StyLua](https://github.com/JohnnyMorganz/StyLua) 2.3.0 and
   [lua-language-server](https://github.com/LuaLS/lua-language-server) 3.15.0
