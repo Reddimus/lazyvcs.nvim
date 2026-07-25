@@ -2675,6 +2675,7 @@ local function test_backend_resolves_directory_arguments()
 
 	-- A file inside it must resolve to the same backend and root.
 	local file_backend, file_root = backends.resolve(helpers_fixture.file)
+	assert(file_backend, "a file inside a repository should resolve to a backend")
 	eq(file_backend.name, "git")
 	eq(file_root, root)
 end
