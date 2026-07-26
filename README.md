@@ -232,6 +232,19 @@ When the active editor window changes buffers, such as with AstroNvim `]b`,
 `[b`, or tabline buffer picking, LazyVCS reopens the live diff for supported
 Git/SVN buffers and closes the session cleanly for unsupported buffers.
 
+LazyVCS mirrors the editable window's `wrap`, `linebreak`, and `breakindent`
+settings to the read-only base window. Native Neovim diff mode disables wrapping
+unless `followwrap` is present in `diffopt`, so add it in your Neovim or
+AstroNvim options to preserve wrapping:
+
+```lua
+vim.opt.diffopt:append("followwrap")
+```
+
+LazyVCS does not change `diffopt`. With `followwrap`, corresponding lines can
+occupy different screen heights and appear visually misaligned when they wrap at
+different points.
+
 ```mermaid
 flowchart LR
   File["Editable file (NEW, right window)"] --> Detect[Detect Git or SVN backend]

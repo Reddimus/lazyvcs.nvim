@@ -161,7 +161,9 @@ function M.open(session)
 
 	vim.wo[session.base_win].number = vim.wo[editable_win].number
 	vim.wo[session.base_win].relativenumber = false
-	vim.wo[session.base_win].wrap = false
+	vim.wo[session.base_win].wrap = vim.wo[editable_win].wrap
+	vim.wo[session.base_win].linebreak = vim.wo[editable_win].linebreak
+	vim.wo[session.base_win].breakindent = vim.wo[editable_win].breakindent
 	vim.wo[session.base_win].cursorline = false
 	vim.wo[session.base_win].winfixwidth = true
 

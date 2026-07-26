@@ -56,6 +56,26 @@ local function diff_hl_id(winid, line)
 	return hl_id
 end
 
+local function with_diffopt_flag(flag, enabled, fn)
+	local previous = vim.o.diffopt
+	local entries = {}
+	for _, entry in ipairs(vim.split(previous, ",", { plain = true })) do
+		if entry ~= flag then
+			entries[#entries + 1] = entry
+		end
+	end
+	if enabled then
+		entries[#entries + 1] = flag
+	end
+	vim.o.diffopt = table.concat(entries, ",")
+
+	local ok, err = xpcall(fn, debug.traceback)
+	vim.o.diffopt = previous
+	if not ok then
+		error(err, 0)
+	end
+end
+
 local function find_first_node(node, wanted_type)
 	if not node then
 		return nil
@@ -2414,6 +2434,89 @@ local function test_live_diff_scrollbinds_panes_and_restores_editable_window()
 	eq(vim.wo[editable_win].scrollbind, false)
 end
 
+local function assert_live_diff_window_options(session, expected_wrap)
+	for _, winid in ipairs({ session.editable_win, session.base_win }) do
+		eq(vim.wo[winid].diff, true)
+		eq(vim.wo[winid].scrollbind, true)
+		eq(vim.wo[winid].wrap, expected_wrap)
+		eq(vim.wo[winid].linebreak, true)
+		eq(vim.wo[winid].breakindent, true)
+	end
+end
+
+local function assert_live_diff_wrap_behavior(followwrap)
+	with_diffopt_flag("followwrap", followwrap, function()
+		require("lazyvcs").setup({ debounce_ms = 10 })
+
+		vim.cmd.enew()
+		local editable_buf = vim.api.nvim_get_current_buf()
+		local editable_win = vim.api.nvim_get_current_win()
+		local previous_window_options = {
+			wrap = vim.wo[editable_win].wrap,
+			linebreak = vim.wo[editable_win].linebreak,
+			breakindent = vim.wo[editable_win].breakindent,
+		}
+		vim.api.nvim_buf_set_name(editable_buf, vim.fs.normalize(vim.fn.tempname()) .. "/wrap-sample.txt")
+		vim.api.nvim_buf_set_lines(editable_buf, 0, -1, false, {
+			"a long editable line that can wrap in a narrow live diff window",
+			"two changed",
+			"three",
+		})
+		vim.wo[editable_win].wrap = true
+		vim.wo[editable_win].linebreak = true
+		vim.wo[editable_win].breakindent = true
+
+		local layout = require("lazyvcs.layout")
+		local session = {
+			editable_bufnr = editable_buf,
+			editable_win = editable_win,
+			backend = "git",
+			root = vim.fs.normalize(vim.fn.tempname()),
+			relpath = "wrap-sample.txt",
+			base_label = "base",
+			base_lines = {
+				"a long base line that can wrap in a narrow live diff window",
+				"two",
+				"three",
+			},
+			opts = vim.deepcopy(require("lazyvcs.config").get()),
+		}
+
+		local closed = false
+		local ok, err = xpcall(function()
+			layout.open(session)
+
+			assert_live_diff_window_options(session, followwrap)
+
+			layout.close(session)
+			closed = true
+			eq(vim.wo[editable_win].wrap, true)
+			eq(vim.wo[editable_win].linebreak, true)
+			eq(vim.wo[editable_win].breakindent, true)
+		end, debug.traceback)
+
+		if not closed then
+			pcall(layout.close, session)
+		end
+		if vim.api.nvim_win_is_valid(editable_win) then
+			for name, value in pairs(previous_window_options) do
+				vim.wo[editable_win][name] = value
+			end
+		end
+		if not ok then
+			error(err, 0)
+		end
+	end)
+end
+
+local function test_live_diff_followwrap_preserves_wrapping_and_restores_editable_window()
+	assert_live_diff_wrap_behavior(true)
+end
+
+local function test_live_diff_without_followwrap_uses_native_nowrap_and_restores_editable_window()
+	assert_live_diff_wrap_behavior(false)
+end
+
 local function test_live_diff_sync_scroll_catches_unfocused_pane()
 	require("lazyvcs").setup({ debounce_ms = 10 })
 
@@ -2901,48 +3004,85 @@ local function test_git_sessions_with_same_relpath_in_different_repos_do_not_col
 end
 
 local function test_git_buffer_transfer_reopens_session()
-	require("lazyvcs").setup({ debounce_ms = 10 })
+	with_diffopt_flag("followwrap", true, function()
+		require("lazyvcs").setup({ debounce_ms = 10 })
 
-	local fixture = helpers.make_git_transfer_fixture()
-	vim.cmd.edit(vim.fn.fnameescape(fixture.file1))
+		local fixture = helpers.make_git_transfer_fixture()
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file1))
 
-	local actions = require("lazyvcs.actions")
-	local state = require("lazyvcs.state")
-	local first_session = assert(actions.open())
+		local editable_win = vim.api.nvim_get_current_win()
+		local previous_window_options = {
+			wrap = vim.wo[editable_win].wrap,
+			linebreak = vim.wo[editable_win].linebreak,
+			breakindent = vim.wo[editable_win].breakindent,
+		}
+		vim.wo[editable_win].wrap = true
+		vim.wo[editable_win].linebreak = true
+		vim.wo[editable_win].breakindent = true
 
-	vim.cmd.badd(vim.fn.fnameescape(fixture.file2))
-	vim.cmd.buffer(vim.fn.fnameescape(fixture.file2))
-	vim.wait(2000, function()
+		local actions = require("lazyvcs.actions")
+		local state = require("lazyvcs.state")
+		local session
+		local ok, err = xpcall(function()
+			local first_session = assert(actions.open())
+			session = first_session
+			assert_live_diff_window_options(first_session, true)
+
+			vim.cmd.badd(vim.fn.fnameescape(fixture.file2))
+			vim.cmd.buffer(vim.fn.fnameescape(fixture.file2))
+			wait_for(function()
+				local live = state.current()
+				return live and live.source_path == fixture.file2
+			end, "live diff should transfer to the second Git buffer")
+
+			local second_session = assert(state.current())
+			session = second_session
+			eq(second_session.backend, "git")
+			eq(second_session.source_path, fixture.file2)
+			assert(second_session.editable_bufnr ~= first_session.editable_bufnr, "should reopen on the new buffer")
+			assert_transfer_session_matches(second_session, {
+				base_lines = fixture.base2,
+				changed_line = 4,
+				unchanged_line = 2,
+			})
+			assert_live_diff_window_options(second_session, true)
+
+			vim.cmd.buffer(vim.fn.fnameescape(fixture.file1))
+			wait_for(function()
+				local live = state.current()
+				return live and live.source_path == fixture.file1
+			end, "live diff should transfer back to the first Git buffer")
+
+			local third_session = assert(state.current())
+			session = third_session
+			eq(third_session.backend, "git")
+			eq(third_session.source_path, fixture.file1)
+			assert_transfer_session_matches(third_session, {
+				base_lines = fixture.base1,
+				changed_line = 2,
+				unchanged_line = 4,
+			})
+			assert_live_diff_window_options(third_session, true)
+
+			actions.close()
+			session = nil
+		end, debug.traceback)
+
 		local live = state.current()
-		return live and live.source_path == fixture.file2
+		if live then
+			pcall(actions.close, live.editable_bufnr)
+		elseif session then
+			pcall(actions.close, session.editable_bufnr)
+		end
+		if vim.api.nvim_win_is_valid(editable_win) then
+			for name, value in pairs(previous_window_options) do
+				vim.wo[editable_win][name] = value
+			end
+		end
+		if not ok then
+			error(err, 0)
+		end
 	end)
-
-	local second_session = assert(state.current())
-	eq(second_session.backend, "git")
-	eq(second_session.source_path, fixture.file2)
-	assert(second_session.editable_bufnr ~= first_session.editable_bufnr, "should reopen on the new buffer")
-	assert_transfer_session_matches(second_session, {
-		base_lines = fixture.base2,
-		changed_line = 4,
-		unchanged_line = 2,
-	})
-
-	vim.cmd.buffer(vim.fn.fnameescape(fixture.file1))
-	vim.wait(2000, function()
-		local live = state.current()
-		return live and live.source_path == fixture.file1
-	end)
-
-	local third_session = assert(state.current())
-	eq(third_session.backend, "git")
-	eq(third_session.source_path, fixture.file1)
-	assert_transfer_session_matches(third_session, {
-		base_lines = fixture.base1,
-		changed_line = 2,
-		unchanged_line = 4,
-	})
-
-	actions.close()
 end
 
 local function test_git_buffer_transfer_refetches_aerial_after_reopen()
@@ -4491,6 +4631,14 @@ local cases = {
 	{
 		"test_live_diff_scrollbinds_panes_and_restores_editable_window",
 		test_live_diff_scrollbinds_panes_and_restores_editable_window,
+	},
+	{
+		"test_live_diff_followwrap_preserves_wrapping_and_restores_editable_window",
+		test_live_diff_followwrap_preserves_wrapping_and_restores_editable_window,
+	},
+	{
+		"test_live_diff_without_followwrap_uses_native_nowrap_and_restores_editable_window",
+		test_live_diff_without_followwrap_uses_native_nowrap_and_restores_editable_window,
 	},
 	{
 		"test_live_diff_sync_scroll_catches_unfocused_pane",

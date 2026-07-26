@@ -385,6 +385,14 @@ NOTES                                                           *lazyvcs-notes*
 - Normal undo works after a hunk revert.
 - Live diff shows the VCS base (old) on the left and the editable file
   (new) on the right.
+- LazyVCS mirrors the editable window's `wrap`, `linebreak`, and `breakindent`
+  settings to the base window. Native diff mode disables wrapping unless
+  `followwrap` is present in 'diffopt'. To preserve wrapping:
+>
+    vim.opt.diffopt:append("followwrap")
+<
+  LazyVCS does not change 'diffopt'. Wrapped corresponding lines can occupy
+  different screen heights and appear visually misaligned.
 - Inline blame is one global toggle; with `blame.persist` it is saved to
   `stdpath('state')/lazyvcs/state.json` and restored on the next launch.
 - Forge Terminal MCP can help with local agent-driven TUI debugging, but it is
