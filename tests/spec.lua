@@ -111,9 +111,11 @@ local function refresh_signs(signs, bufnr)
 		err = load_err
 		completed = true
 	end)
+	-- signs.refresh reads the VCS base through a subprocess; `svn cat -r BASE` in
+	-- particular is slower than its Git counterpart and overran the short default.
 	wait_for(function()
 		return completed
-	end, "async signs refresh did not finish")
+	end, "async signs refresh did not finish", ASYNC_TIMEOUT_MS)
 	return state, err
 end
 
@@ -2834,7 +2836,7 @@ local function test_source_control_native_invalidated_cache_rehydrates()
 	wait_for(function()
 		local cached = state.lazyvcs_repo_cache[spec.root]
 		return cached and cached.summary_loaded == true and cached.loading_summary ~= true
-	end, "initial native hydration should load repo summary")
+	end, "initial native hydration should load repo summary", ASYNC_TIMEOUT_MS)
 
 	local generation = state.lazyvcs_hydration_generation
 	ops.toggle_show_clean(state)
@@ -2847,7 +2849,7 @@ local function test_source_control_native_invalidated_cache_rehydrates()
 			and cached.summary_loaded == true
 			and cached.loading_summary ~= true
 			and state.lazyvcs_hydration_generation > generation
-	end, "native navigate should restart hydration after cache invalidation")
+	end, "native navigate should restart hydration after cache invalidation", ASYNC_TIMEOUT_MS)
 
 	require("lazyvcs").source_control_close()
 end
@@ -2943,7 +2945,7 @@ local function test_source_control_open_change_reopens_without_base_buffer_colli
 	ops.open_change(state, file_node)
 	wait_for(function()
 		return state_mod.current() ~= nil
-	end, "source-control comparison should finish loading")
+	end, "source-control comparison should finish loading", ASYNC_TIMEOUT_MS)
 	local session = assert(state_mod.current())
 	local base_name = vim.api.nvim_buf_get_name(session.base_bufnr)
 	actions.close()
@@ -2954,7 +2956,7 @@ local function test_source_control_open_change_reopens_without_base_buffer_colli
 	ops.open_change(state, file_node)
 	wait_for(function()
 		return state_mod.current() ~= nil and diff_window_count() == 2
-	end, "source-control comparison should reopen after loading")
+	end, "source-control comparison should reopen after loading", ASYNC_TIMEOUT_MS)
 	local reopened = assert(state_mod.current())
 	eq(vim.api.nvim_buf_get_lines(reopened.base_bufnr, 0, -1, false), reopened.base_lines)
 	assert(diff_window_count() == 2, "VCS open_change should reopen lazyvcs diff cleanly")
@@ -3288,7 +3290,7 @@ local function test_svn_backend_added_file_uses_empty_base()
 	end)
 	wait_for(function()
 		return async_result ~= nil or async_err ~= nil
-	end, "SVN added file base should load asynchronously")
+	end, "SVN added file base should load asynchronously", ASYNC_TIMEOUT_MS)
 	eq(async_err, nil)
 	eq(async_result.base_label, "EMPTY")
 	eq(async_result.base_lines, {})
@@ -3309,7 +3311,7 @@ local function test_svn_added_file_blame_uses_uncommitted_lines()
 	end)
 	wait_for(function()
 		return async_lines ~= nil or async_err ~= nil
-	end, "SVN added file blame should load asynchronously")
+	end, "SVN added file blame should load asynchronously", ASYNC_TIMEOUT_MS)
 	eq(async_err, nil)
 	eq(backend.parse_blame_metadata(async_lines), { "Uncommitted line", "Uncommitted line" })
 end
@@ -3480,13 +3482,13 @@ local function test_svn_blame_inline_delays_loading_indicator()
 	wait_for(function()
 		local view = require("lazyvcs.blame")._test_inline_state().views[source_buf]
 		return view and view.loading and callback
-	end, "inline blame should start loading")
+	end, "inline blame should start loading", ASYNC_TIMEOUT_MS)
 	eq(inline_blame_text(source_buf), nil, "inline blame should stay quiet before loading delay")
 
 	callback({ "     7 alice        2026-04-01 line one" })
 	wait_for(function()
 		return inline_blame_text(source_buf) ~= nil
-	end, "inline blame result should render")
+	end, "inline blame result should render", ASYNC_TIMEOUT_MS)
 
 	require("lazyvcs.blame").blame_clear()
 	backend.blame_lines_async = original_blame_lines_async
@@ -3523,7 +3525,7 @@ local function test_svn_blame_inline_loading_indicator_and_uncommitted_line()
 	assert(require("lazyvcs.blame").blame())
 	wait_for(function()
 		return inline_blame_text(source_buf) == "  Blame loading..."
-	end, "inline blame loading indicator should render after delay")
+	end, "inline blame loading indicator should render after delay", ASYNC_TIMEOUT_MS)
 
 	callback({
 		"     7 alice        2026-04-01 line one",
@@ -3531,7 +3533,7 @@ local function test_svn_blame_inline_loading_indicator_and_uncommitted_line()
 	})
 	wait_for(function()
 		return inline_blame_text(source_buf) == "  Uncommitted line"
-	end, "inline blame should render a friendly uncommitted label")
+	end, "inline blame should render a friendly uncommitted label", ASYNC_TIMEOUT_MS)
 
 	require("lazyvcs.blame").blame_clear()
 	backend.blame_lines_async = original_blame_lines_async
@@ -3564,7 +3566,7 @@ local function test_svn_blame_inline_loading_indicator_follows_cursor()
 	assert(require("lazyvcs.blame").blame())
 	wait_for(function()
 		return inline_blame_text(source_buf) == "  Blame loading..."
-	end, "inline blame loading indicator should render after delay")
+	end, "inline blame loading indicator should render after delay", ASYNC_TIMEOUT_MS)
 
 	vim.api.nvim_win_set_cursor(source_win, { 3, 0 })
 	vim.api.nvim_exec_autocmds("CursorMoved", { buffer = source_buf })
@@ -3611,7 +3613,7 @@ local function test_svn_blame_inline_failure_does_not_retry_on_cursor_move()
 	wait_for(function()
 		local view = require("lazyvcs.blame")._test_inline_state().views[source_buf]
 		return view and view.error
-	end, "inline blame failure should be recorded")
+	end, "inline blame failure should be recorded", ASYNC_TIMEOUT_MS)
 	eq(calls, 1)
 
 	for line = 1, 3 do
@@ -4013,7 +4015,7 @@ local function test_svn_signs_preview_diff_window()
 	wait_for(function()
 		local current = vim.api.nvim_get_current_buf()
 		return current ~= source_buf and vim.bo[current].filetype == "diff"
-	end, "SVN signs preview should open after signs finish loading")
+	end, "SVN signs preview should open after signs finish loading", ASYNC_TIMEOUT_MS)
 	local buf = vim.api.nvim_get_current_buf()
 	eq(vim.bo[buf].filetype, "diff")
 	vim.cmd.close()
@@ -6310,7 +6312,7 @@ local function test_source_control_switch_repo_closes_matching_sessions_and_refr
 	ops.switch_repo(state, node)
 	wait_for(function()
 		return state.lazyvcs_repo_cache[fixture.root] == nil and session_state.get_repo_job(fixture.root) == nil
-	end, "switch repo should invalidate cache after async completion")
+	end, "switch repo should invalidate cache after async completion", ASYNC_TIMEOUT_MS)
 	eq(closed, { 11 })
 	eq(state.lazyvcs_repo_cache[fixture.root], nil)
 	assert(state.lazyvcs_repo_cache["/tmp/other"], "other repo cache should stay intact")
