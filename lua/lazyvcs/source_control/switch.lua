@@ -1,8 +1,11 @@
 local util = require("lazyvcs.util")
+local Task = require("lazyvcs.backends.task")
+local svn_xml = require("lazyvcs.backends.xml")
 
 local M = {}
 
 local FIELD_SEP = "\0"
+local SWITCH_TIMEOUT_MS = 30000
 local format_picker_item
 
 local function icon_for_kind(kind)
@@ -169,6 +172,20 @@ local function defaults(opts)
 	return opts
 end
 
+local function async_defaults(opts)
+	opts = vim.tbl_extend("force", {}, opts or {})
+	opts.run_mutation = opts.run_mutation
+		or function(repo, _choice, args, mutation_opts)
+			return util.system_start(args, { cwd = mutation_opts.cwd or repo.root }, function(result, err, raw)
+				if err then
+					return mutation_opts.on_error(err, raw)
+				end
+				mutation_opts.on_success(result, raw)
+			end)
+		end
+	return defaults(opts)
+end
+
 local function git_ref_kind(refname)
 	if refname:match("^refs/heads/") then
 		return "local_branch"
@@ -303,35 +320,8 @@ local function git_picker_items(context, opts)
 	return items
 end
 
-local function parse_svn_info_xml(raw)
-	local entry = raw and raw:match("<entry.-</entry>") or nil
-	if not entry then
-		return nil
-	end
-
-	return {
-		url = entry:match("<url>(.-)</url>"),
-		root = entry:match("<root>(.-)</root>"),
-		revision = entry:match('<entry[^>]-revision="([^"]+)"'),
-	}
-end
-
-local function parse_svn_list_xml(raw)
-	local entries = {}
-	for block in (raw or ""):gmatch("<entry.-</entry>") do
-		local kind = block:match('<entry%s+kind="([^"]+)"')
-		local name = block:match("<name>(.-)</name>")
-		if kind == "dir" and name and name ~= "" then
-			entries[#entries + 1] = {
-				name = name:gsub("/$", ""),
-				revision = block:match('<commit%s+revision="([^"]+)"') or "",
-				author = block:match("<author>(.-)</author>") or "",
-				date = block:match("<date>(.-)</date>") or "",
-			}
-		end
-	end
-	return entries
-end
+local parse_svn_info_xml = svn_xml.parse_info
+local parse_svn_list_xml = svn_xml.parse_list
 
 local function svn_date_label(iso_date)
 	if not iso_date or iso_date == "" then
@@ -341,10 +331,17 @@ local function svn_date_label(iso_date)
 end
 
 local function detect_svn_layout(url)
-	local base, suffix = url:match("^(.*)/trunk/?(.*)$")
+	-- Match exact layout path segments with a non-greedy root. Greedy patterns
+	-- misclassified URLs whose repository/root happened to contain "trunk" or
+	-- "branches" as a substring.
+	local candidates = {}
+	local base, suffix = url:match("^(.-)/trunk/(.*)$")
+	if not base then
+		base = url:match("^(.-)/trunk/?$")
+		suffix = ""
+	end
 	if base then
-		return {
-			standard = true,
+		candidates[#candidates + 1] = {
 			layout_root = base,
 			target_kind = "trunk",
 			target_name = "trunk",
@@ -352,10 +349,13 @@ local function detect_svn_layout(url)
 		}
 	end
 
-	local branch_base, branch_name, branch_suffix = url:match("^(.*)/branches/([^/]+)/?(.*)$")
+	local branch_base, branch_name, branch_suffix = url:match("^(.-)/branches/([^/]+)/(.*)$")
+	if not branch_base then
+		branch_base, branch_name = url:match("^(.-)/branches/([^/]+)/?$")
+		branch_suffix = ""
+	end
 	if branch_base then
-		return {
-			standard = true,
+		candidates[#candidates + 1] = {
 			layout_root = branch_base,
 			target_kind = "branch",
 			target_name = branch_name,
@@ -363,15 +363,26 @@ local function detect_svn_layout(url)
 		}
 	end
 
-	local tag_base, tag_name, tag_suffix = url:match("^(.*)/tags/([^/]+)/?(.*)$")
+	local tag_base, tag_name, tag_suffix = url:match("^(.-)/tags/([^/]+)/(.*)$")
+	if not tag_base then
+		tag_base, tag_name = url:match("^(.-)/tags/([^/]+)/?$")
+		tag_suffix = ""
+	end
 	if tag_base then
-		return {
-			standard = true,
+		candidates[#candidates + 1] = {
 			layout_root = tag_base,
 			target_kind = "tag",
 			target_name = tag_name,
 			suffix = tag_suffix or "",
 		}
+	end
+
+	table.sort(candidates, function(a, b)
+		return #a.layout_root < #b.layout_root
+	end)
+	if candidates[1] then
+		candidates[1].standard = true
+		return candidates[1]
 	end
 
 	return {
@@ -543,12 +554,30 @@ function M.collect(repo)
 	return collect_svn_targets(repo)
 end
 
-function M.collect_async(repo, run_command, on_done)
+function M.collect_async(repo, run_command, on_done, opts)
+	opts = opts or {}
+	local task = Task.new(on_done, { cancel_id = opts.cancel_id })
+	local function run(args, command_opts, callback)
+		command_opts = vim.tbl_extend("keep", command_opts or {}, {
+			timeout_ms = opts.timeout_ms or SWITCH_TIMEOUT_MS,
+		})
+		local handle = run_command(args, command_opts, function(...)
+			if not task.cancelled and not task.done then
+				callback(...)
+			end
+		end)
+		task:add(handle)
+		return handle
+	end
+	local function finish(...)
+		return task:finish(...)
+	end
+
 	if repo.vcs == "git" then
-		run_command({ "git", "branch", "--show-current" }, { kind = "switch" }, function(branch_result)
+		run({ "git", "branch", "--show-current" }, { kind = "switch" }, function(branch_result)
 			local branch = util.trim(branch_result and branch_result.stdout or "")
 			local function with_head(head)
-				run_command({
+				run({
 					"git",
 					"for-each-ref",
 					"--sort=-committerdate",
@@ -567,7 +596,7 @@ function M.collect_async(repo, run_command, on_done)
 					"refs/tags",
 				}, { kind = "switch" }, function(result, err)
 					if not result then
-						return on_done(nil, err)
+						return finish(nil, err)
 					end
 					local refs = parse_git_ref_records(result.stdout)
 					local locals_by_name = {}
@@ -580,7 +609,7 @@ function M.collect_async(repo, run_command, on_done)
 							end
 						end
 					end
-					on_done({
+					finish({
 						repo = repo,
 						vcs = "git",
 						head = head,
@@ -598,25 +627,27 @@ function M.collect_async(repo, run_command, on_done)
 					head = branch,
 				})
 			end
-			run_command({ "git", "rev-parse", "--short", "HEAD" }, { kind = "switch" }, function(short_result)
+			run({ "git", "rev-parse", "--short", "HEAD" }, { kind = "switch" }, function(short_result, short_err)
 				local short = util.trim(short_result and short_result.stdout or "")
 				with_head({
 					current_branch = nil,
-					detached = true,
+					detached = short_result ~= nil,
+					unborn = short_result == nil,
 					head = short ~= "" and short or "HEAD",
+					error = short_result and nil or short_err,
 				})
 			end)
 		end)
-		return
+		return task
 	end
 
-	run_command({ "svn", "info", "--xml", repo.root }, { kind = "switch" }, function(info_result, info_err)
+	run({ "svn", "info", "--xml", repo.root }, { kind = "switch" }, function(info_result, info_err)
 		if not info_result then
-			return on_done(nil, info_err)
+			return finish(nil, info_err)
 		end
 		local info = parse_svn_info_xml(info_result.stdout)
 		if not info or not info.url then
-			return on_done(nil, "Unable to parse svn info for " .. repo.name)
+			return finish(nil, "Unable to parse svn info for " .. repo.name)
 		end
 		local layout = detect_svn_layout(info.url)
 		local context = {
@@ -641,10 +672,12 @@ function M.collect_async(repo, run_command, on_done)
 		}
 		if not layout.standard then
 			context.items = items
-			return on_done(context)
+			return finish(context)
 		end
 
-		local function finish()
+		-- Distinct name: a local `finish` here would shadow the outer `finish`
+		-- above and make the call below recurse into itself.
+		local function finish_sorted()
 			table.sort(items, function(a, b)
 				if (a.order or 99) ~= (b.order or 99) then
 					return (a.order or 99) < (b.order or 99)
@@ -652,62 +685,51 @@ function M.collect_async(repo, run_command, on_done)
 				return (a.seq or 0) < (b.seq or 0)
 			end)
 			context.items = items
-			on_done(context)
+			finish(context)
 		end
 
-		run_command(
-			{ "svn", "info", "--xml", layout.layout_root .. "/trunk" },
-			{ kind = "switch" },
-			function(trunk_info)
-				if trunk_info then
-					local trunk_meta = parse_svn_info_xml(trunk_info.stdout) or {}
-					add_svn_target(items, layout, "trunk", {
-						name = "trunk",
-						revision = trunk_meta.revision or "",
-						author = "",
-						date = "",
-					}, layout.target_kind == "trunk")
-				else
-					add_svn_target(items, layout, "trunk", nil, layout.target_kind == "trunk")
-				end
-				run_command(
-					{ "svn", "ls", "--xml", layout.layout_root .. "/branches" },
-					{ kind = "switch" },
-					function(branches)
-						if branches then
-							for _, entry in ipairs(parse_svn_list_xml(branches.stdout)) do
-								add_svn_target(
-									items,
-									layout,
-									"branch",
-									entry,
-									layout.target_kind == "branch" and layout.target_name == entry.name
-								)
-							end
-						end
-						run_command(
-							{ "svn", "ls", "--xml", layout.layout_root .. "/tags" },
-							{ kind = "switch" },
-							function(tags)
-								if tags then
-									for _, entry in ipairs(parse_svn_list_xml(tags.stdout)) do
-										add_svn_target(
-											items,
-											layout,
-											"tag",
-											entry,
-											layout.target_kind == "tag" and layout.target_name == entry.name
-										)
-									end
-								end
-								finish()
-							end
+		run({ "svn", "info", "--xml", layout.layout_root .. "/trunk" }, { kind = "switch" }, function(trunk_info)
+			if trunk_info then
+				local trunk_meta = parse_svn_info_xml(trunk_info.stdout) or {}
+				add_svn_target(items, layout, "trunk", {
+					name = "trunk",
+					revision = trunk_meta.revision or "",
+					author = "",
+					date = "",
+				}, layout.target_kind == "trunk")
+			else
+				add_svn_target(items, layout, "trunk", nil, layout.target_kind == "trunk")
+			end
+			run({ "svn", "ls", "--xml", layout.layout_root .. "/branches" }, { kind = "switch" }, function(branches)
+				if branches then
+					for _, entry in ipairs(parse_svn_list_xml(branches.stdout)) do
+						add_svn_target(
+							items,
+							layout,
+							"branch",
+							entry,
+							layout.target_kind == "branch" and layout.target_name == entry.name
 						)
 					end
-				)
-			end
-		)
+				end
+				run({ "svn", "ls", "--xml", layout.layout_root .. "/tags" }, { kind = "switch" }, function(tags)
+					if tags then
+						for _, entry in ipairs(parse_svn_list_xml(tags.stdout)) do
+							add_svn_target(
+								items,
+								layout,
+								"tag",
+								entry,
+								layout.target_kind == "tag" and layout.target_name == entry.name
+							)
+						end
+					end
+					finish_sorted()
+				end)
+			end)
+		end)
 	end)
+	return task
 end
 
 local function group_label(item)
@@ -801,13 +823,6 @@ local function prompt_text(opts, title, prompt, default_value, on_submit)
 	}, on_submit)
 end
 
-local function local_branch_exists(repo, name)
-	local result = util.system_result({ "git", "show-ref", "--verify", "--quiet", "refs/heads/" .. name }, {
-		cwd = repo.root,
-	})
-	return result.code == 0
-end
-
 local function perform(repo, choice, opts, args)
 	opts = defaults(opts)
 	if opts.before_mutation(repo, choice) == false then
@@ -848,14 +863,14 @@ local function git_checkout(repo, item, context, opts)
 			if name == "" then
 				return
 			end
-			if local_branch_exists(repo, name) then
+			if context.locals_by_name[name] then
 				opts.notify("Local branch already exists: " .. name, vim.log.levels.WARN)
 				return
 			end
 			perform(repo, item, opts, { "git", "switch", "--track", "-c", name, item.short })
 		end
 
-		if local_branch_exists(repo, tail) then
+		if context.locals_by_name[tail] then
 			return prompt_text(opts, string.format(" Track Remote Branch: %s ", repo.name), " ", tail, finish)
 		end
 		return finish(tail)
@@ -864,7 +879,7 @@ local function git_checkout(repo, item, context, opts)
 	return perform(repo, item, opts, { "git", "switch", "--detach", item.short })
 end
 
-local function git_create_branch(repo, base_ref, opts)
+local function git_create_branch(repo, base_ref, context, opts)
 	local title = base_ref and string.format(" New Branch From %s: %s ", base_ref.short, repo.name)
 		or string.format(" New Branch: %s ", repo.name)
 	return prompt_text(opts, title, " ", "", function(name)
@@ -872,7 +887,7 @@ local function git_create_branch(repo, base_ref, opts)
 		if name == "" then
 			return
 		end
-		if local_branch_exists(repo, name) then
+		if context.locals_by_name[name] then
 			opts.notify("Local branch already exists: " .. name, vim.log.levels.WARN)
 			return
 		end
@@ -899,13 +914,14 @@ local function pick_git_refs(context, opts, spec, on_choice)
 		notify = opts.notify,
 		before_mutation = opts.before_mutation,
 		after_mutation = opts.after_mutation,
+		run_mutation = opts.run_mutation,
 	}, on_choice)
 end
 
 local function execute_git(repo, context, choice, opts)
 	if choice.kind == "command" then
 		if choice.action == "git_create_branch" then
-			return git_create_branch(repo, nil, opts)
+			return git_create_branch(repo, nil, context, opts)
 		end
 		if choice.action == "git_create_branch_from" then
 			return pick_git_refs(context, opts, {
@@ -918,7 +934,7 @@ local function execute_git(repo, context, choice, opts)
 				prompt = "Create new branch from " .. repo.name,
 			}, function(ref)
 				if ref then
-					git_create_branch(repo, ref, opts)
+					git_create_branch(repo, ref, context, opts)
 				end
 			end)
 		end
@@ -947,12 +963,6 @@ local function svn_manual_switch(repo, context, opts)
 	return prompt_text(opts, string.format(" Switch SVN URL: %s ", repo.name), "󰌘 ", context.info.url, function(url)
 		url = util.trim(url or "")
 		if url == "" or url == context.info.url then
-			return
-		end
-
-		local info, err = util.system({ "svn", "info", url }, { cwd = repo.root })
-		if not info then
-			opts.notify(err, vim.log.levels.ERROR)
 			return
 		end
 
@@ -1011,8 +1021,8 @@ function M.open(repo, opts)
 end
 
 function M.open_async(repo, opts, run_command)
-	opts = defaults(opts)
-	M.collect_async(repo, run_command, function(context, err)
+	opts = async_defaults(opts)
+	return M.collect_async(repo, run_command, function(context, err)
 		opts.on_ready(repo, err)
 		if not context then
 			opts.notify(err or ("Unable to load switch targets for " .. repo.name), vim.log.levels.ERROR)
@@ -1043,7 +1053,10 @@ function M.open_async(repo, opts, run_command)
 			end
 			return execute_svn(repo, context, choice, opts)
 		end)
-	end)
+	end, {
+		timeout_ms = opts.timeout_ms or SWITCH_TIMEOUT_MS,
+		cancel_id = opts.cancel_id,
+	})
 end
 
 function M._test_git_picker_items(context, opts)
@@ -1053,5 +1066,9 @@ end
 function M._test_format_picker_item(item, chunks)
 	return format_picker_item(item, chunks)
 end
+
+M._test_detect_svn_layout = detect_svn_layout
+M._test_parse_svn_info_xml = parse_svn_info_xml
+M._test_parse_svn_list_xml = parse_svn_list_xml
 
 return M
