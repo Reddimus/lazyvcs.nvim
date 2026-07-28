@@ -15,6 +15,54 @@ local function wait_for(predicate, msg, timeout)
 	assert(ok, msg or "timed out")
 end
 
+local function async_command_runner(cwd)
+	return function(args, opts, on_done)
+		opts = opts or {}
+		return require("lazyvcs.util").system_start(args, {
+			cwd = opts.cwd or cwd,
+			timeout = opts.timeout_ms,
+		}, on_done)
+	end
+end
+
+local function await_repo_loader(loader, repo, opts)
+	local completed = false
+	local loaded
+	local err
+	loader(repo, opts or {}, async_command_runner(repo.root), function(result, load_err)
+		loaded = result
+		err = load_err
+		completed = true
+	end)
+	wait_for(function()
+		return completed
+	end, "async repository load did not finish", 5000)
+	return loaded, err
+end
+
+local function load_repo_summary(model, repo, opts)
+	return await_repo_loader(model.load_repo_summary_async, repo, opts)
+end
+
+local function load_repo_details(model, repo, opts)
+	return await_repo_loader(model.load_repo_details_async, repo, opts)
+end
+
+local function collect_switch_targets(switch, repo)
+	local completed = false
+	local context
+	local err
+	switch.collect_async(repo, async_command_runner(repo.root), function(result, collect_err)
+		context = result
+		err = collect_err
+		completed = true
+	end)
+	wait_for(function()
+		return completed
+	end, "async switch-target collection did not finish", 5000)
+	return context, err
+end
+
 -- `actions.open` resolves the backend off the UI thread, so it returns a
 -- cancellable task rather than a session; `on_open` delivers the session once
 -- the backend replies. A buffer that already has a live session is returned
@@ -509,16 +557,452 @@ local function test_picker_uses_snacks_select_module_when_available()
 	}
 
 	local selected
-	require("lazyvcs.picker").select({ { label = "first" } }, { prompt = "Pick" }, function(item)
+	require("lazyvcs.picker").select({
+		{ label = "first" },
+	}, {
+		prompt = "Pick",
+		snacks = {
+			layout = "select",
+			matcher = { sort_empty = true },
+		},
+	}, function(item)
 		selected = item
 	end)
 
 	eq(#calls, 1)
 	eq(calls[1].opts.prompt, "Pick")
+	eq(calls[1].opts.snacks, {
+		layout = "select",
+		matcher = { sort_empty = true },
+	})
 	eq(selected, { label = "first" })
 
 	package.loaded["lazyvcs.picker"] = previous_picker
 	package.loaded["snacks.picker.select"] = previous_snacks
+end
+
+local function test_picker_uses_fzf_lua_when_snacks_select_is_unavailable()
+	local previous_picker = package.loaded["lazyvcs.picker"]
+	local previous_snacks = package.loaded["snacks.picker.select"]
+	local previous_fzf = package.loaded["fzf-lua"]
+	package.loaded["lazyvcs.picker"] = nil
+	package.loaded["snacks.picker.select"] = {}
+
+	local captured
+	package.loaded["fzf-lua"] = {
+		fzf_exec = function(entries, opts)
+			captured = {
+				entries = entries,
+				opts = opts,
+			}
+			opts.actions.default({ entries[2] })
+		end,
+	}
+
+	local selected
+	require("lazyvcs.picker").select({
+		{ label = "first" },
+		{ label = "second" },
+	}, {
+		prompt = "Choose> ",
+	}, function(item)
+		selected = item
+	end)
+
+	assert(captured, "fzf-lua should receive the shared picker request")
+	eq(captured.opts.prompt, "Choose> ")
+	assert(captured.entries[1]:match("^00000001\tfirst$"), captured.entries[1])
+	assert(captured.entries[2]:match("^00000002\tsecond$"), captured.entries[2])
+	eq(selected, { label = "second" })
+
+	package.loaded["lazyvcs.picker"] = previous_picker
+	package.loaded["snacks.picker.select"] = previous_snacks
+	package.loaded["fzf-lua"] = previous_fzf
+end
+
+local function test_core_backend_task_cancellation_finish_and_late_add()
+	local Task = require("lazyvcs.backends.task")
+	local cancelled_ids = {}
+	local first_signals = {}
+	local second_signals = {}
+	local task = Task.new(function()
+		error("a cancelled task must not finish")
+	end, {
+		cancel_id = function(id)
+			cancelled_ids[#cancelled_ids + 1] = id
+		end,
+	})
+	task:add({
+		cancel = function(_, signal)
+			first_signals[#first_signals + 1] = signal
+		end,
+	})
+	task:add({
+		kill = function(_, signal)
+			second_signals[#second_signals + 1] = signal
+		end,
+	})
+	task:add(42)
+
+	assert(task:kill(9), "first cancellation should take effect")
+	eq(first_signals, { 9 })
+	eq(second_signals, { 9 })
+	eq(cancelled_ids, { 42 })
+	eq(task:is_active(), false)
+	eq(task:kill(9), false, "cancellation should be idempotent")
+
+	local late_signals = {}
+	task:add({
+		kill = function(_, signal)
+			late_signals[#late_signals + 1] = signal
+		end,
+	})
+	eq(late_signals, { 15 }, "a handle added after cancellation should be stopped immediately")
+
+	local finished = {}
+	local finish_task = Task.new(function(value)
+		finished[#finished + 1] = value
+	end)
+	assert(finish_task:finish("first"), "the first finish should resolve the task")
+	eq(finish_task:finish("second"), false, "finish should be idempotent")
+	eq(finished, { "first" })
+end
+
+local function test_svn_xml_parses_info_status_list_and_entities()
+	local xml = require("lazyvcs.backends.xml")
+	eq(xml.decode("A&amp;B &lt;x&gt; &quot;q&quot; &apos;s&apos; &#65; &#x42;"), "A&B <x> \"q\" 's' A B")
+
+	local info = assert(xml.parse_info([[
+		<info>
+		  <entry kind="dir" path="proj&amp;ect" revision="12">
+		    <url>https://example.test/svn/proj&amp;ect/trunk</url>
+		    <repository><root>https://example.test/svn/proj&#101;ct</root></repository>
+		  </entry>
+		</info>
+	]]))
+	eq(info.kind, "dir")
+	eq(info.path, "proj&ect")
+	eq(info.revision, "12")
+	eq(info.url, "https://example.test/svn/proj&ect/trunk")
+	eq(info.root, "https://example.test/svn/project")
+
+	local status = xml.parse_status([[
+		<status><target path=".">
+		  <entry path="src/a&amp;b.txt">
+		    <wc-status item="modified" props="modified" revision="7" tree-conflicted="true"/>
+		    <repos-status item="deleted" props="none"/>
+		  </entry>
+		</target></status>
+	]])
+	eq(#status, 1)
+	eq(status[1], {
+		path = "src/a&b.txt",
+		wc_item = "modified",
+		wc_props = "modified",
+		repos_item = "deleted",
+		repos_props = "none",
+		revision = "7",
+		tree_conflicted = true,
+	})
+
+	local listed = xml.parse_list([[
+		<lists><list path="https://example.test/svn/branches">
+		  <entry kind="dir">
+		    <name>release&amp;next/</name>
+		    <commit revision="19">
+		      <author>Ada &lt;ada@example.test&gt;</author>
+		      <date>2026-07-27T12:00:00.000000Z</date>
+		    </commit>
+		  </entry>
+		  <entry kind="file"><name>ignored.txt</name></entry>
+		</list></lists>
+	]])
+	eq(listed, {
+		{
+			name = "release&next",
+			revision = "19",
+			author = "Ada <ada@example.test>",
+			date = "2026-07-27T12:00:00.000000Z",
+		},
+	})
+end
+
+local function test_core_json_file_migration_atomic_replace_and_invalid_reads()
+	local json_file = require("lazyvcs.json_file")
+	local root = vim.fs.normalize(vim.fn.tempname())
+	local path = root .. "/state.json"
+	local unreadable = root .. "/unreadable.json"
+	local corrupt = root .. "/corrupt.json"
+	vim.fn.mkdir(root, "p")
+	helpers.write_file(path, vim.json.encode({ legacy = true, nested = { value = 4 } }))
+	eq(json_file.read(path), {
+		legacy = true,
+		nested = { value = 4 },
+	}, "v0.4.x direct-table state should migrate on read")
+
+	local previous_rename = vim.uv.fs_rename
+	local rename_call
+	---@diagnostic disable-next-line: duplicate-set-field
+	vim.uv.fs_rename = function(from, to)
+		rename_call = { from = from, to = to }
+		eq(json_file.read(path), {
+			legacy = true,
+			nested = { value = 4 },
+		}, "the destination should remain readable until the atomic rename")
+		return previous_rename(from, to)
+	end
+	local ok, err = xpcall(function()
+		assert(json_file.write(path, { replacement = "complete" }))
+	end, debug.traceback)
+	vim.uv.fs_rename = previous_rename
+	if not ok then
+		error(err, 0)
+	end
+	assert(rename_call and rename_call.from ~= path, "atomic writes should rename a distinct temporary file")
+	eq(rename_call.to, path)
+	assert(rename_call.from:find(path .. ".tmp.", 1, true) == 1, rename_call.from)
+	eq(json_file.read(path), { replacement = "complete" })
+	local encoded = vim.json.decode(table.concat(vim.fn.readfile(path), "\n"))
+	eq(encoded.version, 1)
+	eq(encoded.data, { replacement = "complete" })
+	eq(vim.fn.glob(path .. ".tmp.*"), "", "successful atomic replacement should not leave a temporary file")
+
+	helpers.write_file(corrupt, "{ definitely not json")
+	eq(json_file.read(corrupt), {}, "corrupt JSON should be ignored")
+	helpers.write_file(unreadable, "{}")
+	local previous_open = vim.uv.fs_open
+	---@diagnostic disable-next-line: duplicate-set-field
+	vim.uv.fs_open = function(candidate, ...)
+		if candidate == unreadable then
+			return nil, "simulated unreadable file"
+		end
+		return previous_open(candidate, ...)
+	end
+	ok, err = xpcall(function()
+		eq(json_file.read(unreadable), {}, "an unreadable state file should be ignored")
+	end, debug.traceback)
+	vim.uv.fs_open = previous_open
+	vim.fn.delete(root, "rf")
+	if not ok then
+		error(err, 0)
+	end
+end
+
+local function test_source_control_modal_escape_q_and_wipe_finish_once_and_restore_view()
+	local modal = require("lazyvcs.source_control.modal")
+	local compat = require("lazyvcs.compat")
+
+	local function run_case(close_modal)
+		vim.cmd.enew()
+		vim.api.nvim_buf_set_lines(0, 0, -1, false, { "first", "second", "third" })
+		local previous_win = vim.api.nvim_get_current_win()
+		vim.api.nvim_win_set_cursor(previous_win, { 2, 3 })
+		local previous_cursor = vim.api.nvim_win_get_cursor(previous_win)
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "modal" })
+		local winid = vim.api.nvim_open_win(bufnr, true, {
+			relative = "editor",
+			row = 1,
+			col = 1,
+			width = 20,
+			height = 1,
+			style = "minimal",
+		})
+		local finished = {}
+		local owner = modal.new({
+			bufnr = bufnr,
+			winid = winid,
+			previous_win = previous_win,
+			previous_cursor = previous_cursor,
+			cancel_value = "cancel",
+			on_finish = function(value)
+				finished[#finished + 1] = value
+			end,
+		})
+		compat.keymap_set("n", "<Esc>", function()
+			owner:finish("cancel")
+		end, { buffer = bufnr, nowait = true })
+
+		close_modal(owner, bufnr)
+		wait_for(function()
+			return #finished == 1
+		end, "modal close path did not finish")
+		vim.wait(20)
+		eq(finished, { "cancel" }, "overlapping close events must resolve the modal once")
+		eq(vim.api.nvim_get_current_win(), previous_win)
+		eq(vim.api.nvim_win_get_cursor(previous_win), previous_cursor)
+	end
+
+	run_case(function()
+		feed("<Esc>")
+	end)
+	run_case(function()
+		vim.cmd("q")
+	end)
+	run_case(function(_, bufnr)
+		vim.api.nvim_buf_delete(bufnr, { force = true })
+	end)
+end
+
+local function test_core_compat_routes_neovim_011_and_012_apis()
+	local compat = require("lazyvcs.compat")
+	local previous_fn = vim.fn
+	local previous_keymap = vim.keymap
+	local previous_text = vim.text
+	local previous_diff = vim.diff
+	local version = 12
+	local calls = {}
+	vim.fn = setmetatable({
+		has = function(name)
+			eq(name, "nvim-0.12")
+			return version == 12 and 1 or 0
+		end,
+	}, { __index = previous_fn })
+	vim.keymap = {
+		set = function(mode, lhs, rhs, opts)
+			calls[#calls + 1] = { action = "set", mode = mode, lhs = lhs, rhs = rhs, opts = opts }
+		end,
+		del = function(mode, lhs, opts)
+			calls[#calls + 1] = { action = "del", mode = mode, lhs = lhs, opts = opts }
+		end,
+	}
+
+	local ok, err = xpcall(function()
+		vim.text = {
+			diff = function(a, b, opts)
+				return { api = "0.12", a = a, b = b, opts = opts }
+			end,
+		}
+		---@diagnostic disable-next-line: duplicate-set-field
+		vim.diff = function()
+			error("the 0.12 diff branch should prefer vim.text.diff")
+		end
+		eq(compat.diff("a", "b", { result_type = "indices" }).api, "0.12")
+		local original_opts = { buffer = 7, silent = true }
+		compat.keymap_set("n", "x", function() end, original_opts)
+		compat.keymap_del("n", "x", original_opts)
+		eq(calls[1].opts, { buf = 7, silent = true })
+		eq(calls[2].opts, { buf = 7, silent = true })
+		eq(original_opts, { buffer = 7, silent = true }, "compat mapping options should be copied")
+
+		version = 11
+		vim.text = nil
+		---@diagnostic disable-next-line: duplicate-set-field
+		vim.diff = function(a, b, opts)
+			return { api = "0.11", a = a, b = b, opts = opts }
+		end
+		eq(compat.diff("c", "d", { result_type = "indices" }).api, "0.11")
+		compat.keymap_set("n", "y", function() end, { buffer = 8 })
+		compat.keymap_del("n", "y", { buffer = 8 })
+		eq(calls[3].opts, { buffer = 8 })
+		eq(calls[4].opts, { buffer = 8 })
+	end, debug.traceback)
+	vim.fn = previous_fn
+	vim.keymap = previous_keymap
+	vim.text = previous_text
+	vim.diff = previous_diff
+	if not ok then
+		error(err, 0)
+	end
+end
+
+local function test_source_control_persist_owns_state_serialization_and_apply()
+	local persist = require("lazyvcs.source_control.persist")
+	local previous_save = persist.save
+	local previous_load = persist.load
+	local saved_root
+	local saved_value
+	---@diagnostic disable-next-line: duplicate-set-field
+	persist.save = function(root, value)
+		saved_root = root
+		saved_value = value
+	end
+	---@diagnostic disable-next-line: duplicate-set-field
+	persist.load = function(root)
+		eq(root, "/workspace")
+		return {
+			visible_repos = { "/repo/a" },
+			hidden_repos = { "/repo/b" },
+			focused_repo = "/repo/a",
+			show_clean = true,
+			selection_mode = "multiple",
+			changes_view_mode = "list",
+			changes_sort = "status",
+		}
+	end
+
+	local ok, err = xpcall(function()
+		persist.save_state({
+			path = "/workspace",
+			lazyvcs_repo_visibility_overrides = {
+				["/repo/z"] = true,
+				["/repo/a"] = true,
+				["/repo/b"] = false,
+			},
+			lazyvcs_focused_repo = "/repo/z",
+			lazyvcs_show_clean = false,
+			lazyvcs_selection_mode = "single",
+			lazyvcs_changes_view_mode = "tree",
+			lazyvcs_changes_sort = "path",
+		})
+		eq(saved_root, "/workspace")
+		eq(saved_value, {
+			visible_repos = { "/repo/a", "/repo/z" },
+			hidden_repos = { "/repo/b" },
+			focused_repo = "/repo/z",
+			show_clean = false,
+			selection_mode = "single",
+			changes_view_mode = "tree",
+			changes_sort = "path",
+		})
+
+		local state = {}
+		persist.apply_state(state, "/workspace")
+		eq(state.lazyvcs_repo_visibility, {})
+		eq(state.lazyvcs_repo_visibility_overrides, {
+			["/repo/a"] = true,
+			["/repo/b"] = false,
+		})
+		eq(state.lazyvcs_focused_repo, "/repo/a")
+		eq(state.lazyvcs_show_clean, true)
+		eq(state.lazyvcs_selection_mode, "multiple")
+		eq(state.lazyvcs_changes_view_mode, "list")
+		eq(state.lazyvcs_changes_sort, "status")
+	end, debug.traceback)
+	persist.save = previous_save
+	persist.load = previous_load
+	if not ok then
+		error(err, 0)
+	end
+end
+
+local function test_source_control_discovery_error_is_rendered_in_sidebar()
+	require("lazyvcs").setup({
+		source_control = {
+			remote_refresh = "manual",
+			width = 100,
+		},
+	})
+	local native = require("lazyvcs.source_control.native")
+	local state = {
+		path = "/workspace",
+		bufnr = vim.api.nvim_create_buf(false, true),
+		lazyvcs_expanded = {},
+		lazyvcs_commit_drafts = {},
+		lazyvcs_repo_specs = {},
+		lazyvcs_repo_cache = {},
+		lazyvcs_discovery_error = "simulated scan failure",
+	}
+	native.render(state)
+	local text = table.concat(vim.api.nvim_buf_get_lines(state.bufnr, 0, -1, false), "\n")
+	assert(
+		text:match("Repository discovery failed: simulated scan failure"),
+		"the native sidebar should surface asynchronous discovery failures"
+	)
+	local error_node = assert(state.lazyvcs_line_nodes[2])
+	eq(error_node.type, "message")
+	eq(error_node.extra.error, true)
+	eq(error_node.extra.discovery_error, true)
 end
 
 local function test_source_control_confirm_popup_key_paths()
@@ -630,9 +1114,9 @@ local function test_source_control_collects_dirty_nested_repos()
 		lazyvcs_repo_specs = specs,
 		lazyvcs_repo_cache = {},
 	}
-	state.lazyvcs_repo_cache[fixture.git_dirty] = assert(model.load_repo_details(by_root[fixture.git_dirty], {}))
-	state.lazyvcs_repo_cache[fixture.git_clean] = assert(model.load_repo_summary(by_root[fixture.git_clean], {}))
-	state.lazyvcs_repo_cache[fixture.svn_wc] = assert(model.load_repo_details(by_root[fixture.svn_wc], {}))
+	state.lazyvcs_repo_cache[fixture.git_dirty] = assert(load_repo_details(model, by_root[fixture.git_dirty], {}))
+	state.lazyvcs_repo_cache[fixture.git_clean] = assert(load_repo_summary(model, by_root[fixture.git_clean], {}))
+	state.lazyvcs_repo_cache[fixture.svn_wc] = assert(load_repo_details(model, by_root[fixture.svn_wc], {}))
 	local root = model.collect(state, {
 		root = fixture.root,
 		scan_depth = 3,
@@ -718,7 +1202,7 @@ local function test_source_control_busy_repo_marks_nodes_disabled()
 			[model.repo_changes_id(fixture.root)] = true,
 		},
 	}
-	state.lazyvcs_repo_cache[fixture.root] = assert(model.load_repo_details(specs[1], {
+	state.lazyvcs_repo_cache[fixture.root] = assert(load_repo_details(model, specs[1], {
 		changes_sort = "path",
 	}))
 	state_mod.set_repo_job(fixture.root, {
@@ -906,24 +1390,88 @@ local function test_source_control_jobs_prioritize_user_work_over_background_ref
 end
 
 local function fake_process_start(processes, started)
-	return function(args, _, on_exit)
+	return function(args, opts, on_exit)
 		local name = args[1]
 		local process = {
 			name = name,
 			signals = {},
 			exited = false,
 		}
+		local timeout_timer
+		local kill_timer
+		local forced
+		local function close_timer(timer)
+			if timer and not timer:is_closing() then
+				timer:stop()
+				timer:close()
+			end
+		end
+		local function force(kind, reason)
+			if process.exited or forced then
+				return false
+			end
+			local message
+			local raw
+			if kind == "timeout" then
+				message = string.format("Timed out after %dms: %s", opts.timeout, name)
+				raw = {
+					code = 124,
+					stdout = "",
+					stderr = message,
+					timed_out = true,
+					reason = "timeout",
+				}
+			else
+				message = "Cancelled: " .. tostring(reason or "cancelled")
+				raw = {
+					code = 130,
+					stdout = "",
+					stderr = message,
+					cancelled = true,
+					reason = reason or "cancelled",
+				}
+			end
+			forced = { err = message, raw = raw }
+			process.signals[#process.signals + 1] = 15
+			if type(opts.on_terminate) == "function" then
+				opts.on_terminate(nil, message, raw)
+			end
+			if opts.kill_grace_ms and opts.kill_grace_ms > 0 then
+				kill_timer = vim.defer_fn(function()
+					kill_timer = nil
+					if not process.exited then
+						process.signals[#process.signals + 1] = 9
+					end
+				end, opts.kill_grace_ms)
+			end
+			return true
+		end
 		function process:kill(signal)
 			self.signals[#self.signals + 1] = signal
 			return true
 		end
+		function process:cancel(reason)
+			return force("cancelled", reason)
+		end
 		function process:exit(result, err, raw)
 			assert(not self.exited, "fake child process exited more than once")
 			self.exited = true
-			on_exit(result or { code = 0, stdout = "", stderr = "" }, err, raw)
+			close_timer(timeout_timer)
+			close_timer(kill_timer)
+			if forced then
+				on_exit(nil, forced.err, forced.raw)
+			else
+				on_exit(result or { code = 0, stdout = "", stderr = "" }, err, raw)
+			end
 		end
 		processes[name] = process
 		started[#started + 1] = name
+		if opts.timeout and opts.timeout > 0 then
+			timeout_timer = vim.defer_fn(function()
+				timeout_timer = nil
+				force("timeout")
+			end, opts.timeout)
+		end
 		return process
 	end
 end
@@ -1347,7 +1895,7 @@ local function test_source_control_single_repo_root_uses_unique_node_ids()
 		lazyvcs_repo_specs = specs,
 		lazyvcs_repo_cache = {},
 	}
-	state.lazyvcs_repo_cache[fixture.root] = assert(model.load_repo_summary(specs[1], {}))
+	state.lazyvcs_repo_cache[fixture.root] = assert(load_repo_summary(model, specs[1], {}))
 
 	local root = model.collect(state, {
 		root = fixture.root,
@@ -1477,8 +2025,8 @@ local function test_source_control_can_show_clean_repos()
 		lazyvcs_repo_specs = specs,
 		lazyvcs_repo_cache = {},
 	}
-	state.lazyvcs_repo_cache[fixture.git_dirty] = assert(model.load_repo_summary(by_root[fixture.git_dirty], {}))
-	state.lazyvcs_repo_cache[fixture.git_clean] = assert(model.load_repo_summary(by_root[fixture.git_clean], {}))
+	state.lazyvcs_repo_cache[fixture.git_dirty] = assert(load_repo_summary(model, by_root[fixture.git_dirty], {}))
+	state.lazyvcs_repo_cache[fixture.git_clean] = assert(load_repo_summary(model, by_root[fixture.git_clean], {}))
 	local root = model.collect(state, {
 		root = fixture.root,
 		scan_depth = 3,
@@ -1680,7 +2228,7 @@ local function test_source_control_tree_view_groups_files_into_folders()
 		lazyvcs_repo_specs = specs,
 		lazyvcs_repo_cache = {},
 	}
-	state.lazyvcs_repo_cache[root] = assert(model.load_repo_details(specs[1], {
+	state.lazyvcs_repo_cache[root] = assert(load_repo_details(model, specs[1], {
 		changes_sort = "path",
 	}))
 
@@ -1733,8 +2281,8 @@ local function test_source_control_hides_clean_repo_after_summary_hydration()
 		lazyvcs_repo_cache = {},
 	}
 
-	state.lazyvcs_repo_cache[fixture.git_dirty] = assert(model.load_repo_summary(by_root[fixture.git_dirty], {}))
-	state.lazyvcs_repo_cache[fixture.git_clean] = assert(model.load_repo_summary(by_root[fixture.git_clean], {}))
+	state.lazyvcs_repo_cache[fixture.git_dirty] = assert(load_repo_summary(model, by_root[fixture.git_dirty], {}))
+	state.lazyvcs_repo_cache[fixture.git_clean] = assert(load_repo_summary(model, by_root[fixture.git_clean], {}))
 
 	local root = model.collect(state, {
 		root = fixture.root,
@@ -1947,7 +2495,7 @@ local function test_source_control_native_render_consumes_force_expand()
 	local model = require("lazyvcs.source_control.model")
 	local native = require("lazyvcs.source_control.native")
 	local specs = model.discover(fixture.root, 1)
-	local repo = assert(model.load_repo_details(specs[1], {
+	local repo = assert(load_repo_details(model, specs[1], {
 		changes_sort = "path",
 	}))
 	local repo_id = model.repo_changes_id(repo.root)
@@ -2133,13 +2681,7 @@ end
 
 local function test_svn_status_xml_ignores_external_banner_noise()
 	local model = require("lazyvcs.source_control.model")
-	local util = require("lazyvcs.util")
-	local previous_system = util.system
-
-	---@diagnostic disable-next-line: duplicate-set-field
-	util.system = function()
-		return {
-			stdout = [[<?xml version="1.0" encoding="UTF-8"?>
+	local status_xml = [[<?xml version="1.0" encoding="UTF-8"?>
 <status>
 <target path=".">
 <entry path="src/local/config/rdu-armv8.config">
@@ -2153,9 +2695,7 @@ local function test_svn_status_xml_ignores_external_banner_noise()
 <wc-status item="external" props="none"></wc-status>
 </entry>
 </target>
-</status>]],
-		}
-	end
+</status>]]
 
 	local repo = {
 		root = "/tmp/factory",
@@ -2165,18 +2705,30 @@ local function test_svn_status_xml_ignores_external_banner_noise()
 		relpath = "platform/factory",
 		path_label = "platform",
 	}
-	local detail = assert(model.load_repo_details(repo, {
+	local completed = false
+	local detail
+	local load_err
+	model.load_repo_details_async(repo, {
 		remote_refresh = true,
 		changes_sort = "path",
-	}))
+	}, function(args, _, on_done)
+		local stdout = args[2] == "status" and status_xml or ""
+		on_done({ code = 0, stdout = stdout, stderr = "" })
+		return { kill = function() end }
+	end, function(result, err)
+		detail = result
+		load_err = err
+		completed = true
+	end)
+	assert(completed, "the fake async SVN runner should resolve the detail load")
+	eq(load_err, nil)
+	detail = assert(detail)
 
 	eq(detail.counts.local_changes, 0)
 	eq(detail.counts.remote, 1)
 	eq(#detail.sections, 1)
 	eq(detail.sections[1].id, "remote")
 	eq(detail.sections[1].items[1].extra.relpath, "src/local/config/rdu-armv8.config")
-
-	util.system = previous_system
 end
 
 local function test_source_control_open_change_reopens_without_base_buffer_collision()
@@ -2205,7 +2757,7 @@ local function test_source_control_open_change_reopens_without_base_buffer_colli
 			[model.repo_changes_id(fixture.root)] = true,
 		},
 	}
-	state.lazyvcs_repo_cache[fixture.root] = assert(model.load_repo_details(specs[1], {
+	state.lazyvcs_repo_cache[fixture.root] = assert(load_repo_details(model, specs[1], {
 		changes_sort = "path",
 	}))
 
@@ -2263,7 +2815,7 @@ local function test_source_control_open_change_reuses_active_diff_window()
 			[model.repo_changes_id(fixture.root)] = true,
 		},
 	}
-	state.lazyvcs_repo_cache[fixture.root] = assert(model.load_repo_details(specs[1], {
+	state.lazyvcs_repo_cache[fixture.root] = assert(load_repo_details(model, specs[1], {
 		changes_sort = "path",
 	}))
 
@@ -2453,6 +3005,76 @@ local function test_async_system_cancel_waits_for_real_process_exit()
 			return callback_count == 1
 		end, "system callback should run after the fake child exits")
 		assert(callback_raw and callback_raw.cancelled)
+		eq(callback_count, 1)
+	end, debug.traceback)
+	vim.system = previous_system
+	if not ok then
+		error(err, 0)
+	end
+end
+
+local function test_async_system_owns_timeout_escalation_and_bounded_output()
+	local util = require("lazyvcs.util")
+	local previous_system = vim.system
+	local process_exit
+	local system_opts
+	local signals = {}
+	local termination_count = 0
+	local callback_count = 0
+	local callback_raw
+	---@diagnostic disable-next-line: duplicate-set-field
+	vim.system = function(_, opts, on_exit)
+		system_opts = opts
+		process_exit = on_exit
+		return {
+			kill = function(_, signal)
+				signals[#signals + 1] = signal
+			end,
+		}
+	end
+
+	local ok, err = xpcall(function()
+		assert(util.system_start({
+			"fake-timeout",
+		}, {
+			timeout = 10,
+			kill_grace_ms = 10,
+			output_limit = 256,
+			on_terminate = function(_, terminate_err, raw)
+				termination_count = termination_count + 1
+				assert(terminate_err and terminate_err:match("Timed out"), terminate_err)
+				assert(raw and raw.timed_out, "the logical timeout should be reported by the process owner")
+			end,
+		}, function(_, _, raw)
+			callback_count = callback_count + 1
+			callback_raw = raw
+		end))
+		eq(system_opts.timeout, nil)
+		eq(system_opts.output_limit, nil)
+		eq(system_opts.kill_grace_ms, nil)
+		eq(system_opts.on_terminate, nil)
+		assert(type(system_opts.stdout) == "function")
+		assert(type(system_opts.stderr) == "function")
+		system_opts.stdout(nil, string.rep("x", 400))
+		system_opts.stderr(nil, string.rep("y", 400))
+
+		wait_for(function()
+			return termination_count == 1
+		end, "system timeout should report logical termination")
+		eq(signals, { 15 })
+		eq(callback_count, 0, "physical completion must wait for the child exit")
+		wait_for(function()
+			return vim.deep_equal(signals, { 15, 9 })
+		end, "the process owner should escalate TERM to KILL")
+		eq(callback_count, 0, "KILL delivery must not masquerade as physical completion")
+
+		process_exit({ code = 137, signal = 9, stdout = "", stderr = "" })
+		wait_for(function()
+			return callback_count == 1
+		end, "the timeout callback should run after physical exit")
+		assert(callback_raw and callback_raw.timed_out)
+		assert(#callback_raw.stdout <= 128, "bounded stdout should honor half the total output limit")
+		assert(callback_raw.stdout:match("truncated"), callback_raw.stdout)
 		eq(callback_count, 1)
 	end, debug.traceback)
 	vim.system = previous_system
@@ -3981,7 +4603,7 @@ local function test_source_control_git_file_actions_commit_and_sync()
 	state.lazyvcs_render = function() end
 
 	local function reload_tree()
-		state.lazyvcs_repo_cache[fixture.root] = assert(model.load_repo_details(specs[1], {
+		state.lazyvcs_repo_cache[fixture.root] = assert(load_repo_details(model, specs[1], {
 			changes_sort = "path",
 		}))
 		return model.collect(state, {
@@ -4048,7 +4670,7 @@ local function test_source_control_git_file_actions_commit_and_sync()
 		lazyvcs_repo_specs = remote_specs,
 		lazyvcs_repo_cache = {},
 	}
-	remote_state.lazyvcs_repo_cache[remote_fixture.root] = assert(model.load_repo_summary(remote_specs[1], {
+	remote_state.lazyvcs_repo_cache[remote_fixture.root] = assert(load_repo_summary(model, remote_specs[1], {
 		remote_refresh = false,
 	}))
 	local remote_node = {
@@ -4802,7 +5424,7 @@ local function test_source_control_svn_commit_and_update()
 		lazyvcs_changes_sort = "path",
 	}
 	commit_state.lazyvcs_render = function() end
-	commit_state.lazyvcs_repo_cache[commit_fixture.root] = assert(model.load_repo_details(commit_specs[1], {
+	commit_state.lazyvcs_repo_cache[commit_fixture.root] = assert(load_repo_details(model, commit_specs[1], {
 		changes_sort = "path",
 	}))
 	local commit_tree = model.collect(commit_state, {
@@ -4831,7 +5453,7 @@ local function test_source_control_svn_commit_and_update()
 		lazyvcs_repo_cache = {},
 	}
 	update_state.lazyvcs_render = function() end
-	update_state.lazyvcs_repo_cache[update_fixture.root] = assert(model.load_repo_summary(update_specs[1], {
+	update_state.lazyvcs_repo_cache[update_fixture.root] = assert(load_repo_summary(model, update_specs[1], {
 		remote_refresh = false,
 	}))
 	local update_node = {
@@ -4874,7 +5496,7 @@ local function test_source_control_busy_repo_blocks_repo_actions()
 			[model.repo_changes_id(fixture.root)] = true,
 		},
 	}
-	state.lazyvcs_repo_cache[fixture.root] = assert(model.load_repo_details(specs[1], {
+	state.lazyvcs_repo_cache[fixture.root] = assert(load_repo_details(model, specs[1], {
 		changes_sort = "path",
 	}))
 	local tree = model.collect(state, {
@@ -4918,7 +5540,7 @@ local function test_source_control_git_switch_collects_refs()
 	local fixture = helpers.make_git_switch_fixture()
 	local repo = { root = fixture.root, name = "clone", vcs = "git" }
 	local switch = require("lazyvcs.source_control.switch")
-	local context = assert(switch.collect(repo))
+	local context = assert(collect_switch_targets(switch, repo))
 	local kinds = {}
 	for _, ref in ipairs(context.refs) do
 		kinds[ref.ref_kind] = kinds[ref.ref_kind] or {}
@@ -5010,11 +5632,14 @@ local function test_source_control_git_switch_snacks_picker_omits_indices()
 
 	local fixture = helpers.make_git_switch_fixture()
 	local repo = { root = fixture.root, name = "clone", vcs = "git" }
-	require("lazyvcs.source_control.switch").open(repo, {
+	require("lazyvcs.source_control.switch").open_async(repo, {
 		input = function(_, _) end,
 		notify = function() end,
-	})
+	}, async_command_runner(repo.root))
 
+	wait_for(function()
+		return captured ~= nil
+	end, "async Git switch targets should reach the Snacks picker", 5000)
 	assert(captured, "expected Snacks picker to be used")
 	eq(captured.title, "Checkout branch or tag for clone")
 	eq(captured.layout.preset, "vscode")
@@ -5041,7 +5666,8 @@ local function test_source_control_git_switch_executes_checkout_flows()
 	local after_count = 0
 
 	local function run_pick(predicate, input_value)
-		switch.open(repo, {
+		local expected_after = after_count + 1
+		switch.open_async(repo, {
 			select = function(items, _, on_choice)
 				for _, item in ipairs(items) do
 					if predicate(item) then
@@ -5062,7 +5688,10 @@ local function test_source_control_git_switch_executes_checkout_flows()
 				after_count = after_count + 1
 			end,
 			notify = function() end,
-		})
+		}, async_command_runner(repo.root))
+		wait_for(function()
+			return after_count == expected_after
+		end, "async Git switch mutation did not finish", 5000)
 	end
 
 	run_pick(function(item)
@@ -5180,7 +5809,7 @@ local function test_source_control_svn_switch_supports_standard_and_manual_layou
 	local before_count = 0
 	local after_count = 0
 
-	switch.open(standard_repo, {
+	switch.open_async(standard_repo, {
 		select = function(items, _, on_choice)
 			for _, item in ipairs(items) do
 				if item.kind == "svn_branch" and item.label == "release" then
@@ -5198,7 +5827,10 @@ local function test_source_control_svn_switch_supports_standard_and_manual_layou
 			after_count = after_count + 1
 		end,
 		notify = function() end,
-	})
+	}, async_command_runner(standard_repo.root))
+	wait_for(function()
+		return after_count == 1
+	end, "async SVN switch mutation did not finish", 5000)
 
 	eq(
 		util.trim(helpers.exec({ "svn", "info", "--show-item", "url" }, standard_fixture.root)),
@@ -5209,7 +5841,7 @@ local function test_source_control_svn_switch_supports_standard_and_manual_layou
 
 	local nonstandard_fixture = helpers.make_svn_fixture()
 	local nonstandard_repo = { root = nonstandard_fixture.root, name = "sample", vcs = "svn" }
-	local context = assert(switch.collect(nonstandard_repo))
+	local context = assert(collect_switch_targets(switch, nonstandard_repo))
 	eq(#context.items, 1)
 	eq(context.items[1].action, "svn_switch_url")
 end
@@ -5438,6 +6070,35 @@ local cases = {
 		test_ai_commit_message_auto_falls_back_to_next_cli_provider,
 	},
 	{ "test_picker_uses_snacks_select_module_when_available", test_picker_uses_snacks_select_module_when_available },
+	{
+		"test_picker_uses_fzf_lua_when_snacks_select_is_unavailable",
+		test_picker_uses_fzf_lua_when_snacks_select_is_unavailable,
+	},
+	{
+		"test_core_backend_task_cancellation_finish_and_late_add",
+		test_core_backend_task_cancellation_finish_and_late_add,
+	},
+	{ "test_svn_xml_parses_info_status_list_and_entities", test_svn_xml_parses_info_status_list_and_entities },
+	{
+		"test_core_json_file_migration_atomic_replace_and_invalid_reads",
+		test_core_json_file_migration_atomic_replace_and_invalid_reads,
+	},
+	{
+		"test_source_control_modal_escape_q_and_wipe_finish_once_and_restore_view",
+		test_source_control_modal_escape_q_and_wipe_finish_once_and_restore_view,
+	},
+	{
+		"test_core_compat_routes_neovim_011_and_012_apis",
+		test_core_compat_routes_neovim_011_and_012_apis,
+	},
+	{
+		"test_source_control_persist_owns_state_serialization_and_apply",
+		test_source_control_persist_owns_state_serialization_and_apply,
+	},
+	{
+		"test_source_control_discovery_error_is_rendered_in_sidebar",
+		test_source_control_discovery_error_is_rendered_in_sidebar,
+	},
 	{ "test_source_control_confirm_popup_key_paths", test_source_control_confirm_popup_key_paths },
 	{ "test_compute_target_view_centered_hunk", test_compute_target_view_centered_hunk },
 	{ "test_compute_target_view_large_hunk", test_compute_target_view_large_hunk },
@@ -5446,6 +6107,10 @@ local cases = {
 	{ "test_git_backend", test_git_backend },
 	{ "test_async_system_reports_missing_executable", test_async_system_reports_missing_executable },
 	{ "test_async_system_cancel_waits_for_real_process_exit", test_async_system_cancel_waits_for_real_process_exit },
+	{
+		"test_async_system_owns_timeout_escalation_and_bounded_output",
+		test_async_system_owns_timeout_escalation_and_bounded_output,
+	},
 	{ "test_svn_backend", test_svn_backend },
 	{ "test_svn_backend_added_file_uses_empty_base", test_svn_backend_added_file_uses_empty_base },
 	{ "test_svn_added_file_blame_uses_uncommitted_lines", test_svn_added_file_blame_uses_uncommitted_lines },

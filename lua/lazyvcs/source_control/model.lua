@@ -561,38 +561,6 @@ local function build_git_summary(repo, opts, status_stdout, fetch_error)
 	})
 end
 
-local function git_summary(repo, opts)
-	opts = opts or {}
-	local lines, branch_err = util.system_lines(
-		{ "git", "status", "--branch", "--porcelain=v1", "--untracked-files=all", "--ignored=no" },
-		{ cwd = repo.root }
-	)
-	if not lines then
-		return nil, branch_err
-	end
-
-	local branch_info, counts = parse_git_summary(lines)
-	local status_stdout = table.concat(lines, "\n") .. "\n"
-	local fetch_error
-	if opts.remote_refresh and branch_info.upstream then
-		local remotes = util.system_lines({ "git", "remote" }, { cwd = repo.root })
-		if remotes and #remotes > 0 then
-			local _, err = util.system({ "git", "fetch", "--all", "--prune", "--quiet" }, { cwd = repo.root })
-			fetch_error = err
-			local refreshed = util.system_lines(
-				{ "git", "status", "--branch", "--porcelain=v1", "--untracked-files=all", "--ignored=no" },
-				{ cwd = repo.root }
-			)
-			if refreshed and refreshed[1] then
-				branch_info, counts = parse_git_summary(refreshed)
-				status_stdout = table.concat(refreshed, "\n") .. "\n"
-			end
-		end
-	end
-
-	return build_git_summary(repo, opts, status_stdout, fetch_error)
-end
-
 local function parse_git_entries(root, raw, sort_key)
 	local sections = {
 		merge = { id = "merge", label = "Merge Changes", items = {} },
@@ -726,27 +694,6 @@ local function build_git_detail(repo, opts, status_stdout, raw_stdout)
 	return apply_repo_job(summary)
 end
 
-local function git_detail(repo, opts)
-	opts = opts or {}
-	local status, status_err = util.system(
-		{ "git", "status", "--branch", "--porcelain=v1", "--untracked-files=all", "--ignored=no" },
-		{ cwd = repo.root }
-	)
-	if not status then
-		return nil, status_err
-	end
-
-	local raw_files, file_err = util.system(
-		{ "git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=no" },
-		{ cwd = repo.root }
-	)
-	if not raw_files then
-		return nil, file_err
-	end
-
-	return build_git_detail(repo, opts, status.stdout, raw_files.stdout)
-end
-
 local function build_svn_sync(counts)
 	if counts.local_changes > 0 and counts.remote > 0 then
 		return sync_badge(
@@ -840,22 +787,6 @@ local function build_svn_summary(repo, opts, status_stdout, info_stdout)
 		loading_details = false,
 		loading_summary = false,
 	})
-end
-
-local function svn_summary(repo, opts)
-	opts = opts or {}
-	local args = { "svn", "status", "--xml" }
-	if opts.remote_refresh then
-		args[#args + 1] = "-u"
-	end
-	args[#args + 1] = repo.root
-
-	local result, err = util.system(args, { cwd = repo.root })
-	if not result then
-		return nil, err
-	end
-	local info = util.system({ "svn", "info", "--xml", repo.root }, { cwd = repo.root })
-	return build_svn_summary(repo, opts, result.stdout, info and info.stdout or nil)
 end
 
 local function build_svn_detail(repo, opts, status_stdout, info_stdout)
@@ -964,22 +895,6 @@ local function build_svn_detail(repo, opts, status_stdout, info_stdout)
 	})
 end
 
-local function svn_detail(repo, opts)
-	opts = opts or {}
-	local args = { "svn", "status", "--xml" }
-	if opts.remote_refresh then
-		args[#args + 1] = "-u"
-	end
-	args[#args + 1] = repo.root
-
-	local result, err = util.system(args, { cwd = repo.root })
-	if not result then
-		return nil, err
-	end
-	local info = util.system({ "svn", "info", "--xml", repo.root }, { cwd = repo.root })
-	return build_svn_detail(repo, opts, result.stdout, info and info.stdout or nil)
-end
-
 local function mark_node_disabled(node, disabled, busy_label)
 	if not disabled or type(node) ~= "table" then
 		return node
@@ -1045,22 +960,7 @@ local function cached_section_children(state, key, build)
 		local expired = table.remove(cache.order, 1)
 		cache.entries[expired] = nil
 	end
-	state.lazyvcs_section_materializations = (state.lazyvcs_section_materializations or 0) + 1
 	return value
-end
-
-function M.load_repo_summary(repo, opts)
-	if repo.vcs == "git" then
-		return git_summary(repo, opts)
-	end
-	return svn_summary(repo, opts)
-end
-
-function M.load_repo_details(repo, opts)
-	if repo.vcs == "git" then
-		return git_detail(repo, opts)
-	end
-	return svn_detail(repo, opts)
 end
 
 function M.load_repo_summary_async(repo, opts, run_command, on_done)
@@ -1686,6 +1586,17 @@ function M.collect(state, opts)
 		hydration_active = state.lazyvcs_hydration_active == true,
 		hydration_pending = state.lazyvcs_hydration_pending or 0,
 	}
+	if state.lazyvcs_discovery_error then
+		children[#children + 1] = {
+			id = root .. "::discovery_error",
+			type = "message",
+			name = "Repository discovery failed: " .. tostring(state.lazyvcs_discovery_error),
+			extra = {
+				error = true,
+				discovery_error = true,
+			},
+		}
+	end
 	if #repo_specs > 1 or source_opts.always_show_repositories then
 		children[#children + 1] = {
 			id = root .. "::repositories",
@@ -1716,8 +1627,5 @@ function M.collect(state, opts)
 		extra = vim.tbl_extend("force", { repo_count = #repo_selector_nodes }, hydration_extra),
 	}
 end
-
-M._test_parse_git_branch = parse_git_branch
-M._test_parse_svn_status_xml = parse_svn_status_xml
 
 return M

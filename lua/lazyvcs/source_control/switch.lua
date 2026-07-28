@@ -1,5 +1,6 @@
 local util = require("lazyvcs.util")
 local Task = require("lazyvcs.backends.task")
+local picker = require("lazyvcs.picker")
 local svn_xml = require("lazyvcs.backends.xml")
 
 local M = {}
@@ -122,23 +123,13 @@ local function default_select(items, opts, on_choice)
 		return
 	end
 
-	local ok, select_mod = pcall(require, "snacks.picker.select")
-	if ok and select_mod and type(select_mod.select) == "function" then
-		return select_mod.select(items, {
-			prompt = picker_opts.prompt,
-			format_item = picker_opts.format_item,
-			snacks = {
-				layout = "select",
-				matcher = { sort_empty = true },
-			},
-		}, on_choice)
-	end
-
-	return vim.ui.select(items, {
+	return picker.select(items, {
 		prompt = picker_opts.prompt,
-		format_item = function(item)
-			return picker_opts.format_item(item, false)
-		end,
+		format_item = picker_opts.format_item,
+		snacks = {
+			layout = "select",
+			matcher = { sort_empty = true },
+		},
 	}, on_choice)
 end
 
@@ -155,14 +146,6 @@ local function defaults(opts)
 		local _ = { ... }
 		return true
 	end
-	opts.run_mutation = opts.run_mutation
-		or function(repo, _choice, args, mutation_opts)
-			local result, err = util.system(args, { cwd = mutation_opts.cwd or repo.root })
-			if not result then
-				return mutation_opts.on_error(err)
-			end
-			mutation_opts.on_success(result)
-		end
 	opts.after_mutation = opts.after_mutation or function(...)
 		local _ = { ... }
 	end
@@ -224,24 +207,6 @@ local function parse_git_ref_records(raw)
 		end
 	end
 	return refs
-end
-
-local function parse_git_head(repo)
-	local branch = util.trim(vim.fn.system({ "git", "-C", repo.root, "branch", "--show-current" }))
-	if branch ~= "" then
-		return {
-			current_branch = branch,
-			detached = false,
-			head = branch,
-		}
-	end
-
-	local short = util.trim(vim.fn.system({ "git", "-C", repo.root, "rev-parse", "--short", "HEAD" }))
-	return {
-		current_branch = nil,
-		detached = true,
-		head = short ~= "" and short or "HEAD",
-	}
 end
 
 local function git_command_items()
@@ -426,132 +391,6 @@ local function add_svn_target(items, layout, target_kind, entry, current)
 		order = target_kind == "trunk" and 2 or (target_kind == "branch" and 3 or 4),
 		seq = #items + 1,
 	}
-end
-
-local function collect_svn_targets(repo)
-	local info_result, info_err = util.system({ "svn", "info", "--xml", repo.root }, { cwd = repo.root })
-	if not info_result then
-		return nil, info_err
-	end
-	local info = parse_svn_info_xml(info_result.stdout)
-	if not info or not info.url then
-		return nil, "Unable to parse svn info for " .. repo.name
-	end
-
-	local layout = detect_svn_layout(info.url)
-	local context = {
-		repo = repo,
-		vcs = "svn",
-		info = info,
-		layout = layout,
-		current_target = layout.standard
-				and (layout.target_kind == "trunk" and "trunk" or (layout.target_kind == "branch" and ("branches/" .. layout.target_name) or ("tags/" .. layout.target_name)))
-			or nil,
-	}
-
-	local items = {
-		{
-			kind = "command",
-			action = "svn_switch_url",
-			label = "Switch URL...",
-			description = layout.standard and "manual target" or info.url,
-			detail = "Enter a repository URL and switch this working copy to it",
-			group = "commands",
-			order = 1,
-		},
-	}
-
-	if not layout.standard then
-		context.items = items
-		return context
-	end
-
-	local trunk_info = util.system({ "svn", "info", "--xml", layout.layout_root .. "/trunk" }, { cwd = repo.root })
-	if trunk_info then
-		local trunk_meta = parse_svn_info_xml(trunk_info.stdout) or {}
-		add_svn_target(items, layout, "trunk", {
-			name = "trunk",
-			revision = trunk_meta.revision or "",
-			author = "",
-			date = "",
-		}, layout.target_kind == "trunk")
-	else
-		add_svn_target(items, layout, "trunk", nil, layout.target_kind == "trunk")
-	end
-
-	for _, spec in ipairs({
-		{ kind = "branch", url = layout.layout_root .. "/branches" },
-		{ kind = "tag", url = layout.layout_root .. "/tags" },
-	}) do
-		local result = util.system({ "svn", "ls", "--xml", spec.url }, { cwd = repo.root })
-		if result then
-			for _, entry in ipairs(parse_svn_list_xml(result.stdout)) do
-				local current = layout.target_kind == spec.kind and layout.target_name == entry.name
-				add_svn_target(items, layout, spec.kind, entry, current)
-			end
-		end
-	end
-
-	table.sort(items, function(a, b)
-		if (a.order or 99) ~= (b.order or 99) then
-			return (a.order or 99) < (b.order or 99)
-		end
-		return (a.seq or 0) < (b.seq or 0)
-	end)
-
-	context.items = items
-	return context
-end
-
-function M.collect(repo)
-	if repo.vcs == "git" then
-		local head = parse_git_head(repo)
-		local result, err = util.system({
-			"git",
-			"for-each-ref",
-			"--sort=-committerdate",
-			"--format=%(refname)"
-				.. "%00%(refname:short)"
-				.. "%00%(objectname:short)"
-				.. "%00%(committerdate:relative)"
-				.. "%00%(committerdate:iso8601-strict)"
-				.. "%00%(authorname)"
-				.. "%00%(subject)"
-				.. "%00%(upstream:short)"
-				.. "%00%(upstream:track)"
-				.. "%00%(HEAD)",
-			"refs/heads",
-			"refs/remotes",
-			"refs/tags",
-		}, { cwd = repo.root })
-		if not result then
-			return nil, err
-		end
-
-		local refs = parse_git_ref_records(result.stdout)
-		local locals_by_name = {}
-		local locals_by_upstream = {}
-		for _, ref in ipairs(refs) do
-			if ref.ref_kind == "local_branch" then
-				locals_by_name[ref.short] = ref
-				if ref.upstream and ref.upstream ~= "" then
-					locals_by_upstream[ref.upstream] = ref
-				end
-			end
-		end
-
-		return {
-			repo = repo,
-			vcs = "git",
-			head = head,
-			refs = refs,
-			locals_by_name = locals_by_name,
-			locals_by_upstream = locals_by_upstream,
-			items = nil,
-		}
-	end
-
-	return collect_svn_targets(repo)
 end
 
 function M.collect_async(repo, run_command, on_done, opts)
@@ -986,40 +825,6 @@ local function execute_svn(repo, context, choice, opts)
 	return perform(repo, choice, opts, { "svn", "switch", "--ignore-ancestry", choice.target_url, repo.root })
 end
 
-function M.open(repo, opts)
-	opts = defaults(opts)
-	local context, err = M.collect(repo)
-	if not context then
-		opts.notify(err or ("Unable to load switch targets for " .. repo.name), vim.log.levels.ERROR)
-		return
-	end
-
-	local items = context.vcs == "git" and git_picker_items(context) or context.items
-	if not items or #items == 0 then
-		opts.notify("No switch targets found for " .. repo.name, vim.log.levels.WARN)
-		return
-	end
-
-	return select_items(items, {
-		prompt = context.vcs == "git" and ("Checkout branch or tag for " .. repo.name)
-			or ("Switch working copy for " .. repo.name),
-		kind = context.vcs == "git" and "git_switch" or nil,
-		select = opts.select,
-		input = opts.input,
-		notify = opts.notify,
-		before_mutation = opts.before_mutation,
-		after_mutation = opts.after_mutation,
-	}, function(choice)
-		if not choice then
-			return
-		end
-		if context.vcs == "git" then
-			return execute_git(repo, context, choice, opts)
-		end
-		return execute_svn(repo, context, choice, opts)
-	end)
-end
-
 function M.open_async(repo, opts, run_command)
 	opts = async_defaults(opts)
 	return M.collect_async(repo, run_command, function(context, err)
@@ -1066,9 +871,5 @@ end
 function M._test_format_picker_item(item, chunks)
 	return format_picker_item(item, chunks)
 end
-
-M._test_detect_svn_layout = detect_svn_layout
-M._test_parse_svn_info_xml = parse_svn_info_xml
-M._test_parse_svn_list_xml = parse_svn_list_xml
 
 return M

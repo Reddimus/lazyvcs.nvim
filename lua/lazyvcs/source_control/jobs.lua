@@ -47,18 +47,7 @@ local function history_limit()
 	return math.min(10000, math.max(1, background_config().history_limit or 100))
 end
 
-local function close_timer(timer)
-	if not timer then
-		return
-	end
-	local ok, closing = pcall(timer.is_closing, timer)
-	if ok and not closing then
-		pcall(timer.stop, timer)
-		pcall(timer.close, timer)
-	end
-end
-
-local function bounded_text(value, limit)
+local function history_text(value, limit)
 	value = type(value) == "string" and value or ""
 	if #value <= limit then
 		return value
@@ -68,86 +57,10 @@ local function bounded_text(value, limit)
 	return value:sub(1, keep) .. suffix
 end
 
-local function bounded_result(result, limit)
-	if type(result) ~= "table" then
-		return result
-	end
-	limit = math.max(256, math.floor(limit or DEFAULT_OUTPUT_LIMIT_BYTES))
-	local stdout_limit = math.floor(limit / 2)
-	local stderr_limit = limit - stdout_limit
-	return {
-		code = result.code,
-		signal = result.signal,
-		stdout = bounded_text(result.stdout, stdout_limit),
-		stderr = bounded_text(result.stderr, stderr_limit),
-		cancelled = result.cancelled,
-		timed_out = result.timed_out,
-		reason = result.reason,
-	}
-end
-
-local function stream_collector(limit)
-	local per_stream = math.max(128, math.floor(limit / 2))
-	local streams = {
-		stdout = { chunks = {}, bytes = 0, omitted = 0 },
-		stderr = { chunks = {}, bytes = 0, omitted = 0 },
-	}
-	local function capture(name, err, data)
-		local stream = streams[name]
-		if err and not data then
-			data = tostring(err)
-		end
-		if type(data) ~= "string" or data == "" then
-			return
-		end
-		local remaining = math.max(0, per_stream - stream.bytes)
-		if remaining > 0 then
-			local chunk = data:sub(1, remaining)
-			stream.chunks[#stream.chunks + 1] = chunk
-			stream.bytes = stream.bytes + #chunk
-		end
-		stream.omitted = stream.omitted + math.max(0, #data - remaining)
-	end
-	local function value(name, fallback)
-		local stream = streams[name]
-		if #stream.chunks == 0 and stream.omitted == 0 then
-			return fallback or ""
-		end
-		local text = table.concat(stream.chunks)
-		if stream.omitted > 0 then
-			text =
-				bounded_text(text .. string.format("\n... [truncated at least %d bytes]", stream.omitted), per_stream)
-		end
-		return text
-	end
-	return {
-		stdout = function(err, data)
-			capture("stdout", err, data)
-		end,
-		stderr = function(err, data)
-			capture("stderr", err, data)
-		end,
-		merge = function(result)
-			if type(result) ~= "table" then
-				return result
-			end
-			return {
-				code = result.code,
-				signal = result.signal,
-				stdout = value("stdout", result.stdout),
-				stderr = value("stderr", result.stderr),
-				cancelled = result.cancelled,
-				timed_out = result.timed_out,
-				reason = result.reason,
-			}
-		end,
-	}
-end
-
 local function bounded_args(args)
 	local result = {}
 	for index = 1, math.min(#(args or {}), MAX_HISTORY_ARG_COUNT) do
-		result[index] = bounded_text(tostring(args[index]), MAX_HISTORY_ARG_BYTES)
+		result[index] = history_text(tostring(args[index]), MAX_HISTORY_ARG_BYTES)
 	end
 	if #(args or {}) > MAX_HISTORY_ARG_COUNT then
 		result[#result + 1] = string.format("... [%d arguments omitted]", #args - MAX_HISTORY_ARG_COUNT)
@@ -160,7 +73,7 @@ local function record(job, status, err)
 	local item = {
 		id = job.id,
 		root = job.root,
-		owner = bounded_text(
+		owner = history_text(
 			job.owner_id
 				or (type(job.owner) == "string" and job.owner)
 				or string.format("<%s:%s>", type(job.owner), tostring(job.owner)),
@@ -173,7 +86,7 @@ local function record(job, status, err)
 		kind = job.kind,
 		args = bounded_args(job.args),
 		status = status,
-		error = err and bounded_text(tostring(err), MAX_HISTORY_ERROR_BYTES) or nil,
+		error = err and history_text(tostring(err), MAX_HISTORY_ERROR_BYTES) or nil,
 		started_at = job.started_at,
 		ended_at = ended_at,
 		duration_ms = job.started_at and math.floor((ended_at - job.started_at) / 1e6) or 0,
@@ -215,62 +128,31 @@ local function finish(job, status, result, err, raw)
 	end
 	job.finalized = true
 	job.queued = false
-	close_timer(job.timeout_timer)
-	job.timeout_timer = nil
-	if (status == "cancelled" or status == "timeout") and job.started and not job.process_exited then
-		job.forced_result = {
-			status = status,
-			result = result,
-			err = err,
-			raw = raw,
-		}
-	end
 	if not job.started or job.process_exited then
 		release_worker(job)
 	end
 
-	local bounded_raw = bounded_result(raw or result, job.output_limit_bytes)
-	local bounded = result and bounded_result(result, job.output_limit_bytes) or nil
 	record(job, status, err)
-	invoke_done(job, bounded, err, bounded_raw)
+	invoke_done(job, result, err, raw or result)
 	pump(job.vcs)
 	return true
 end
 
-local function signal_process(job, signal)
-	if not job.handle then
-		return false
-	end
-	local ok = pcall(job.handle.kill, job.handle, signal)
-	return ok
-end
-
-local function terminate(job)
-	if job.process_exited or job.termination_started or not job.handle then
-		return
-	end
-	job.termination_started = true
-	signal_process(job, 15)
-	job.kill_timer = vim.defer_fn(function()
-		job.kill_timer = nil
-		if not job.process_exited then
-			signal_process(job, 9)
-		end
-	end, job.kill_grace_ms)
-end
-
 local function on_process_exit(job, result, err, raw)
 	job.process_exited = true
-	close_timer(job.kill_timer)
-	job.kill_timer = nil
 	if job.finalized then
 		release_worker(job)
 		pump(job.vcs)
 		return
 	end
 
-	result = job.collector and job.collector.merge(result) or result
-	raw = job.collector and job.collector.merge(raw or result) or (raw or result)
+	raw = raw or result
+	if raw and raw.timed_out then
+		return finish(job, "timeout", nil, err or util.system_error(raw), raw)
+	end
+	if raw and raw.cancelled then
+		return finish(job, "cancelled", nil, err or util.system_error(raw), raw)
+	end
 	if err and util.trim(tostring(err)) == "" then
 		err = nil
 	end
@@ -283,6 +165,33 @@ local function on_process_exit(job, result, err, raw)
 	return finish(job, "ok", result, nil, raw)
 end
 
+local function on_process_terminate(job, result, err, raw)
+	if job.finalized then
+		return
+	end
+	local status = raw and raw.timed_out and "timeout" or "cancelled"
+	finish(job, status, result, err, raw)
+end
+
+local function cancel_handle(handle, reason)
+	if not handle then
+		return false
+	end
+	local ok, cancel, kill = pcall(function()
+		return handle.cancel, handle.kill
+	end)
+	if not ok then
+		return false
+	end
+	if type(cancel) == "function" then
+		return pcall(cancel, handle, reason)
+	end
+	if type(kill) == "function" then
+		return pcall(kill, handle, 15)
+	end
+	return false
+end
+
 local function start_job(job)
 	job.queued = false
 	job.started = true
@@ -290,31 +199,15 @@ local function start_job(job)
 	running[job.id] = job
 	active[job.vcs] = active[job.vcs] + 1
 
-	if job.timeout_ms > 0 then
-		job.timeout_timer = vim.defer_fn(function()
-			job.timeout_timer = nil
-			if job.finalized then
-				return
-			end
-			local err = string.format("Timed out after %dms: %s", job.timeout_ms, table.concat(job.args, " "))
-			local raw = {
-				code = 124,
-				stdout = "",
-				stderr = err,
-				timed_out = true,
-				reason = "timeout",
-			}
-			terminate(job)
-			finish(job, "timeout", nil, err, raw)
-		end, job.timeout_ms)
-	end
-
 	local starter = job.start or util.system_start
-	job.collector = stream_collector(job.output_limit_bytes)
 	local ok, handle = pcall(starter, job.args, {
 		cwd = job.cwd,
-		stdout = job.collector.stdout,
-		stderr = job.collector.stderr,
+		timeout = job.timeout_ms > 0 and job.timeout_ms or nil,
+		output_limit = job.output_limit_bytes,
+		kill_grace_ms = job.kill_grace_ms,
+		on_terminate = function(result, err, raw)
+			on_process_terminate(job, result, err, raw)
+		end,
 	}, function(result, err, raw)
 		on_process_exit(job, result, err, raw)
 	end)
@@ -328,7 +221,7 @@ local function start_job(job)
 	end
 	job.handle = handle
 	if job.termination_requested and not job.process_exited then
-		terminate(job)
+		cancel_handle(handle, job.termination_reason)
 	end
 end
 
@@ -520,17 +413,20 @@ function M.cancel(filter, reason)
 			set_latest_generation(job.owner, job.scope, math.max(latest or job.generation, job.generation + 1))
 		end
 		job.termination_requested = true
+		job.termination_reason = reason
 		if job.started then
-			terminate(job)
+			cancel_handle(job.handle, reason)
 		end
 		local message = reason == "cancelled" and "Cancelled" or ("Cancelled: " .. reason)
-		finish(job, "cancelled", nil, message, {
-			code = 130,
-			stdout = "",
-			stderr = message,
-			cancelled = true,
-			reason = reason,
-		})
+		if not job.finalized then
+			finish(job, "cancelled", nil, message, {
+				code = 130,
+				stdout = "",
+				stderr = message,
+				cancelled = true,
+				reason = reason,
+			})
+		end
 	end
 	return #selected
 end

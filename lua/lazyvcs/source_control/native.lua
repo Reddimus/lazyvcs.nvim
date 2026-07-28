@@ -147,52 +147,6 @@ local function compose_right_meta(primary, sync, counts, max_width)
 	return fit_right_text(primary, max_width, 8) or ""
 end
 
-local function serialize_state(state)
-	local visible = {}
-	local hidden = {}
-	for root, enabled in pairs(state.lazyvcs_repo_visibility_overrides or {}) do
-		if enabled then
-			visible[#visible + 1] = root
-		elseif enabled == false then
-			hidden[#hidden + 1] = root
-		end
-	end
-	table.sort(visible)
-	table.sort(hidden)
-	return {
-		visible_repos = visible,
-		hidden_repos = hidden,
-		focused_repo = state.lazyvcs_focused_repo,
-		show_clean = state.lazyvcs_show_clean,
-		selection_mode = state.lazyvcs_selection_mode,
-		changes_view_mode = state.lazyvcs_changes_view_mode,
-		changes_sort = state.lazyvcs_changes_sort,
-	}
-end
-
-local function save_state(state)
-	if state.path and state.path ~= "" then
-		persist.save(state.path, serialize_state(state))
-	end
-end
-
-local function load_persisted_state(state, path)
-	local saved = persist.load(path)
-	state.lazyvcs_repo_visibility = {}
-	state.lazyvcs_repo_visibility_overrides = {}
-	for _, root in ipairs(saved.visible_repos or {}) do
-		state.lazyvcs_repo_visibility_overrides[root] = true
-	end
-	for _, root in ipairs(saved.hidden_repos or {}) do
-		state.lazyvcs_repo_visibility_overrides[root] = false
-	end
-	state.lazyvcs_focused_repo = saved.focused_repo
-	state.lazyvcs_show_clean = saved.show_clean
-	state.lazyvcs_selection_mode = saved.selection_mode
-	state.lazyvcs_changes_view_mode = saved.changes_view_mode
-	state.lazyvcs_changes_sort = saved.changes_sort
-end
-
 local function reset_for_path(state, path)
 	if state.lazyvcs_repo_root == path then
 		return
@@ -214,7 +168,8 @@ local function reset_for_path(state, path)
 	state.lazyvcs_hydration_active = false
 	state.lazyvcs_hydration_pending = 0
 	state.lazyvcs_expanded = {}
-	load_persisted_state(state, path)
+	state.lazyvcs_discovery_error = nil
+	persist.apply_state(state, path)
 end
 
 local function start_discovery(state)
@@ -223,6 +178,7 @@ local function start_discovery(state)
 	end
 	state.lazyvcs_discovering = true
 	state.lazyvcs_repo_specs = {}
+	state.lazyvcs_discovery_error = nil
 	state.lazyvcs_discovery_generation = (state.lazyvcs_discovery_generation or 0) + 1
 	local generation = state.lazyvcs_discovery_generation
 	state.lazyvcs_discovery_handle = model.discover_async(
@@ -239,9 +195,7 @@ local function start_discovery(state)
 			state.lazyvcs_discovery_handle = nil
 			state.lazyvcs_discovering = false
 			state.lazyvcs_repo_specs = specs or {}
-			if err then
-				state.lazyvcs_discovery_error = err
-			end
+			state.lazyvcs_discovery_error = err
 			M.navigate(state)
 		end,
 		{ entry_budget = 64 }
@@ -310,6 +264,9 @@ end
 local function highlight_for(node)
 	if node.extra and node.extra.disabled then
 		return "LazyVcsDisabled"
+	end
+	if node.extra and node.extra.error then
+		return "DiagnosticError"
 	end
 	if node.type == "repo_selector" or node.type == "repo_changes" or node.type == "folder" then
 		return "Directory"
@@ -910,15 +867,7 @@ local function cancel_state_jobs(state)
 		pcall(state.lazyvcs_discovery_handle.kill, state.lazyvcs_discovery_handle, 15)
 		state.lazyvcs_discovery_handle = nil
 	end
-	if type(jobs.cancel_owner) == "function" then
-		pcall(jobs.cancel_owner, state)
-	elseif type(jobs.cancel_scope) == "function" then
-		pcall(jobs.cancel_scope, "hydration", state)
-	elseif type(jobs.cancel) == "function" then
-		pcall(jobs.cancel, function(job)
-			return job.owner == state
-		end, "owner closed")
-	end
+	pcall(jobs.cancel_owner, state, { reason = "owner closed" })
 end
 
 local function teardown_state(state, opts)
@@ -927,7 +876,7 @@ local function teardown_state(state, opts)
 		return
 	end
 	state.lazyvcs_tearing_down = true
-	save_state(state)
+	persist.save_state(state)
 	cancel_state_jobs(state)
 	if state.augroup then
 		pcall(vim.api.nvim_del_augroup_by_id, state.augroup)
@@ -974,7 +923,7 @@ function M.refresh(remote_refresh)
 	state.lazyvcs_repo_cache = {}
 	state.lazyvcs_loading_details = {}
 	state.lazyvcs_remote_refresh = remote_refresh ~= false
-	save_state(state)
+	persist.save_state(state)
 	M.navigate(state)
 end
 
@@ -997,7 +946,6 @@ function M.cancel(path)
 				pcall(cancel, state.lazyvcs_diff_target_task)
 			end
 			state.lazyvcs_diff_target_task = nil
-			state.lazyvcs_diff_target_loading = false
 			state.lazyvcs_diff_target_generation = (state.lazyvcs_diff_target_generation or 0) + 1
 		end
 		M.navigate(state)
@@ -1129,7 +1077,7 @@ local function setup_lifecycle()
 		group = lifecycle_augroup,
 		callback = function()
 			for _, state in pairs(states) do
-				save_state(state)
+				persist.save_state(state)
 				cancel_state_jobs(state)
 			end
 		end,

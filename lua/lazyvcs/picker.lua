@@ -14,6 +14,7 @@ function M.select(items, opts, on_choice)
 		return snacks_select.select(items, {
 			prompt = opts.prompt,
 			format_item = opts.format_item or item_text,
+			snacks = opts.snacks,
 		}, on_choice)
 	end
 

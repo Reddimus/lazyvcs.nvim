@@ -73,13 +73,17 @@ function M.system(args, opts)
 end
 
 function M.system_start(args, opts, on_exit)
-	opts = opts or {}
-	local timeout_ms = opts.timeout
-	local output_limit = math.max(1024, math.floor(opts.output_limit or 4 * 1024 * 1024))
+	opts = vim.tbl_extend("force", {}, opts or {})
+	local timeout_ms = opts.timeout_ms or opts.timeout
+	local output_limit = math.max(256, math.floor(opts.output_limit_bytes or opts.output_limit or 4 * 1024 * 1024))
 	local kill_grace_ms = math.max(0, math.floor(opts.kill_grace_ms or 1000))
+	local on_terminate = opts.on_terminate
 	opts.timeout = nil
+	opts.timeout_ms = nil
 	opts.output_limit = nil
+	opts.output_limit_bytes = nil
 	opts.kill_grace_ms = nil
+	opts.on_terminate = nil
 	local done = false
 	local process
 	local timeout_timer
@@ -98,13 +102,58 @@ function M.system_start(args, opts, on_exit)
 		end
 	end
 
-	local function bounded(text)
-		text = type(text) == "string" and text or ""
-		if #text <= output_limit then
-			return text
+	local function bounded_text(value, limit)
+		value = type(value) == "string" and value or ""
+		if #value <= limit then
+			return value
 		end
-		local suffix = string.format("\n... [truncated %d bytes]", #text - output_limit)
-		return text:sub(1, math.max(0, output_limit - #suffix)) .. suffix
+		local suffix = string.format("\n... [truncated %d bytes]", #value - limit)
+		return value:sub(1, math.max(0, limit - #suffix)) .. suffix
+	end
+
+	local stdout_limit = math.floor(output_limit / 2)
+	local stderr_limit = output_limit - stdout_limit
+	local streams = {
+		stdout = { chunks = {}, bytes = 0, omitted = 0, callback = opts.stdout },
+		stderr = { chunks = {}, bytes = 0, omitted = 0, callback = opts.stderr },
+	}
+	local function capture(name, err, data)
+		local stream = streams[name]
+		if err and not data then
+			data = tostring(err)
+		end
+		if type(data) == "string" and data ~= "" then
+			local limit = name == "stdout" and stdout_limit or stderr_limit
+			local remaining = math.max(0, limit - stream.bytes)
+			if remaining > 0 then
+				local chunk = data:sub(1, remaining)
+				stream.chunks[#stream.chunks + 1] = chunk
+				stream.bytes = stream.bytes + #chunk
+			end
+			stream.omitted = stream.omitted + math.max(0, #data - remaining)
+		end
+		if type(stream.callback) == "function" then
+			pcall(stream.callback, err, data)
+		end
+	end
+	opts.stdout = function(err, data)
+		capture("stdout", err, data)
+	end
+	opts.stderr = function(err, data)
+		capture("stderr", err, data)
+	end
+
+	local function stream_value(name, fallback)
+		local stream = streams[name]
+		local limit = name == "stdout" and stdout_limit or stderr_limit
+		if #stream.chunks == 0 and stream.omitted == 0 then
+			return bounded_text(fallback, limit)
+		end
+		local value = table.concat(stream.chunks)
+		if stream.omitted > 0 then
+			value = value .. string.format("\n... [truncated at least %d bytes]", stream.omitted)
+		end
+		return bounded_text(value, limit)
 	end
 
 	local function bounded_result(result)
@@ -114,8 +163,11 @@ function M.system_start(args, opts, on_exit)
 		return {
 			code = result.code,
 			signal = result.signal,
-			stdout = bounded(result.stdout),
-			stderr = bounded(result.stderr),
+			stdout = stream_value("stdout", result.stdout),
+			stderr = stream_value("stderr", result.stderr),
+			cancelled = result.cancelled,
+			timed_out = result.timed_out,
+			reason = result.reason,
 		}
 	end
 
@@ -137,6 +189,55 @@ function M.system_start(args, opts, on_exit)
 		end, kill_grace_ms)
 	end
 
+	local function notify_termination(result)
+		if type(on_terminate) == "function" then
+			pcall(on_terminate, result.result, result.err, result.raw)
+		end
+	end
+
+	local function begin_termination(kind, signal, reason)
+		if done or forced_result then
+			return false
+		end
+		close_timer(timeout_timer)
+		timeout_timer = nil
+		local message
+		local raw
+		if kind == "timeout" then
+			message = string.format("Timed out after %dms: %s", timeout_ms, table.concat(args, " "))
+			raw = {
+				code = 124,
+				stdout = "",
+				stderr = message,
+				timed_out = true,
+				reason = "timeout",
+			}
+		else
+			local cancel_reason = reason ~= nil and tostring(reason) or nil
+			message = cancel_reason and ("Cancelled: " .. cancel_reason) or ("Cancelled: " .. table.concat(args, " "))
+			raw = {
+				code = 130,
+				stdout = "",
+				stderr = message,
+				cancelled = true,
+				reason = cancel_reason or "cancelled",
+			}
+		end
+		forced_result = {
+			result = nil,
+			err = message,
+			raw = raw,
+		}
+		if process then
+			pcall(process.kill, process, signal or 15)
+			if signal ~= 9 then
+				schedule_kill()
+			end
+		end
+		notify_termination(forced_result)
+		return true
+	end
+
 	local function complete(result, err, raw)
 		if done then
 			return false
@@ -155,36 +256,15 @@ function M.system_start(args, opts, on_exit)
 	end
 
 	function wrapper:kill(signal)
-		if done then
-			return false
-		end
-		if process then
-			pcall(process.kill, process, signal or 15)
-		end
-		if forced_result then
-			return true
-		end
-		local message = "Cancelled: " .. table.concat(args, " ")
-		close_timer(timeout_timer)
-		timeout_timer = nil
-		forced_result = {
-			result = nil,
-			err = message,
-			raw = {
-				code = 130,
-				stdout = "",
-				stderr = message,
-				cancelled = true,
-				reason = "cancelled",
-			},
-		}
-		if process and signal ~= 9 then
-			schedule_kill()
-		end
-		return true
+		return begin_termination("cancelled", signal or 15)
 	end
 
-	wrapper.cancel = wrapper.kill
+	function wrapper:cancel(reason)
+		if type(reason) == "number" then
+			return begin_termination("cancelled", reason)
+		end
+		return begin_termination("cancelled", 15, reason)
+	end
 
 	if type(opts.cwd) == "string" and opts.cwd ~= "" and not vim.uv.fs_stat(opts.cwd) then
 		local result = {
@@ -200,11 +280,13 @@ function M.system_start(args, opts, on_exit)
 		if done then
 			return
 		end
+		local bounded_raw = bounded_result(result)
 		if forced_result then
+			forced_result.raw.stdout = bounded_raw and bounded_raw.stdout or ""
+			forced_result.raw.signal = bounded_raw and bounded_raw.signal or nil
 			complete(forced_result.result, forced_result.err, forced_result.raw)
 			return
 		end
-		local bounded_raw = bounded_result(result)
 		if result.code ~= 0 then
 			complete(nil, M.system_error(bounded_raw), bounded_raw)
 			return
@@ -214,7 +296,7 @@ function M.system_start(args, opts, on_exit)
 	if not ok then
 		local result = { code = 127, stdout = "", stderr = tostring(proc) }
 		complete(nil, M.system_error(result), result)
-		return nil
+		return wrapper
 	end
 	process = proc
 	wrapper.process = proc
@@ -224,24 +306,7 @@ function M.system_start(args, opts, on_exit)
 			if done then
 				return
 			end
-			if process then
-				pcall(process.kill, process, 15)
-			end
-			local message = string.format("Timed out after %dms: %s", timeout_ms, table.concat(args, " "))
-			forced_result = {
-				result = nil,
-				err = message,
-				raw = {
-					code = 124,
-					stdout = "",
-					stderr = message,
-					timed_out = true,
-					reason = "timeout",
-				},
-			}
-			if process then
-				schedule_kill()
-			end
+			begin_termination("timeout", 15)
 		end, timeout_ms)
 	end
 	return wrapper

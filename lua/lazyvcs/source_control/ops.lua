@@ -5,6 +5,7 @@ local input = require("lazyvcs.source_control.input")
 local jobs = require("lazyvcs.source_control.jobs")
 local model = require("lazyvcs.source_control.model")
 local persist = require("lazyvcs.source_control.persist")
+local picker = require("lazyvcs.picker")
 local repo_switch = require("lazyvcs.source_control.switch")
 local session_state = require("lazyvcs.state")
 local util = require("lazyvcs.util")
@@ -30,36 +31,6 @@ local function window_exists(state)
 		return state.lazyvcs_window_exists(state)
 	end
 	return true
-end
-
-local function serialize_state(state)
-	local visible = {}
-	local hidden = {}
-	for root, enabled in pairs(state.lazyvcs_repo_visibility_overrides or {}) do
-		if enabled then
-			visible[#visible + 1] = root
-		elseif enabled == false then
-			hidden[#hidden + 1] = root
-		end
-	end
-	table.sort(visible)
-	table.sort(hidden)
-
-	return {
-		visible_repos = visible,
-		hidden_repos = hidden,
-		focused_repo = state.lazyvcs_focused_repo,
-		show_clean = state.lazyvcs_show_clean,
-		selection_mode = state.lazyvcs_selection_mode,
-		changes_view_mode = state.lazyvcs_changes_view_mode,
-		changes_sort = state.lazyvcs_changes_sort,
-	}
-end
-
-local function save_state(state)
-	if state.path and state.path ~= "" then
-		persist.save(state.path, serialize_state(state))
-	end
 end
 
 local function repo_root_for_node(node)
@@ -138,7 +109,7 @@ local function set_repo_changes_expanded(state, repo, expanded)
 	if not expanded then
 		state.lazyvcs_force_expand[id] = nil
 	end
-	save_state(state)
+	persist.save_state(state)
 	navigate(state)
 end
 
@@ -147,7 +118,7 @@ local function restart_source(state, remote_refresh)
 	state.lazyvcs_repo_cache = {}
 	state.lazyvcs_loading_details = {}
 	state.lazyvcs_remote_refresh = remote_refresh ~= false
-	save_state(state)
+	persist.save_state(state)
 	navigate(state)
 end
 
@@ -163,40 +134,13 @@ local function invalidate_repo(state, repo_root, remote_refresh)
 	state.lazyvcs_repo_cache[repo_root] = nil
 	state.lazyvcs_loading_details = state.lazyvcs_loading_details or {}
 	state.lazyvcs_loading_details[repo_root] = nil
-	state.lazyvcs_hydration_queue = nil
-	state.lazyvcs_hydration_remote = nil
 	state.lazyvcs_remote_refresh = remote_refresh ~= false
-	save_state(state)
+	persist.save_state(state)
 end
 
 local function refresh_repo(state, repo_root, remote_refresh)
 	invalidate_repo(state, repo_root, remote_refresh)
 	navigate_if_visible(state)
-end
-
-local function select_items(items, opts, on_choice)
-	opts = opts or {}
-	local format_item = opts.format_item
-		or function(item)
-			return type(item) == "table" and (item.label or item.text or item.name or "") or tostring(item)
-		end
-
-	local ok, select_mod = pcall(require, "snacks.picker.select")
-	if ok and select_mod and type(select_mod.select) == "function" then
-		return select_mod.select(items, {
-			prompt = opts.prompt,
-			format_item = format_item,
-			snacks = {
-				layout = "select",
-				matcher = { sort_empty = true },
-			},
-		}, on_choice)
-	end
-
-	return vim.ui.select(items, {
-		prompt = opts.prompt,
-		format_item = format_item,
-	}, on_choice)
 end
 
 local function confirm_mutation(state, message, on_confirm)
@@ -708,7 +652,7 @@ end
 
 function M.toggle_changes_view_mode(state)
 	state.lazyvcs_changes_view_mode = state.lazyvcs_changes_view_mode == "tree" and "list" or "tree"
-	save_state(state)
+	persist.save_state(state)
 	navigate(state)
 end
 
@@ -794,12 +738,6 @@ function M.open_change(state, node)
 		repo_root = repo.root,
 		path = node.path,
 	})
-	local comparison, resolve_err = backends.resolve_diff_target(target)
-	if not comparison then
-		util.notify(resolve_err or "Unable to resolve the selected diff target", vim.log.levels.ERROR)
-		return
-	end
-
 	if state.lazyvcs_diff_target_task then
 		local cancel = state.lazyvcs_diff_target_task.cancel or state.lazyvcs_diff_target_task.kill
 		if type(cancel) == "function" then
@@ -810,19 +748,17 @@ function M.open_change(state, node)
 	end
 	state.lazyvcs_diff_target_generation = (state.lazyvcs_diff_target_generation or 0) + 1
 	local generation = state.lazyvcs_diff_target_generation
-	state.lazyvcs_diff_target_loading = true
 	state.lazyvcs_diff_target_root = repo.root
 	navigate_if_visible(state)
 
 	local completed = false
-	local task = backends.load_diff_target_async(comparison, function(loaded, load_err)
+	local task = backends.load_diff_target_async(target, function(loaded, load_err)
 		completed = true
 		if state.lazyvcs_diff_target_generation ~= generation then
 			return
 		end
 		state.lazyvcs_diff_target_task = nil
 		state.lazyvcs_diff_target_root = nil
-		state.lazyvcs_diff_target_loading = false
 		navigate_if_visible(state)
 		if not loaded then
 			util.notify(load_err or "Unable to load the selected diff target", vim.log.levels.ERROR)
@@ -972,11 +908,15 @@ function M.commit_repo(state, node)
 	confirm_mutation(state, "Commit changes in " .. repo.name .. "?", function()
 		if repo.vcs == "git" then
 			if repo.counts.staged == 0 and repo.counts.local_changes > 0 then
-				select_items({
+				picker.select({
 					"Stage all and commit",
 					"Cancel",
 				}, {
 					prompt = "No staged changes in " .. repo.name,
+					snacks = {
+						layout = "select",
+						matcher = { sort_empty = true },
+					},
 				}, function(choice)
 					if choice ~= "Stage all and commit" then
 						return
@@ -1074,7 +1014,7 @@ function M.focus_repo(state, node, activate_changes)
 		state.lazyvcs_force_expand[model.repo_changes_id(repo.root)] = true
 	end
 
-	save_state(state)
+	persist.save_state(state)
 	navigate(state)
 end
 
@@ -1100,7 +1040,7 @@ function M.toggle_repo_visibility(state, node)
 		end
 	end
 
-	save_state(state)
+	persist.save_state(state)
 	navigate(state)
 end
 
@@ -1190,8 +1130,6 @@ function M.cancel_repo(state, node)
 		return 0
 	end
 	local hydration_count = invalidate_hydration(state, repo.root, "user")
-	state.lazyvcs_hydration_queue = nil
-	state.lazyvcs_hydration_remote = nil
 	state.lazyvcs_loading_details = state.lazyvcs_loading_details or {}
 	state.lazyvcs_loading_details[repo.root] = nil
 	if state.lazyvcs_diff_target_task and state.lazyvcs_diff_target_root == repo.root then
@@ -1201,7 +1139,6 @@ function M.cancel_repo(state, node)
 		end
 		state.lazyvcs_diff_target_task = nil
 		state.lazyvcs_diff_target_root = nil
-		state.lazyvcs_diff_target_loading = false
 		state.lazyvcs_diff_target_generation = (state.lazyvcs_diff_target_generation or 0) + 1
 	end
 	local count = hydration_count + M.cancel(repo.root, { owner = state })
@@ -1462,7 +1399,7 @@ function M.repo_action_picker(state, node)
 	end
 	local busy, job = repo_is_busy(repo.root)
 	if busy and job then
-		return select_items({
+		return picker.select({
 			{
 				label = "Cancel " .. (job.label or job.sync_text or "Operation"),
 				action = "cancel",
@@ -1472,6 +1409,10 @@ function M.repo_action_picker(state, node)
 			format_item = function(item)
 				return item.label
 			end,
+			snacks = {
+				layout = "select",
+				matcher = { sort_empty = true },
+			},
 		}, function(choice)
 			if choice then
 				execute_repo_action(state, repo, choice.action, node)
@@ -1479,11 +1420,15 @@ function M.repo_action_picker(state, node)
 		end)
 	end
 	local actions = repo_actions(repo)
-	select_items(actions, {
+	picker.select(actions, {
 		prompt = "Actions for " .. repo.name,
 		format_item = function(item)
 			return item.label
 		end,
+		snacks = {
+			layout = "select",
+			matcher = { sort_empty = true },
+		},
 	}, function(choice)
 		if not choice then
 			return
