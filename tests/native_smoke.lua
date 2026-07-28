@@ -32,9 +32,13 @@ for _, gone in ipairs({
 	assert(vim.fn.exists(gone) == 0, "legacy command should be removed: " .. gone)
 end
 
+-- macOS puts temporary files under /var, a symlink to /private/var, so Neovim
+-- reports buffer names resolved while this path stays unresolved. Resolve once
+-- so the buffer-name comparison below matches on every platform.
 local root = vim.fs.normalize(vim.fn.tempname())
 vim.fn.mkdir(root .. "/team-a/service/.git", "p")
 vim.fn.mkdir(root .. "/team-b/service/.git", "p")
+root = vim.fs.normalize(vim.uv.fs_realpath(root) or root)
 
 require("lazyvcs").source_control_open({ path = root })
 local state = assert(require("lazyvcs.source_control.native")._state(), "missing native source-control state")

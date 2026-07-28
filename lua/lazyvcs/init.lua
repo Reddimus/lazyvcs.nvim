@@ -111,4 +111,11 @@ function M.source_control_refresh()
 	return require("lazyvcs.source_control.native").refresh(true)
 end
 
+---Cancel source-control work.
+---@param path? string Repository root. When omitted, cancels all source-control jobs.
+---@return integer count Number of queued or running jobs cancelled.
+function M.source_control_cancel(path)
+	return require("lazyvcs.source_control.native").cancel(path)
+end
+
 return M

@@ -7,7 +7,7 @@ function M.check()
 
 	-- Requirements ----------------------------------------------------------
 	if vim.fn.has("nvim-0.11") == 1 then
-		health.ok("Neovim 0.11+ (vim.system, vim.diff, vim.uv and the current vim.validate signature)")
+		health.ok("Neovim 0.11+ (vim.system, vim.text.diff/vim.diff, vim.uv and current vim.validate)")
 	else
 		health.error("Neovim 0.11+ is required (config validation uses the 0.11 vim.validate signature)")
 	end

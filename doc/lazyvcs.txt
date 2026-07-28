@@ -290,6 +290,20 @@ Main options:
     session_keymaps    Add buffer-local live diff mappings.
     base_window.width  Left/base diff window width. Ratio when <= 1.
 
+Live diff keymaps:
+
+    keymaps.close      Close the live diff session. Default "q".
+    keymaps.next_hunk  Jump to the next hunk. Default "]v".
+    keymaps.prev_hunk  Jump to the previous hunk. Default "[v".
+    keymaps.revert_hunk
+                       Revert the hunk under the cursor. Default "<leader>vr".
+
+Each accepts a string, or `false` to leave the key unmapped. Empty strings are
+rejected, and binding two of them to the same key is a configuration error.
+
+Unknown or removed configuration keys are reported once at startup with
+|vim.notify_once()| rather than being ignored silently.
+
 SVN signs options:
 
     signs.enabled      Enable SVN gutter signs.
@@ -342,6 +356,51 @@ Source-control options:
     changes_view_mode  `list` or `tree`.
     changes_sort       `path`, `name`, or `status`.
     compact_folders    Collapse single-child folder chains in tree mode.
+    sync_button_behavior
+                       `picker` or `sync` for the Sync button.
+    always_show_repositories
+                       Keep the Repositories section visible with one repo.
+    show_action_button Show the sidebar action button.
+    show_input_action_button
+                       Show the action button in the commit input.
+    remote_error_notifications
+                       `summary`, `inline`, or `notify`.
+
+Background scheduling options, under source_control.background:
+
+    git_workers        Concurrent Git subprocesses. Default 4.
+    svn_workers        Concurrent SVN subprocesses. Default 1.
+    status_timeout_ms  Timeout for status and hydration commands.
+    remote_timeout_ms  Timeout for fetch and remote-status commands.
+    switch_timeout_ms  Timeout for branch and ref switching.
+    mutation_timeout_ms
+                       Timeout for stage, commit, push, and other
+                       mutations. Must be greater than zero.
+    history_limit      Entries retained for :LazyVCS profile.
+
+Every scheduled command is cancellable and bounded. A mutation that hangs
+forever cannot be distinguished from one still in progress, so
+mutation_timeout_ms rejects 0. Cancel in-flight work with :LazyVCS sidebar
+cancel, with `X` in the sidebar, or with
+require("lazyvcs").source_control_cancel().
+
+AI commit-message options, under ai.commit_message:
+
+    provider           Provider name, or "auto" to try provider_order.
+    provider_order     Providers tried in order when provider = "auto".
+    instructions       Extra instructions appended to the prompt.
+    timeout_ms         Provider timeout.
+    max_context_chars  Diff context is truncated to this length.
+    context            `staged_first`, `staged`, `unstaged`, `all`,
+                       or `status`.
+    generate_key       Normal-mode key in the commit input. Default "gm".
+    insert_generate_key
+                       Insert-mode key in the commit input. Default "<C-g>".
+    confirm_privacy    Confirm before sending diffs to a provider.
+
+Diff context reaches providers over stdin, or as a private 0600 attachment
+that is deleted on completion, so it never appears in process arguments or
+task listings.
 
 Mutation confirmations use a small native popup. Press 1 to confirm, 2 to
 confirm and skip more mutation prompts for the current Neovim session, or 3,

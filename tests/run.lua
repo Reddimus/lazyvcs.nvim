@@ -1,18 +1,53 @@
 local run_file = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p")
 local repo_root = vim.fn.fnamemodify(run_file, ":h:h")
-local lazy_root = vim.env.LAZYVCS_TEST_LAZY_ROOT or (vim.fn.stdpath("data") .. "/lazy")
 
-local function add_dependency(name)
-	local path = lazy_root .. "/" .. name
-	if vim.fn.isdirectory(path) == 0 then
-		error("missing test dependency: " .. path .. "\nSet LAZYVCS_TEST_LAZY_ROOT to your lazy.nvim plugin directory.")
+local groups = {
+	"core",
+	"source_control",
+	"blame_signs",
+	"live_diff",
+	"svn",
+}
+
+-- Run each subsystem in a fresh Neovim process. This prevents monkeypatches,
+-- skipped external-tool tests, timers, buffers, and module state from leaking
+-- into unrelated coverage while remaining portable across Unix and Windows.
+if not vim.env.LAZYVCS_TEST_GROUP or vim.env.LAZYVCS_TEST_GROUP == "" then
+	local failures = {}
+	for _, group in ipairs(groups) do
+		print(string.format("\n===== lazyvcs test group: %s =====", group))
+		local result = vim.system({
+			vim.v.progpath,
+			"--headless",
+			"-u",
+			"NONE",
+			"-l",
+			run_file,
+		}, {
+			text = true,
+			env = {
+				LAZYVCS_TEST_GROUP = group,
+			},
+		}):wait()
+		if result.stdout and result.stdout ~= "" then
+			io.stdout:write(result.stdout)
+		end
+		if result.stderr and result.stderr ~= "" then
+			io.stderr:write(result.stderr)
+		end
+		if result.code ~= 0 then
+			failures[#failures + 1] = group
+		end
 	end
-	vim.opt.runtimepath:append(path)
-	package.path = table.concat({
-		path .. "/lua/?.lua",
-		path .. "/lua/?/init.lua",
-		package.path,
-	}, ";")
+
+	if #failures > 0 then
+		print("FAILED GROUPS: " .. table.concat(failures, ", "))
+		vim.cmd("cquit 1")
+	else
+		print("\nlazyvcs isolated test groups: ok")
+		vim.cmd("qa!")
+	end
+	return
 end
 
 vim.opt.runtimepath:prepend(repo_root)
@@ -23,17 +58,8 @@ package.path = table.concat({
 	package.path,
 }, ";")
 
-for _, dependency in ipairs({
-	"plenary.nvim",
-	"gitsigns.nvim",
-}) do
-	add_dependency(dependency)
-end
-
 require("spec")
 
--- Propagate a non-zero exit status when any test failed so CI (and shell
--- callers) can detect regressions. Skipped tests do not fail the suite.
 if _G.LAZYVCS_TEST_FAILED then
 	vim.cmd("cquit 1")
 else

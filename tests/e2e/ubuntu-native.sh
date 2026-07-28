@@ -4,8 +4,9 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
-UBUNTU_IMAGE="${UBUNTU_IMAGE:-ubuntu:24.04}"
-NVIM_VERSION="${NVIM_VERSION:-v0.12.2}"
+UBUNTU_IMAGE="${UBUNTU_IMAGE:-ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90}"
+NVIM_VERSION="${NVIM_VERSION:-v0.12.4}"
+NVIM_SHA256="${NVIM_SHA256:-012bf3fcac5ade43914df3f174668bf64d05e049a4f032a388c027b1ebd78628}"
 
 if ! command -v docker >/dev/null 2>&1; then
 	printf 'docker is required for the native E2E test\n' >&2
@@ -17,6 +18,7 @@ mkdir -p "${ARTIFACT_DIR}"
 
 docker run --rm -i \
 	-e "NVIM_VERSION=${NVIM_VERSION}" \
+	-e "NVIM_SHA256=${NVIM_SHA256}" \
 	-v "${REPO_ROOT}:/work/lazyvcs.nvim:ro" \
 	-v "${ARTIFACT_DIR}:/artifacts" \
 	"${UBUNTU_IMAGE}" bash -s <<'CONTAINER'
@@ -33,8 +35,11 @@ locale-gen en_US.UTF-8 >/dev/null
 
 archive=/tmp/nvim.tar.gz
 base="https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}"
-curl -fsSL "${base}/nvim-linux-x86_64.tar.gz" -o "${archive}" \
-	|| curl -fsSL "${base}/nvim-linux64.tar.gz" -o "${archive}"
+curl --fail --location --retry 5 --retry-all-errors --silent --show-error \
+	"${base}/nvim-linux-x86_64.tar.gz" -o "${archive}"
+if [ -n "${NVIM_SHA256}" ]; then
+	printf '%s  %s\n' "${NVIM_SHA256}" "${archive}" | sha256sum --check -
+fi
 mkdir -p /opt/nvim
 tar -C /opt/nvim --strip-components=1 -xzf "${archive}"
 ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim
@@ -100,7 +105,6 @@ child = pexpect.spawn(
 def ex(command):
     child.send("\x1b")
     child.sendline(":" + command)
-    time.sleep(0.25)
 
 def wait_file(name):
     path = artifact_dir / name
@@ -110,10 +114,20 @@ def wait_file(name):
         time.sleep(0.1)
     raise AssertionError(f"missing artifact {path}")
 
-def write_width(name):
+# Sidebar rendering is coalesced and scheduled, so the width does not change
+# during the keypress that triggers it. Sampling immediately after `child.send`
+# reads the pre-render width, so wait inside Neovim for the width itself to
+# settle rather than sleeping for an arbitrary interval. `settle` is a Lua
+# comparison against the previous width; on timeout the current width is still
+# recorded and the assertion below reports the real value.
+def write_width(name, settle="~= nil"):
     ex(
-        "lua local s=require('lazyvcs.source_control.native')._state(); "
-        f"vim.fn.writefile({{tostring(vim.api.nvim_win_get_width(s.winid))}}, '/artifacts/{name}')"
+        "lua local function w() "
+        "local s = require('lazyvcs.source_control.native')._state(); "
+        "if not (s and s.winid and vim.api.nvim_win_is_valid(s.winid)) then return -1 end; "
+        "return vim.api.nvim_win_get_width(s.winid) end "
+        f"vim.wait(8000, function() return w() {settle} end, 50); "
+        f"vim.fn.writefile({{tostring(w())}}, '/artifacts/{name}')"
     )
     return int(wait_file(name))
 
@@ -123,11 +137,9 @@ try:
 
     before = write_width("pty-width-before.txt")
     child.send("e")
-    time.sleep(0.5)
-    after = write_width("pty-width-after.txt")
+    after = write_width("pty-width-after.txt", settle=f"> {before}")
     child.send("e")
-    time.sleep(0.5)
-    restored = write_width("pty-width-restored.txt")
+    restored = write_width("pty-width-restored.txt", settle=f"== {before}")
 
     if not after > before:
         raise AssertionError(f"expected e to expand sidebar: before={before} after={after}")

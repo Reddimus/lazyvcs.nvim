@@ -2,29 +2,47 @@
 
 ## Requirements
 
-- Neovim 0.11+ (CI pins 0.12.2)
+- Neovim 0.11+. CI tests 0.11.0 (the supported floor), 0.11.7, and 0.12.4 on
+  Linux; 0.11.7 and 0.12.4 on Windows; 0.12.4 on macOS.
 - `git`, and `svn` if you want the Subversion specs to run instead of skip
-- [StyLua](https://github.com/JohnnyMorganz/StyLua) 2.3.0 and
-  [lua-language-server](https://github.com/LuaLS/lua-language-server) 3.15.0
-- Node 22+ for the Markdown formatter (`npm ci`)
+- [StyLua](https://github.com/JohnnyMorganz/StyLua) 2.5.2 and
+  [lua-language-server](https://github.com/LuaLS/lua-language-server) 3.18.2
+- Node 22+ for the Markdown tooling (`npm ci`)
+- `actionlint` and `shellcheck` for the workflow and shell gates
 - Docker, only for the container E2E suites
 
 ## Running the checks
 
-CI runs these; run them before opening a pull request.
+CI runs all of these from the reusable `.github/workflows/verify.yml`; run them
+before opening a pull request.
 
 ```sh
 npm ci
 npm run format:md:check                       # Markdown formatting
+npm run lint:md                               # markdownlint-cli2
+npm run lint:links                            # local Markdown link targets
+npm run audit                                 # npm audit --audit-level=high
 stylua --check lua tests                      # Lua formatting
-lua-language-server --check=. --checklevel=Warning
-bash -n tests/minitest.sh tests/e2e/*.sh      # shell syntax
+lua-language-server --check=. --check_format=pretty --checklevel=Warning
+actionlint                                    # workflow lint
+shellcheck tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
+bash -n tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
 
 nvim --headless -u NONE -l tests/native_smoke.lua   # startup smoke
 nvim --headless -u NONE -l tests/run.lua            # spec suite
 tests/minitest.sh                                   # sidebar UI tests
 nvim --headless -u NONE -c 'helptags doc' -c 'quitall'
+nvim --headless -u NONE -c 'checkhealth lazyvcs' -c 'quitall'
 ```
+
+`lua-language-server` needs `VIMRUNTIME` exported — `.luarc.json` resolves the
+Neovim runtime through `${env:VIMRUNTIME}/lua`.
+
+On Windows, `tests/minitest.sh` is not usable directly; clone mini.nvim at the
+commit pinned in that script, set `MINI_TEST_PATH`, and run
+`nvim --headless -u NONE -l tests/minitest.lua` instead. PowerShell also does
+not glob-expand `tests/e2e/*.sh` for native executables, so pass explicit paths
+to `shellcheck`.
 
 Container E2E (Linux + Docker):
 

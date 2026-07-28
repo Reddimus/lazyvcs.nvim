@@ -1,0 +1,344 @@
+name: Reusable verification
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact Git ref or commit to verify
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact Git ref or commit to verify
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ inputs.ref || github.sha }}
+  cancel-in-progress: true
+
+env:
+  MINI_TEST_COMMIT: 2df201d9b217bc0ad54e5d077fc4c228e6e4ef96
+  NVIM_STABLE: v0.12.4
+  NVIM_STABLE_LINUX_SHA256: 012bf3fcac5ade43914df3f174668bf64d05e049a4f032a388c027b1ebd78628
+
+jobs:
+  static:
+    name: Static checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            shellcheck \
+            unzip
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install Neovim
+        run: tests/ci/install-neovim.sh "${NVIM_STABLE}" "${NVIM_STABLE_LINUX_SHA256}" "${RUNNER_TEMP}/nvim"
+
+      - name: Install pinned Lua and workflow tools
+        run: |
+          curl --fail --location --retry 5 --retry-all-errors --silent --show-error \
+            "https://github.com/JohnnyMorganz/StyLua/releases/download/v2.5.2/stylua-linux-x86_64.zip" \
+            --output "${RUNNER_TEMP}/stylua.zip"
+          echo "bcb0d855e91f102f28a370e850f8566b3b44b79e6274d806ea5246837c0fd5ab  ${RUNNER_TEMP}/stylua.zip" \
+            | sha256sum --check -
+          mkdir -p "${RUNNER_TEMP}/stylua"
+          unzip -q "${RUNNER_TEMP}/stylua.zip" -d "${RUNNER_TEMP}/stylua"
+
+          curl --fail --location --retry 5 --retry-all-errors --silent --show-error \
+            "https://github.com/LuaLS/lua-language-server/releases/download/3.18.2/lua-language-server-3.18.2-linux-x64.tar.gz" \
+            --output "${RUNNER_TEMP}/lua-language-server.tar.gz"
+          echo "ca71415dd19f19e30aaa35a4915aefca9fdb5fec31b98331cc3d77f778d539c5  ${RUNNER_TEMP}/lua-language-server.tar.gz" \
+            | sha256sum --check -
+          mkdir -p "${RUNNER_TEMP}/lua-language-server"
+          tar -C "${RUNNER_TEMP}/lua-language-server" -xzf "${RUNNER_TEMP}/lua-language-server.tar.gz"
+
+          curl --fail --location --retry 5 --retry-all-errors --silent --show-error \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz" \
+            --output "${RUNNER_TEMP}/actionlint.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  ${RUNNER_TEMP}/actionlint.tar.gz" \
+            | sha256sum --check -
+          mkdir -p "${RUNNER_TEMP}/actionlint"
+          tar -C "${RUNNER_TEMP}/actionlint" -xzf "${RUNNER_TEMP}/actionlint.tar.gz"
+
+          {
+            echo "${RUNNER_TEMP}/stylua"
+            echo "${RUNNER_TEMP}/lua-language-server/bin"
+            echo "${RUNNER_TEMP}/actionlint"
+          } >>"${GITHUB_PATH}"
+
+      - name: Install documentation tooling
+        run: npm ci
+
+      - name: Check Markdown
+        run: |
+          npm run format:md:check
+          npm run lint:md
+          npm run lint:links
+          npm run audit
+
+      - name: Check Lua
+        env:
+          VIMRUNTIME: ${{ runner.temp }}/nvim/share/nvim/runtime
+        run: |
+          stylua --check lua tests
+          lua-language-server --check=. --check_format=pretty --checklevel=Warning
+
+      - name: Check workflows and shell scripts
+        env:
+          SHELLCHECK_OPTS: --external-sources
+        run: |
+          actionlint
+          shellcheck tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
+          bash -n tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
+
+      - name: Check whitespace
+        run: git diff-tree --check --no-commit-id --root -r HEAD
+
+  linux:
+    name: Linux / Neovim ${{ matrix.version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: v0.11.0
+            sha256: fe0a5bc79e64c5e4d9f844cd96157ebd3919ef1343b329e9ebc3f455924cc7d6
+          - version: v0.11.7
+            sha256: 38a7c6317f94503841096c00e8fde05ef04b9472fc9d7d62b6e033cecd6f7991
+          - version: v0.12.4
+            sha256: 012bf3fcac5ade43914df3f174668bf64d05e049a4f032a388c027b1ebd78628
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates curl git subversion
+
+      - name: Install Neovim
+        run: tests/ci/install-neovim.sh "${{ matrix.version }}" "${{ matrix.sha256 }}" "${RUNNER_TEMP}/nvim"
+
+      - name: Configure Git identity
+        run: |
+          git config --global user.name "lazyvcs ci"
+          git config --global user.email "lazyvcs-ci@example.invalid"
+          git config --global init.defaultBranch main
+
+      - name: Headless and isolated Lua tests
+        run: |
+          nvim --version
+          nvim --headless -u NONE -l tests/native_smoke.lua
+          nvim --headless -u NONE -l tests/run.lua
+
+      - name: Native sidebar UI tests
+        env:
+          MINI_TEST_PATH: ${{ runner.temp }}/mini.nvim-v0.18.0
+        run: tests/minitest.sh
+
+      - name: Help and health
+        run: |
+          nvim --headless -u NONE -c "helptags doc" -c "quitall"
+          nvim --headless -u NONE -c "set rtp+=." -c "runtime plugin/lazyvcs.lua" -c "checkhealth lazyvcs" -c "quitall"
+
+  windows:
+    name: Windows / Neovim ${{ matrix.version }}
+    runs-on: windows-2025
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: v0.11.7
+            sha256: 7b10e6e08b14bf256422b72cfe706ef0452fd9c0a40e138426e1af09803d697f
+          - version: v0.12.4
+            sha256: 9fc3572829ffd13debb6e32555da2c8cc02555568260a9fc4cf1f65bbcca319c
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Install Neovim
+        shell: pwsh
+        run: |
+          ./tests/ci/install-neovim.ps1 `
+            -Version "${{ matrix.version }}" `
+            -Sha256 "${{ matrix.sha256 }}" `
+            -Prefix "${env:RUNNER_TEMP}\nvim"
+
+      - name: Install Subversion
+        shell: pwsh
+        run: |
+          choco install sliksvn --version=1.14.5 -y --no-progress
+          "C:\Program Files\SlikSvn\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Configure Git identity
+        shell: pwsh
+        run: |
+          git config --global user.name "lazyvcs ci"
+          git config --global user.email "lazyvcs-ci@example.invalid"
+          git config --global init.defaultBranch main
+
+      - name: Headless and isolated Lua tests
+        shell: pwsh
+        run: |
+          nvim --version
+          nvim --headless -u NONE -l tests/native_smoke.lua
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          nvim --headless -u NONE -l tests/run.lua
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install pinned Mini.nvim
+        shell: pwsh
+        run: |
+          $miniPath = Join-Path $env:RUNNER_TEMP "mini.nvim-v0.18.0"
+          New-Item -ItemType Directory -Force -Path $miniPath | Out-Null
+          git -C $miniPath init
+          git -C $miniPath remote add origin https://github.com/nvim-mini/mini.nvim
+          git -C $miniPath fetch --depth 1 origin $env:MINI_TEST_COMMIT
+          git -C $miniPath checkout --detach FETCH_HEAD
+          # The pin may name an annotated tag object rather than a commit, so
+          # dereference it before comparing against the detached HEAD.
+          $expectedCommit = git -C $miniPath rev-parse "$($env:MINI_TEST_COMMIT)^{commit}"
+          if ((git -C $miniPath rev-parse HEAD) -ne $expectedCommit) {
+            throw "Mini.nvim checkout did not resolve to the pinned commit $expectedCommit"
+          }
+          "MINI_TEST_PATH=$miniPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Native sidebar UI tests
+        shell: pwsh
+        run: |
+          nvim --headless -u NONE -l tests/minitest.lua
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Help and health
+        shell: pwsh
+        run: |
+          nvim --headless -u NONE -c "helptags doc" -c "quitall"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          nvim --headless -u NONE -c "set rtp+=." -c "runtime plugin/lazyvcs.lua" -c "checkhealth lazyvcs" -c "quitall"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  macos:
+    name: macOS / Neovim 0.12.4
+    runs-on: macos-14
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Install Subversion
+        run: brew install subversion
+
+      - name: Install Neovim
+        run: |
+          case "$(uname -m)" in
+            arm64) sha256="51ab83afa66d663627c2ab1be43209b0f4e81360d4598b53efaa4d8195f24c89" ;;
+            x86_64) sha256="03fe16f8dd9f1e9eaf52d5e294913a39917b9e2faea30d7fb0fb385fbd36fe59" ;;
+            *) echo "unsupported macOS architecture" >&2; exit 2 ;;
+          esac
+          tests/ci/install-neovim.sh v0.12.4 "${sha256}" "${RUNNER_TEMP}/nvim"
+
+      - name: Configure Git identity
+        run: |
+          git config --global user.name "lazyvcs ci"
+          git config --global user.email "lazyvcs-ci@example.invalid"
+          git config --global init.defaultBranch main
+
+      - name: Test plugin
+        run: |
+          nvim --headless -u NONE -l tests/native_smoke.lua
+          nvim --headless -u NONE -l tests/run.lua
+          MINI_TEST_PATH="${RUNNER_TEMP}/mini.nvim-v0.18.0" tests/minitest.sh
+          nvim --headless -u NONE -c "helptags doc" -c "quitall"
+          nvim --headless -u NONE -c "set rtp+=." -c "runtime plugin/lazyvcs.lua" -c "checkhealth lazyvcs" -c "quitall"
+
+  e2e:
+    name: Ubuntu and AstroNvim E2E
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Run native E2E
+        env:
+          E2E_ARTIFACT_DIR: ${{ runner.temp }}/native-e2e
+        run: tests/e2e/ubuntu-native.sh
+
+      - name: Run pinned AstroNvim v6 E2E
+        env:
+          E2E_ARTIFACT_DIR: ${{ runner.temp }}/astronvim-e2e
+        run: tests/e2e/ubuntu-astronvim.sh
+
+      - name: Upload E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/native-e2e
+            ${{ runner.temp }}/astronvim-e2e
+          if-no-files-found: warn
+          retention-days: 14
+
+  result:
+    name: Verification result
+    if: always()
+    needs:
+      - static
+      - linux
+      - windows
+      - macos
+      - e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require all jobs
+        env:
+          STATIC_RESULT: ${{ needs.static.result }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+        run: |
+          test "${STATIC_RESULT}" = "success"
+          test "${LINUX_RESULT}" = "success"
+          test "${WINDOWS_RESULT}" = "success"
+          test "${MACOS_RESULT}" = "success"
+          test "${E2E_RESULT}" = "success"

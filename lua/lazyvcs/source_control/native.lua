@@ -1,4 +1,5 @@
 local config = require("lazyvcs.config")
+local compat = require("lazyvcs.compat")
 local jobs = require("lazyvcs.source_control.jobs")
 local model = require("lazyvcs.source_control.model")
 local ops = require("lazyvcs.source_control.ops")
@@ -9,6 +10,8 @@ local M = {}
 local states = {}
 local ns = vim.api.nvim_create_namespace("lazyvcs_native")
 local strwidth = vim.api.nvim_strwidth
+local lifecycle_augroup
+local invalidate_hydration
 
 local function normalize(path)
 	return vim.fs.normalize(path or vim.fn.getcwd())
@@ -144,48 +147,20 @@ local function compose_right_meta(primary, sync, counts, max_width)
 	return fit_right_text(primary, max_width, 8) or ""
 end
 
-local function serialize_state(state)
-	local visible = {}
-	for root, enabled in pairs(state.lazyvcs_repo_visibility or {}) do
-		if enabled then
-			visible[#visible + 1] = root
-		end
-	end
-	table.sort(visible)
-	return {
-		visible_repos = visible,
-		focused_repo = state.lazyvcs_focused_repo,
-		show_clean = state.lazyvcs_show_clean,
-		selection_mode = state.lazyvcs_selection_mode,
-		changes_view_mode = state.lazyvcs_changes_view_mode,
-		changes_sort = state.lazyvcs_changes_sort,
-	}
-end
-
-local function save_state(state)
-	if state.path and state.path ~= "" then
-		persist.save(state.path, serialize_state(state))
-	end
-end
-
-local function load_persisted_state(state, path)
-	local saved = persist.load(path)
-	state.lazyvcs_repo_visibility = {}
-	for _, root in ipairs(saved.visible_repos or {}) do
-		state.lazyvcs_repo_visibility[root] = true
-	end
-	state.lazyvcs_focused_repo = saved.focused_repo
-	state.lazyvcs_show_clean = saved.show_clean
-	state.lazyvcs_selection_mode = saved.selection_mode
-	state.lazyvcs_changes_view_mode = saved.changes_view_mode
-	state.lazyvcs_changes_sort = saved.changes_sort
-end
-
 local function reset_for_path(state, path)
 	if state.lazyvcs_repo_root == path then
 		return
 	end
+	if state.lazyvcs_invalidate_hydration then
+		state.lazyvcs_invalidate_hydration(state, nil, "source path changed")
+	end
 	state.lazyvcs_repo_root = path
+	if state.lazyvcs_discovery_handle and type(state.lazyvcs_discovery_handle.kill) == "function" then
+		pcall(state.lazyvcs_discovery_handle.kill, state.lazyvcs_discovery_handle, 15)
+	end
+	state.lazyvcs_discovery_handle = nil
+	state.lazyvcs_discovery_generation = (state.lazyvcs_discovery_generation or 0) + 1
+	state.lazyvcs_discovering = false
 	state.lazyvcs_repo_specs = nil
 	state.lazyvcs_repo_cache = {}
 	state.lazyvcs_loading_details = {}
@@ -193,7 +168,38 @@ local function reset_for_path(state, path)
 	state.lazyvcs_hydration_active = false
 	state.lazyvcs_hydration_pending = 0
 	state.lazyvcs_expanded = {}
-	load_persisted_state(state, path)
+	state.lazyvcs_discovery_error = nil
+	persist.apply_state(state, path)
+end
+
+local function start_discovery(state)
+	if state.lazyvcs_discovering or state.lazyvcs_repo_specs ~= nil then
+		return
+	end
+	state.lazyvcs_discovering = true
+	state.lazyvcs_repo_specs = {}
+	state.lazyvcs_discovery_error = nil
+	state.lazyvcs_discovery_generation = (state.lazyvcs_discovery_generation or 0) + 1
+	local generation = state.lazyvcs_discovery_generation
+	state.lazyvcs_discovery_handle = model.discover_async(
+		state.path,
+		config.get().source_control.scan_depth,
+		function(specs, err)
+			if
+				states[state.tabid] ~= state
+				or state.lazyvcs_discovery_generation ~= generation
+				or state.lazyvcs_tearing_down
+			then
+				return
+			end
+			state.lazyvcs_discovery_handle = nil
+			state.lazyvcs_discovering = false
+			state.lazyvcs_repo_specs = specs or {}
+			state.lazyvcs_discovery_error = err
+			M.navigate(state)
+		end,
+		{ entry_budget = 64 }
+	)
 end
 
 local function icon(node)
@@ -258,6 +264,9 @@ end
 local function highlight_for(node)
 	if node.extra and node.extra.disabled then
 		return "LazyVcsDisabled"
+	end
+	if node.extra and node.extra.error then
+		return "DiagnosticError"
 	end
 	if node.type == "repo_selector" or node.type == "repo_changes" or node.type == "folder" then
 		return "Directory"
@@ -478,10 +487,57 @@ local function should_remote_refresh(state)
 	return true
 end
 
-local function start_summary_hydration(state, remote_refresh)
-	if state.lazyvcs_hydration_active then
-		return
+local function repo_generation(state, repo_root)
+	state.lazyvcs_repo_generations = state.lazyvcs_repo_generations or {}
+	return state.lazyvcs_repo_generations[repo_root] or 0
+end
+
+local function bump_repo_generation(state, repo_root)
+	state.lazyvcs_repo_generations = state.lazyvcs_repo_generations or {}
+	local generation = (state.lazyvcs_repo_generations[repo_root] or 0) + 1
+	state.lazyvcs_repo_generations[repo_root] = generation
+	return generation
+end
+
+local function update_hydration_counts(state)
+	local pending = 0
+	for _, repo in pairs(state.lazyvcs_repo_cache or {}) do
+		if repo.loading_summary then
+			pending = pending + 1
+		end
 	end
+	state.lazyvcs_hydration_pending = pending
+	state.lazyvcs_hydration_active = pending > 0
+end
+
+invalidate_hydration = function(state, repo_root, reason)
+	state.lazyvcs_hydration_generation = (state.lazyvcs_hydration_generation or 0) + 1
+	local roots = {}
+	if repo_root then
+		roots[repo_root] = true
+	else
+		for _, repo in ipairs(state.lazyvcs_repo_specs or {}) do
+			roots[repo.root] = true
+		end
+		for root in pairs(state.lazyvcs_repo_cache or {}) do
+			roots[root] = true
+		end
+	end
+	for root in pairs(roots) do
+		bump_repo_generation(state, root)
+		local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[root] or nil
+		if cached then
+			cached.loading_summary = false
+			cached.refreshing_summary = false
+		end
+	end
+	update_hydration_counts(state)
+	return jobs.cancel(function(job)
+		return job.owner == state and job.scope == "hydration" and (not repo_root or job.root == repo_root)
+	end, reason or "hydration invalidated")
+end
+
+local function start_summary_hydration(state, remote_refresh)
 	local specs = state.lazyvcs_repo_specs or {}
 	if #specs == 0 then
 		return
@@ -495,13 +551,11 @@ local function start_summary_hydration(state, remote_refresh)
 		end
 	end
 	if #queue == 0 then
+		update_hydration_counts(state)
 		return
 	end
 
 	state.lazyvcs_hydration_generation = (state.lazyvcs_hydration_generation or 0) + 1
-	local generation = state.lazyvcs_hydration_generation
-	state.lazyvcs_hydration_active = true
-	state.lazyvcs_hydration_pending = #queue
 	state.lazyvcs_repo_cache = state.lazyvcs_repo_cache or {}
 	for _, repo in ipairs(queue) do
 		local previous = state.lazyvcs_repo_cache[repo.root] or {}
@@ -510,34 +564,35 @@ local function start_summary_hydration(state, remote_refresh)
 			refreshing_summary = previous.summary_loaded == true,
 		})
 	end
+	update_hydration_counts(state)
 	M.render(state)
 
 	local bg = config.get().source_control.background
 	for _, repo in ipairs(queue) do
-		local previous = state.lazyvcs_repo_cache[repo.root] or nil
-		model.load_repo_summary_async(repo, {
+		local current_repo = repo
+		local generation = bump_repo_generation(state, current_repo.root)
+		local previous = state.lazyvcs_repo_cache[current_repo.root] or nil
+		model.load_repo_summary_async(current_repo, {
 			previous = previous or {},
 			remote_refresh = remote_refresh,
 			status_timeout_ms = bg.status_timeout_ms,
 			remote_timeout_ms = bg.remote_timeout_ms,
 		}, function(args, opts, on_done)
-			jobs.command(repo, opts.kind, args, {
+			jobs.command(current_repo, opts.kind, args, {
 				timeout_ms = opts.timeout_ms,
-				generation = generation,
 				scope = "hydration",
+				owner = state,
 				priority = remote_refresh and -10 or 0,
 			}, on_done)
 		end, function(summary, err)
-			if state.lazyvcs_hydration_generation ~= generation then
+			if repo_generation(state, current_repo.root) ~= generation then
 				return
 			end
-			state.lazyvcs_hydration_pending = math.max(0, (state.lazyvcs_hydration_pending or 1) - 1)
-			local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[repo.root] or nil
-			state.lazyvcs_repo_cache[repo.root] = summary or model.make_error(repo, cached, err)
-			if state.lazyvcs_hydration_pending == 0 then
-				state.lazyvcs_hydration_active = false
-			end
-			M.render(state)
+			local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[current_repo.root] or nil
+			state.lazyvcs_repo_cache[current_repo.root] = summary
+				or model.make_error(current_repo, cached, err, { remote_refresh = remote_refresh })
+			update_hydration_counts(state)
+			M.schedule_render(state)
 		end)
 	end
 end
@@ -593,7 +648,7 @@ local function toggle_auto_expand_width(state)
 end
 
 local function bind(bufnr, lhs, rhs, desc)
-	vim.keymap.set("n", lhs, rhs, { buffer = bufnr, nowait = true, silent = true, desc = desc })
+	compat.keymap_set("n", lhs, rhs, { buffer = bufnr, nowait = true, silent = true, desc = desc })
 end
 
 local function setup_buffer(state)
@@ -657,6 +712,9 @@ local function setup_buffer(state)
 	bind(bufnr, "gr", function()
 		M.dispatch("revert_file")
 	end, "Revert file")
+	bind(bufnr, "X", function()
+		M.dispatch("cancel_repo")
+	end, "Cancel repository operation")
 	bind(bufnr, "v", function()
 		M.dispatch("toggle_changes_view_mode")
 	end, "Toggle changes view")
@@ -690,9 +748,23 @@ local function ensure_window(state, opts)
 	vim.wo[state.winid].foldcolumn = "0"
 	vim.wo[state.winid].wrap = false
 	vim.wo[state.winid].cursorline = true
+	vim.wo[state.winid].winfixwidth = true
 	if opts.focus == false and valid_win(current) then
 		vim.api.nvim_set_current_win(current)
 	end
+end
+
+function M.schedule_render(state)
+	if not state or state.lazyvcs_render_pending then
+		return
+	end
+	state.lazyvcs_render_pending = true
+	vim.schedule(function()
+		state.lazyvcs_render_pending = false
+		if states[state.tabid] == state and valid_buf(state.bufnr) then
+			M.render(state)
+		end
+	end)
 end
 
 function M.render(state)
@@ -726,7 +798,11 @@ function M.render(state)
 	vim.bo[state.bufnr].modifiable = false
 	vim.api.nvim_buf_clear_namespace(state.bufnr, ns, 0, -1)
 	for index, mark in ipairs(marks) do
-		vim.api.nvim_buf_add_highlight(state.bufnr, ns, mark.highlight, index - 1, 0, -1)
+		vim.api.nvim_buf_set_extmark(state.bufnr, ns, index - 1, 0, {
+			end_row = index,
+			hl_group = mark.highlight,
+			hl_eol = true,
+		})
 	end
 	restore_view(state, saved_view)
 end
@@ -754,6 +830,7 @@ local function prepare_state(path)
 		state.lazyvcs_auto_expand_width = config.get().source_control.auto_expand_width
 	end
 	state.lazyvcs_render = M.navigate
+	state.lazyvcs_invalidate_hydration = invalidate_hydration
 	state.lazyvcs_window_exists = function(current)
 		return valid_win(current.winid)
 	end
@@ -771,9 +848,6 @@ local function prepare_state(path)
 		vim.cmd.edit(vim.fn.fnameescape(path_to_open))
 	end
 	reset_for_path(state, state.path)
-	if not state.lazyvcs_repo_specs then
-		state.lazyvcs_repo_specs = model.discover(state.path, config.get().source_control.scan_depth)
-	end
 	return state
 end
 
@@ -783,25 +857,52 @@ function M.open(opts)
 	ensure_window(state, { focus = opts.focus })
 	state.lazyvcs_remote_refresh = should_remote_refresh(state)
 	M.navigate(state)
+	start_discovery(state)
 	return state
 end
 
-function M.close()
-	local state = states[tabid()]
-	if state and valid_win(state.winid) then
-		save_state(state)
-		-- Closing the last window in a tab raises E444, which used to escape the `q`
-		-- keymap and leave state.winid set, permanently wedging the toggle. Replace
-		-- the sidebar with an empty buffer instead.
-		if #vim.api.nvim_tabpage_list_wins(0) == 1 then
+local function cancel_state_jobs(state)
+	invalidate_hydration(state, nil, "owner closed")
+	if state.lazyvcs_discovery_handle and type(state.lazyvcs_discovery_handle.kill) == "function" then
+		pcall(state.lazyvcs_discovery_handle.kill, state.lazyvcs_discovery_handle, 15)
+		state.lazyvcs_discovery_handle = nil
+	end
+	pcall(jobs.cancel_owner, state, { reason = "owner closed" })
+end
+
+local function teardown_state(state, opts)
+	opts = opts or {}
+	if not state or state.lazyvcs_tearing_down then
+		return
+	end
+	state.lazyvcs_tearing_down = true
+	persist.save_state(state)
+	cancel_state_jobs(state)
+	if state.augroup then
+		pcall(vim.api.nvim_del_augroup_by_id, state.augroup)
+		state.augroup = nil
+	end
+	if opts.close_window and valid_win(state.winid) then
+		if #vim.api.nvim_tabpage_list_wins(state.tabid) == 1 then
 			pcall(vim.api.nvim_win_call, state.winid, function()
 				vim.cmd("enew")
 			end)
 		else
 			pcall(vim.api.nvim_win_close, state.winid, true)
 		end
-		state.winid = nil
 	end
+	state.winid = nil
+	if valid_buf(state.bufnr) then
+		pcall(vim.api.nvim_buf_delete, state.bufnr, { force = true })
+	end
+	state.bufnr = nil
+	states[state.tabid] = nil
+	state.lazyvcs_tearing_down = false
+end
+
+function M.close()
+	local state = states[tabid()]
+	teardown_state(state, { close_window = true })
 end
 
 function M.toggle(opts)
@@ -818,13 +919,44 @@ function M.refresh(remote_refresh)
 	if not state then
 		return M.open()
 	end
+	invalidate_hydration(state, nil, "source refreshed")
 	state.lazyvcs_repo_cache = {}
 	state.lazyvcs_loading_details = {}
-	state.lazyvcs_hydration_active = false
-	state.lazyvcs_hydration_generation = (state.lazyvcs_hydration_generation or 0) + 1
 	state.lazyvcs_remote_refresh = remote_refresh ~= false
-	save_state(state)
+	persist.save_state(state)
 	M.navigate(state)
+end
+
+function M.cancel(path)
+	local normalized = path and path ~= "" and normalize(vim.fn.fnamemodify(path, ":p")) or nil
+	local state = states[tabid()]
+	local hydration_count = state and invalidate_hydration(state, normalized, "user") or 0
+	local count
+	if normalized and state then
+		count = ops.cancel(normalized, { owner = state })
+		count = count + ops.cancel(normalized, { owner = normalized })
+	else
+		count = ops.cancel(normalized, { all_owners = true })
+	end
+	if state then
+		state.lazyvcs_loading_details = state.lazyvcs_loading_details or {}
+		for root, repo in pairs(state.lazyvcs_repo_cache or {}) do
+			if not normalized or normalize(root) == normalized then
+				state.lazyvcs_loading_details[root] = nil
+				repo.loading_details = false
+			end
+		end
+		if state.lazyvcs_diff_target_task and not normalized then
+			local cancel = state.lazyvcs_diff_target_task.cancel or state.lazyvcs_diff_target_task.kill
+			if type(cancel) == "function" then
+				pcall(cancel, state.lazyvcs_diff_target_task)
+			end
+			state.lazyvcs_diff_target_task = nil
+			state.lazyvcs_diff_target_generation = (state.lazyvcs_diff_target_generation or 0) + 1
+		end
+		M.navigate(state)
+	end
+	return count + hydration_count
 end
 
 function M.dispatch(action)
@@ -902,6 +1034,9 @@ function M.dispatch(action)
 	if action == "revert_file" then
 		return ops.revert_file(state, node)
 	end
+	if action == "cancel_repo" and type(ops.cancel_repo) == "function" then
+		return ops.cancel_repo(state, node)
+	end
 end
 
 function M._state()
@@ -909,5 +1044,55 @@ function M._state()
 end
 
 M._test_should_remote_refresh = should_remote_refresh
+
+local function setup_lifecycle()
+	if lifecycle_augroup then
+		return
+	end
+	lifecycle_augroup = vim.api.nvim_create_augroup("lazyvcs_source_control_lifecycle", { clear = true })
+	vim.api.nvim_create_autocmd("TabClosed", {
+		group = lifecycle_augroup,
+		callback = function()
+			vim.schedule(function()
+				local snapshot = {}
+				for _, state in pairs(states) do
+					snapshot[#snapshot + 1] = state
+				end
+				for _, state in ipairs(snapshot) do
+					if not vim.api.nvim_tabpage_is_valid(state.tabid) then
+						teardown_state(states[state.tabid])
+					end
+				end
+			end)
+		end,
+	})
+	vim.api.nvim_create_autocmd("WinClosed", {
+		group = lifecycle_augroup,
+		callback = function(args)
+			local closed_win = tonumber(args.match)
+			vim.schedule(function()
+				for _, state in pairs(states) do
+					if state.winid == closed_win and not valid_win(state.winid) then
+						teardown_state(state)
+					end
+				end
+			end)
+		end,
+	})
+	vim.api.nvim_create_autocmd("VimLeavePre", {
+		group = lifecycle_augroup,
+		callback = function()
+			for _, state in pairs(states) do
+				persist.save_state(state)
+				cancel_state_jobs(state)
+			end
+		end,
+	})
+end
+
+setup_lifecycle()
+
+M._test_start_summary_hydration = start_summary_hydration
+M._test_invalidate_hydration = invalidate_hydration
 
 return M

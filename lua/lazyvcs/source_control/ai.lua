@@ -9,6 +9,17 @@ local executable_checker = function(name)
 	return vim.fn.executable(name) == 1
 end
 
+local function copilot_chat_installed()
+	if package.loaded["CopilotChat"] then
+		return true
+	end
+	if package.searchpath("CopilotChat", package.path) then
+		return true
+	end
+	local ok, lazy_config = pcall(require, "lazy.core.config")
+	return ok and lazy_config.plugins and lazy_config.plugins["CopilotChat.nvim"] ~= nil or false
+end
+
 local function load_copilot_chat()
 	local ok_lazy, lazy = pcall(require, "lazy")
 	if ok_lazy then
@@ -27,7 +38,7 @@ end
 
 local function provider_available(provider)
 	if provider == "copilotchat" then
-		return load_copilot_chat() ~= nil
+		return copilot_chat_installed()
 	end
 	if provider == "copilot_cli" then
 		return executable("copilot")
@@ -46,23 +57,122 @@ local function configured_providers()
 	return { opts.provider }
 end
 
-local function run_context_commands(commands, index, callback)
+local function new_request(callback)
+	local request = {
+		active = true,
+		cleanups = {},
+	}
+
+	function request:set_handle(handle)
+		if not self.active then
+			if handle and type(handle.kill) == "function" then
+				pcall(handle.kill, handle, 15)
+			end
+			return
+		end
+		self.handle = handle
+	end
+
+	function request:add_cleanup(cleanup)
+		self.cleanups[#self.cleanups + 1] = cleanup
+	end
+
+	function request:cleanup()
+		for _, cleanup in ipairs(self.cleanups) do
+			pcall(cleanup)
+		end
+		self.cleanups = {}
+	end
+
+	function request:finish(message, err, provider)
+		if not self.active then
+			return
+		end
+		self.active = false
+		self.handle = nil
+		self:cleanup()
+		if type(callback) == "function" then
+			local ok, callback_err = pcall(callback, message, err, provider)
+			if not ok then
+				util.notify("AI callback failed: " .. tostring(callback_err), vim.log.levels.ERROR)
+			end
+		end
+	end
+
+	function request:cancel()
+		if not self.active then
+			return
+		end
+		self.active = false
+		if self.handle and type(self.handle.kill) == "function" then
+			pcall(self.handle.kill, self.handle, 15)
+		end
+		self.handle = nil
+		self:cleanup()
+	end
+
+	request.kill = request.cancel
+	return request
+end
+
+local function run_context_commands(request, commands, index, callback)
+	if not request.active then
+		return
+	end
 	local command = commands[index]
 	if not command then
 		return callback("")
 	end
-	util.system_start(command.args, { cwd = command.cwd, timeout = command.timeout }, function(result)
+	local handle = util.system_start(command.args, { cwd = command.cwd, timeout = command.timeout }, function(result)
+		if not request.active then
+			return
+		end
+		request.handle = nil
 		local stdout = result and util.trim(result.stdout) or ""
 		if stdout ~= "" then
 			return callback(result.stdout)
 		end
-		run_context_commands(commands, index + 1, callback)
+		run_context_commands(request, commands, index + 1, callback)
 	end)
+	request:set_handle(handle)
 end
 
-local function git_context(repo_root, callback)
+local function collect_context_commands(request, commands, callback)
+	local output = {}
+	local index = 1
+	local function next_command()
+		if not request.active then
+			return
+		end
+		local command = commands[index]
+		index = index + 1
+		if not command then
+			return callback(table.concat(output, "\n"))
+		end
+		local handle = util.system_start(
+			command.args,
+			{ cwd = command.cwd, timeout = command.timeout },
+			function(result)
+				if not request.active then
+					return
+				end
+				request.handle = nil
+				local stdout = result and util.trim(result.stdout) or ""
+				if stdout ~= "" then
+					output[#output + 1] = stdout
+				end
+				next_command()
+			end
+		)
+		request:set_handle(handle)
+	end
+	next_command()
+end
+
+local function git_context(request, repo_root, callback)
 	local timeout = config.get().source_control.background.status_timeout_ms
-	run_context_commands({
+	local context = config.get().ai.commit_message.context
+	local commands = {
 		{
 			args = { "git", "diff", "--staged", "--stat", "--patch", "--minimal", "--unified=1" },
 			cwd = repo_root,
@@ -78,15 +188,36 @@ local function git_context(repo_root, callback)
 			cwd = repo_root,
 			timeout = timeout,
 		},
-	}, 1, callback)
+	}
+	if context == "staged_first" then
+		return run_context_commands(request, commands, 1, callback)
+	end
+	if context == "staged" then
+		return run_context_commands(request, { commands[1] }, 1, callback)
+	end
+	if context == "unstaged" then
+		return run_context_commands(request, { commands[2] }, 1, callback)
+	end
+	if context == "status" then
+		return run_context_commands(request, { commands[3] }, 1, callback)
+	end
+	collect_context_commands(request, commands, callback)
 end
 
-local function svn_context(repo_root, callback)
+local function svn_context(request, repo_root, callback)
 	local timeout = config.get().source_control.background.status_timeout_ms
-	run_context_commands({
+	local commands = {
 		{ args = { "svn", "diff", repo_root }, cwd = repo_root, timeout = timeout },
 		{ args = { "svn", "status", repo_root }, cwd = repo_root, timeout = timeout },
-	}, 1, callback)
+	}
+	local context = config.get().ai.commit_message.context
+	if context == "status" then
+		return run_context_commands(request, { commands[2] }, 1, callback)
+	end
+	if context == "all" then
+		return collect_context_commands(request, commands, callback)
+	end
+	run_context_commands(request, commands, 1, callback)
 end
 
 local function build_prompt(repo, context)
@@ -112,7 +243,25 @@ local function clean_message(text)
 	return util.trim(first_line or "")
 end
 
-local function run_cli_provider(provider, repo, prompt, callback)
+local function write_private_attachment(prompt)
+	local path = vim.fn.tempname() .. "-lazyvcs-ai.txt"
+	local fd, err = vim.uv.fs_open(path, "w", 384)
+	if not fd then
+		return nil, err
+	end
+	local written, write_err = vim.uv.fs_write(fd, prompt, 0)
+	if written then
+		pcall(vim.uv.fs_fsync, fd)
+	end
+	vim.uv.fs_close(fd)
+	if not written then
+		pcall(vim.uv.fs_unlink, path)
+		return nil, write_err
+	end
+	return path
+end
+
+local function run_cli_provider(request, provider, repo, prompt, callback)
 	local opts = config.get().ai.commit_message
 	local args
 	local run_opts = {
@@ -122,9 +271,16 @@ local function run_cli_provider(provider, repo, prompt, callback)
 	}
 
 	if provider == "claude" then
-		args =
-			{ "claude", "-p", prompt, "--output-format", "text", "--no-session-persistence", "--disallowedTools", "*" }
-		run_opts.stdin = nil
+		args = {
+			"claude",
+			"-p",
+			"Follow the instructions and change context supplied on standard input.",
+			"--output-format",
+			"text",
+			"--no-session-persistence",
+			"--disallowedTools",
+			"*",
+		}
 	elseif provider == "codex" then
 		args = {
 			"codex",
@@ -138,17 +294,37 @@ local function run_cli_provider(provider, repo, prompt, callback)
 			"-",
 		}
 	elseif provider == "gemini" then
-		args = { "gemini", "-p", prompt, "--output-format", "text", "--skip-trust", "--approval-mode", "plan" }
-		run_opts.stdin = nil
+		args = { "gemini", "--output-format", "text", "--skip-trust", "--approval-mode", "plan" }
 	elseif provider == "copilot_cli" then
-		args =
-			{ "copilot", "-p", prompt, "--output-format", "text", "--no-custom-instructions", "--available-tools", "" }
+		local attachment, attachment_err = write_private_attachment(prompt)
+		if not attachment then
+			return callback(nil, "Could not create private Copilot context attachment: " .. tostring(attachment_err))
+		end
+		request:add_cleanup(function()
+			pcall(vim.uv.fs_unlink, attachment)
+		end)
+		args = {
+			"copilot",
+			"-p",
+			"Generate the requested commit subject from the attached context. Return only one line.",
+			"--attachment",
+			attachment,
+			"--output-format",
+			"text",
+			"--no-custom-instructions",
+			"--available-tools",
+			"",
+		}
 		run_opts.stdin = nil
 	else
 		return callback(nil, "Unsupported commit message provider: " .. provider)
 	end
 
-	util.system_start(args, run_opts, function(result, err)
+	local handle = util.system_start(args, run_opts, function(result, err)
+		if not request.active then
+			return
+		end
+		request.handle = nil
 		if err then
 			return callback(nil, err)
 		end
@@ -158,27 +334,66 @@ local function run_cli_provider(provider, repo, prompt, callback)
 		end
 		callback(message)
 	end)
+	request:set_handle(handle)
 end
 
-local function run_provider(provider, repo, prompt, callback)
+local function run_provider(request, provider, repo, prompt, callback)
 	if provider == "copilotchat" then
 		local chat, err = load_copilot_chat()
 		if not chat then
 			return callback(nil, err)
 		end
-		chat.ask(prompt, {
+		local finished = false
+		local timer
+		local function finish(message, err)
+			if finished or not request.active then
+				return
+			end
+			finished = true
+			if timer and not timer:is_closing() then
+				timer:stop()
+				timer:close()
+			end
+			local ok, callback_err = pcall(callback, message, err)
+			if not ok then
+				request:finish(nil, "CopilotChat callback failed: " .. tostring(callback_err))
+			end
+		end
+		local timeout_ms = config.get().ai.commit_message.timeout_ms
+		if timeout_ms > 0 then
+			timer = vim.uv.new_timer()
+			if timer then
+				timer:start(
+					timeout_ms,
+					0,
+					vim.schedule_wrap(function()
+						finish(nil, "CopilotChat timed out")
+					end)
+				)
+			end
+		end
+		request:add_cleanup(function()
+			if timer and not timer:is_closing() then
+				timer:stop()
+				timer:close()
+			end
+		end)
+		local ok, ask_err = pcall(chat.ask, prompt, {
 			headless = true,
 			callback = function(response)
 				local message = clean_message(response and response.content or "")
 				if message == "" then
-					return callback(nil, "CopilotChat returned an empty commit message")
+					return finish(nil, "CopilotChat returned an empty commit message")
 				end
-				callback(message)
+				finish(message)
 			end,
 		})
+		if not ok then
+			finish(nil, tostring(ask_err))
+		end
 		return
 	end
-	run_cli_provider(provider, repo, prompt, callback)
+	run_cli_provider(request, provider, repo, prompt, callback)
 end
 
 local function confirm_privacy(callback)
@@ -201,7 +416,10 @@ local function confirm_privacy(callback)
 	end)
 end
 
-local function try_provider(providers, index, repo, prompt, callback)
+local function try_provider(request, providers, index, repo, prompt, callback)
+	if not request.active then
+		return
+	end
 	local provider = providers[index]
 	if not provider then
 		local errors = {}
@@ -213,16 +431,19 @@ local function try_provider(providers, index, repo, prompt, callback)
 	end
 	if not provider_available(provider) then
 		last_error_by_provider[provider] = "not available"
-		return try_provider(providers, index + 1, repo, prompt, callback)
+		return try_provider(request, providers, index + 1, repo, prompt, callback)
 	end
-	run_provider(provider, repo, prompt, function(message, err)
+	run_provider(request, provider, repo, prompt, function(message, err)
+		if not request.active then
+			return
+		end
 		if message then
 			last_error_by_provider[provider] = nil
 			return callback(message, nil, provider)
 		end
 		last_error_by_provider[provider] = err or "failed"
 		if config.get().ai.commit_message.provider == "auto" then
-			return try_provider(providers, index + 1, repo, prompt, callback)
+			return try_provider(request, providers, index + 1, repo, prompt, callback)
 		end
 		callback(nil, err or "Failed to generate commit message")
 	end)
@@ -247,28 +468,34 @@ function M.generate(repo, callback)
 		return nil, "No AI commit-message provider is configured"
 	end
 
+	local request = new_request(callback)
 	confirm_privacy(function(accepted)
-		if not accepted then
-			if type(callback) == "function" then
-				callback(nil, nil)
-			end
+		if not request.active then
 			return
 		end
+		if not accepted then
+			return request:finish(nil, nil)
+		end
 		local context_callback = function(context)
+			if not request.active then
+				return
+			end
 			if util.trim(context) == "" then
-				return callback(nil, "No changes available to summarize")
+				return request:finish(nil, "No changes available to summarize")
 			end
 			local prompt = build_prompt(repo, context)
-			try_provider(providers, 1, repo, prompt, callback)
+			try_provider(request, providers, 1, repo, prompt, function(message, err, provider)
+				request:finish(message, err, provider)
+			end)
 		end
 		if repo.vcs == "git" then
-			git_context(repo.root, context_callback)
+			git_context(request, repo.root, context_callback)
 		else
-			svn_context(repo.root, context_callback)
+			svn_context(request, repo.root, context_callback)
 		end
 	end)
 
-	return true
+	return request
 end
 
 function M.status()

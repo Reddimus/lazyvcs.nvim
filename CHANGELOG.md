@@ -6,6 +6,83 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-28
+
+Hardening release. An exhaustive audit of the 0.4.x tree produced 32 confirmed
+findings, tracked as #17-#24; this release fixes all of them, along with
+independent findings from a follow-up architecture review. Every user-facing
+command keeps working — the only breaking change is the `mutation_timeout_ms`
+default described below.
+
+### Changed
+
+- **Breaking:** `source_control.background.mutation_timeout_ms` now defaults to
+  `120000` instead of being unlimited, and `0` is rejected at setup. A mutation
+  that hangs forever cannot be told apart from one still running, so it now
+  always has a finite deadline. If you previously set it to `0`, choose a real
+  timeout instead.
+- Every source-control command now runs through one bounded, cancellable
+  scheduler. Tasks carry an owner, scope, repository, generation, priority,
+  timeout, and output limit; Git and SVN get separate worker pools
+  (`background.git_workers`, `background.svn_workers`). Timeouts escalate
+  `SIGTERM` to `SIGKILL` after a grace period, and a worker slot is held until
+  the child process is actually reaped.
+- Repository discovery, status hydration, branch switching, blame, and signs are
+  asynchronous and cancellable. Synchronous subprocess calls have been removed
+  from user-facing paths.
+- Collapsed sidebar sections no longer build their children, and renders are
+  coalesced and cached per revision, so large repositories stay responsive.
+- `ai.commit_message.context` accepts `staged_first`, `staged`, `unstaged`,
+  `all`, or `status`.
+- Each live-diff keymap in `keymaps` may be `false` to leave the key unmapped.
+  Empty strings are rejected, and binding two actions to the same key is a
+  configuration error.
+- Unknown or removed configuration keys are reported once at startup instead of
+  being ignored silently.
+
+### Added
+
+- `:LazyVCS sidebar cancel [path]` and
+  `require("lazyvcs").source_control_cancel(path?)` cancel in-flight work,
+  returning the number of cancelled tasks. `X` in the sidebar cancels the
+  repository under the cursor.
+- `:LazyVCS profile` shows recent command timings from a bounded history ring
+  (`background.history_limit`).
+- `source_control.remote_error_notifications` (`summary`, `inline`, `notify`) is
+  now implemented rather than inert.
+- `SECURITY.md`, a documented vulnerability-reporting path, and
+  `.github/allowed_signers` so release tags are SSH-signed and verifiable.
+- CodeQL analysis for GitHub Actions, Markdown lint and local-link checking,
+  `actionlint`, `shellcheck`, and an npm audit gate. CI and release now share
+  one reusable exact-commit verification workflow covering Neovim 0.11.0,
+  0.11.7, and 0.12.4 on Linux, 0.11.7 and 0.12.4 on Windows, and 0.12.4 on
+  macOS, plus both container E2E suites.
+
+### Fixed
+
+- Diff sessions are created transactionally: overwritten mappings and window
+  options are restored exactly, and only session-owned windows are reset. Global
+  `diffoff!` is never used, so unrelated diff groups are left alone.
+- Splits that LazyVCS opens for a comparison are now owned and closed by the
+  session, instead of leaking duplicate sidebar windows.
+- Cancelling or invalidating one repository no longer strands its siblings in a
+  permanent loading state, and no longer cancels work belonging to a different
+  sidebar or tab.
+- Prompts, confirms, and the AI commit popup are owned by a single modal
+  lifecycle, so `<Esc>`, `:q`, and external window closure all cancel the
+  underlying task exactly once.
+- AI diff context is passed over stdin or a private `0600` attachment that is
+  deleted on completion, so it never appears in process arguments or task
+  listings.
+- SVN status parsing uses a real entity-aware XML parser covering every status
+  class, replacing regex matching.
+- Persisted state is written atomically through a versioned schema with a
+  migration from the 0.4.x format.
+- Test fixtures build `file://` URLs correctly on Windows. They previously
+  produced `file://C:/...`, which Subversion parses with `C:` as the URL
+  authority; because CI's Windows runner has no `svn`, those specs skipped and
+  the breakage stayed invisible.
+
 ## [0.4.2] - 2026-07-25
 
 ### Changed
@@ -232,3 +309,8 @@ First tagged release.
 [0.1.0]: https://github.com/Reddimus/lazyvcs.nvim/releases/tag/v0.1.0
 [0.2.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.1.0...v0.2.0
 [0.2.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.2.0...v0.2.1
+[0.3.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.2.1...v0.3.0
+[0.4.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.3.0...v0.4.0
+[0.4.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.4.0...v0.4.1
+[0.4.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.4.1...v0.4.2
+[0.5.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.4.2...v0.5.0

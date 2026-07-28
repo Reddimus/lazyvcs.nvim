@@ -1,8 +1,11 @@
 local util = require("lazyvcs.util")
+local Task = require("lazyvcs.backends.task")
 
 local M = {
 	name = "git",
 }
+
+local ASYNC_TIMEOUT_MS = 30000
 
 -- Mirror the svn backend's executable cache: backends/init.lua probes every
 -- backend for each path, so an unguarded call here would spawn a failing process
@@ -64,6 +67,32 @@ function M.probe(path)
 	return { root = root }
 end
 
+function M.probe_async(path, on_done, opts)
+	opts = opts or {}
+	local task = Task.new(on_done)
+	if not git_available() then
+		vim.schedule(function()
+			task:finish(nil, "git executable not found")
+		end)
+		return task
+	end
+	local cwd = util.dir_of(path)
+	task:add(util.system_start({ "git", "rev-parse", "--show-toplevel" }, {
+		cwd = cwd,
+		timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+	}, function(result, err)
+		if not result then
+			return task:finish(nil, err)
+		end
+		local root = util.trim(result.stdout)
+		if root == "" then
+			return task:finish(nil, "Git returned an empty working-tree root")
+		end
+		task:finish({ root = root })
+	end))
+	return task
+end
+
 function M.load(path)
 	local root, err = get_root(path)
 	if not root then
@@ -108,6 +137,33 @@ function M.is_versioned(path)
 	return is_tracked(root, util.relpath(root, path))
 end
 
+function M.is_versioned_async(path, on_done, opts)
+	opts = opts or {}
+	local task = Task.new(on_done)
+	task:add(M.probe_async(path, function(info, err)
+		if not task:is_active() then
+			return
+		end
+		if not info then
+			return task:finish(false, err)
+		end
+		local relpath = util.relpath(info.root, path)
+		task:add(util.system_start({ "git", "ls-files", "--error-unmatch", "--", relpath }, {
+			cwd = info.root,
+			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+		}, function(result, tracked_err, raw)
+			if result then
+				return task:finish(true)
+			end
+			if raw and raw.code == 1 then
+				return task:finish(false)
+			end
+			task:finish(false, tracked_err)
+		end))
+	end, opts))
+	return task
+end
+
 -- Base content for gutter signs and previews: the index, matching what the live
 -- diff compares against. Untracked files have an empty base, the Git counterpart
 -- of an SVN file scheduled for addition.
@@ -139,52 +195,259 @@ function M.load_base(path)
 	}
 end
 
-function M.load_base_async(path, on_done)
+local function load_payload_async(path, on_done, opts, base_only)
+	opts = opts or {}
+	local task = Task.new(on_done)
 	if not git_available() then
 		vim.schedule(function()
-			on_done(nil, "git executable not found")
+			task:finish(nil, "git executable not found")
 		end)
-		return nil
+		return task
 	end
 
 	local cwd = util.dir_of(path)
-	return util.system_start({ "git", "rev-parse", "--show-toplevel" }, { cwd = cwd }, function(result, err)
+	task:add(util.system_start({ "git", "rev-parse", "--show-toplevel" }, {
+		cwd = cwd,
+		timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+	}, function(result, err)
+		if not task:is_active() then
+			return
+		end
 		if err then
-			return on_done(nil, err)
+			return task:finish(nil, err)
 		end
 		local root = util.trim(result.stdout)
 		local relpath = util.relpath(root, path)
 
-		util.system_start(
-			{ "git", "ls-files", "--error-unmatch", "--", relpath },
-			{ cwd = root },
-			function(_, tracked_err)
-				if tracked_err then
-					-- Untracked: empty base rather than an error, so signs still render.
-					return on_done({
-						root = root,
-						relpath = relpath,
-						tracked = false,
-						base_label = "EMPTY",
-						base_lines = {},
-					})
-				end
-
-				util.system_lines_start({ "git", "show", ":" .. relpath }, { cwd = root }, function(lines, show_err)
-					if not lines then
-						return on_done(nil, show_err)
+		task:add(
+			util.system_start(
+				{ "git", "ls-files", "--error-unmatch", "--", relpath },
+				{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
+				function(_, tracked_err, raw)
+					if not task:is_active() then
+						return
 					end
-					on_done({
-						root = root,
-						relpath = relpath,
-						tracked = true,
-						base_label = "INDEX",
-						base_lines = lines,
-					})
-				end)
-			end
+					if tracked_err then
+						-- `--error-unmatch` uses exit 1 for an ordinary untracked path.
+						-- Other exit codes indicate a real repository/process failure.
+						if not raw or raw.code ~= 1 then
+							return task:finish(nil, tracked_err)
+						end
+						local payload = {
+							root = root,
+							relpath = relpath,
+							tracked = false,
+							base_label = "EMPTY",
+							base_lines = {},
+						}
+						if not base_only then
+							payload.name = M.name
+							payload.impl = M
+						end
+						return task:finish(payload)
+					end
+
+					task:add(util.system_lines_start({ "git", "show", ":" .. relpath }, {
+						cwd = root,
+						timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+					}, function(lines, show_err)
+						if not lines then
+							return task:finish(nil, show_err)
+						end
+						local payload = {
+							root = root,
+							relpath = relpath,
+							tracked = true,
+							base_label = "INDEX",
+							base_lines = lines,
+						}
+						if not base_only then
+							payload.name = M.name
+							payload.impl = M
+						end
+						task:finish(payload)
+					end))
+				end
+			)
 		)
-	end)
+	end))
+	return task
+end
+
+function M.load_async(path, on_done, opts)
+	return load_payload_async(path, on_done, opts, false)
+end
+
+function M.load_base_async(path, on_done, opts)
+	return load_payload_async(path, on_done, opts, true)
+end
+
+local function empty_side(label)
+	return {
+		label = label or "EMPTY",
+		source = { kind = "empty" },
+		lines = {},
+		modifiable = false,
+	}
+end
+
+local function git_side(label, object, allow_missing)
+	return {
+		label = label,
+		source = {
+			kind = "git_object",
+			object = object,
+			allow_missing = allow_missing or false,
+		},
+		modifiable = false,
+	}
+end
+
+local function worktree_side(path)
+	return {
+		label = "WORKTREE",
+		source = { kind = "worktree", path = path },
+		path = path,
+		modifiable = true,
+	}
+end
+
+---Resolve a source-control file item into an explicit comparison.
+---@param target table
+---@return table|nil comparison, string|nil err
+function M.resolve_diff_target(target)
+	target = target or {}
+	local root = target.root or target.repo_root
+	local relpath = target.relpath
+	local path = target.path or (root and relpath and vim.fs.normalize(root .. "/" .. relpath))
+	if not root or not relpath then
+		return nil, "Git diff target requires root and relpath"
+	end
+
+	local section = target.section
+	if section == "unstaged" then
+		section = "changes"
+	end
+	local change_kind = target.change_kind
+	local status = target.status or ""
+	local comparison = {
+		backend = M.name,
+		vcs = M.name,
+		root = root,
+		relpath = relpath,
+		path = path,
+		section = section,
+		change_kind = change_kind,
+		status = status,
+	}
+
+	if section == "merge" or change_kind == "conflict" then
+		comparison.kind = "git_conflict"
+		comparison.base = git_side("BASE", ":1:" .. relpath, true)
+		comparison.ours = git_side("OURS", ":2:" .. relpath, true)
+		comparison.theirs = git_side("THEIRS", ":3:" .. relpath, true)
+		comparison.left = comparison.ours
+		comparison.right = worktree_side(path)
+		comparison.editable_side = "right"
+	elseif section == "untracked" or change_kind == "untracked" or status == "??" then
+		comparison.kind = "git_untracked"
+		comparison.left = empty_side()
+		comparison.right = worktree_side(path)
+		comparison.editable_side = "right"
+	elseif section == "staged" then
+		comparison.kind = "git_staged"
+		local old_path = target.renamed_from or relpath
+		if change_kind == "added" or status:sub(1, 1) == "A" then
+			comparison.left = empty_side()
+		else
+			comparison.left = git_side("HEAD", "HEAD:" .. old_path, false)
+		end
+		if change_kind == "deleted" or status:sub(1, 1) == "D" then
+			comparison.right = empty_side()
+		else
+			comparison.right = git_side("INDEX", ":" .. relpath, false)
+		end
+	elseif section == "changes" then
+		comparison.kind = "git_unstaged"
+		comparison.left = git_side("INDEX", ":" .. relpath, false)
+		if change_kind == "deleted" or status:sub(2, 2) == "D" then
+			comparison.right = empty_side()
+		else
+			comparison.right = worktree_side(path)
+			comparison.editable_side = "right"
+		end
+	else
+		return nil, "Unsupported Git diff section: " .. tostring(section)
+	end
+
+	comparison.title = string.format("%s ↔ %s", comparison.left.label, comparison.right.label)
+	return comparison
+end
+
+---Load immutable Git-object sides of a typed comparison. Worktree sides retain
+---their path so the UI can use the user's real buffer rather than a stale read.
+function M.load_diff_target_async(target, on_done, opts)
+	opts = opts or {}
+	local comparison, resolve_err
+	if target and target.left and target.right then
+		comparison = vim.deepcopy(target)
+	else
+		comparison, resolve_err = M.resolve_diff_target(target)
+	end
+	local task = Task.new(on_done)
+	if not comparison then
+		vim.schedule(function()
+			task:finish(nil, resolve_err)
+		end)
+		return task
+	end
+
+	local sides = {}
+	local seen = {}
+	for _, key in ipairs({ "left", "right", "base", "ours", "theirs" }) do
+		local side = comparison[key]
+		if side and not seen[side] then
+			seen[side] = true
+			sides[#sides + 1] = side
+		end
+	end
+
+	local pending = 0
+	local failed = false
+	local function complete()
+		if not failed and pending == 0 then
+			task:finish(comparison)
+		end
+	end
+	for _, side in ipairs(sides) do
+		local source = side.source or {}
+		if source.kind == "empty" then
+			side.lines = {}
+		elseif source.kind == "git_object" then
+			pending = pending + 1
+			task:add(util.system_lines_start({ "git", "show", "--no-ext-diff", source.object }, {
+				cwd = comparison.root,
+				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+			}, function(lines, err)
+				pending = pending - 1
+				if failed then
+					return
+				end
+				if not lines then
+					if source.allow_missing then
+						side.lines = {}
+						return complete()
+					end
+					failed = true
+					return task:finish(nil, err)
+				end
+				side.lines = lines
+				complete()
+			end))
+		end
+	end
+	complete()
+	return task
 end
 
 -- `git status --porcelain` C-quotes any path with non-ASCII or special bytes:
@@ -245,6 +508,29 @@ function M.changed_files(root)
 	return M.parse_status_lines(lines, root)
 end
 
+function M.changed_files_async(path, on_done, opts)
+	opts = opts or {}
+	local task = Task.new(on_done)
+	task:add(M.probe_async(path, function(info, err)
+		if not task:is_active() then
+			return
+		end
+		if not info then
+			return task:finish(nil, err or "Not a Git working tree")
+		end
+		task:add(util.system_lines_start({ "git", "status", "--porcelain", "--untracked-files=normal" }, {
+			cwd = info.root,
+			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+		}, function(lines, status_err)
+			if not lines then
+				return task:finish(nil, status_err)
+			end
+			task:finish(M.parse_status_lines(lines, info.root))
+		end))
+	end, opts))
+	return task
+end
+
 function M.revert_file(path)
 	local root, err = get_root(path)
 	if not root then
@@ -256,6 +542,44 @@ function M.revert_file(path)
 		return nil, "File is untracked; nothing to revert"
 	end
 	return util.system({ "git", "checkout", "--", relpath }, { cwd = root })
+end
+
+function M.revert_file_async(path, on_done, opts)
+	opts = opts or {}
+	local task = Task.new(on_done)
+	task:add(M.probe_async(path, function(info, err)
+		if not task:is_active() then
+			return
+		end
+		if not info then
+			return task:finish(nil, err or "Not a Git working tree")
+		end
+		local relpath = util.relpath(info.root, path)
+		task:add(util.system_start({ "git", "ls-files", "--error-unmatch", "--", relpath }, {
+			cwd = info.root,
+			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+		}, function(_, tracked_err, raw)
+			if not task:is_active() then
+				return
+			end
+			if tracked_err then
+				if raw and raw.code == 1 then
+					return task:finish(nil, "File is untracked; nothing to revert")
+				end
+				return task:finish(nil, tracked_err)
+			end
+			task:add(util.system_start({ "git", "restore", "--worktree", "--", relpath }, {
+				cwd = info.root,
+				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+			}, function(result, restore_err)
+				if not result then
+					return task:finish(nil, restore_err)
+				end
+				task:finish(result)
+			end))
+		end))
+	end, opts))
+	return task
 end
 
 function M.revert_hunk(session, hunk)
@@ -300,57 +624,67 @@ function M.blame_lines(path)
 	return util.system_lines({ "git", "blame", "--line-porcelain", "--", relpath }, { cwd = root })
 end
 
-function M.blame_lines_async(path, on_done)
+function M.blame_lines_async(path, on_done, opts)
+	opts = opts or {}
 	local cwd = util.dir_of(path)
-	local job = {
-		handle = nil,
-		cancelled = false,
-	}
-	function job:kill(signal)
-		self.cancelled = true
-		if self.handle then
-			pcall(self.handle.kill, self.handle, signal or 15)
-		end
+	local task = Task.new(on_done)
+	if not git_available() then
+		vim.schedule(function()
+			task:finish(nil, "git executable not found")
+		end)
+		return task
 	end
 
-	job.handle = util.system_start({ "git", "rev-parse", "--show-toplevel" }, { cwd = cwd }, function(result, err)
-		if job.cancelled then
+	task:add(util.system_start({ "git", "rev-parse", "--show-toplevel" }, {
+		cwd = cwd,
+		timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+	}, function(result, err)
+		if not task:is_active() then
 			return
 		end
 		if err then
-			return on_done(nil, err)
+			return task:finish(nil, err)
 		end
 
 		local root = util.trim(result.stdout)
 		local relpath = util.relpath(root, path)
-		job.handle = util.system_start(
-			{ "git", "ls-files", "--error-unmatch", "--", relpath },
-			{ cwd = root },
-			function(_, tracked_err)
-				if job.cancelled then
-					return
-				end
-				if tracked_err then
-					return on_done(nil, "File is not tracked by Git")
-				end
-				job.handle = util.system_lines_start(
-					{ "git", "blame", "--line-porcelain", "--", relpath },
-					{ cwd = root },
-					function(lines, blame_err)
-						if job.cancelled then
-							return
-						end
-						if not lines then
-							return on_done(nil, blame_err)
-						end
-						on_done(lines, nil, root)
+		task:add(
+			util.system_start(
+				{ "git", "ls-files", "--error-unmatch", "--", relpath },
+				{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
+				function(_, tracked_err, raw)
+					if not task:is_active() then
+						return
 					end
-				)
-			end
+					if tracked_err then
+						if raw and raw.code == 1 then
+							return task:finish(nil, "File is not tracked by Git")
+						end
+						return task:finish(nil, tracked_err)
+					end
+					local blame_args = { "git", "blame", "--line-porcelain" }
+					local blame_opts = {
+						cwd = root,
+						timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+					}
+					if opts.contents ~= nil then
+						vim.list_extend(blame_args, { "--contents", "-" })
+						blame_opts.stdin = type(opts.contents) == "table" and util.join_lines(opts.contents)
+							or tostring(opts.contents)
+					end
+					vim.list_extend(blame_args, { "--", relpath })
+					task:add(util.system_lines_start(blame_args, blame_opts, function(lines, blame_err)
+						if not lines then
+							return task:finish(nil, blame_err)
+						end
+						task:finish(lines, nil, root)
+					end))
+				end
+			)
 		)
-	end)
+	end))
 
-	return job
+	return task
 end
 
 function M.parse_blame_entries(lines)
@@ -419,6 +753,25 @@ function M.line_revision(path, line_number)
 	return entry.full_revision or entry.revision
 end
 
+function M.line_revision_async(path, line_number, on_done, opts)
+	opts = opts or {}
+	local task = Task.new(on_done)
+	task:add(M.blame_lines_async(path, function(lines, err)
+		if not lines then
+			return task:finish(nil, err)
+		end
+		local entry = M.parse_blame_entries(lines)[line_number]
+		if not entry then
+			return task:finish(nil, "No blame information for this line")
+		end
+		if entry.uncommitted then
+			return task:finish(nil, "No committed Git revision for this line")
+		end
+		task:finish(entry.full_revision or entry.revision)
+	end, opts))
+	return task
+end
+
 function M.revision_log(path, revision)
 	local root, err = get_root(path)
 	if not root then
@@ -433,6 +786,39 @@ function M.revision_log(path, revision)
 		return nil, log_err
 	end
 	return lines
+end
+
+function M.revision_log_async(path, revision, on_done, opts)
+	opts = opts or {}
+	local task = Task.new(on_done)
+	task:add(M.probe_async(path, function(info, err)
+		if not task:is_active() then
+			return
+		end
+		if not info then
+			return task:finish(nil, err or "Not a Git working tree")
+		end
+		local relpath = util.relpath(info.root, path)
+		task:add(util.system_lines_start({
+			"git",
+			"show",
+			"--no-ext-diff",
+			"--stat",
+			"--format=medium",
+			tostring(revision),
+			"--",
+			relpath,
+		}, {
+			cwd = info.root,
+			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+		}, function(lines, log_err)
+			if not lines then
+				return task:finish(nil, log_err)
+			end
+			task:finish(lines)
+		end))
+	end, opts))
+	return task
 end
 
 function M.parse_remote_url(url)

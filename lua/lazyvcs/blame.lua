@@ -1,4 +1,5 @@
 local backends = require("lazyvcs.backends")
+local compat = require("lazyvcs.compat")
 local config = require("lazyvcs.config")
 local store = require("lazyvcs.store")
 local util = require("lazyvcs.util")
@@ -9,6 +10,7 @@ local ns_id = vim.api.nvim_create_namespace("lazyvcs_blame_inline")
 local augroup
 local blame_views = {}
 local inline_views = {}
+local line_log_views = {}
 local inline_enabled = false
 local STORE_KEY = "blame_inline_enabled"
 
@@ -38,7 +40,7 @@ end
 -- `svn info`) on every CursorMoved/CursorMovedI -- two blocking subprocesses per
 -- cursor movement while inline blame was on.
 local function backend_for_path(path)
-	local backend = backends.resolve(path)
+	local backend = backends.resolve_cached(path)
 	if backend and backend.blame_lines_async then
 		return backend
 	end
@@ -54,9 +56,6 @@ local function supported_blame_buffer(bufnr)
 		return nil
 	end
 	local backend = backend_for_path(path)
-	if not backend then
-		return nil
-	end
 	return path, backend
 end
 
@@ -81,6 +80,28 @@ local function close_blame(source_bufnr)
 	return true
 end
 
+local function close_line_log(source_bufnr)
+	local view = line_log_views[source_bufnr]
+	if not view or view.closing then
+		return false
+	end
+	view.closing = true
+	if view.handle and type(view.handle.kill) == "function" then
+		pcall(view.handle.kill, view.handle, 15)
+	end
+	if view.augroup then
+		pcall(vim.api.nvim_del_augroup_by_id, view.augroup)
+	end
+	if util.win_is_valid(view.winid) then
+		pcall(vim.api.nvim_win_close, view.winid, true)
+	end
+	if util.buf_is_valid(view.bufnr) and #vim.fn.win_findbuf(view.bufnr) == 0 then
+		pcall(vim.api.nvim_buf_delete, view.bufnr, { force = true })
+	end
+	line_log_views[source_bufnr] = nil
+	return true
+end
+
 local function clear_inline(bufnr)
 	local view = inline_views[bufnr]
 	if view and view.timer then
@@ -101,14 +122,21 @@ local function clear_inline(bufnr)
 end
 
 local function highlight_blame(bufnr, lines)
+	local highlight_ns = vim.api.nvim_create_namespace("lazyvcs_blame_split_" .. bufnr)
 	for idx, line in ipairs(lines) do
 		local revision = line:match("^%s*(%S+)")
 		if revision then
-			vim.api.nvim_buf_add_highlight(bufnr, -1, "LazyVcsBlameRevision", idx - 1, 0, #revision + 1)
+			vim.api.nvim_buf_set_extmark(bufnr, highlight_ns, idx - 1, 0, {
+				end_col = #revision + 1,
+				hl_group = "LazyVcsBlameRevision",
+			})
 		end
 		local author_start, author_end = line:find("%S+", 10)
 		if author_start and author_end then
-			vim.api.nvim_buf_add_highlight(bufnr, -1, "LazyVcsBlameAuthor", idx - 1, author_start - 1, author_end)
+			vim.api.nvim_buf_set_extmark(bufnr, highlight_ns, idx - 1, author_start - 1, {
+				end_col = author_end,
+				hl_group = "LazyVcsBlameAuthor",
+			})
 		end
 	end
 end
@@ -155,6 +183,7 @@ local function render_loading_inline(bufnr)
 		return
 	end
 	view.last_line = line
+	view.loading_visible = true
 	set_inline_text(bufnr, line, util.truncate(config.get().blame.loading_text, config.get().blame.max_width))
 end
 
@@ -225,7 +254,7 @@ local function load_inline(bufnr, path, backend)
 		live.error = nil
 		live.entries = backend.parse_blame_entries(lines)
 		render_inline(bufnr)
-	end)
+	end, { contents = util.join_lines(util.get_buf_lines(bufnr)) })
 end
 
 local invalidate_inline
@@ -251,11 +280,32 @@ local function update_inline(bufnr)
 		return
 	end
 
-	if view.entries then
-		local line = current_visible_line(bufnr)
-		if line and line ~= view.last_line then
-			render_inline(bufnr)
+	if not backend then
+		if view.resolving then
+			return
 		end
+		view.resolving = true
+		view.generation = (view.generation or 0) + 1
+		local generation = view.generation
+		view.handle = backends.resolve_async(path, function(resolved, _, err)
+			local live = inline_views[bufnr]
+			if not live or live.generation ~= generation or not util.buf_is_valid(bufnr) then
+				return
+			end
+			live.handle = nil
+			live.resolving = false
+			if not resolved or not resolved.blame_lines_async then
+				live.error = err or "Blame is not supported for this buffer"
+				return
+			end
+			live.backend = resolved
+			load_inline(bufnr, path, resolved)
+		end)
+		return
+	end
+
+	if view.entries then
+		render_inline(bufnr)
 		return
 	end
 
@@ -265,10 +315,7 @@ local function update_inline(bufnr)
 
 	if view.loading then
 		if view.loading_visible then
-			local line = current_visible_line(bufnr)
-			if line and line ~= view.last_line then
-				render_loading_inline(bufnr)
-			end
+			render_loading_inline(bufnr)
 		end
 		return
 	end
@@ -377,46 +424,89 @@ function M.blame_clear()
 	return true
 end
 
-function M.blame_split()
-	local source_bufnr = vim.api.nvim_get_current_buf()
-	if close_blame(source_bufnr) then
-		return
+function M.blame_split(resolved)
+	local source_bufnr = resolved and resolved.source_bufnr or vim.api.nvim_get_current_buf()
+	if not resolved and close_blame(source_bufnr) then
+		return true
 	end
 
-	local path, backend = supported_blame_buffer(source_bufnr)
+	local path, backend
+	if resolved then
+		path, backend = resolved.path, resolved.backend
+	else
+		path, backend = supported_blame_buffer(source_bufnr)
+	end
 	if not path then
 		util.notify("Current buffer is not a Git or SVN file", vim.log.levels.WARN)
 		return
 	end
-	backend = assert(backend)
-
-	local source_win = vim.api.nvim_get_current_win()
+	local source_win = resolved and resolved.source_win or vim.api.nvim_get_current_win()
+	if not backend then
+		local token = {}
+		local pending = { loading = true, token = token }
+		blame_views[source_bufnr] = pending
+		pending.handle = backends.resolve_async(path, function(found, _, err)
+			local live = blame_views[source_bufnr]
+			if live ~= pending or live.token ~= token then
+				return
+			end
+			blame_views[source_bufnr] = nil
+			if
+				not found
+				or not found.blame_lines_async
+				or not util.win_is_valid(source_win)
+				or vim.api.nvim_win_get_buf(source_win) ~= source_bufnr
+			then
+				util.notify(err or "Current buffer is not a Git or SVN file", vim.log.levels.WARN)
+				return
+			end
+			M.blame_split({
+				source_bufnr = source_bufnr,
+				source_win = source_win,
+				path = path,
+				backend = found,
+			})
+		end)
+		return true
+	end
 	local token = {}
-	blame_views[source_bufnr] = {
+	local view = {
 		loading = true,
 		token = token,
-		handle = backend.blame_lines_async(path, function(raw, err)
-			local pending = blame_views[source_bufnr]
-			if not pending or pending.token ~= token then
-				return
-			end
-			if not util.buf_is_valid(source_bufnr) or not util.win_is_valid(source_win) then
-				close_blame(source_bufnr)
-				return
-			end
-			if not raw then
-				close_blame(source_bufnr)
-				util.notify(err or "No blame information available", vim.log.levels.WARN)
-				return
-			end
+	}
+	blame_views[source_bufnr] = view
+	view.handle = backend.blame_lines_async(path, function(raw, err)
+		local pending = blame_views[source_bufnr]
+		if not pending or pending.token ~= token then
+			return
+		end
+		pending.handle = nil
+		if
+			not util.buf_is_valid(source_bufnr)
+			or not util.win_is_valid(source_win)
+			or vim.api.nvim_win_get_buf(source_win) ~= source_bufnr
+		then
+			close_blame(source_bufnr)
+			return
+		end
+		if not raw then
+			close_blame(source_bufnr)
+			util.notify(err or "No blame information available", vim.log.levels.WARN)
+			return
+		end
 
-			local lines = backend.parse_blame_metadata(raw, config.get().blame.uncommitted_text)
-			if #lines == 0 then
-				close_blame(source_bufnr)
-				util.notify("No blame information available", vim.log.levels.WARN)
-				return
-			end
+		local lines = backend.parse_blame_metadata(raw, config.get().blame.uncommitted_text)
+		if #lines == 0 then
+			close_blame(source_bufnr)
+			util.notify("No blame information available", vim.log.levels.WARN)
+			return
+		end
 
+		local callback_win = vim.api.nvim_get_current_win()
+		local created_buf
+		local created_win
+		local source_options
+		local ok, build_err = xpcall(function()
 			local blame_opts = config.get().blame
 			local width = 0
 			for _, line in ipairs(lines) do
@@ -426,44 +516,44 @@ function M.blame_split()
 				math.min(blame_opts.split_max_width, math.max(blame_opts.split_min_width, vim.o.columns - 10))
 			width = math.min(math.max(width + 2, blame_opts.split_min_width), max_width)
 
-			local buf = vim.api.nvim_create_buf(false, true)
-			vim.api.nvim_buf_set_name(buf, "lazyvcs://blame/" .. source_bufnr)
-			vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-			vim.bo[buf].buftype = "nofile"
-			vim.bo[buf].bufhidden = "wipe"
-			vim.bo[buf].swapfile = false
-			vim.bo[buf].modifiable = false
-			highlight_blame(buf, lines)
+			created_buf = vim.api.nvim_create_buf(false, true)
+			vim.api.nvim_buf_set_name(created_buf, "lazyvcs://blame/" .. source_bufnr)
+			vim.api.nvim_buf_set_lines(created_buf, 0, -1, false, lines)
+			vim.bo[created_buf].buftype = "nofile"
+			vim.bo[created_buf].bufhidden = "wipe"
+			vim.bo[created_buf].swapfile = false
+			vim.bo[created_buf].modifiable = false
+			highlight_blame(created_buf, lines)
 
-			vim.api.nvim_set_current_win(source_win)
-			vim.cmd("leftabove " .. width .. "vnew")
-			local win = vim.api.nvim_get_current_win()
-			vim.api.nvim_win_set_buf(win, buf)
-			vim.wo[win].number = false
-			vim.wo[win].relativenumber = false
-			vim.wo[win].signcolumn = "no"
-			vim.wo[win].foldcolumn = "0"
-			vim.wo[win].wrap = false
-			vim.wo[win].linebreak = false
-			vim.wo[win].list = false
-			vim.wo[win].spell = false
-			vim.wo[win].cursorline = false
-			apply_win_options(win, {
+			vim.api.nvim_win_call(source_win, function()
+				vim.cmd("leftabove " .. width .. "vnew")
+				created_win = vim.api.nvim_get_current_win()
+			end)
+			vim.api.nvim_win_set_buf(created_win, created_buf)
+			vim.wo[created_win].number = false
+			vim.wo[created_win].relativenumber = false
+			vim.wo[created_win].signcolumn = "no"
+			vim.wo[created_win].foldcolumn = "0"
+			vim.wo[created_win].wrap = false
+			vim.wo[created_win].linebreak = false
+			vim.wo[created_win].list = false
+			vim.wo[created_win].spell = false
+			vim.wo[created_win].cursorline = false
+			apply_win_options(created_win, {
 				statuscolumn = "",
 				scrollbind = true,
 				cursorbind = true,
 			})
-			vim.wo[win].winfixwidth = true
-			vim.wo[win].winhighlight = "Normal:LazyVcsBlame,NormalNC:LazyVcsBlame,EndOfBuffer:LazyVcsBlame"
-			pcall(vim.api.nvim_win_set_width, win, width)
-			local source_options = capture_win_options(source_win, { "scrollbind", "cursorbind" })
-			apply_win_options(source_win, {
-				scrollbind = true,
-				cursorbind = true,
-			})
-			vim.api.nvim_set_current_win(source_win)
+			vim.wo[created_win].winfixwidth = true
+			vim.wo[created_win].winhighlight = "Normal:LazyVcsBlame,NormalNC:LazyVcsBlame,EndOfBuffer:LazyVcsBlame"
+			pcall(vim.api.nvim_win_set_width, created_win, width)
+			source_options = capture_win_options(source_win, { "scrollbind", "cursorbind" })
+			apply_win_options(source_win, { scrollbind = true, cursorbind = true })
 
-			local split_augroup = vim.api.nvim_create_augroup("lazyvcs_blame_" .. source_bufnr, { clear = true })
+			local split_augroup = vim.api.nvim_create_augroup(
+				"lazyvcs_blame_" .. source_bufnr .. "_" .. tostring(vim.uv.hrtime()),
+				{ clear = true }
+			)
 			local syncing = false
 			local function sync_cursor(from_win, to_win)
 				if syncing or not util.win_is_valid(from_win) or not util.win_is_valid(to_win) then
@@ -475,110 +565,218 @@ function M.blame_split()
 				pcall(vim.api.nvim_win_set_cursor, to_win, { math.min(line, max_line), 0 })
 				syncing = false
 			end
-
 			vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
 				group = split_augroup,
 				buffer = source_bufnr,
 				callback = function()
-					sync_cursor(source_win, win)
+					sync_cursor(source_win, created_win)
 				end,
 			})
 			vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
 				group = split_augroup,
-				buffer = buf,
+				buffer = created_buf,
 				callback = function()
-					sync_cursor(win, source_win)
+					sync_cursor(created_win, source_win)
 				end,
 			})
-			vim.api.nvim_create_autocmd({ "BufWipeout", "WinClosed" }, {
+			local function schedule_close()
+				vim.schedule(function()
+					close_blame(source_bufnr)
+				end)
+			end
+			vim.api.nvim_create_autocmd("WinClosed", {
 				group = split_augroup,
-				callback = function()
-					if
-						not util.buf_is_valid(source_bufnr)
-						or not util.win_is_valid(source_win)
-						or not util.win_is_valid(win)
-					then
-						close_blame(source_bufnr)
-					end
-				end,
+				pattern = { tostring(source_win), tostring(created_win) },
+				callback = schedule_close,
+			})
+			vim.api.nvim_create_autocmd("BufWipeout", {
+				group = split_augroup,
+				buffer = source_bufnr,
+				callback = schedule_close,
+			})
+			vim.api.nvim_create_autocmd("BufWipeout", {
+				group = split_augroup,
+				buffer = created_buf,
+				callback = schedule_close,
 			})
 			local close = function()
 				close_blame(source_bufnr)
 			end
-			vim.keymap.set("n", "q", close, { buffer = buf, silent = true, nowait = true, desc = "Close VCS blame" })
-			vim.keymap.set(
+			compat.keymap_set(
+				"n",
+				"q",
+				close,
+				{ buffer = created_buf, silent = true, nowait = true, desc = "Close VCS blame" }
+			)
+			compat.keymap_set(
 				"n",
 				"<Esc>",
 				close,
-				{ buffer = buf, silent = true, nowait = true, desc = "Close VCS blame" }
+				{ buffer = created_buf, silent = true, nowait = true, desc = "Close VCS blame" }
 			)
 			blame_views[source_bufnr] = {
-				bufnr = buf,
-				winid = win,
+				bufnr = created_buf,
+				winid = created_win,
 				source_winid = source_win,
 				source_options = source_options,
 				augroup = split_augroup,
+				token = token,
 			}
-			sync_cursor(source_win, win)
-		end),
-	}
+			sync_cursor(source_win, created_win)
+		end, debug.traceback)
+
+		if util.win_is_valid(callback_win) then
+			pcall(vim.api.nvim_set_current_win, callback_win)
+		end
+		if not ok then
+			if source_options and util.win_is_valid(source_win) then
+				apply_win_options(source_win, source_options)
+			end
+			if util.win_is_valid(created_win) then
+				pcall(vim.api.nvim_win_close, created_win, true)
+			end
+			if util.buf_is_valid(created_buf) then
+				pcall(vim.api.nvim_buf_delete, created_buf, { force = true })
+			end
+			blame_views[source_bufnr] = nil
+			util.notify("Could not open blame split: " .. util.truncate(tostring(build_err), 200), vim.log.levels.ERROR)
+		end
+	end, { contents = util.join_lines(util.get_buf_lines(source_bufnr)) })
 	return true
 end
 
 function M.line_log()
-	local path, backend = supported_blame_buffer(vim.api.nvim_get_current_buf())
+	local source_bufnr = vim.api.nvim_get_current_buf()
+	local source_win = vim.api.nvim_get_current_win()
+	close_line_log(source_bufnr)
+	local path, cached_backend = supported_blame_buffer(source_bufnr)
 	if not path then
 		util.notify("Current buffer is not a Git or SVN file", vim.log.levels.WARN)
-		return
-	end
-	backend = assert(backend)
-
-	local revision, blame_err = backend.line_revision(path, vim.api.nvim_win_get_cursor(0)[1])
-	if not revision then
-		util.notify(blame_err or "No blame information for this line", vim.log.levels.WARN)
-		return
+		return false
 	end
 
-	local lines, log_err = backend.revision_log(path, revision)
-	if not lines then
-		util.notify(log_err or ("No log information for revision " .. revision), vim.log.levels.WARN)
-		return
+	local token = {}
+	local view = {
+		source_winid = source_win,
+		token = token,
+		loading = true,
+	}
+	line_log_views[source_bufnr] = view
+
+	local function valid()
+		return line_log_views[source_bufnr] == view
+			and view.token == token
+			and util.buf_is_valid(source_bufnr)
+			and util.win_is_valid(source_win)
+			and vim.api.nvim_win_get_buf(source_win) == source_bufnr
 	end
 
-	local width = 0
-	for _, line in ipairs(lines) do
-		width = math.max(width, vim.fn.strdisplaywidth(line))
+	local function fail(message)
+		if not valid() then
+			return
+		end
+		close_line_log(source_bufnr)
+		util.notify(message, vim.log.levels.WARN)
 	end
-	width = math.min(math.max(width + 2, 40), vim.o.columns - 4)
-	local height = math.min(math.max(#lines, 1), math.max(vim.o.lines - 6, 1))
-	local buf = vim.api.nvim_create_buf(false, true)
-	vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-	vim.bo[buf].buftype = "nofile"
-	vim.bo[buf].bufhidden = "wipe"
-	vim.bo[buf].swapfile = false
-	vim.bo[buf].filetype = backend.name == "git" and "git" or "svn"
 
-	local win = vim.api.nvim_open_win(buf, false, {
-		relative = "cursor",
-		row = 1,
-		col = 0,
-		width = width,
-		height = height,
-		style = "minimal",
-		border = "rounded",
-		title = " " .. backend.name:upper() .. " " .. revision .. " ",
-	})
-	local popup_augroup = vim.api.nvim_create_augroup("lazyvcs_line_log", { clear = true })
-	vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "BufLeave" }, {
-		group = popup_augroup,
-		once = true,
-		callback = function()
-			if util.win_is_valid(win) then
-				vim.api.nvim_win_close(win, true)
+	local function open_popup(backend, revision, lines)
+		if not valid() then
+			return
+		end
+		local width = 0
+		for _, line in ipairs(lines) do
+			width = math.max(width, vim.fn.strdisplaywidth(line))
+		end
+		width = math.min(math.max(width + 2, 40), vim.o.columns - 4)
+		local height = math.min(math.max(#lines, 1), math.max(vim.o.lines - 6, 1))
+		local buf = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+		vim.bo[buf].buftype = "nofile"
+		vim.bo[buf].bufhidden = "wipe"
+		vim.bo[buf].swapfile = false
+		vim.bo[buf].filetype = backend.name == "git" and "git" or "svn"
+
+		local win
+		vim.api.nvim_win_call(source_win, function()
+			win = vim.api.nvim_open_win(buf, false, {
+				relative = "cursor",
+				row = 1,
+				col = 0,
+				width = width,
+				height = height,
+				style = "minimal",
+				border = "rounded",
+				title = " " .. backend.name:upper() .. " " .. revision .. " ",
+			})
+		end)
+		local popup_augroup = vim.api.nvim_create_augroup(
+			"lazyvcs_line_log_" .. source_bufnr .. "_" .. tostring(vim.uv.hrtime()),
+			{ clear = true }
+		)
+		view.loading = false
+		view.handle = nil
+		view.bufnr = buf
+		view.winid = win
+		view.augroup = popup_augroup
+		local function close()
+			close_line_log(source_bufnr)
+		end
+		vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+			group = popup_augroup,
+			buffer = source_bufnr,
+			once = true,
+			callback = close,
+		})
+		vim.api.nvim_create_autocmd("WinClosed", {
+			group = popup_augroup,
+			pattern = { tostring(source_win), tostring(win) },
+			callback = function()
+				vim.schedule(close)
+			end,
+		})
+		vim.api.nvim_create_autocmd("BufWipeout", {
+			group = popup_augroup,
+			buffer = source_bufnr,
+			callback = function()
+				vim.schedule(close)
+			end,
+		})
+		compat.keymap_set("n", "q", close, { buffer = buf, silent = true, nowait = true, desc = "Close VCS log" })
+		compat.keymap_set("n", "<Esc>", close, { buffer = buf, silent = true, nowait = true, desc = "Close VCS log" })
+	end
+
+	local line_number = vim.api.nvim_win_get_cursor(source_win)[1]
+	local function resolved(backend, _, resolve_err)
+		if not valid() then
+			return
+		end
+		if not backend or not backend.line_revision_async or not backend.revision_log_async then
+			return fail(resolve_err or "Line history is not supported for this buffer")
+		end
+		view.handle = backend.line_revision_async(path, line_number, function(revision, blame_err)
+			if not valid() then
+				return
 			end
-			pcall(vim.api.nvim_del_augroup_by_id, popup_augroup)
-		end,
-	})
+			if not revision then
+				return fail(blame_err or "No blame information for this line")
+			end
+			view.handle = backend.revision_log_async(path, revision, function(lines, log_err)
+				if not valid() then
+					return
+				end
+				if not lines then
+					return fail(log_err or ("No log information for revision " .. revision))
+				end
+				open_popup(backend, revision, lines)
+			end)
+		end)
+	end
+	if cached_backend then
+		resolved(cached_backend)
+	else
+		view.handle = backends.resolve_async(path, resolved)
+	end
+	return true
 end
 
 function M.refresh(bufnr)
@@ -596,6 +794,9 @@ function M.setup()
 	for bufnr in pairs(blame_views) do
 		close_blame(bufnr)
 	end
+	for bufnr in pairs(line_log_views) do
+		close_line_log(bufnr)
+	end
 
 	local blame_opts = config.get().blame
 	if blame_opts.persist and blame_opts.mode == "inline" then
@@ -611,7 +812,7 @@ function M.setup()
 			update_inline(args.buf)
 		end,
 	})
-	vim.api.nvim_create_autocmd({ "BufWritePost", "BufFilePost" }, {
+	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "BufWritePost", "BufFilePost" }, {
 		group = augroup,
 		callback = function(args)
 			if inline_enabled then

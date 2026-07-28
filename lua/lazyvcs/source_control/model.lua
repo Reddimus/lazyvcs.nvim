@@ -1,6 +1,8 @@
 local config = require("lazyvcs.config")
 local runtime_state = require("lazyvcs.state")
 local util = require("lazyvcs.util")
+local Task = require("lazyvcs.backends.task")
+local svn_xml = require("lazyvcs.backends.xml")
 
 local M = {}
 
@@ -27,41 +29,8 @@ local function file_exists(path)
 	return uv.fs_stat(path) ~= nil
 end
 
-local function parse_svn_status_xml(raw)
-	local entries = {}
-	local current
-	for tag_text in (raw or ""):gmatch("<[^>]+>") do
-		if tag_text:match("^<entry%s") then
-			current = {
-				path = tag_text:match('path="([^"]+)"'),
-			}
-		elseif current and tag_text:match("^<wc%-status%s") then
-			current.wc_item = tag_text:match('item="([^"]+)"')
-			current.props = tag_text:match('props="([^"]+)"')
-		elseif current and tag_text:match("^<repos%-status%s") then
-			current.repos_item = tag_text:match('item="([^"]+)"')
-		elseif current and tag_text:match("^</entry>") then
-			if current.path and current.wc_item then
-				entries[#entries + 1] = current
-			end
-			current = nil
-		end
-	end
-	return entries
-end
-
-local function parse_svn_info_xml(raw)
-	local entry = raw and raw:match("<entry.-</entry>") or nil
-	if not entry then
-		return nil
-	end
-
-	return {
-		url = entry:match("<url>(.-)</url>"),
-		root = entry:match("<root>(.-)</root>"),
-		revision = entry:match('<entry[^>]-revision="([^"]+)"'),
-	}
-end
+local parse_svn_status_xml = svn_xml.parse_status
+local parse_svn_info_xml = svn_xml.parse_info
 
 local function svn_branch_from_info(raw)
 	local info = parse_svn_info_xml(raw)
@@ -69,7 +38,7 @@ local function svn_branch_from_info(raw)
 		return "svn"
 	end
 
-	local rel = info.url
+	local rel = tostring(info.url)
 	if info.root and info.root ~= "" and rel:sub(1, #info.root) == info.root then
 		rel = rel:sub(#info.root + 2)
 	end
@@ -86,7 +55,7 @@ end
 
 local function resolve_svn_entry_path(repo_root, entry_path)
 	local normalized = normalize(entry_path)
-	if normalized:sub(1, #repo_root) == repo_root then
+	if normalized == repo_root or normalized:sub(1, #repo_root + 1) == repo_root .. "/" then
 		return normalized, util.relpath(repo_root, normalized) or normalized
 	end
 	local absolute = normalize(join(repo_root, entry_path))
@@ -94,7 +63,8 @@ local function resolve_svn_entry_path(repo_root, entry_path)
 end
 
 local function repo_kind(path)
-	if is_dir(join(path, ".git")) then
+	-- Worktrees and submodules store `.git` as a pointer file, not a directory.
+	if file_exists(join(path, ".git")) then
 		return "git"
 	end
 	if is_dir(join(path, ".svn")) then
@@ -174,10 +144,12 @@ local function apply_repo_job(status)
 	return status
 end
 
-function M.make_error(repo, previous, err)
+function M.make_error(repo, previous, err, opts)
+	opts = opts or {}
 	local status = placeholder_status(repo, previous)
 	status.sync = sync_badge("!", "error", "DiagnosticError")
 	status.error = err
+	status.remote_error = opts.remote_refresh and err or nil
 	status.summary_loaded = true
 	status.loading_details = false
 	status.loading_summary = false
@@ -260,7 +232,7 @@ function M.discover(root, max_depth)
 			local kind = repo_kind(enclosing)
 			if kind then
 				repos[#repos + 1] = {
-					kind = kind,
+					vcs = kind,
 					root = normalize(enclosing),
 					name = vim.fs.basename(enclosing),
 					order = 1,
@@ -276,19 +248,129 @@ function M.discover(root, max_depth)
 	return repos
 end
 
+---Incremental, cancellable repository discovery. Directory entries are consumed
+---in bounded batches so large workspaces yield back to Neovim between scans.
+function M.discover_async(root, max_depth, on_done, opts)
+	opts = opts or {}
+	root = normalize(root)
+	max_depth = math.max(0, max_depth or 0)
+	local task = Task.new(on_done)
+	local repos = {}
+	local seen = {}
+	local stack = {
+		{ root = root, depth = 0, entered = false },
+	}
+	local budget = math.max(1, opts.entry_budget or 128)
+
+	local function finish()
+		if #repos > 0 then
+			annotate_repos(root, repos)
+			table.sort(repos, function(a, b)
+				return a.order < b.order
+			end)
+			return task:finish(repos)
+		end
+		task:add(require("lazyvcs.backends").resolve_async(root, function(backend, enclosing)
+			if backend and enclosing then
+				repos[1] = {
+					vcs = backend.name,
+					root = normalize(enclosing),
+					name = basename(enclosing),
+					order = 1,
+				}
+			end
+			annotate_repos(root, repos)
+			task:finish(repos)
+		end, { timeout_ms = opts.timeout_ms }))
+	end
+
+	local function step()
+		if task.cancelled or task.done then
+			return
+		end
+		local consumed = 0
+		while #stack > 0 and consumed < budget do
+			local frame = stack[#stack]
+			if not frame.entered then
+				frame.entered = true
+				frame.root = normalize(frame.root)
+				if seen[frame.root] then
+					table.remove(stack)
+				else
+					seen[frame.root] = true
+					local kind = repo_kind(frame.root)
+					if kind then
+						repos[#repos + 1] = {
+							root = frame.root,
+							name = basename(frame.root),
+							vcs = kind,
+							order = #repos + 1,
+						}
+					end
+					if frame.depth >= max_depth then
+						table.remove(stack)
+					else
+						frame.scanner = uv.fs_scandir(frame.root)
+						if not frame.scanner then
+							table.remove(stack)
+						end
+					end
+				end
+				consumed = consumed + 1
+			else
+				local name, entry_type = uv.fs_scandir_next(frame.scanner)
+				consumed = consumed + 1
+				if not name then
+					table.remove(stack)
+				elseif entry_type == "directory" and name ~= ".git" and name ~= ".svn" then
+					stack[#stack + 1] = {
+						root = join(frame.root, name),
+						depth = frame.depth + 1,
+						entered = false,
+					}
+				end
+			end
+		end
+		if #stack == 0 then
+			return finish()
+		end
+		vim.schedule(step)
+	end
+
+	vim.schedule(step)
+	return task
+end
+
 local function parse_git_branch(line)
 	local branch = util.trim((line or ""):gsub("^##%s*", ""))
 	local upstream
 	local ahead = 0
 	local behind = 0
 	local branch_name = branch
+	local detached = false
+	local unborn = false
 
-	local lhs, rhs, suffix = branch:match("^(.-)%.%.%.([^ ]+)(.*)$")
-	if lhs and rhs then
-		branch_name = lhs
-		upstream = rhs
-		ahead = tonumber((suffix or ""):match("ahead (%d+)") or "0") or 0
-		behind = tonumber((suffix or ""):match("behind (%d+)") or "0") or 0
+	local initial = branch:match("^No commits yet on (.+)$") or branch:match("^Initial commit on (.+)$")
+	if initial then
+		branch_name = initial
+		unborn = true
+	elseif
+		branch:match("^HEAD %(no branch%)$")
+		or branch:match("^HEAD %(detached at .+%)$")
+		or branch:match("^HEAD %(detached from .+%)$")
+	then
+		branch_name = "HEAD"
+		detached = true
+	end
+
+	if not detached and not unborn then
+		local lhs, rhs, suffix = branch:match("^(.-)%.%.%.([^ ]+)(.*)$")
+		if lhs and rhs then
+			branch_name = lhs
+			upstream = rhs
+			ahead = tonumber((suffix or ""):match("ahead (%d+)") or "0") or 0
+			behind = tonumber((suffix or ""):match("behind (%d+)") or "0") or 0
+		end
 	end
 
 	return {
@@ -296,6 +378,8 @@ local function parse_git_branch(line)
 		upstream = upstream,
 		ahead = ahead,
 		behind = behind,
+		detached = detached,
+		unborn = unborn,
 	}
 end
 
@@ -305,6 +389,8 @@ local function parse_git_summary(lines)
 		upstream = nil,
 		ahead = 0,
 		behind = 0,
+		detached = true,
+		unborn = false,
 	}
 	if lines[1] then
 		branch_info = parse_git_branch(lines[1])
@@ -356,8 +442,10 @@ local function git_sort_weight(item)
 		deleted = 2,
 		modified = 3,
 		renamed = 4,
+		replaced = 4,
 		added = 5,
 		untracked = 6,
+		ignored = 8,
 		remote = 7,
 	}
 	return map[item.extra.change_kind] or 99
@@ -399,6 +487,12 @@ local function make_file_item(repo, section, opts)
 			section = section,
 			deleted = opts.deleted or false,
 			renamed_from = opts.renamed_from,
+			wc_item = opts.wc_item,
+			wc_props = opts.wc_props,
+			repos_item = opts.repos_item,
+			repos_props = opts.repos_props,
+			base_revision = opts.base_revision,
+			property_only = opts.property_only or false,
 		},
 	}
 end
@@ -409,6 +503,8 @@ local function build_git_sync(branch_info, counts, fetch_error)
 	end
 	if
 		not branch_info.upstream
+		and not branch_info.unborn
+		and not branch_info.detached
 		and branch_info.branch
 		and branch_info.branch ~= ""
 		and branch_info.branch ~= "HEAD"
@@ -447,6 +543,8 @@ local function build_git_summary(repo, opts, status_stdout, fetch_error)
 		relpath = repo.relpath,
 		path_label = repo.path_label,
 		branch = branch_info.branch,
+		detached = branch_info.detached,
+		unborn = branch_info.unborn,
 		upstream = branch_info.upstream,
 		sections = previous.sections or {},
 		counts = counts,
@@ -461,38 +559,6 @@ local function build_git_summary(repo, opts, status_stdout, fetch_error)
 		loading_details = false,
 		loading_summary = false,
 	})
-end
-
-local function git_summary(repo, opts)
-	opts = opts or {}
-	local lines, branch_err = util.system_lines(
-		{ "git", "status", "--branch", "--porcelain=v1", "--untracked-files=all", "--ignored=no" },
-		{ cwd = repo.root }
-	)
-	if not lines then
-		return nil, branch_err
-	end
-
-	local branch_info, counts = parse_git_summary(lines)
-	local status_stdout = table.concat(lines, "\n") .. "\n"
-	local fetch_error
-	if opts.remote_refresh and branch_info.upstream then
-		local remotes = util.system_lines({ "git", "remote" }, { cwd = repo.root })
-		if remotes and #remotes > 0 then
-			local _, err = util.system({ "git", "fetch", "--all", "--prune", "--quiet" }, { cwd = repo.root })
-			fetch_error = err
-			local refreshed = util.system_lines(
-				{ "git", "status", "--branch", "--porcelain=v1", "--untracked-files=all", "--ignored=no" },
-				{ cwd = repo.root }
-			)
-			if refreshed and refreshed[1] then
-				branch_info, counts = parse_git_summary(refreshed)
-				status_stdout = table.concat(refreshed, "\n") .. "\n"
-			end
-		end
-	end
-
-	return build_git_summary(repo, opts, status_stdout, fetch_error)
 end
 
 local function parse_git_entries(root, raw, sort_key)
@@ -602,7 +668,9 @@ end
 
 local function build_git_detail(repo, opts, status_stdout, raw_stdout)
 	opts = opts or {}
-	local summary = build_git_summary(repo, opts, status_stdout, nil)
+	local previous = opts.previous or {}
+	local fetch_error = opts.fetch_error or (previous.sync and previous.sync.fetch_error)
+	local summary = build_git_summary(repo, opts, status_stdout, fetch_error)
 	local sort_key = opts.changes_sort or config.get().source_control.changes_sort
 	local sections, counts = parse_git_entries(repo.root, raw_stdout, sort_key)
 	summary.sections = sections
@@ -626,27 +694,6 @@ local function build_git_detail(repo, opts, status_stdout, raw_stdout)
 	return apply_repo_job(summary)
 end
 
-local function git_detail(repo, opts)
-	opts = opts or {}
-	local status, status_err = util.system(
-		{ "git", "status", "--branch", "--porcelain=v1", "--untracked-files=all", "--ignored=no" },
-		{ cwd = repo.root }
-	)
-	if not status then
-		return nil, status_err
-	end
-
-	local raw_files, file_err = util.system(
-		{ "git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=no" },
-		{ cwd = repo.root }
-	)
-	if not raw_files then
-		return nil, file_err
-	end
-
-	return build_git_detail(repo, opts, status.stdout, raw_files.stdout)
-end
-
 local function build_svn_sync(counts)
 	if counts.local_changes > 0 and counts.remote > 0 then
 		return sync_badge(
@@ -660,6 +707,43 @@ local function build_svn_sync(counts)
 		return sync_badge(string.format("%d↑", counts.local_changes), "outgoing", "DiagnosticHint")
 	end
 	return sync_badge("", "synced", "Comment")
+end
+
+local function svn_props_changed(value)
+	return value ~= nil and value ~= "" and value ~= "none" and value ~= "normal"
+end
+
+local function svn_local_changed(entry)
+	if not entry or entry.wc_item == "external" then
+		return false
+	end
+	return entry.tree_conflicted == true
+		or (entry.wc_item ~= "normal" and entry.wc_item ~= "none")
+		or svn_props_changed(entry.wc_props)
+end
+
+local function svn_remote_changed(entry)
+	if not entry or entry.wc_item == "external" then
+		return false
+	end
+	return (entry.repos_item ~= "normal" and entry.repos_item ~= "none") or svn_props_changed(entry.repos_props)
+end
+
+local function svn_change_kind(item, remote)
+	local kinds = {
+		added = "added",
+		conflicted = "conflict",
+		deleted = "deleted",
+		ignored = "ignored",
+		incomplete = "conflict",
+		merged = "modified",
+		missing = "deleted",
+		modified = remote and "remote" or "modified",
+		obstructed = "conflict",
+		replaced = "replaced",
+		unversioned = "untracked",
+	}
+	return kinds[item]
 end
 
 local function build_svn_summary(repo, opts, status_stdout, info_stdout)
@@ -676,10 +760,10 @@ local function build_svn_summary(repo, opts, status_stdout, info_stdout)
 	local remote_count = 0
 	for _, entry in ipairs(entries) do
 		if entry.wc_item ~= "external" then
-			if entry.wc_item ~= "normal" then
+			if svn_local_changed(entry) then
 				counts.local_changes = counts.local_changes + 1
 			end
-			if opts.remote_refresh and entry.repos_item == "modified" then
+			if opts.remote_refresh and svn_remote_changed(entry) then
 				remote_count = remote_count + 1
 			end
 		end
@@ -705,22 +789,6 @@ local function build_svn_summary(repo, opts, status_stdout, info_stdout)
 	})
 end
 
-local function svn_summary(repo, opts)
-	opts = opts or {}
-	local args = { "svn", "status", "--xml" }
-	if opts.remote_refresh then
-		args[#args + 1] = "-u"
-	end
-	args[#args + 1] = repo.root
-
-	local result, err = util.system(args, { cwd = repo.root })
-	if not result then
-		return nil, err
-	end
-	local info = util.system({ "svn", "info", "--xml", repo.root }, { cwd = repo.root })
-	return build_svn_summary(repo, opts, result.stdout, info and info.stdout or nil)
-end
-
 local function build_svn_detail(repo, opts, status_stdout, info_stdout)
 	opts = opts or {}
 	local previous = opts.previous or {}
@@ -740,18 +808,16 @@ local function build_svn_detail(repo, opts, status_stdout, info_stdout)
 	for _, entry in ipairs(entries) do
 		if entry.wc_item ~= "external" then
 			local abs_path, relpath = resolve_svn_entry_path(repo.root, entry.path)
-			local kind = ({
-				modified = "modified",
-				added = "added",
-				deleted = "deleted",
-				replaced = "renamed",
-				unversioned = "untracked",
-				missing = "deleted",
-				obstructed = "conflict",
-				conflicted = "conflict",
-				incomplete = "conflict",
-			})[entry.wc_item]
-			if entry.wc_item ~= "normal" and kind then
+			local local_property_only = (entry.wc_item == "normal" or entry.wc_item == "none")
+				and svn_props_changed(entry.wc_props)
+			local kind = svn_change_kind(entry.wc_item, false)
+			if entry.tree_conflicted then
+				kind = "conflict"
+			end
+			if local_property_only then
+				kind = "modified"
+			end
+			if svn_local_changed(entry) and kind then
 				local section_id = entry.wc_item == "unversioned" and "untracked" or "changes"
 				sections[section_id].items[#sections[section_id].items + 1] = make_file_item(
 					{ root = repo.root, vcs = "svn" },
@@ -759,26 +825,43 @@ local function build_svn_detail(repo, opts, status_stdout, info_stdout)
 					{
 						path = abs_path,
 						relpath = relpath,
-						status = entry.wc_item,
+						status = local_property_only and "properties" or entry.wc_item,
 						change_kind = kind,
 						deleted = kind == "deleted" and not file_exists(abs_path),
+						wc_item = entry.wc_item,
+						wc_props = entry.wc_props,
+						repos_item = entry.repos_item,
+						repos_props = entry.repos_props,
+						base_revision = entry.revision,
+						property_only = local_property_only,
 					}
 				)
 				counts.local_changes = counts.local_changes + 1
 			end
-			if opts.remote_refresh and entry.repos_item == "modified" then
-				if entry.wc_item == "normal" then
-					sections.remote.items[#sections.remote.items + 1] = make_file_item(
-						{ root = repo.root, vcs = "svn" },
-						"remote",
-						{
-							path = abs_path,
-							relpath = relpath,
-							status = "*",
-							change_kind = "remote",
-						}
-					)
+			if opts.remote_refresh and svn_remote_changed(entry) then
+				local remote_property_only = (entry.repos_item == "normal" or entry.repos_item == "none")
+					and svn_props_changed(entry.repos_props)
+				local remote_kind = svn_change_kind(entry.repos_item, true)
+				if remote_property_only then
+					remote_kind = "remote"
 				end
+				sections.remote.items[#sections.remote.items + 1] = make_file_item(
+					{ root = repo.root, vcs = "svn" },
+					"remote",
+					{
+						path = abs_path,
+						relpath = relpath,
+						status = remote_property_only and "properties" or entry.repos_item,
+						change_kind = remote_kind or "remote",
+						deleted = entry.repos_item == "deleted",
+						wc_item = entry.wc_item,
+						wc_props = entry.wc_props,
+						repos_item = entry.repos_item,
+						repos_props = entry.repos_props,
+						base_revision = entry.revision,
+						property_only = remote_property_only,
+					}
+				)
 				remote_count = remote_count + 1
 			end
 		end
@@ -812,47 +895,72 @@ local function build_svn_detail(repo, opts, status_stdout, info_stdout)
 	})
 end
 
-local function svn_detail(repo, opts)
-	opts = opts or {}
-	local args = { "svn", "status", "--xml" }
-	if opts.remote_refresh then
-		args[#args + 1] = "-u"
-	end
-	args[#args + 1] = repo.root
-
-	local result, err = util.system(args, { cwd = repo.root })
-	if not result then
-		return nil, err
-	end
-	local info = util.system({ "svn", "info", "--xml", repo.root }, { cwd = repo.root })
-	return build_svn_detail(repo, opts, result.stdout, info and info.stdout or nil)
-end
-
 local function mark_node_disabled(node, disabled, busy_label)
 	if not disabled or type(node) ~= "table" then
 		return node
 	end
-	node.extra = node.extra or {}
-	node.extra.disabled = true
-	node.extra.busy_label = busy_label
-	for _, child in ipairs(node.children or {}) do
-		mark_node_disabled(child, true, busy_label)
+	node = vim.deepcopy(node)
+	local function mark(current)
+		current.extra = current.extra or {}
+		current.extra.disabled = true
+		current.extra.busy_label = busy_label
+		for _, child in ipairs(current.children or {}) do
+			mark(child)
+		end
 	end
+	mark(node)
 	return node
 end
 
-function M.load_repo_summary(repo, opts)
-	if repo.vcs == "git" then
-		return git_summary(repo, opts)
+local function section_content_signature(repo, section, source_opts)
+	local parts = {
+		repo.root,
+		section.id,
+		source_opts.changes_view_mode,
+		source_opts.changes_sort,
+		tostring(source_opts.compact_folders),
+		tostring(#section.items),
+	}
+	for _, item in ipairs(section.items) do
+		local extra = item.extra or {}
+		parts[#parts + 1] = table.concat({
+			tostring(item.id or ""),
+			tostring(extra.relpath or item.path or ""),
+			tostring(extra.status or ""),
+			tostring(extra.change_kind or ""),
+			tostring(extra.renamed_from or ""),
+		}, "\31")
 	end
-	return svn_summary(repo, opts)
+	return table.concat(parts, "\30")
 end
 
-function M.load_repo_details(repo, opts)
-	if repo.vcs == "git" then
-		return git_detail(repo, opts)
+local function cached_section_children(state, key, build)
+	state.lazyvcs_section_cache = state.lazyvcs_section_cache or {
+		entries = {},
+		order = {},
+	}
+	local cache = state.lazyvcs_section_cache
+	local hit = cache.entries[key]
+	if hit then
+		for index, cached_key in ipairs(cache.order) do
+			if cached_key == key then
+				table.remove(cache.order, index)
+				break
+			end
+		end
+		cache.order[#cache.order + 1] = key
+		return hit
 	end
-	return svn_detail(repo, opts)
+
+	local value = build()
+	cache.entries[key] = value
+	cache.order[#cache.order + 1] = key
+	local limit = 32
+	while #cache.order > limit do
+		local expired = table.remove(cache.order, 1)
+		cache.entries[expired] = nil
+	end
+	return value
 end
 
 function M.load_repo_summary_async(repo, opts, run_command, on_done)
@@ -999,7 +1107,7 @@ local function first_interesting_repo(repos, show_clean)
 			return repo.root
 		end
 	end
-	return repos[1] and repos[1].root or nil
+	return nil
 end
 
 local function ordered_repositories(repos, sort_key)
@@ -1126,15 +1234,36 @@ local function folder_tree_from_items(repo, section, items, compact)
 	return nodes
 end
 
-local function make_section_node(repo, section, source_opts)
-	local items = vim.deepcopy(section.items)
-	sort_items(items, source_opts.changes_sort)
-	local children = source_opts.changes_view_mode == "tree"
-			and folder_tree_from_items(repo, section, items, source_opts.compact_folders)
-		or items
+local function make_section_node(repo, section, source_opts, state)
+	local id = section_node_id(repo.root, section.id)
+	local force_repo = state.lazyvcs_force_expand and state.lazyvcs_force_expand[M.repo_changes_id(repo.root)]
+	local expanded = state.lazyvcs_expanded and state.lazyvcs_expanded[id] == true or force_repo == true
+	local children
+	if expanded then
+		local cache_key = section_content_signature(repo, section, source_opts)
+		children = cached_section_children(state, cache_key, function()
+			local items = vim.deepcopy(section.items)
+			sort_items(items, source_opts.changes_sort)
+			return source_opts.changes_view_mode == "tree"
+					and folder_tree_from_items(repo, section, items, source_opts.compact_folders)
+				or items
+		end)
+	else
+		-- Native rendering currently determines expandability from `#children`.
+		-- A single inert sentinel keeps the disclosure marker without touching
+		-- any file item; the next render materializes real children after expand.
+		children = {
+			{
+				id = id .. "::lazy",
+				type = "lazy_placeholder",
+				name = "",
+				extra = { lazy = true },
+			},
+		}
+	end
 
 	return {
-		id = section_node_id(repo.root, section.id),
+		id = id,
 		type = "section",
 		name = string.format("%s (%d)", section.label, #section.items),
 		loaded = true,
@@ -1142,11 +1271,12 @@ local function make_section_node(repo, section, source_opts)
 		extra = {
 			repo_root = repo.root,
 			section_id = section.id,
+			lazy = not expanded,
 		},
 	}
 end
 
-local function make_repo_change_children(repo, source_opts)
+local function make_repo_change_children(repo, source_opts, state)
 	local draft = repo.draft ~= "" and repo.draft or ""
 	local placeholder = "Commit message"
 	local primary = primary_action(repo)
@@ -1183,6 +1313,21 @@ local function make_repo_change_children(repo, source_opts)
 		}
 	end
 
+	local remote_error = (repo.sync and repo.sync.fetch_error) or repo.remote_error
+	if source_opts.remote_error_notifications == "inline" and remote_error and remote_error ~= "" then
+		children[#children + 1] = {
+			id = repo.root .. "::remote_error",
+			type = "message",
+			name = "Remote refresh failed: " .. tostring(remote_error),
+			extra = {
+				repo_root = repo.root,
+				error = true,
+				remote_error = true,
+				disabled = disabled,
+			},
+		}
+	end
+
 	if repo.details_loaded then
 		if #repo.sections == 0 then
 			children[#children + 1] = {
@@ -1199,7 +1344,7 @@ local function make_repo_change_children(repo, source_opts)
 		end
 		for _, section in ipairs(repo.sections) do
 			children[#children + 1] =
-				mark_node_disabled(make_section_node(repo, section, source_opts), disabled, primary.label)
+				mark_node_disabled(make_section_node(repo, section, source_opts, state), disabled, primary.label)
 		end
 		return children
 	end
@@ -1230,58 +1375,66 @@ local function make_repo_change_children(repo, source_opts)
 	return children
 end
 
-local function normalize_visibility_state(state, repos, source_opts)
+local function normalize_visibility_state(state, repos, _source_opts)
 	local available = {}
 	for _, repo in ipairs(repos) do
 		available[repo.root] = true
 	end
 
-	state.lazyvcs_repo_visibility = state.lazyvcs_repo_visibility or {}
-	for root, _ in pairs(vim.deepcopy(state.lazyvcs_repo_visibility)) do
+	state.lazyvcs_repo_visibility_overrides = state.lazyvcs_repo_visibility_overrides or {}
+	for root, _ in pairs(vim.deepcopy(state.lazyvcs_repo_visibility_overrides)) do
 		if not available[root] then
-			state.lazyvcs_repo_visibility[root] = nil
+			state.lazyvcs_repo_visibility_overrides[root] = nil
 		end
 	end
+	state.lazyvcs_repo_visibility = {}
 
 	if state.lazyvcs_focused_repo and not available[state.lazyvcs_focused_repo] then
 		state.lazyvcs_focused_repo = nil
 	end
 
 	if state.lazyvcs_selection_mode == "single" then
-		local focused = state.lazyvcs_focused_repo or first_interesting_repo(repos, state.lazyvcs_show_clean)
+		local focused = state.lazyvcs_focused_repo
+		local override = focused and state.lazyvcs_repo_visibility_overrides[focused]
+		local focused_repo
+		for _, repo in ipairs(repos) do
+			if repo.root == focused then
+				focused_repo = repo
+				break
+			end
+		end
+		if
+			not focused_repo
+			or override == false
+			or (override == nil and not repo_visible(focused_repo, state.lazyvcs_show_clean))
+		then
+			focused = nil
+			for _, repo in ipairs(repos) do
+				if state.lazyvcs_repo_visibility_overrides[repo.root] == true then
+					focused = repo.root
+					break
+				end
+			end
+			focused = focused or first_interesting_repo(repos, state.lazyvcs_show_clean)
+		end
 		state.lazyvcs_focused_repo = focused
-		state.lazyvcs_repo_visibility = {}
 		if focused then
 			state.lazyvcs_repo_visibility[focused] = true
 		end
 		return
 	end
 
-	local has_visible = false
-	for root, enabled in pairs(state.lazyvcs_repo_visibility) do
-		if enabled and available[root] then
-			has_visible = true
-			break
+	for _, repo in ipairs(repos) do
+		local explicit = state.lazyvcs_repo_visibility_overrides[repo.root]
+		if explicit ~= nil then
+			state.lazyvcs_repo_visibility[repo.root] = explicit
+		else
+			state.lazyvcs_repo_visibility[repo.root] = repo_visible(repo, state.lazyvcs_show_clean)
 		end
 	end
 
-	if not has_visible then
-		for _, repo in ipairs(repos) do
-			if repo_visible(repo, state.lazyvcs_show_clean) then
-				state.lazyvcs_repo_visibility[repo.root] = true
-				has_visible = true
-			end
-		end
-	end
-
-	if not has_visible then
-		local fallback = first_interesting_repo(repos, true)
-		if fallback then
-			state.lazyvcs_repo_visibility[fallback] = true
-		end
-	end
-
-	if not state.lazyvcs_focused_repo then
+	if not state.lazyvcs_focused_repo or not state.lazyvcs_repo_visibility[state.lazyvcs_focused_repo] then
+		state.lazyvcs_focused_repo = nil
 		for _, repo in ipairs(repos) do
 			if state.lazyvcs_repo_visibility[repo.root] then
 				state.lazyvcs_focused_repo = repo.root
@@ -1289,9 +1442,32 @@ local function normalize_visibility_state(state, repos, source_opts)
 			end
 		end
 	end
+end
 
-	if not state.lazyvcs_focused_repo and repos[1] then
-		state.lazyvcs_focused_repo = repos[1].root
+local function apply_remote_error_notifications(state, repos, source_opts)
+	state.lazyvcs_remote_error_notified = state.lazyvcs_remote_error_notified or {}
+	local available = {}
+	local generation = state.lazyvcs_hydration_generation or 0
+	for _, repo in ipairs(repos) do
+		available[repo.root] = true
+		local remote_error = (repo.sync and repo.sync.fetch_error) or repo.remote_error
+		if source_opts.remote_error_notifications == "notify" and remote_error and remote_error ~= "" then
+			local signature = tostring(generation) .. "\0" .. tostring(remote_error)
+			if state.lazyvcs_remote_error_notified[repo.root] ~= signature then
+				state.lazyvcs_remote_error_notified[repo.root] = signature
+				util.notify(
+					string.format("Remote refresh failed for %s: %s", repo.name, remote_error),
+					vim.log.levels.WARN
+				)
+			end
+		elseif not remote_error then
+			state.lazyvcs_remote_error_notified[repo.root] = nil
+		end
+	end
+	for root in pairs(vim.deepcopy(state.lazyvcs_remote_error_notified)) do
+		if not available[root] then
+			state.lazyvcs_remote_error_notified[root] = nil
+		end
 	end
 end
 
@@ -1317,14 +1493,14 @@ local function make_repo_selector_node(repo, state)
 	}
 end
 
-local function make_repo_changes_node(repo, source_opts)
+local function make_repo_changes_node(repo, source_opts, state)
 	return {
 		id = M.repo_changes_id(repo.root),
 		path = repo.root,
 		type = "repo_changes",
 		name = repo.name,
 		loaded = true,
-		children = make_repo_change_children(repo, source_opts),
+		children = make_repo_change_children(repo, source_opts, state),
 		extra = {
 			repo_root = repo.root,
 			vcs = repo.vcs,
@@ -1381,6 +1557,7 @@ function M.collect(state, opts)
 
 	ordered_repositories(loaded, source_opts.repositories_sort)
 	normalize_visibility_state(state, loaded, source_opts)
+	apply_remote_error_notifications(state, loaded, source_opts)
 
 	local repo_selector_nodes = {}
 	for _, repo in ipairs(loaded) do
@@ -1391,7 +1568,7 @@ function M.collect(state, opts)
 	local change_nodes = {}
 	for _, repo in ipairs(loaded) do
 		if state.lazyvcs_repo_visibility[repo.root] then
-			change_nodes[#change_nodes + 1] = make_repo_changes_node(repo, source_opts)
+			change_nodes[#change_nodes + 1] = make_repo_changes_node(repo, source_opts, state)
 		end
 	end
 
@@ -1409,6 +1586,17 @@ function M.collect(state, opts)
 		hydration_active = state.lazyvcs_hydration_active == true,
 		hydration_pending = state.lazyvcs_hydration_pending or 0,
 	}
+	if state.lazyvcs_discovery_error then
+		children[#children + 1] = {
+			id = root .. "::discovery_error",
+			type = "message",
+			name = "Repository discovery failed: " .. tostring(state.lazyvcs_discovery_error),
+			extra = {
+				error = true,
+				discovery_error = true,
+			},
+		}
+	end
 	if #repo_specs > 1 or source_opts.always_show_repositories then
 		children[#children + 1] = {
 			id = root .. "::repositories",

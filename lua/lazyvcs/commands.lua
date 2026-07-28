@@ -81,6 +81,17 @@ local spec = {
 					sidebar().source_control_refresh()
 				end,
 			},
+			cancel = {
+				run = function(a)
+					local count = sidebar().source_control_cancel(path_arg(a))
+					require("lazyvcs.util").notify(
+						count == 1 and "Cancelled one source-control job"
+							or string.format("Cancelled %d source-control jobs", count),
+						count > 0 and vim.log.levels.INFO or vim.log.levels.WARN
+					)
+				end,
+				complete = "dir",
+			},
 		},
 	},
 	diff = {

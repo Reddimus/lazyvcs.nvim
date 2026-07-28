@@ -1,6 +1,7 @@
 local M = {}
 
 local wrapped = false
+local wrapper
 local original_is_ignored_win
 local suspended_wins = {}
 
@@ -36,7 +37,7 @@ function M.ensure_wrapped()
 	end
 
 	original_is_ignored_win = aerial_util.is_ignored_win
-	aerial_util.is_ignored_win = function(winid)
+	wrapper = function(winid)
 		if not winid or winid == 0 then
 			winid = vim.api.nvim_get_current_win()
 		end
@@ -45,6 +46,7 @@ function M.ensure_wrapped()
 		end
 		return original_is_ignored_win(winid)
 	end
+	aerial_util.is_ignored_win = wrapper
 	wrapped = true
 	return true
 end
@@ -63,6 +65,17 @@ function M.resume_win(winid)
 		return
 	end
 	suspended_wins[winid] = nil
+	if next(suspended_wins) ~= nil or not wrapped then
+		return
+	end
+
+	local aerial_util = get_aerial_util()
+	if aerial_util and aerial_util.is_ignored_win == wrapper then
+		aerial_util.is_ignored_win = original_is_ignored_win
+	end
+	wrapped = false
+	wrapper = nil
+	original_is_ignored_win = nil
 end
 
 function M.disable_buffer(bufnr, opts)

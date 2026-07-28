@@ -32,6 +32,17 @@ end
 -- freeze Neovim outright. Callers may override via `opts.timeout`.
 M.SYNC_TIMEOUT_MS = 30000
 
+---Describe a failed `vim.system` spawn, naming the command that failed.
+---
+---Neovim 0.11.0 raises a bare "ENOENT: no such file or directory" with no
+---indication of what could not be spawned, while 0.11.7+ includes the command.
+---Prefixing it ourselves keeps the message useful, and identical, on every
+---supported version: a missing `git` must say so rather than just "ENOENT".
+function M.spawn_error(args, err)
+	local command = type(args) == "table" and table.concat(args, " ") or tostring(args)
+	return string.format("%s: %s", command, tostring(err))
+end
+
 function M.system_result(args, opts)
 	opts = vim.tbl_extend("keep", opts or {}, { text = true })
 	local timeout_ms = opts.timeout or M.SYNC_TIMEOUT_MS
@@ -42,7 +53,7 @@ function M.system_result(args, opts)
 	-- the usual result.code path instead of crashing.
 	local ok, proc = pcall(vim.system, args, opts)
 	if not ok then
-		return { code = 127, stdout = "", stderr = tostring(proc) }
+		return { code = 127, stdout = "", stderr = M.spawn_error(args, proc) }
 	end
 
 	-- On timeout `wait()` kills the process and returns nil rather than raising.
@@ -73,61 +84,243 @@ function M.system(args, opts)
 end
 
 function M.system_start(args, opts, on_exit)
-	opts = opts or {}
-	local timeout_ms = opts.timeout
+	opts = vim.tbl_extend("force", {}, opts or {})
+	local timeout_ms = opts.timeout_ms or opts.timeout
+	local output_limit = math.max(256, math.floor(opts.output_limit_bytes or opts.output_limit or 4 * 1024 * 1024))
+	local kill_grace_ms = math.max(0, math.floor(opts.kill_grace_ms or 1000))
+	local on_terminate = opts.on_terminate
 	opts.timeout = nil
+	opts.timeout_ms = nil
+	opts.output_limit = nil
+	opts.output_limit_bytes = nil
+	opts.kill_grace_ms = nil
+	opts.on_terminate = nil
 	local done = false
-	local handle
-	local timer
-	if timeout_ms and timeout_ms > 0 then
-		timer = vim.defer_fn(function()
-			if done or not handle then
-				return
-			end
-			done = true
-			pcall(handle.kill, handle, 15)
-			if type(on_exit) == "function" then
-				vim.schedule(function()
-					on_exit(nil, string.format("Timed out after %dms: %s", timeout_ms, table.concat(args, " ")))
-				end)
-			end
-		end, timeout_ms)
+	local process
+	local timeout_timer
+	local kill_timer
+	local forced_result
+	local wrapper = {}
+
+	local function close_timer(timer)
+		if not timer then
+			return
+		end
+		local ok, closing = pcall(timer.is_closing, timer)
+		if ok and not closing then
+			pcall(timer.stop, timer)
+			pcall(timer.close, timer)
+		end
 	end
+
+	local function bounded_text(value, limit)
+		value = type(value) == "string" and value or ""
+		if #value <= limit then
+			return value
+		end
+		local suffix = string.format("\n... [truncated %d bytes]", #value - limit)
+		return value:sub(1, math.max(0, limit - #suffix)) .. suffix
+	end
+
+	local stdout_limit = math.floor(output_limit / 2)
+	local stderr_limit = output_limit - stdout_limit
+	local streams = {
+		stdout = { chunks = {}, bytes = 0, omitted = 0, callback = opts.stdout },
+		stderr = { chunks = {}, bytes = 0, omitted = 0, callback = opts.stderr },
+	}
+	local function capture(name, err, data)
+		local stream = streams[name]
+		if err and not data then
+			data = tostring(err)
+		end
+		if type(data) == "string" and data ~= "" then
+			local limit = name == "stdout" and stdout_limit or stderr_limit
+			local remaining = math.max(0, limit - stream.bytes)
+			if remaining > 0 then
+				local chunk = data:sub(1, remaining)
+				stream.chunks[#stream.chunks + 1] = chunk
+				stream.bytes = stream.bytes + #chunk
+			end
+			stream.omitted = stream.omitted + math.max(0, #data - remaining)
+		end
+		if type(stream.callback) == "function" then
+			pcall(stream.callback, err, data)
+		end
+	end
+	opts.stdout = function(err, data)
+		capture("stdout", err, data)
+	end
+	opts.stderr = function(err, data)
+		capture("stderr", err, data)
+	end
+
+	local function stream_value(name, fallback)
+		local stream = streams[name]
+		local limit = name == "stdout" and stdout_limit or stderr_limit
+		if #stream.chunks == 0 and stream.omitted == 0 then
+			return bounded_text(fallback, limit)
+		end
+		local value = table.concat(stream.chunks)
+		if stream.omitted > 0 then
+			value = value .. string.format("\n... [truncated at least %d bytes]", stream.omitted)
+		end
+		return bounded_text(value, limit)
+	end
+
+	local function bounded_result(result)
+		if type(result) ~= "table" then
+			return result
+		end
+		return {
+			code = result.code,
+			signal = result.signal,
+			stdout = stream_value("stdout", result.stdout),
+			stderr = stream_value("stderr", result.stderr),
+			cancelled = result.cancelled,
+			timed_out = result.timed_out,
+			reason = result.reason,
+		}
+	end
+
+	local function schedule_kill()
+		if done then
+			return
+		end
+		if not process or kill_grace_ms <= 0 then
+			if process then
+				pcall(process.kill, process, 9)
+			end
+			return
+		end
+		kill_timer = vim.defer_fn(function()
+			kill_timer = nil
+			if process and not done then
+				pcall(process.kill, process, 9)
+			end
+		end, kill_grace_ms)
+	end
+
+	local function notify_termination(result)
+		if type(on_terminate) == "function" then
+			pcall(on_terminate, result.result, result.err, result.raw)
+		end
+	end
+
+	local function begin_termination(kind, signal, reason)
+		if done or forced_result then
+			return false
+		end
+		close_timer(timeout_timer)
+		timeout_timer = nil
+		local message
+		local raw
+		if kind == "timeout" then
+			message = string.format("Timed out after %dms: %s", timeout_ms, table.concat(args, " "))
+			raw = {
+				code = 124,
+				stdout = "",
+				stderr = message,
+				timed_out = true,
+				reason = "timeout",
+			}
+		else
+			local cancel_reason = reason ~= nil and tostring(reason) or nil
+			message = cancel_reason and ("Cancelled: " .. cancel_reason) or ("Cancelled: " .. table.concat(args, " "))
+			raw = {
+				code = 130,
+				stdout = "",
+				stderr = message,
+				cancelled = true,
+				reason = cancel_reason or "cancelled",
+			}
+		end
+		forced_result = {
+			result = nil,
+			err = message,
+			raw = raw,
+		}
+		if process then
+			pcall(process.kill, process, signal or 15)
+			if signal ~= 9 then
+				schedule_kill()
+			end
+		end
+		notify_termination(forced_result)
+		return true
+	end
+
+	local function complete(result, err, raw)
+		if done then
+			return false
+		end
+		done = true
+		close_timer(timeout_timer)
+		close_timer(kill_timer)
+		timeout_timer = nil
+		kill_timer = nil
+		if type(on_exit) == "function" then
+			vim.schedule(function()
+				on_exit(result, err, raw)
+			end)
+		end
+		return true
+	end
+
+	function wrapper:kill(signal)
+		return begin_termination("cancelled", signal or 15)
+	end
+
+	function wrapper:cancel(reason)
+		if type(reason) == "number" then
+			return begin_termination("cancelled", reason)
+		end
+		return begin_termination("cancelled", 15, reason)
+	end
+
+	if type(opts.cwd) == "string" and opts.cwd ~= "" and not vim.uv.fs_stat(opts.cwd) then
+		local result = {
+			code = 127,
+			stdout = "",
+			stderr = "Working directory does not exist: " .. opts.cwd,
+		}
+		complete(nil, M.system_error(result), result)
+		return wrapper
+	end
+
 	local ok, proc = pcall(vim.system, args, vim.tbl_extend("keep", opts, { text = true }), function(result)
 		if done then
 			return
 		end
-		done = true
-		if timer and not timer:is_closing() then
-			timer:stop()
-			timer:close()
-		end
-		if type(on_exit) ~= "function" then
+		local bounded_raw = bounded_result(result)
+		if forced_result then
+			forced_result.raw.stdout = bounded_raw and bounded_raw.stdout or ""
+			forced_result.raw.signal = bounded_raw and bounded_raw.signal or nil
+			complete(forced_result.result, forced_result.err, forced_result.raw)
 			return
 		end
-		vim.schedule(function()
-			if result.code ~= 0 then
-				return on_exit(nil, M.system_error(result), result)
-			end
-			on_exit(result, nil, result)
-		end)
+		if result.code ~= 0 then
+			complete(nil, M.system_error(bounded_raw), bounded_raw)
+			return
+		end
+		complete(bounded_raw, nil, bounded_raw)
 	end)
 	if not ok then
-		done = true
-		if timer and not timer:is_closing() then
-			timer:stop()
-			timer:close()
-		end
-		if type(on_exit) == "function" then
-			vim.schedule(function()
-				local result = { code = 127, stdout = "", stderr = tostring(proc) }
-				on_exit(nil, M.system_error(result), result)
-			end)
-		end
-		return nil
+		local result = { code = 127, stdout = "", stderr = M.spawn_error(args, proc) }
+		complete(nil, M.system_error(result), result)
+		return wrapper
 	end
-	handle = proc
-	return handle
+	process = proc
+	wrapper.process = proc
+	if timeout_ms and timeout_ms > 0 then
+		timeout_timer = vim.defer_fn(function()
+			timeout_timer = nil
+			if done then
+				return
+			end
+			begin_termination("timeout", 15)
+		end, timeout_ms)
+	end
+	return wrapper
 end
 
 function M.system_lines(args, opts)

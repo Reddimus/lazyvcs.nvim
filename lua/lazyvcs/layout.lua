@@ -4,13 +4,17 @@ local editor = require("lazyvcs.integrations.editor")
 
 local M = {}
 
-local function sanitize_buffer_segment(text)
-	return (vim.fs.normalize(text or ""):gsub("\n", " "):gsub("\r", " "))
+local function sanitize_root(text)
+	return (vim.fs.normalize(text or ""):gsub("[%c]", " "))
+end
+
+local function sanitize_relative(text)
+	return (tostring(text or ""):gsub("[/\\]+", "/"):gsub("[%c]", " "))
 end
 
 local function base_buffer_name(session)
-	local root = sanitize_buffer_segment(session.root)
-	local relpath = sanitize_buffer_segment(session.relpath)
+	local root = sanitize_root(session.root)
+	local relpath = sanitize_relative(session.relpath)
 	return string.format("lazyvcs://%s/%s//%s", session.backend, root, relpath)
 end
 
@@ -61,14 +65,16 @@ local function set_window_labels(session)
 
 	if util.win_is_valid(session.editable_win) then
 		session.editable_prev_winbar = session.editable_prev_winbar or vim.wo[session.editable_win].winbar
+		local right_label = session.right_label or session.base_label
+		local right_role = session.readonly_comparison and "right" or "editable"
 		vim.wo[session.editable_win].winbar =
-			string.format(" lazyvcs %s %s [editable]", session.backend, session.base_label:lower())
+			string.format(" lazyvcs %s %s [%s]", session.backend, right_label:lower(), right_role)
 	end
 
 	if util.win_is_valid(session.base_win) then
 		session.base_prev_winbar = session.base_prev_winbar or vim.wo[session.base_win].winbar
-		vim.wo[session.base_win].winbar =
-			string.format(" lazyvcs %s %s [base]", session.backend, session.base_label:lower())
+		local left_label = session.left_label or session.base_label
+		vim.wo[session.base_win].winbar = string.format(" lazyvcs %s %s [left]", session.backend, left_label:lower())
 	end
 end
 
@@ -111,17 +117,36 @@ local function restore_window_option(winid, name, value)
 	end
 end
 
---- Reset diff mode for the tab page containing `winid`.
----
---- KNOWN ISSUE: `diffoff!` is tab-page-global, so this also tears down unrelated
---- diff windows the user has open in the same tab (a manual `:diffthis` pair,
---- another plugin's diff). Scoping it to just this session's two windows -- via
---- `diffoff` without the bang, or by assigning `vim.wo[win].diff = false` --
---- breaks the buffer-transfer diff state: the reopened session then highlights
---- unchanged lines (test_git_buffer_transfer_reopens_session). The transfer flow
---- evidently relies on the group-wide reset, so fixing this properly means
---- reworking how a transferred session re-enters diff mode, not just narrowing
---- the scope here.
+local tracked_window_options = {
+	"diff",
+	"scrollbind",
+	"cursorbind",
+	"foldenable",
+	"foldmethod",
+	"foldcolumn",
+	"wrap",
+	"linebreak",
+	"breakindent",
+}
+
+local function capture_window_options(winid)
+	local values = {}
+	for _, name in ipairs(tracked_window_options) do
+		values[name] = vim.wo[winid][name]
+	end
+	return values
+end
+
+local function restore_window_options(winid, values)
+	if not util.win_is_valid(winid) or not values then
+		return
+	end
+	for _, name in ipairs(tracked_window_options) do
+		restore_window_option(winid, name, values[name])
+	end
+end
+
+---Reset diff mode in one owned window without touching unrelated diff groups.
 function M.reset_tab_diff(winid)
 	local target = winid
 	if not util.win_is_valid(target) then
@@ -130,13 +155,15 @@ function M.reset_tab_diff(winid)
 
 	if util.win_is_valid(target) then
 		vim.api.nvim_win_call(target, function()
-			vim.cmd("silent diffoff!")
+			vim.cmd("silent diffoff")
 		end)
 	end
 end
 
 function M.open(session)
-	local editable_win = vim.fn.bufwinid(session.editable_bufnr)
+	local current_win = vim.api.nvim_get_current_win()
+	local editable_win = vim.api.nvim_win_get_buf(current_win) == session.editable_bufnr and current_win
+		or vim.fn.bufwinid(session.editable_bufnr)
 	if editable_win == -1 then
 		vim.cmd.buffer(session.editable_bufnr)
 		editable_win = vim.api.nvim_get_current_win()
@@ -145,6 +172,7 @@ function M.open(session)
 	session.editable_win = editable_win
 	session.editable_had_diff = vim.wo[editable_win].diff
 	session.editable_prev_scrollbind = vim.wo[editable_win].scrollbind
+	session.editable_window_options = capture_window_options(editable_win)
 
 	configure_base_buffer(session)
 	vim.api.nvim_set_current_win(editable_win)
@@ -248,32 +276,24 @@ end
 function M.close(session, opts)
 	opts = opts or {}
 
-	if opts.reset_tab_diff then
-		M.reset_tab_diff(session.editable_win)
-	end
-
 	if util.win_is_valid(session.editable_win) then
-		if not opts.reset_tab_diff then
-			pcall(vim.api.nvim_win_call, session.editable_win, function()
-				if not session.editable_had_diff then
-					vim.cmd("silent diffoff")
-				end
-			end)
-		end
+		pcall(vim.api.nvim_win_call, session.editable_win, function()
+			if not session.editable_had_diff then
+				vim.cmd("silent diffoff")
+			end
+		end)
 		if session.opts.set_winbar then
 			restore_winbar(session.editable_win, session.editable_prev_winbar)
 		end
-		restore_window_option(session.editable_win, "scrollbind", session.editable_prev_scrollbind)
+		restore_window_options(session.editable_win, session.editable_window_options)
 	end
 
 	if util.win_is_valid(session.base_win) then
-		if not opts.reset_tab_diff then
-			pcall(vim.api.nvim_win_call, session.base_win, function()
-				if not session.base_had_diff then
-					vim.cmd("silent diffoff")
-				end
-			end)
-		end
+		pcall(vim.api.nvim_win_call, session.base_win, function()
+			if not session.base_had_diff then
+				vim.cmd("silent diffoff")
+			end
+		end)
 		if session.opts.set_winbar then
 			restore_winbar(session.base_win, session.base_prev_winbar)
 		end
@@ -287,6 +307,10 @@ function M.close(session, opts)
 		if not session.base_wiping then
 			pcall(vim.api.nvim_buf_delete, session.base_bufnr, { force = true })
 		end
+	end
+
+	if opts.reset_tab_diff then
+		M.reset_tab_diff(session.editable_win)
 	end
 end
 

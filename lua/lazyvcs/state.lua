@@ -1,9 +1,26 @@
 local M = {
 	sessions = {},
 	buffer_index = {},
-	pending_transfer = nil,
+	pending_transfers = {},
 	repo_jobs = {},
 }
+
+local function transfer_key(winid)
+	winid = winid or vim.api.nvim_get_current_win()
+	return tostring(winid)
+end
+
+local function cancel_transfer(pending)
+	if not pending then
+		return
+	end
+	pending.cancelled = true
+	if pending.handle and type(pending.handle.kill) == "function" then
+		local handle = pending.handle
+		pending.handle = nil
+		pcall(handle.kill, handle, 15)
+	end
+end
 
 function M.register(session)
 	M.sessions[session.editable_bufnr] = session
@@ -45,28 +62,57 @@ function M.list()
 end
 
 function M.set_pending_transfer(session)
-	M.pending_transfer = {
+	if not session or not session.editable_win then
+		return
+	end
+	local key = transfer_key(session.editable_win)
+	cancel_transfer(M.pending_transfers[key])
+	M.pending_transfers[key] = {
 		tabpage = vim.api.nvim_get_current_tabpage(),
 		editable_bufnr = session.editable_bufnr,
 		base_bufnr = session.base_bufnr,
 		editable_win = session.editable_win,
 		base_win = session.base_win,
+		owned_editor_win = session.owned_editor_win,
 		aerial_transfer_state = session.aerial_transfer_state,
+		cancelled = false,
+		in_flight = false,
 	}
 end
 
-function M.peek_pending_transfer()
-	return M.pending_transfer
+function M.peek_pending_transfer(winid)
+	return M.pending_transfers[transfer_key(winid)]
 end
 
-function M.take_pending_transfer()
-	local pending = M.pending_transfer
-	M.pending_transfer = nil
+function M.take_pending_transfer(winid)
+	local key = transfer_key(winid)
+	local pending = M.pending_transfers[key]
+	if pending then
+		pending.in_flight = true
+	end
 	return pending
 end
 
-function M.clear_pending_transfer()
-	M.pending_transfer = nil
+function M.finish_pending_transfer(winid, pending)
+	local key = transfer_key(winid)
+	if M.pending_transfers[key] ~= pending then
+		return false
+	end
+	M.pending_transfers[key] = nil
+	return true
+end
+
+function M.clear_pending_transfer(winid)
+	if winid then
+		local key = transfer_key(winid)
+		cancel_transfer(M.pending_transfers[key])
+		M.pending_transfers[key] = nil
+		return
+	end
+	for _, pending in pairs(M.pending_transfers) do
+		cancel_transfer(pending)
+	end
+	M.pending_transfers = {}
 end
 
 function M.set_repo_job(repo_root, job)

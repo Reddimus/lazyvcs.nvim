@@ -1,27 +1,74 @@
-name: E2E (Ubuntu + AstroNvim)
+name: Compatibility canaries
 
-# Heavy: builds a full Ubuntu + AstroNvim container. Manual trigger only so it
-# does not run on every push/PR.
 on:
+  schedule:
+    - cron: "17 9 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: compatibility-canaries
+  cancel-in-progress: true
+
 jobs:
-  e2e:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  neovim-nightly:
+    name: Neovim nightly
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Run Ubuntu + AstroNvim smoke test
-        run: bash tests/e2e/ubuntu-astronvim.sh
-        env:
-          UBUNTU_IMAGE: ubuntu:24.04
-          E2E_ARTIFACT_DIR: ${{ runner.temp }}/lazyvcs-e2e
-
-      - name: Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@v7
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          name: lazyvcs-e2e-artifacts
-          path: ${{ runner.temp }}/lazyvcs-e2e
+          persist-credentials: false
+
+      - name: Run native nightly E2E
+        env:
+          NVIM_VERSION: nightly
+          NVIM_SHA256: ""
+          E2E_ARTIFACT_DIR: ${{ runner.temp }}/nightly-e2e
+        run: tests/e2e/ubuntu-native.sh
+
+      - name: Upload nightly artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: nightly-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/nightly-e2e
           if-no-files-found: ignore
+          retention-days: 7
+
+  astronvim-v6:
+    name: Floating AstroNvim v6
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Resolve template canary revision
+        run: |
+          template_ref="$(git ls-remote https://github.com/AstroNvim/template HEAD | awk '{print $1}')"
+          test -n "${template_ref}"
+          echo "ASTRONVIM_TEMPLATE_REF=${template_ref}" >>"${GITHUB_ENV}"
+
+      - name: Run floating AstroNvim v6 E2E
+        env:
+          ASTRONVIM_VERSION: ^6
+          ASTRONVIM_COMMIT: ""
+          E2E_ARTIFACT_DIR: ${{ runner.temp }}/astronvim-canary
+        run: tests/e2e/ubuntu-astronvim.sh
+
+      - name: Upload AstroNvim artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: astronvim-canary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/astronvim-canary
+          if-no-files-found: ignore
+          retention-days: 7
