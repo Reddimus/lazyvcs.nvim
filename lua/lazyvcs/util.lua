@@ -75,59 +75,176 @@ end
 function M.system_start(args, opts, on_exit)
 	opts = opts or {}
 	local timeout_ms = opts.timeout
+	local output_limit = math.max(1024, math.floor(opts.output_limit or 4 * 1024 * 1024))
+	local kill_grace_ms = math.max(0, math.floor(opts.kill_grace_ms or 1000))
 	opts.timeout = nil
+	opts.output_limit = nil
+	opts.kill_grace_ms = nil
 	local done = false
-	local handle
-	local timer
-	if timeout_ms and timeout_ms > 0 then
-		timer = vim.defer_fn(function()
-			if done or not handle then
-				return
-			end
-			done = true
-			pcall(handle.kill, handle, 15)
-			if type(on_exit) == "function" then
-				vim.schedule(function()
-					on_exit(nil, string.format("Timed out after %dms: %s", timeout_ms, table.concat(args, " ")))
-				end)
-			end
-		end, timeout_ms)
+	local process
+	local timeout_timer
+	local kill_timer
+	local forced_result
+	local wrapper = {}
+
+	local function close_timer(timer)
+		if not timer then
+			return
+		end
+		local ok, closing = pcall(timer.is_closing, timer)
+		if ok and not closing then
+			pcall(timer.stop, timer)
+			pcall(timer.close, timer)
+		end
 	end
+
+	local function bounded(text)
+		text = type(text) == "string" and text or ""
+		if #text <= output_limit then
+			return text
+		end
+		local suffix = string.format("\n... [truncated %d bytes]", #text - output_limit)
+		return text:sub(1, math.max(0, output_limit - #suffix)) .. suffix
+	end
+
+	local function bounded_result(result)
+		if type(result) ~= "table" then
+			return result
+		end
+		return {
+			code = result.code,
+			signal = result.signal,
+			stdout = bounded(result.stdout),
+			stderr = bounded(result.stderr),
+		}
+	end
+
+	local function schedule_kill()
+		if done then
+			return
+		end
+		if not process or kill_grace_ms <= 0 then
+			if process then
+				pcall(process.kill, process, 9)
+			end
+			return
+		end
+		kill_timer = vim.defer_fn(function()
+			kill_timer = nil
+			if process and not done then
+				pcall(process.kill, process, 9)
+			end
+		end, kill_grace_ms)
+	end
+
+	local function complete(result, err, raw)
+		if done then
+			return false
+		end
+		done = true
+		close_timer(timeout_timer)
+		close_timer(kill_timer)
+		timeout_timer = nil
+		kill_timer = nil
+		if type(on_exit) == "function" then
+			vim.schedule(function()
+				on_exit(result, err, raw)
+			end)
+		end
+		return true
+	end
+
+	function wrapper:kill(signal)
+		if done then
+			return false
+		end
+		if process then
+			pcall(process.kill, process, signal or 15)
+		end
+		if forced_result then
+			return true
+		end
+		local message = "Cancelled: " .. table.concat(args, " ")
+		close_timer(timeout_timer)
+		timeout_timer = nil
+		forced_result = {
+			result = nil,
+			err = message,
+			raw = {
+				code = 130,
+				stdout = "",
+				stderr = message,
+				cancelled = true,
+				reason = "cancelled",
+			},
+		}
+		if process and signal ~= 9 then
+			schedule_kill()
+		end
+		return true
+	end
+
+	wrapper.cancel = wrapper.kill
+
+	if type(opts.cwd) == "string" and opts.cwd ~= "" and not vim.uv.fs_stat(opts.cwd) then
+		local result = {
+			code = 127,
+			stdout = "",
+			stderr = "Working directory does not exist: " .. opts.cwd,
+		}
+		complete(nil, M.system_error(result), result)
+		return wrapper
+	end
+
 	local ok, proc = pcall(vim.system, args, vim.tbl_extend("keep", opts, { text = true }), function(result)
 		if done then
 			return
 		end
-		done = true
-		if timer and not timer:is_closing() then
-			timer:stop()
-			timer:close()
-		end
-		if type(on_exit) ~= "function" then
+		if forced_result then
+			complete(forced_result.result, forced_result.err, forced_result.raw)
 			return
 		end
-		vim.schedule(function()
-			if result.code ~= 0 then
-				return on_exit(nil, M.system_error(result), result)
-			end
-			on_exit(result, nil, result)
-		end)
+		local bounded_raw = bounded_result(result)
+		if result.code ~= 0 then
+			complete(nil, M.system_error(bounded_raw), bounded_raw)
+			return
+		end
+		complete(bounded_raw, nil, bounded_raw)
 	end)
 	if not ok then
-		done = true
-		if timer and not timer:is_closing() then
-			timer:stop()
-			timer:close()
-		end
-		if type(on_exit) == "function" then
-			vim.schedule(function()
-				local result = { code = 127, stdout = "", stderr = tostring(proc) }
-				on_exit(nil, M.system_error(result), result)
-			end)
-		end
+		local result = { code = 127, stdout = "", stderr = tostring(proc) }
+		complete(nil, M.system_error(result), result)
 		return nil
 	end
-	handle = proc
-	return handle
+	process = proc
+	wrapper.process = proc
+	if timeout_ms and timeout_ms > 0 then
+		timeout_timer = vim.defer_fn(function()
+			timeout_timer = nil
+			if done then
+				return
+			end
+			if process then
+				pcall(process.kill, process, 15)
+			end
+			local message = string.format("Timed out after %dms: %s", timeout_ms, table.concat(args, " "))
+			forced_result = {
+				result = nil,
+				err = message,
+				raw = {
+					code = 124,
+					stdout = "",
+					stderr = message,
+					timed_out = true,
+					reason = "timeout",
+				},
+			}
+			if process then
+				schedule_kill()
+			end
+		end, timeout_ms)
+	end
+	return wrapper
 end
 
 function M.system_lines(args, opts)
