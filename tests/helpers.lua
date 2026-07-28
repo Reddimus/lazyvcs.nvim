@@ -1,4 +1,5 @@
 local M = {}
+local temp_roots = {}
 
 local function join(...)
 	return vim.fs.normalize(table.concat({ ... }, "/"))
@@ -10,7 +11,64 @@ end
 local function tempdir()
 	local dir = vim.fs.normalize(vim.fn.tempname())
 	vim.fn.mkdir(dir, "p")
+	temp_roots[#temp_roots + 1] = dir
 	return dir
+end
+
+M.tempdir = tempdir
+
+function M.cleanup()
+	local function belongs_to_fixture(path)
+		if not path or path == "" then
+			return false
+		end
+		local normalized = vim.fs.normalize(path)
+		if package.config:sub(1, 1) == "\\" then
+			normalized = normalized:lower()
+		end
+		for _, root in ipairs(temp_roots) do
+			local candidate = package.config:sub(1, 1) == "\\" and root:lower() or root
+			if normalized == candidate or vim.startswith(normalized, candidate .. "/") then
+				return true
+			end
+		end
+		return false
+	end
+
+	local actions = package.loaded["lazyvcs.actions"]
+	local session_state = package.loaded["lazyvcs.state"]
+	if actions and session_state and type(session_state.list) == "function" then
+		for _, session in ipairs(session_state.list()) do
+			if belongs_to_fixture(session.source_path or session.root) then
+				pcall(actions.close, session.editable_bufnr)
+			end
+		end
+	end
+
+	local jobs = package.loaded["lazyvcs.source_control.jobs"]
+	if jobs and type(jobs.cancel) == "function" then
+		jobs.cancel(function(job)
+			return belongs_to_fixture(job.root)
+		end, "test fixture cleanup")
+	end
+
+	local removed_buffers = false
+	for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+		if vim.api.nvim_buf_is_valid(bufnr) and belongs_to_fixture(vim.api.nvim_buf_get_name(bufnr)) then
+			removed_buffers = true
+			pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+		end
+	end
+	if removed_buffers then
+		vim.wait(100, function()
+			return false
+		end, 10)
+	end
+
+	for index = #temp_roots, 1, -1 do
+		pcall(vim.fn.delete, temp_roots[index], "rf")
+	end
+	temp_roots = {}
 end
 
 function M.write_file(path, text)
@@ -22,6 +80,21 @@ function M.exec(args, cwd)
 	local result = vim.system(args, { cwd = cwd, text = true }):wait()
 	assert(result.code == 0, table.concat(args, " ") .. "\n" .. (result.stderr or ""))
 	return result.stdout or ""
+end
+
+---Build a `file://` URL for a local repository path.
+---
+---POSIX paths already start with `/`, so `file://` yields the required three
+---slashes. Windows paths start with a drive letter instead, and `file://C:/...`
+---makes `svn` parse `C:` as the URL authority, so every fixture checkout fails.
+---Those failures are invisible on CI's Windows runner because it has no `svn`
+---and the specs skip, so this must stay correct by construction.
+function M.file_url(path)
+	local normalized = vim.fs.normalize(path)
+	if normalized:sub(1, 1) == "/" then
+		return "file://" .. normalized
+	end
+	return "file:///" .. normalized
 end
 
 function M.make_git_fixture()
@@ -71,7 +144,7 @@ function M.make_git_transfer_fixture()
 end
 
 function M.make_git_markdown_transfer_fixture()
-	local root = vim.fs.normalize(vim.fn.tempname())
+	local root = tempdir()
 	local lua_root = join(root, "lua", "lazyvcs")
 	vim.fn.mkdir(lua_root, "p")
 
@@ -119,7 +192,7 @@ function M.make_svn_fixture()
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
-	local root = vim.fs.normalize(vim.fn.tempname())
+	local root = tempdir()
 	local repo = join(root, "repo")
 	local seed = join(root, "seed")
 	local wc = join(root, "wc")
@@ -130,8 +203,8 @@ function M.make_svn_fixture()
 
 	local file = join(seed, "sample.txt")
 	M.write_file(file, "one\ntwo\nthree\n")
-	M.exec({ "svn", "import", seed, "file://" .. repo, "-m", "init" }, root)
-	M.exec({ "svn", "checkout", "file://" .. repo, wc }, root)
+	M.exec({ "svn", "import", seed, M.file_url(repo), "-m", "init" }, root)
+	M.exec({ "svn", "checkout", M.file_url(repo), wc }, root)
 
 	local wc_file = join(wc, "sample.txt")
 	M.write_file(wc_file, "one\nchanged\nthree\n")
@@ -148,13 +221,13 @@ function M.make_svn_added_fixture()
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
-	local root = vim.fs.normalize(vim.fn.tempname())
+	local root = tempdir()
 	local repo = join(root, "repo")
 	local wc = join(root, "wc")
 
 	vim.fn.mkdir(root, "p")
 	M.exec({ "svnadmin", "create", repo }, root)
-	M.exec({ "svn", "checkout", "file://" .. repo, wc }, root)
+	M.exec({ "svn", "checkout", M.file_url(repo), wc }, root)
 
 	local wc_file = join(wc, "added.txt")
 	M.write_file(wc_file, "alpha\nbeta\n")
@@ -168,7 +241,7 @@ function M.make_svn_added_fixture()
 end
 
 function M.make_git_remote_fixture()
-	local root = vim.fs.normalize(vim.fn.tempname())
+	local root = tempdir()
 	local origin = join(root, "origin.git")
 	local seed = join(root, "seed")
 	local clone = join(root, "clone")
@@ -205,7 +278,7 @@ function M.make_git_remote_fixture()
 end
 
 function M.make_git_switch_fixture()
-	local root = vim.fs.normalize(vim.fn.tempname())
+	local root = tempdir()
 	local origin = join(root, "origin.git")
 	local seed = join(root, "seed")
 	local clone = join(root, "clone")
@@ -255,7 +328,7 @@ function M.make_svn_transfer_fixture()
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
-	local root = vim.fs.normalize(vim.fn.tempname())
+	local root = tempdir()
 	local repo = join(root, "repo")
 	local seed = join(root, "seed")
 	local wc = join(root, "wc")
@@ -270,8 +343,8 @@ function M.make_svn_transfer_fixture()
 	local base2 = { "red", "blue", "green", "yellow", "orange" }
 	M.write_file(file1, table.concat(base1, "\n") .. "\n")
 	M.write_file(file2, table.concat(base2, "\n") .. "\n")
-	M.exec({ "svn", "import", seed, "file://" .. repo, "-m", "init" }, root)
-	M.exec({ "svn", "checkout", "file://" .. repo, wc }, root)
+	M.exec({ "svn", "import", seed, M.file_url(repo), "-m", "init" }, root)
+	M.exec({ "svn", "checkout", M.file_url(repo), wc }, root)
 
 	local wc_file1 = join(wc, "alpha.txt")
 	local wc_file2 = join(wc, "beta.txt")
@@ -299,7 +372,7 @@ function M.make_svn_update_fixture()
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
-	local root = vim.fs.normalize(vim.fn.tempname())
+	local root = tempdir()
 	local repo = join(root, "repo")
 	local seed = join(root, "seed")
 	local wc = join(root, "wc")
@@ -311,9 +384,9 @@ function M.make_svn_update_fixture()
 
 	local file = join(seed, "sample.txt")
 	M.write_file(file, "one\ntwo\nthree\n")
-	M.exec({ "svn", "import", seed, "file://" .. repo, "-m", "init" }, root)
-	M.exec({ "svn", "checkout", "file://" .. repo, wc }, root)
-	M.exec({ "svn", "checkout", "file://" .. repo, peer }, root)
+	M.exec({ "svn", "import", seed, M.file_url(repo), "-m", "init" }, root)
+	M.exec({ "svn", "checkout", M.file_url(repo), wc }, root)
+	M.exec({ "svn", "checkout", M.file_url(repo), peer }, root)
 
 	local peer_file = join(peer, "sample.txt")
 	M.write_file(peer_file, "one\nupdated\nthree\n")
@@ -332,7 +405,7 @@ function M.make_svn_switch_fixture()
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
-	local root = vim.fs.normalize(vim.fn.tempname())
+	local root = tempdir()
 	local repo = join(root, "repo")
 	local seed = join(root, "seed")
 	local wc = join(root, "wc")
@@ -346,19 +419,48 @@ function M.make_svn_switch_fixture()
 	M.write_file(join(seed, "trunk", "sample.txt"), "trunk\n")
 	M.write_file(join(seed, "branches", "release", "sample.txt"), "release\n")
 	M.write_file(join(seed, "tags", "v1.0.0", "sample.txt"), "tag\n")
-	M.exec({ "svn", "import", seed, "file://" .. repo, "-m", "init" }, root)
-	M.exec({ "svn", "checkout", "file://" .. repo .. "/trunk", wc }, root)
+	M.exec({ "svn", "import", seed, M.file_url(repo), "-m", "init" }, root)
+	M.exec({ "svn", "checkout", M.file_url(repo) .. "/trunk", wc }, root)
 
 	return {
 		root = wc,
 		repo = repo,
-		trunk_url = "file://" .. repo .. "/trunk",
-		release_url = "file://" .. repo .. "/branches/release",
-		tag_url = "file://" .. repo .. "/tags/v1.0.0",
+		trunk_url = M.file_url(repo) .. "/trunk",
+		release_url = M.file_url(repo) .. "/branches/release",
+		tag_url = M.file_url(repo) .. "/tags/v1.0.0",
 	}
 end
 
-function M.make_source_control_fixture()
+function M.make_git_source_control_fixture()
+	local root = tempdir()
+
+	local git_dirty = join(root, "apps", "git-dirty")
+	vim.fn.mkdir(git_dirty, "p")
+	M.exec({ "git", "init" }, git_dirty)
+	M.exec({ "git", "config", "user.name", "lazyvcs-test" }, git_dirty)
+	M.exec({ "git", "config", "user.email", "lazyvcs@example.com" }, git_dirty)
+	M.write_file(join(git_dirty, "sample.txt"), "one\ntwo\nthree\n")
+	M.exec({ "git", "add", "sample.txt" }, git_dirty)
+	M.exec({ "git", "commit", "-m", "init" }, git_dirty)
+	M.write_file(join(git_dirty, "sample.txt"), "one\nchanged\nthree\n")
+
+	local git_clean = join(root, "libs", "git-clean")
+	vim.fn.mkdir(git_clean, "p")
+	M.exec({ "git", "init" }, git_clean)
+	M.exec({ "git", "config", "user.name", "lazyvcs-test" }, git_clean)
+	M.exec({ "git", "config", "user.email", "lazyvcs@example.com" }, git_clean)
+	M.write_file(join(git_clean, "clean.txt"), "alpha\nbeta\n")
+	M.exec({ "git", "add", "clean.txt" }, git_clean)
+	M.exec({ "git", "commit", "-m", "init" }, git_clean)
+
+	return {
+		root = root,
+		git_dirty = git_dirty,
+		git_clean = git_clean,
+	}
+end
+
+function M.make_mixed_source_control_fixture()
 	if vim.fn.executable("svnadmin") ~= 1 then
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
@@ -391,9 +493,9 @@ function M.make_source_control_fixture()
 	vim.fn.mkdir(svn_seed, "p")
 	M.exec({ "svnadmin", "create", svn_repo }, root)
 	M.write_file(join(svn_seed, "app.txt"), "red\nblue\ngreen\n")
-	M.exec({ "svn", "import", svn_seed, "file://" .. svn_repo, "-m", "init" }, root)
+	M.exec({ "svn", "import", svn_seed, M.file_url(svn_repo), "-m", "init" }, root)
 	vim.fn.mkdir(svn_root, "p")
-	M.exec({ "svn", "checkout", "file://" .. svn_repo, svn_wc }, root)
+	M.exec({ "svn", "checkout", M.file_url(svn_repo), svn_wc }, root)
 	M.write_file(join(svn_wc, "app.txt"), "red\nteal\ngreen\n")
 
 	return {

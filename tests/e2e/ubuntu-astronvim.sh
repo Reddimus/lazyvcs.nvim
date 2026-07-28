@@ -4,9 +4,12 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
-UBUNTU_IMAGE="${UBUNTU_IMAGE:-ubuntu:24.04}"
-NVIM_VERSION="${NVIM_VERSION:-v0.12.2}"
-ASTRONVIM_TEMPLATE_REF="${ASTRONVIM_TEMPLATE_REF:-}"
+UBUNTU_IMAGE="${UBUNTU_IMAGE:-ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90}"
+NVIM_VERSION="${NVIM_VERSION:-v0.12.4}"
+NVIM_SHA256="${NVIM_SHA256:-012bf3fcac5ade43914df3f174668bf64d05e049a4f032a388c027b1ebd78628}"
+ASTRONVIM_TEMPLATE_REF="${ASTRONVIM_TEMPLATE_REF:-49a7161b776f8bc6c23508819ea1ad4e7b359bee}"
+ASTRONVIM_VERSION="${ASTRONVIM_VERSION:-6.0.5}"
+ASTRONVIM_COMMIT="${ASTRONVIM_COMMIT:-35966a16caefeb8f3a9dcb1a91f89ada8f3edc77}"
 KEEP_E2E_HOME="${KEEP_E2E_HOME:-}"
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -29,7 +32,10 @@ printf '  artifacts: %s\n' "${ARTIFACT_DIR}"
 
 docker run --rm -i \
 	-e "NVIM_VERSION=${NVIM_VERSION}" \
+	-e "NVIM_SHA256=${NVIM_SHA256}" \
 	-e "ASTRONVIM_TEMPLATE_REF=${ASTRONVIM_TEMPLATE_REF}" \
+	-e "ASTRONVIM_VERSION=${ASTRONVIM_VERSION}" \
+	-e "ASTRONVIM_COMMIT=${ASTRONVIM_COMMIT}" \
 	-e "KEEP_E2E_HOME=${KEEP_E2E_HOME}" \
 	-v "${REPO_ROOT}:/work/lazyvcs.nvim:ro" \
 	-v "${ARTIFACT_DIR}:/artifacts" \
@@ -59,17 +65,12 @@ run_logged() {
 install_nvim() {
 	local base="https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}"
 	local archive="/tmp/nvim.tar.gz"
-	local asset
+	local asset="nvim-linux-x86_64.tar.gz"
 
-	for asset in nvim-linux-x86_64.tar.gz nvim-linux64.tar.gz; do
-		if curl -fsSL "${base}/${asset}" -o "${archive}"; then
-			break
-		fi
-	done
-
-	if [ ! -s "${archive}" ]; then
-		printf 'failed to download Neovim release %s\n' "${NVIM_VERSION}" >&2
-		return 1
+	curl --fail --location --retry 5 --retry-all-errors --silent --show-error \
+		"${base}/${asset}" -o "${archive}"
+	if [ -n "${NVIM_SHA256}" ]; then
+		printf '%s  %s\n' "${NVIM_SHA256}" "${archive}" | sha256sum --check -
 	fi
 
 	mkdir -p /opt/nvim
@@ -114,14 +115,15 @@ git config --global user.email "lazyvcs-e2e@example.invalid"
 git config --global advice.detachedHead false
 
 log "install AstroNvim template"
-if [ -n "${ASTRONVIM_TEMPLATE_REF}" ]; then
-	git clone --depth 1 --branch "${ASTRONVIM_TEMPLATE_REF}" \
-		https://github.com/AstroNvim/template "${XDG_CONFIG_HOME}/nvim"
-else
-	git clone --depth 1 https://github.com/AstroNvim/template "${XDG_CONFIG_HOME}/nvim"
-fi
+git -C "${XDG_CONFIG_HOME}" init nvim
+git -C "${XDG_CONFIG_HOME}/nvim" remote add origin https://github.com/AstroNvim/template
+git -C "${XDG_CONFIG_HOME}/nvim" fetch --depth 1 origin "${ASTRONVIM_TEMPLATE_REF}"
+git -C "${XDG_CONFIG_HOME}/nvim" checkout --detach FETCH_HEAD
+test "$(git -C "${XDG_CONFIG_HOME}/nvim" rev-parse HEAD)" = "${ASTRONVIM_TEMPLATE_REF}"
 rm -rf "${XDG_CONFIG_HOME}/nvim/.git"
 rm -f "${XDG_CONFIG_HOME}/nvim/lazy-lock.json"
+sed -i "s/version = \"\\^6\"/version = \"${ASTRONVIM_VERSION}\"/" \
+	"${XDG_CONFIG_HOME}/nvim/lua/lazy_setup.lua"
 
 mkdir -p "${XDG_CONFIG_HOME}/nvim/lua/plugins"
 cat >"${XDG_CONFIG_HOME}/nvim/lua/plugins/lazyvcs.lua" <<'LUA'
@@ -137,6 +139,7 @@ return {
       { "CopilotC-Nvim/CopilotChat.nvim", optional = true },
     },
     cmd = { "LazyVCS" },
+    event = { "BufReadPre", "BufNewFile" },
     keys = {
       { "<leader>vs", "<cmd>LazyVCS sidebar toggle<cr>", desc = "Toggle VCS sidebar" },
     },
@@ -155,6 +158,11 @@ return {
 LUA
 
 run_logged lazy-sync timeout 360s nvim --headless "+Lazy! sync" "+qa"
+if [ -n "${ASTRONVIM_COMMIT}" ]; then
+	grep -q "\"AstroNvim\":.*\"commit\": \"${ASTRONVIM_COMMIT}\"" \
+		"${XDG_CONFIG_HOME}/nvim/lazy-lock.json"
+fi
+cp "${XDG_CONFIG_HOME}/nvim/lazy-lock.json" /artifacts/astronvim-lazy-lock.json
 run_logged plugin-registration timeout 180s nvim --headless "+Lazy! sync" \
 	"+lua local plugin = require('lazy.core.config').plugins['lazyvcs.nvim']; assert(plugin and plugin.dir == '/work/lazyvcs.nvim', 'lazyvcs.nvim is not registered from the mounted plugin path')" \
 	"+qa"
