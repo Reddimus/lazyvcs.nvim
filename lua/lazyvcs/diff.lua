@@ -1,4 +1,5 @@
 local util = require("lazyvcs.util")
+local compat = require("lazyvcs.compat")
 
 local M = {}
 
@@ -12,12 +13,15 @@ local function normalize_hunk(item)
 end
 
 function M.compute_hunks(base_lines, current_lines)
-	local raw = vim.diff(util.join_lines(base_lines), util.join_lines(current_lines), {
+	local raw = compat.diff(util.join_lines(base_lines), util.join_lines(current_lines), {
 		algorithm = "histogram",
 		result_type = "indices",
 	})
 
 	local hunks = {}
+	if type(raw) ~= "table" then
+		return hunks
+	end
 	for _, item in ipairs(raw) do
 		hunks[#hunks + 1] = normalize_hunk(item)
 	end

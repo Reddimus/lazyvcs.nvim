@@ -1,3 +1,6 @@
+local compat = require("lazyvcs.compat")
+local modal = require("lazyvcs.source_control.modal")
+
 local M = {}
 
 local options = {
@@ -32,7 +35,6 @@ function M.open(opts, on_choice)
 	local selected = 1
 	local previous_win = vim.api.nvim_get_current_win()
 	local previous_cursor = vim.api.nvim_win_is_valid(previous_win) and vim.api.nvim_win_get_cursor(previous_win) or nil
-	local closed = false
 	local bufnr = vim.api.nvim_create_buf(false, true)
 	local size = popup_size(prompt)
 	local winid = vim.api.nvim_open_win(bufnr, true, {
@@ -75,28 +77,18 @@ function M.open(opts, on_choice)
 		end
 	end
 
-	local function finish(action)
-		if closed then
-			return
-		end
-		closed = true
-		if vim.api.nvim_win_is_valid(winid) then
-			pcall(vim.api.nvim_win_close, winid, true)
-		end
-		if vim.api.nvim_win_is_valid(previous_win) then
-			vim.api.nvim_set_current_win(previous_win)
-			if previous_cursor then
-				pcall(vim.api.nvim_win_set_cursor, previous_win, previous_cursor)
-			end
-		end
-		if type(on_choice) == "function" then
-			on_choice(action)
-		end
-	end
+	local owner = modal.new({
+		bufnr = bufnr,
+		winid = winid,
+		previous_win = previous_win,
+		previous_cursor = previous_cursor,
+		cancel_value = "cancel",
+		on_finish = on_choice,
+	})
 
 	local function choose(index)
 		local item = options[index]
-		finish(item and item.action or "cancel")
+		owner:finish(item and item.action or "cancel")
 	end
 
 	local function move(delta)
@@ -108,30 +100,30 @@ function M.open(opts, on_choice)
 
 	local map_opts = { buffer = bufnr, nowait = true, silent = true }
 	for index, item in ipairs(options) do
-		vim.keymap.set("n", item.key, function()
+		compat.keymap_set("n", item.key, function()
 			choose(index)
 		end, map_opts)
 	end
-	vim.keymap.set("n", "<CR>", function()
+	compat.keymap_set("n", "<CR>", function()
 		choose(selected)
 	end, map_opts)
-	vim.keymap.set("n", "j", function()
+	compat.keymap_set("n", "j", function()
 		move(1)
 	end, map_opts)
-	vim.keymap.set("n", "<Down>", function()
+	compat.keymap_set("n", "<Down>", function()
 		move(1)
 	end, map_opts)
-	vim.keymap.set("n", "k", function()
+	compat.keymap_set("n", "k", function()
 		move(-1)
 	end, map_opts)
-	vim.keymap.set("n", "<Up>", function()
+	compat.keymap_set("n", "<Up>", function()
 		move(-1)
 	end, map_opts)
-	vim.keymap.set("n", "q", function()
-		finish("cancel")
+	compat.keymap_set("n", "q", function()
+		owner:finish("cancel")
 	end, map_opts)
-	vim.keymap.set("n", "<Esc>", function()
-		finish("cancel")
+	compat.keymap_set("n", "<Esc>", function()
+		owner:finish("cancel")
 	end, map_opts)
 
 	render()
@@ -139,8 +131,9 @@ function M.open(opts, on_choice)
 		bufnr = bufnr,
 		winid = winid,
 		close = function()
-			finish("cancel")
+			owner:finish("cancel")
 		end,
+		owner = owner,
 	}
 end
 

@@ -1,4 +1,6 @@
 local config = require("lazyvcs.config")
+local compat = require("lazyvcs.compat")
+local modal = require("lazyvcs.source_control.modal")
 local util = require("lazyvcs.util")
 
 local M = {}
@@ -35,12 +37,6 @@ local function set_footer(winid, opts, generating)
 	})
 end
 
-local function restore_window(winid)
-	if util.win_is_valid(winid) then
-		pcall(vim.api.nvim_set_current_win, winid)
-	end
-end
-
 local function line_value(bufnr)
 	return table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, 1, false), "\n")
 end
@@ -58,8 +54,8 @@ function M.open_text(opts, on_submit)
 	local size = popup_size(opts)
 	local bufnr = vim.api.nvim_create_buf(false, true)
 	local title = opts.title or " Input "
-	local closed = false
 	local generating = false
+	local generation = 0
 
 	vim.api.nvim_buf_set_name(bufnr, "lazyvcs://commit-input/" .. bufnr)
 	vim.bo[bufnr].buftype = "nofile"
@@ -84,30 +80,25 @@ function M.open_text(opts, on_submit)
 	vim.wo[winid].winhighlight = "Normal:Normal,FloatBorder:FloatBorder,FloatTitle:FloatTitle"
 	vim.cmd("startinsert!")
 
-	local function close(value)
-		if closed then
-			return
-		end
-		closed = true
-		if util.win_is_valid(winid) then
-			vim.api.nvim_win_close(winid, true)
-		end
-		restore_window(previous_win)
-		if type(on_submit) == "function" then
-			on_submit(value)
-		end
-	end
+	local owner = modal.new({
+		bufnr = bufnr,
+		winid = winid,
+		previous_win = previous_win,
+		cancel_value = nil,
+		on_finish = on_submit,
+	})
 
 	local function cancel()
-		close(nil)
+		owner:finish(nil)
 	end
 
 	local function submit()
-		close(line_value(bufnr))
+		owner:set_task(nil)
+		owner:finish(line_value(bufnr))
 	end
 
 	local function apply_generated(message)
-		if not util.buf_is_valid(bufnr) or closed then
+		if not owner:is_live() then
 			return
 		end
 		local current = util.trim(line_value(bufnr))
@@ -116,7 +107,13 @@ function M.open_text(opts, on_submit)
 				prompt = "Generated message is ready",
 			}, function(choice)
 				if choice == "Replace current message" then
+					if not owner:is_live() then
+						return
+					end
 					set_line(bufnr, message)
+					if type(opts.on_generated_accept) == "function" then
+						opts.on_generated_accept(message)
+					end
 					if util.win_is_valid(winid) then
 						pcall(vim.api.nvim_set_current_win, winid)
 						pcall(vim.api.nvim_win_set_cursor, winid, { 1, #message })
@@ -125,6 +122,9 @@ function M.open_text(opts, on_submit)
 			end)
 		else
 			set_line(bufnr, message)
+			if type(opts.on_generated_accept) == "function" then
+				opts.on_generated_accept(message)
+			end
 			if util.win_is_valid(winid) then
 				pcall(vim.api.nvim_win_set_cursor, winid, { 1, #message })
 			end
@@ -136,8 +136,14 @@ function M.open_text(opts, on_submit)
 			return
 		end
 		generating = true
+		generation = generation + 1
+		local current_generation = generation
 		set_footer(winid, opts, true)
-		opts.on_generate(function(message, err)
+		local task = opts.on_generate(function(message, err)
+			if not owner:is_live() or current_generation ~= generation then
+				return
+			end
+			owner:set_task(nil)
 			generating = false
 			set_footer(winid, opts, false)
 			if err then
@@ -148,23 +154,27 @@ function M.open_text(opts, on_submit)
 				apply_generated(message)
 			end
 		end)
+		owner:set_task(type(task) == "table" and task or nil)
 	end
 
 	local map_opts = { buffer = bufnr, nowait = true, silent = true }
-	vim.keymap.set({ "n", "i" }, "<CR>", submit, map_opts)
-	vim.keymap.set({ "n", "i" }, "<Esc>", cancel, map_opts)
-	vim.keymap.set("n", "q", cancel, map_opts)
+	compat.keymap_set({ "n", "i" }, "<CR>", submit, map_opts)
+	compat.keymap_set({ "n", "i" }, "<Esc>", cancel, map_opts)
+	compat.keymap_set("n", "q", cancel, map_opts)
 	if opts.can_generate then
 		local cfg = config.get().ai.commit_message
-		vim.keymap.set("n", cfg.generate_key, generate, map_opts)
-		vim.keymap.set("i", cfg.insert_generate_key, generate, map_opts)
+		compat.keymap_set("n", cfg.generate_key, generate, map_opts)
+		compat.keymap_set("i", cfg.insert_generate_key, generate, map_opts)
 	end
 
 	return {
 		bufnr = bufnr,
 		winid = winid,
 		generate = generate,
-		close = close,
+		close = function(value)
+			owner:finish(value)
+		end,
+		owner = owner,
 	}
 end
 
@@ -180,15 +190,11 @@ function M.open(state, repo, default_value, on_submit)
 		default_value = default_value or "",
 		can_generate = ai.available(),
 		on_generate = function(done)
-			local ok, start_err = ai.generate(repo, function(message, err)
-				if message then
-					state.lazyvcs_commit_drafts[repo.root] = message
-				end
-				done(message, err)
-			end)
+			local ok, start_err = ai.generate(repo, done)
 			if not ok then
 				done(nil, start_err)
 			end
+			return type(ok) == "table" and ok or nil
 		end,
 	}, on_submit)
 end
