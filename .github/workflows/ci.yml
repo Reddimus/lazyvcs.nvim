@@ -4,157 +4,32 @@ on:
   pull_request:
   push:
     branches:
-      - "**"
+      - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  checks:
+  verification:
+    name: Verification
+    uses: ./.github/workflows/verify.yml
+    with:
+      ref: ${{ github.sha }}
+
+  required:
+    name: Required CI
+    if: always()
+    needs:
+      - verification
     runs-on: ubuntu-24.04
-    env:
-      NVIM_VERSION: v0.12.2
-      STYLUA_VERSION: v2.3.0
-      LUALS_VERSION: 3.15.0
-      LAZYVCS_TEST_LAZY_ROOT: ${{ github.workspace }}/deps/lazy
+    timeout-minutes: 2
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install system packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ca-certificates \
-            curl \
-            git \
-            gzip \
-            subversion \
-            tar \
-            unzip
-
-      - name: Setup Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: npm
-
-      - name: Install Markdown tooling
-        run: npm ci
-
-      - name: Install Neovim
-        run: |
-          archive=/tmp/nvim.tar.gz
-          base="https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}"
-          curl -fsSL "${base}/nvim-linux-x86_64.tar.gz" -o "${archive}" \
-            || curl -fsSL "${base}/nvim-linux64.tar.gz" -o "${archive}"
-          mkdir -p /tmp/nvim
-          tar -C /tmp/nvim --strip-components=1 -xzf "${archive}"
-          echo "/tmp/nvim/bin" >> "${GITHUB_PATH}"
-
-      - name: Install Stylua
-        run: |
-          archive=/tmp/stylua.zip
-          curl -fsSL "https://github.com/JohnnyMorganz/StyLua/releases/download/${STYLUA_VERSION}/stylua-linux-x86_64.zip" -o "${archive}"
-          unzip -q "${archive}" -d /tmp/stylua
-          chmod +x /tmp/stylua/stylua
-          echo "/tmp/stylua" >> "${GITHUB_PATH}"
-
-      - name: Install LuaLS
-        run: |
-          archive=/tmp/lua-language-server.tar.gz
-          curl -fsSL "https://github.com/LuaLS/lua-language-server/releases/download/${LUALS_VERSION}/lua-language-server-${LUALS_VERSION}-linux-x64.tar.gz" -o "${archive}"
-          mkdir -p /tmp/lua-language-server
-          tar -C /tmp/lua-language-server -xzf "${archive}"
-          echo "/tmp/lua-language-server/bin" >> "${GITHUB_PATH}"
-
-      - name: Install test dependencies
-        run: |
-          mkdir -p "${LAZYVCS_TEST_LAZY_ROOT}"
-          git clone --filter=blob:none https://github.com/nvim-lua/plenary.nvim "${LAZYVCS_TEST_LAZY_ROOT}/plenary.nvim"
-          git clone --filter=blob:none https://github.com/lewis6991/gitsigns.nvim "${LAZYVCS_TEST_LAZY_ROOT}/gitsigns.nvim"
-
-      - name: Markdown format
-        run: npm run format:md:check
-
-      - name: Lua format
-        run: stylua --check lua tests
-
-      - name: Lua diagnostics
-        run: lua-language-server --check=. --check_format=pretty --checklevel=Warning
-
-      - name: Shell syntax
-        run: bash -n tests/minitest.sh tests/e2e/ubuntu-native.sh tests/e2e/ubuntu-astronvim.sh
-
-      - name: Whitespace
-        run: git diff-tree --check --no-commit-id --root -r HEAD
-
-      - name: Headless smoke
-        run: nvim --headless -u NONE -l tests/native_smoke.lua
-
-      - name: Lua tests
-        run: nvim --headless -u NONE -l tests/run.lua
-
-      - name: Native sidebar UI tests
-        run: tests/minitest.sh
-
-      - name: Help tags
-        run: nvim --headless -u NONE -c 'helptags doc' -c 'quitall'
-
-      - name: Health check
-        run: nvim --headless -u NONE -c 'set rtp+=.' -c 'runtime plugin/lazyvcs.lua' -c 'checkhealth lazyvcs' -c 'quitall'
-
-  # Windows is a first-class target: the plugin normalizes every path through
-  # vim.fs.normalize, and mixed `\` / `/` separators produced 10 spec failures
-  # that an Ubuntu-only matrix could never surface. SVN is not installed here, so
-  # the SVN specs skip cleanly and Git coverage is what this job guards.
-  windows:
-    runs-on: windows-latest
-    env:
-      LAZYVCS_TEST_LAZY_ROOT: ${{ github.workspace }}/deps/lazy
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install Neovim
-        run: |
-          choco install neovim --version=0.12.2 -y --no-progress
-          echo "C:\tools\neovim\nvim-win64\bin" >> $env:GITHUB_PATH
-
-      - name: Neovim version
-        run: nvim --version
-
-      - name: Configure Git identity
-        run: |
-          git config --global user.name "lazyvcs ci"
-          git config --global user.email "lazyvcs-ci@example.invalid"
-          git config --global init.defaultBranch main
-
-      - name: Install test dependencies
-        run: |
-          New-Item -ItemType Directory -Force "${env:LAZYVCS_TEST_LAZY_ROOT}" | Out-Null
-          git clone --filter=blob:none https://github.com/nvim-lua/plenary.nvim "${env:LAZYVCS_TEST_LAZY_ROOT}/plenary.nvim"
-          git clone --filter=blob:none https://github.com/lewis6991/gitsigns.nvim "${env:LAZYVCS_TEST_LAZY_ROOT}/gitsigns.nvim"
-
-      - name: Headless smoke
-        run: nvim --headless -u NONE -l tests/native_smoke.lua
-
-      - name: Lua tests
-        run: nvim --headless -u NONE -l tests/run.lua
-
-      - name: Help tags
-        run: nvim --headless -u NONE -c 'helptags doc' -c 'quitall'
-
-      - name: Health check
-        run: nvim --headless -u NONE -c 'set rtp+=.' -c 'runtime plugin/lazyvcs.lua' -c 'checkhealth lazyvcs' -c 'quitall'
-
-  e2e:
-    runs-on: ubuntu-24.04
-    needs: checks
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Native container E2E
-        run: tests/e2e/ubuntu-native.sh
-
-      - name: AstroNvim container E2E
-        run: tests/e2e/ubuntu-astronvim.sh
+      - name: Require every verification job
+        env:
+          VERIFICATION_RESULT: ${{ needs.verification.result }}
+        run: test "${VERIFICATION_RESULT}" = "success"

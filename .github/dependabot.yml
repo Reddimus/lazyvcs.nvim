@@ -7,8 +7,7 @@ updates:
     commit-message:
       prefix: "ci"
 
-  # Prettier is the only runtime dependency; grouped so markdown tooling bumps
-  # arrive as a single PR.
+  # Development-only documentation tooling is grouped into one maintenance PR.
   - package-ecosystem: npm
     directory: "/"
     schedule:

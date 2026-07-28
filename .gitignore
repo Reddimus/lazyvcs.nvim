@@ -42,6 +42,9 @@ luac.out
 # Generated Neovim help tags
 doc/tags
 
+# Neovim log written by headless test runs
+nvim.log
+
 # Test dependencies fetched on demand
 deps/
 

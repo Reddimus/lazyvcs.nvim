@@ -9,7 +9,10 @@
     ]
   },
   "workspace": {
-    "checkThirdParty": false
+    "checkThirdParty": false,
+    "library": [
+      "${env:VIMRUNTIME}/lua"
+    ]
   },
   "format": {
     "enable": false
