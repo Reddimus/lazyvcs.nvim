@@ -32,6 +32,17 @@ end
 -- freeze Neovim outright. Callers may override via `opts.timeout`.
 M.SYNC_TIMEOUT_MS = 30000
 
+---Describe a failed `vim.system` spawn, naming the command that failed.
+---
+---Neovim 0.11.0 raises a bare "ENOENT: no such file or directory" with no
+---indication of what could not be spawned, while 0.11.7+ includes the command.
+---Prefixing it ourselves keeps the message useful, and identical, on every
+---supported version: a missing `git` must say so rather than just "ENOENT".
+function M.spawn_error(args, err)
+	local command = type(args) == "table" and table.concat(args, " ") or tostring(args)
+	return string.format("%s: %s", command, tostring(err))
+end
+
 function M.system_result(args, opts)
 	opts = vim.tbl_extend("keep", opts or {}, { text = true })
 	local timeout_ms = opts.timeout or M.SYNC_TIMEOUT_MS
@@ -42,7 +53,7 @@ function M.system_result(args, opts)
 	-- the usual result.code path instead of crashing.
 	local ok, proc = pcall(vim.system, args, opts)
 	if not ok then
-		return { code = 127, stdout = "", stderr = tostring(proc) }
+		return { code = 127, stdout = "", stderr = M.spawn_error(args, proc) }
 	end
 
 	-- On timeout `wait()` kills the process and returns nil rather than raising.
@@ -294,7 +305,7 @@ function M.system_start(args, opts, on_exit)
 		complete(bounded_raw, nil, bounded_raw)
 	end)
 	if not ok then
-		local result = { code = 127, stdout = "", stderr = tostring(proc) }
+		local result = { code = 127, stdout = "", stderr = M.spawn_error(args, proc) }
 		complete(nil, M.system_error(result), result)
 		return wrapper
 	end

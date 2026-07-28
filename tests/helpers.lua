@@ -8,9 +8,13 @@ end
 -- vim.fs.normalize(vim.fn.tempname()) returns a backslash path on Windows. The plugin normalizes
 -- every path it reports through vim.fs.normalize, so fixtures must do the same or
 -- comparisons fail with mixed separators (C:\a\b/c vs C:/a/b/c).
+-- macOS puts temporary files under /var, which is a symlink to /private/var, so
+-- Neovim reports buffer names in the resolved form while the fixture path stays
+-- unresolved. Resolve once at creation so every later comparison matches.
 local function tempdir()
 	local dir = vim.fs.normalize(vim.fn.tempname())
 	vim.fn.mkdir(dir, "p")
+	dir = vim.fs.normalize(vim.uv.fs_realpath(dir) or dir)
 	temp_roots[#temp_roots + 1] = dir
 	return dir
 end

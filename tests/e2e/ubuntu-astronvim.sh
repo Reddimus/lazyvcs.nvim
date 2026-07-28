@@ -382,36 +382,43 @@ local function main()
   end
 
   dump("before open")
-  if not actions.open() then
-    return finish(false, "failed to open initial live diff")
-  end
-  dump("after open")
-
-  -- added.cpp is scheduled for addition in SVN: it has no BASE, so the live diff
-  -- must reopen against an empty base.
-  require("astrocore.buffer").nav(1)
-  dump("after nav added immediate")
-  wait_for("live diff did not transfer to SVN added file", 15000, function()
+  -- actions.open resolves the backend off the UI thread and returns a
+  -- cancellable task, not a session, so the diff is not live on return.
+  -- Navigating before it completes deliberately abandons the open, so wait for
+  -- the session to exist before driving buffer navigation.
+  actions.open()
+  wait_for("failed to open initial live diff", 15000, function()
     local live = state.current()
-    return live and live.source_path == files.added and live.base_label == "EMPTY"
+    return live ~= nil and live.source_path == files.beta
   end, function()
-    dump("after nav added settled")
+    dump("after open")
 
+    -- added.cpp is scheduled for addition in SVN: it has no BASE, so the live diff
+    -- must reopen against an empty base.
     require("astrocore.buffer").nav(1)
-    dump("after nav beta immediate")
-    wait_for("live diff did not transfer back to tracked SVN file", 15000, function()
+    dump("after nav added immediate")
+    wait_for("live diff did not transfer to SVN added file", 15000, function()
       local live = state.current()
-      return live and live.source_path == files.beta and live.base_label == "BASE"
+      return live and live.source_path == files.added and live.base_label == "EMPTY"
     end, function()
-      dump("after nav beta settled")
+      dump("after nav added settled")
 
       require("astrocore.buffer").nav(1)
-      dump("after nav scratch immediate")
-      wait_for("live diff did not close on unsupported SVN file", 15000, function()
-        return state.current() == nil and #state.list() == 0 and no_stale_diff_windows()
+      dump("after nav beta immediate")
+      wait_for("live diff did not transfer back to tracked SVN file", 15000, function()
+        local live = state.current()
+        return live and live.source_path == files.beta and live.base_label == "BASE"
       end, function()
-        dump("after nav scratch settled")
-        finish(true, "buffer navigation smoke passed")
+        dump("after nav beta settled")
+
+        require("astrocore.buffer").nav(1)
+        dump("after nav scratch immediate")
+        wait_for("live diff did not close on unsupported SVN file", 15000, function()
+          return state.current() == nil and #state.list() == 0 and no_stale_diff_windows()
+        end, function()
+          dump("after nav scratch settled")
+          finish(true, "buffer navigation smoke passed")
+        end)
       end)
     end)
   end)
