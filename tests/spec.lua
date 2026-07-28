@@ -3023,7 +3023,7 @@ local function test_source_control_open_change_reuses_active_diff_window()
 	wait_for(function()
 		local live = state_mod.current()
 		return live ~= nil and live.source_path == files[2].path and diff_window_count() == 2
-	end, "repeated VCS clicks should replace the active comparison")
+	end, "repeated VCS clicks should replace the active comparison", ASYNC_TIMEOUT_MS)
 
 	local second_session = assert(state_mod.current())
 	eq(second_session.source_path, files[2].path)
@@ -4570,7 +4570,7 @@ local function test_live_diff_failed_transfer_resets_preexisting_diff_state()
 		pending.on_done(nil, "not tracked")
 		wait_for(function()
 			return state.get(session.editable_bufnr) == nil
-		end, "failed transfer should close the stale session")
+		end, "failed transfer should close the stale session", ASYNC_TIMEOUT_MS)
 		eq(diff_window_count(), 0, "failed transfer should clear captured diff state")
 	end, debug.traceback)
 	backends.load_async = previous_load_async
@@ -4636,7 +4636,7 @@ local function test_live_diff_rapid_transfer_late_exit_resets_preexisting_diff_s
 		})
 		wait_for(function()
 			return state.get(session.editable_bufnr) == nil
-		end, "a late transfer result should close the stale session after rapid navigation")
+		end, "a late transfer result should close the stale session after rapid navigation", ASYNC_TIMEOUT_MS)
 		eq(diff_window_count(), 0, "rapid transfer should clear captured diff state")
 	end, debug.traceback)
 	backends.load_async = previous_load_async
@@ -4769,7 +4769,7 @@ local function test_git_buffer_transfer_reopens_session()
 			wait_for(function()
 				local live = state.current()
 				return live ~= nil and live.source_path == fixture.file2
-			end, "live diff should transfer to the second Git buffer")
+			end, "live diff should transfer to the second Git buffer", ASYNC_TIMEOUT_MS)
 
 			local second_session = assert(state.current())
 			session = second_session
@@ -4787,7 +4787,7 @@ local function test_git_buffer_transfer_reopens_session()
 			wait_for(function()
 				local live = state.current()
 				return live ~= nil and live.source_path == fixture.file1
-			end, "live diff should transfer back to the first Git buffer")
+			end, "live diff should transfer back to the first Git buffer", ASYNC_TIMEOUT_MS)
 
 			local third_session = assert(state.current())
 			session = third_session
@@ -5021,7 +5021,7 @@ local function test_source_control_git_file_actions_commit_and_sync()
 	wait_for(function()
 		return vim.deep_equal(vim.fn.readfile(fixture.file), { "one", "two", "three" })
 			and session_state.get_repo_job(fixture.root) == nil
-	end, "git discard should finish in the background")
+	end, "git discard should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(vim.fn.readfile(fixture.file), { "one", "two", "three" })
 
 	helpers.write_file(fixture.file, "one\nchanged\nthree\n")
@@ -5031,7 +5031,7 @@ local function test_source_control_git_file_actions_commit_and_sync()
 	wait_for(function()
 		return helpers.exec({ "git", "diff", "--cached", "--name-only" }, fixture.root):match("sample.txt") ~= nil
 			and session_state.get_repo_job(fixture.root) == nil
-	end, "git stage should finish in the background")
+	end, "git stage should finish in the background", ASYNC_TIMEOUT_MS)
 	assert(helpers.exec({ "git", "diff", "--cached", "--name-only" }, fixture.root):match("sample.txt"))
 
 	tree = reload_tree()
@@ -5040,7 +5040,7 @@ local function test_source_control_git_file_actions_commit_and_sync()
 	wait_for(function()
 		return util.trim(helpers.exec({ "git", "diff", "--cached", "--name-only" }, fixture.root)) == ""
 			and session_state.get_repo_job(fixture.root) == nil
-	end, "git unstage should finish in the background")
+	end, "git unstage should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(util.trim(helpers.exec({ "git", "diff", "--cached", "--name-only" }, fixture.root)), "")
 
 	tree = reload_tree()
@@ -5049,7 +5049,7 @@ local function test_source_control_git_file_actions_commit_and_sync()
 	wait_for(function()
 		return helpers.exec({ "git", "diff", "--cached", "--name-only" }, fixture.root):match("sample.txt") ~= nil
 			and session_state.get_repo_job(fixture.root) == nil
-	end, "git restage should finish in the background")
+	end, "git restage should finish in the background", ASYNC_TIMEOUT_MS)
 
 	tree = reload_tree()
 	repo_node = assert(find_first_node(tree, "repo_changes"))
@@ -5058,7 +5058,7 @@ local function test_source_control_git_file_actions_commit_and_sync()
 	wait_for(function()
 		return util.trim(helpers.exec({ "git", "log", "-1", "--pretty=%s" }, fixture.root)) == "fixture commit"
 			and session_state.get_repo_job(fixture.root) == nil
-	end, "git commit should finish in the background")
+	end, "git commit should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(util.trim(helpers.exec({ "git", "log", "-1", "--pretty=%s" }, fixture.root)), "fixture commit")
 	eq(util.trim(helpers.exec({ "git", "status", "--short" }, fixture.root)), "")
 
@@ -5091,7 +5091,7 @@ local function test_source_control_git_file_actions_commit_and_sync()
 		) == util.trim(helpers.exec({ "git", "rev-parse", "HEAD" }, remote_fixture.root)) and session_state.get_repo_job(
 			remote_fixture.root
 		) == nil
-	end, "git sync should finish in the background", 15000)
+	end, "git sync should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(
 		util.trim(
 			helpers.exec(
@@ -5836,7 +5836,7 @@ local function test_source_control_svn_commit_and_update()
 	ops.commit_repo(commit_state, commit_repo_node)
 	wait_for(function()
 		return util.trim(helpers.exec({ "svn", "status" }, commit_fixture.root)) == ""
-	end, "svn commit should finish in the background")
+	end, "svn commit should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(util.trim(helpers.exec({ "svn", "status" }, commit_fixture.root)), "")
 	assert(
 		helpers
@@ -5867,7 +5867,7 @@ local function test_source_control_svn_commit_and_update()
 	ops.sync_repo(update_state, update_node)
 	wait_for(function()
 		return vim.deep_equal(vim.fn.readfile(update_fixture.file), { "one", "updated", "three" })
-	end, "svn update should finish in the background")
+	end, "svn update should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(vim.fn.readfile(update_fixture.file), { "one", "updated", "three" })
 end
 
