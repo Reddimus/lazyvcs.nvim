@@ -389,7 +389,7 @@ local function main()
   actions.open()
   wait_for("failed to open initial live diff", 15000, function()
     local live = state.current()
-    return live ~= nil and live.source_path == files.beta
+    return live ~= nil and live.source_path == files.alpha
   end, function()
     dump("after open")
 

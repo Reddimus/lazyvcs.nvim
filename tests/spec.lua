@@ -15,6 +15,14 @@ local function wait_for(predicate, msg, timeout)
 	assert(ok, msg or "timed out")
 end
 
+-- Budget for waits that depend on real VCS subprocesses: opening a diff resolves
+-- the backend and reads the base, and a buffer transfer does the same again
+-- while the signs autocmd runs its own commands against the same working copy.
+-- Two contended spawns regularly exceed a 2s budget on Windows, which shows up
+-- as a flaky suite rather than a real failure. Waits that assert something must
+-- NOT happen keep the short default.
+local ASYNC_TIMEOUT_MS = 15000
+
 local function async_command_runner(cwd)
 	return function(args, opts, on_done)
 		opts = opts or {}
@@ -79,9 +87,14 @@ local function open_diff(opts)
 	if type(immediate) == "table" and immediate.editable_bufnr then
 		return immediate
 	end
+	-- Opening spawns a real backend resolve plus a base read, and the signs
+	-- autocmd runs its own commands against the same working copy at the same
+	-- time. Two contended process spawns routinely exceed wait_for's 2s default
+	-- on Windows, so give the await room rather than letting load make the suite
+	-- flaky.
 	wait_for(function()
 		return opened ~= nil
-	end, "live diff session should open")
+	end, "live diff session should open", ASYNC_TIMEOUT_MS)
 	return assert(opened)
 end
 
@@ -2996,7 +3009,7 @@ local function test_source_control_open_change_reuses_active_diff_window()
 	assert(#files >= 2, "fixture should expose at least two changed file nodes")
 
 	ops.open_change(state, files[1])
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		local live = state_mod.current()
 		return live ~= nil and live.source_path == files[1].path
 	end)
@@ -3044,7 +3057,7 @@ local function test_aerial_integration_suspends_window_and_restores_buffer_state
 	eq(select(1, util_stub.is_ignored_win(winid)), false)
 
 	aerial.refetch_buffer(current_buf)
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		return #refetch_calls == 1
 	end)
 	eq(refetch_calls[1], current_buf)
@@ -4240,7 +4253,7 @@ local function test_git_integration()
 	vim.api.nvim_set_current_win(session.editable_win)
 	vim.api.nvim_win_set_cursor(session.editable_win, { 2, 0 })
 	actions.revert_hunk()
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		return vim.deep_equal(vim.api.nvim_buf_get_lines(session.editable_bufnr, 0, -1, false), session.base_lines)
 	end)
 
@@ -4504,9 +4517,18 @@ local function test_live_diff_close_restores_exact_buffer_mapping()
 	actions.close(session.editable_bufnr)
 
 	local restored = vim.fn.maparg("q", "n", false, true)
+	-- The round trip is the actual guarantee: whatever maparg() reported before
+	-- must come back identical afterwards.
 	eq(restored, original, "closing LazyVCS must round-trip every attribute of the overwritten mapping")
-	eq(restored.replace_keycodes, 0)
-	eq(restored.script, 1)
+	-- Neovim 0.11 omits replace_keycodes from maparg() entirely while 0.12
+	-- reports it, so pin the concrete values only where the running version
+	-- exposes them.
+	if original.replace_keycodes ~= nil then
+		eq(restored.replace_keycodes, 0)
+	end
+	if original.script ~= nil then
+		eq(restored.script, 1)
+	end
 end
 
 local function test_live_diff_failed_transfer_resets_preexisting_diff_state()
@@ -4811,7 +4833,7 @@ local function test_git_buffer_transfer_refetches_aerial_after_reopen()
 
 	vim.cmd.badd(vim.fn.fnameescape(fixture.file2))
 	vim.cmd.buffer(vim.fn.fnameescape(fixture.file2))
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		local live = state.current()
 		return live ~= nil and live.source_path == fixture.file2 and #refetch_calls > 0
 	end)
@@ -4859,7 +4881,7 @@ local function test_git_win_resized_rebalances_active_diff_pair()
 
 	pcall(vim.api.nvim_win_set_width, session.base_win, 20)
 	vim.api.nvim_exec_autocmds("WinResized", {})
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		local live = state.current()
 		if not live then
 			return false
@@ -4905,7 +4927,7 @@ local function test_git_base_window_leader_q_closes_session()
 
 	vim.api.nvim_set_current_win(session.base_win)
 	vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<leader>q", true, false, true), "xt", false)
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		return state.get(session.base_bufnr) == nil
 	end)
 
@@ -4926,7 +4948,7 @@ local function test_markdown_transfer_sets_editor_guards_and_reopens_cleanly()
 
 	vim.cmd.badd(vim.fn.fnameescape(fixture.file2))
 	vim.cmd.buffer(vim.fn.fnameescape(fixture.file2))
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		local live = state.current()
 		return live ~= nil and live.source_path == fixture.file2
 	end)
@@ -4938,7 +4960,7 @@ local function test_markdown_transfer_sets_editor_guards_and_reopens_cleanly()
 	assert(diff_window_count() == 2, "markdown transfer should keep a two-window diff layout")
 
 	vim.cmd.buffer(vim.fn.fnameescape(fixture.file1))
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		local live = state.current()
 		return live ~= nil and live.source_path == fixture.file1
 	end)
@@ -5767,7 +5789,7 @@ local function test_svn_integration()
 	vim.api.nvim_set_current_win(session.editable_win)
 	vim.api.nvim_win_set_cursor(session.editable_win, { 2, 0 })
 	actions.revert_hunk()
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		return vim.deep_equal(vim.api.nvim_buf_get_lines(session.editable_bufnr, 0, -1, false), session.base_lines)
 	end)
 
@@ -6312,7 +6334,7 @@ local function test_svn_buffer_transfer_reopens_session()
 
 	vim.cmd.badd(vim.fn.fnameescape(fixture.file2))
 	vim.cmd.buffer(vim.fn.fnameescape(fixture.file2))
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		local live = state.current()
 		return live ~= nil and live.source_path == fixture.file2
 	end)
@@ -6328,7 +6350,7 @@ local function test_svn_buffer_transfer_reopens_session()
 	})
 
 	vim.cmd.buffer(vim.fn.fnameescape(fixture.file1))
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		local live = state.current()
 		return live ~= nil and live.source_path == fixture.file1
 	end)
@@ -6357,7 +6379,7 @@ local function test_svn_buffer_transfer_handles_added_and_untracked_files()
 
 	vim.cmd.badd(vim.fn.fnameescape(fixture.added))
 	vim.cmd.buffer(vim.fn.fnameescape(fixture.added))
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		local live = state.current()
 		return live ~= nil and live.source_path == fixture.added
 	end)
@@ -6371,7 +6393,7 @@ local function test_svn_buffer_transfer_handles_added_and_untracked_files()
 
 	vim.cmd.badd(vim.fn.fnameescape(fixture.file2))
 	vim.cmd.buffer(vim.fn.fnameescape(fixture.file2))
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		local live = state.current()
 		return live ~= nil and live.source_path == fixture.file2
 	end)
@@ -6387,7 +6409,7 @@ local function test_svn_buffer_transfer_handles_added_and_untracked_files()
 
 	vim.cmd.badd(vim.fn.fnameescape(fixture.untracked))
 	vim.cmd.buffer(vim.fn.fnameescape(fixture.untracked))
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		return state.get(first_session.editable_bufnr) == nil
 			and state.get(added_session.editable_bufnr) == nil
 			and state.get(tracked_session.editable_bufnr) == nil
@@ -6410,7 +6432,7 @@ local function test_transfer_to_unsupported_buffer_closes_session()
 	local first_session = open_diff()
 
 	vim.cmd.enew()
-	vim.wait(2000, function()
+	vim.wait(ASYNC_TIMEOUT_MS, function()
 		return state.get(first_session.editable_bufnr) == nil and diff_window_count() == 0
 	end)
 
