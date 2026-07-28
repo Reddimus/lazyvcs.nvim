@@ -931,7 +931,13 @@ function M.cancel(path)
 	local normalized = path and path ~= "" and normalize(vim.fn.fnamemodify(path, ":p")) or nil
 	local state = states[tabid()]
 	local hydration_count = state and invalidate_hydration(state, normalized, "user") or 0
-	local count = ops.cancel(normalized, { owner = state })
+	local count
+	if normalized and state then
+		count = ops.cancel(normalized, { owner = state })
+		count = count + ops.cancel(normalized, { owner = normalized })
+	else
+		count = ops.cancel(normalized, { all_owners = true })
+	end
 	if state then
 		state.lazyvcs_loading_details = state.lazyvcs_loading_details or {}
 		for root, repo in pairs(state.lazyvcs_repo_cache or {}) do

@@ -138,6 +138,15 @@ local function invalidate_repo(state, repo_root, remote_refresh)
 	persist.save_state(state)
 end
 
+local function clear_repo_details_loading(state, repo_root)
+	state.lazyvcs_loading_details = state.lazyvcs_loading_details or {}
+	state.lazyvcs_loading_details[repo_root] = nil
+	local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[repo_root] or nil
+	if cached then
+		cached.loading_details = false
+	end
+end
+
 local function refresh_repo(state, repo_root, remote_refresh)
 	invalidate_repo(state, repo_root, remote_refresh)
 	navigate_if_visible(state)
@@ -622,6 +631,7 @@ local function ensure_repo_details(state, repo)
 			timeout_ms = opts.timeout_ms,
 			generation = generation,
 			scope = "details",
+			owner = state,
 			priority = 10,
 		}, on_done)
 	end, function(detail, err)
@@ -1104,8 +1114,13 @@ function M.cancel(path, opts)
 		if root and job.root ~= root then
 			return false
 		end
-		if job.scope == "hydration" then
-			return opts.owner ~= nil and job.owner == opts.owner
+		if not opts.all_owners then
+			if opts.owner ~= nil and job.owner ~= opts.owner then
+				return false
+			end
+			if job.scope == "hydration" then
+				return opts.owner ~= nil
+			end
 		end
 		return true
 	end, opts.reason or "user")
@@ -1130,8 +1145,7 @@ function M.cancel_repo(state, node)
 		return 0
 	end
 	local hydration_count = invalidate_hydration(state, repo.root, "user")
-	state.lazyvcs_loading_details = state.lazyvcs_loading_details or {}
-	state.lazyvcs_loading_details[repo.root] = nil
+	clear_repo_details_loading(state, repo.root)
 	if state.lazyvcs_diff_target_task and state.lazyvcs_diff_target_root == repo.root then
 		local cancel = state.lazyvcs_diff_target_task.cancel or state.lazyvcs_diff_target_task.kill
 		if type(cancel) == "function" then
@@ -1142,6 +1156,7 @@ function M.cancel_repo(state, node)
 		state.lazyvcs_diff_target_generation = (state.lazyvcs_diff_target_generation or 0) + 1
 	end
 	local count = hydration_count + M.cancel(repo.root, { owner = state })
+	count = count + M.cancel(repo.root, { owner = repo.root })
 	navigate_if_visible(state)
 	util.notify(
 		count == 1 and ("Cancelled the active operation for " .. repo.name)

@@ -245,16 +245,27 @@ local function handle_pending_transfer(target_bufnr)
 
 	pending = state.take_pending_transfer()
 	vim.schedule(function()
+		local function pending_is_current()
+			return pending and not pending.cancelled and state.peek_pending_transfer(pending.editable_win) == pending
+		end
+
 		local function abort()
-			if pending and pending.handle and type(pending.handle.kill) == "function" then
-				pcall(pending.handle.kill, pending.handle, 15)
+			if pending and state.peek_pending_transfer(pending.editable_win) == pending then
+				state.clear_pending_transfer(pending.editable_win)
+			elseif pending and pending.handle and type(pending.handle.kill) == "function" then
+				local handle = pending.handle
 				pending.handle = nil
+				pcall(handle.kill, handle, 15)
 			end
 			settle_aborted_transfer(pending)
 		end
 
-		if not pending then
+		if not pending_is_current() then
 			return
+		end
+
+		if not state.get(pending.editable_bufnr) then
+			return abort()
 		end
 
 		if pending.tabpage ~= vim.api.nvim_get_current_tabpage() then
@@ -285,6 +296,9 @@ local function handle_pending_transfer(target_bufnr)
 
 		pending.handle = build_session_async(target_bufnr, function(replacement, build_err)
 			pending.handle = nil
+			if not pending_is_current() then
+				return
+			end
 			-- The user may have navigated again while the backend was loading, so
 			-- re-validate before touching any window.
 			local tab_ok = vim.api.nvim_tabpage_is_valid(pending.tabpage)
@@ -311,12 +325,13 @@ local function handle_pending_transfer(target_bufnr)
 
 			local ok, err = pcall(function()
 				local live = state.get(pending.editable_bufnr)
-				if live then
-					close_session(live, {
-						keep_pending_transfer = true,
-						reset_tab_diff = true,
-					})
+				if not live or live.closing or not pending_is_current() then
+					return abort()
 				end
+				close_session(live, {
+					keep_pending_transfer = true,
+					reset_tab_diff = true,
+				})
 
 				if not replacement then
 					-- No backend for this buffer is a normal outcome of navigating to a
@@ -334,7 +349,9 @@ local function handle_pending_transfer(target_bufnr)
 				local _, open_err = open_session(replacement)
 				if open_err then
 					fail_transfer(open_err)
+					return
 				end
+				state.finish_pending_transfer(pending.editable_win, pending)
 			end)
 
 			if not ok then
@@ -439,19 +456,9 @@ local function restore_buffer_map(bufnr, mode, lhs, captured)
 		return
 	end
 
-	local rhs = captured.callback or captured.rhs
-	if not rhs or rhs == "" then
-		return
-	end
-	local opts = {
-		buffer = bufnr,
-		desc = captured.desc ~= "" and captured.desc or nil,
-		expr = captured.expr == 1,
-		nowait = captured.nowait == 1,
-		remap = captured.noremap ~= 1,
-		silent = captured.silent == 1,
-	}
-	pcall(compat.keymap_set, mode, lhs, rhs, opts)
+	pcall(vim.api.nvim_buf_call, bufnr, function()
+		vim.fn.mapset(mode, false, captured)
+	end)
 end
 
 clear_session_maps = function(session)
@@ -697,6 +704,7 @@ function M.open(opts)
 	ensure_global_autocmds()
 
 	local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
+	local invoking_win = opts.winid or vim.api.nvim_get_current_win()
 	local existing = state.get(bufnr)
 	if existing then
 		if util.win_is_valid(existing.editable_win) then
@@ -705,8 +713,17 @@ function M.open(opts)
 		return existing
 	end
 
-	if pending_opens[bufnr] then
-		return pending_opens[bufnr]
+	local pending = pending_opens[bufnr]
+	if pending then
+		local active = true
+		if type(pending.is_active) == "function" then
+			local ok, result = pcall(pending.is_active, pending)
+			active = not ok or result
+		end
+		if active then
+			return pending
+		end
+		pending_opens[bufnr] = nil
 	end
 
 	-- Opening must never block: `<leader>vo` runs on a keystroke, and the
@@ -714,9 +731,12 @@ function M.open(opts)
 	-- Against a locked working copy those calls block until they time out,
 	-- which freezes Neovim. Build the session off the UI thread instead.
 	local source_path = util.buf_path(bufnr)
+	local request = {}
 	local task
+	pending_opens[bufnr] = request
 	task = build_session_async(bufnr, function(session, err)
-		if pending_opens[bufnr] ~= task then
+		local current = pending_opens[bufnr]
+		if current ~= request and current ~= task then
 			return
 		end
 		pending_opens[bufnr] = nil
@@ -729,6 +749,9 @@ function M.open(opts)
 		if not util.buf_is_valid(bufnr) or util.buf_path(bufnr) ~= source_path or state.get(bufnr) then
 			return
 		end
+		if not util.win_is_valid(invoking_win) or vim.api.nvim_win_get_buf(invoking_win) ~= bufnr then
+			return
+		end
 		local opened, open_err = open_session(session)
 		if not opened then
 			notify_open_error(open_err, opts)
@@ -738,7 +761,16 @@ function M.open(opts)
 			opts.on_open(opened)
 		end
 	end)
-	pending_opens[bufnr] = task
+	if pending_opens[bufnr] == request then
+		pending_opens[bufnr] = task
+	end
+	if task and type(task.on_cancel) == "function" then
+		pcall(task.on_cancel, task, function()
+			if pending_opens[bufnr] == task then
+				pending_opens[bufnr] = nil
+			end
+		end)
+	end
 	return task
 end
 
@@ -794,7 +826,33 @@ local function comparison_buffer(comparison, side, editor_win)
 	return bufnr, true
 end
 
-local function open_target_impl(comparison)
+local function cleanup_failed_comparison(context)
+	if not context or context.registered then
+		return
+	end
+	local editor_win = context.editor_win
+	local editable_bufnr = context.editable_bufnr
+	if context.created_editor_win and util.win_is_valid(editor_win) then
+		pcall(vim.api.nvim_win_close, editor_win, true)
+	elseif not editor_win and context.tabpage and vim.api.nvim_tabpage_is_valid(context.tabpage) then
+		for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(context.tabpage)) do
+			if not context.original_windows[winid] then
+				pcall(vim.api.nvim_win_close, winid, true)
+			end
+		end
+	elseif
+		context.owned_editable_buf
+		and util.win_is_valid(editor_win)
+		and util.buf_is_valid(context.original_bufnr)
+	then
+		pcall(vim.api.nvim_win_set_buf, editor_win, context.original_bufnr)
+	end
+	if context.owned_editable_buf and util.buf_is_valid(editable_bufnr) then
+		pcall(vim.api.nvim_buf_delete, editable_bufnr, { force = true })
+	end
+end
+
+local function open_target_impl(comparison, failure_context)
 	if not comparison or not comparison.left or not comparison.right then
 		util.notify("Invalid LazyVCS diff target", vim.log.levels.ERROR)
 		return nil
@@ -807,13 +865,18 @@ local function open_target_impl(comparison)
 	end
 
 	local editor_win, created_editor_win = target_editor_window()
+	failure_context.editor_win = editor_win
+	failure_context.created_editor_win = created_editor_win
 	local current_session = state.get(vim.api.nvim_win_get_buf(editor_win))
 	local inherited_editor_win = current_session and current_session.owned_editor_win or false
 	if current_session then
 		close_session(current_session, { keep_editor_win = true })
 	end
 	local original_bufnr = vim.api.nvim_win_get_buf(editor_win)
+	failure_context.original_bufnr = original_bufnr
 	local editable_bufnr, owned = comparison_buffer(comparison, comparison.right, editor_win)
+	failure_context.editable_bufnr = editable_bufnr
+	failure_context.owned_editable_buf = owned
 	local existing = state.get(editable_bufnr)
 	if existing then
 		close_session(existing)
@@ -845,26 +908,28 @@ local function open_target_impl(comparison)
 	vim.api.nvim_set_current_win(editor_win)
 	local opened, err = open_session(session)
 	if not opened then
-		if created_editor_win and util.win_is_valid(editor_win) then
-			pcall(vim.api.nvim_win_close, editor_win, true)
-		elseif owned and util.buf_is_valid(editable_bufnr) then
-			pcall(vim.api.nvim_win_set_buf, editor_win, original_bufnr)
-		end
-		if owned and util.buf_is_valid(editable_bufnr) then
-			pcall(vim.api.nvim_buf_delete, editable_bufnr, { force = true })
-		end
+		cleanup_failed_comparison(failure_context)
 		util.notify("Could not open comparison: " .. one_line(err), vim.log.levels.ERROR)
 		return nil
 	end
+	failure_context.registered = true
 	return opened
 end
 
 function M.open_target(comparison)
 	ensure_global_autocmds()
+	local failure_context = {
+		tabpage = vim.api.nvim_get_current_tabpage(),
+		original_windows = {},
+	}
+	for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(failure_context.tabpage)) do
+		failure_context.original_windows[winid] = true
+	end
 	local ok, result = xpcall(function()
-		return open_target_impl(comparison)
+		return open_target_impl(comparison, failure_context)
 	end, debug.traceback)
 	if not ok then
+		cleanup_failed_comparison(failure_context)
 		util.notify("Could not open comparison: " .. one_line(result), vim.log.levels.ERROR)
 		return nil
 	end
@@ -881,6 +946,19 @@ function M.close(target)
 		pending_opens[bufnr] = nil
 	end
 	local session = state.get(bufnr)
+	if not session then
+		local transfer = state.peek_pending_transfer()
+		if
+			transfer
+			and transfer.editable_win == vim.api.nvim_get_current_win()
+			and vim.api.nvim_win_get_buf(transfer.editable_win) == bufnr
+		then
+			session = state.get(transfer.editable_bufnr)
+			if not session then
+				state.clear_pending_transfer(transfer.editable_win)
+			end
+		end
+	end
 	close_session(session)
 end
 

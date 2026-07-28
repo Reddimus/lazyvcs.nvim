@@ -9,6 +9,7 @@ function M.new(on_done, opts)
 		cancelled = false,
 		done = false,
 		handles = {},
+		cancel_callbacks = {},
 	}
 
 	local function stop_handle(handle, signal)
@@ -40,11 +41,24 @@ function M.new(on_done, opts)
 		return not self.done and not self.cancelled
 	end
 
+	function task:on_cancel(callback)
+		if type(callback) ~= "function" then
+			return self
+		end
+		if self.cancelled then
+			pcall(callback, self)
+		elseif not self.done then
+			self.cancel_callbacks[#self.cancel_callbacks + 1] = callback
+		end
+		return self
+	end
+
 	function task:finish(...)
 		if self.done or self.cancelled then
 			return false
 		end
 		self.done = true
+		self.cancel_callbacks = {}
 		if type(on_done) == "function" then
 			on_done(...)
 		end
@@ -58,6 +72,11 @@ function M.new(on_done, opts)
 		self.cancelled = true
 		for _, handle in ipairs(self.handles) do
 			stop_handle(handle, signal)
+		end
+		local callbacks = self.cancel_callbacks
+		self.cancel_callbacks = {}
+		for _, callback in ipairs(callbacks) do
+			pcall(callback, self)
 		end
 		if opts.callback_on_cancel and type(on_done) == "function" then
 			self.done = true

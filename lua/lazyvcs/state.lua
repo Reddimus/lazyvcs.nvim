@@ -11,8 +11,14 @@ local function transfer_key(winid)
 end
 
 local function cancel_transfer(pending)
-	if pending and pending.handle and type(pending.handle.kill) == "function" then
-		pcall(pending.handle.kill, pending.handle, 15)
+	if not pending then
+		return
+	end
+	pending.cancelled = true
+	if pending.handle and type(pending.handle.kill) == "function" then
+		local handle = pending.handle
+		pending.handle = nil
+		pcall(handle.kill, handle, 15)
 	end
 end
 
@@ -69,6 +75,8 @@ function M.set_pending_transfer(session)
 		base_win = session.base_win,
 		owned_editor_win = session.owned_editor_win,
 		aerial_transfer_state = session.aerial_transfer_state,
+		cancelled = false,
+		in_flight = false,
 	}
 end
 
@@ -79,8 +87,19 @@ end
 function M.take_pending_transfer(winid)
 	local key = transfer_key(winid)
 	local pending = M.pending_transfers[key]
-	M.pending_transfers[key] = nil
+	if pending then
+		pending.in_flight = true
+	end
 	return pending
+end
+
+function M.finish_pending_transfer(winid, pending)
+	local key = transfer_key(winid)
+	if M.pending_transfers[key] ~= pending then
+		return false
+	end
+	M.pending_transfers[key] = nil
+	return true
 end
 
 function M.clear_pending_transfer(winid)

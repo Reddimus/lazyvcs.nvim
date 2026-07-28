@@ -1677,6 +1677,166 @@ local function test_source_control_jobs_generation_isolated_for_equal_tostring_o
 	assert(not results[2].raw.cancelled, "the second owner's lower generation must not be considered stale")
 end
 
+local function with_fake_details_jobs(run)
+	local util = require("lazyvcs.util")
+	local model = require("lazyvcs.source_control.model")
+	local previous_system_start = util.system_start
+	local previous_load_details = model.load_repo_details_async
+	local processes = {}
+
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.system_start = function(args, _, on_exit)
+		local root = args[2]
+		local process = {
+			cancel_count = 0,
+			exited = false,
+		}
+		function process:cancel(reason)
+			self.cancel_count = self.cancel_count + 1
+			self.cancel_reason = reason
+			return true
+		end
+		function process:exit(result, err, raw)
+			assert(not self.exited, "fake details child exited more than once")
+			self.exited = true
+			on_exit(result or { code = 0, stdout = "", stderr = "" }, err, raw)
+		end
+		processes[root] = processes[root] or {}
+		processes[root][#processes[root] + 1] = process
+		return process
+	end
+
+	---@diagnostic disable-next-line: duplicate-set-field
+	model.load_repo_details_async = function(repo, _, run_command, on_done)
+		return run_command({ "details", repo.root }, { kind = "details", timeout_ms = 0 }, function(_, err)
+			if err then
+				return on_done(nil, err)
+			end
+			on_done(vim.tbl_extend("force", repo, {
+				details_loaded = true,
+				loading_details = false,
+				sections = {},
+			}))
+		end)
+	end
+
+	local ok, err = xpcall(function()
+		run(processes)
+	end, debug.traceback)
+	for _, children in pairs(processes) do
+		for _, process in ipairs(children) do
+			if not process.exited then
+				pcall(process.exit, process)
+			end
+		end
+	end
+	util.system_start = previous_system_start
+	model.load_repo_details_async = previous_load_details
+	if not ok then
+		error(err, 0)
+	end
+end
+
+local function fake_details_state(repo)
+	local state = {
+		lazyvcs_repo_cache = {
+			[repo.root] = vim.tbl_extend("force", {}, repo),
+		},
+		lazyvcs_repo_generations = {},
+		lazyvcs_loading_details = {},
+	}
+	state.lazyvcs_get_node = function()
+		return {
+			type = "repo_changes",
+			path = repo.root,
+			extra = { repo_root = repo.root },
+			get_id = function()
+				return repo.root
+			end,
+		}
+	end
+	return state
+end
+
+local function test_source_control_details_cancel_clears_cached_loading_flag_and_requeues()
+	require("lazyvcs").setup({
+		source_control = {
+			background = {
+				git_workers = 4,
+			},
+		},
+	})
+
+	with_fake_details_jobs(function(processes)
+		local ops = require("lazyvcs.source_control.ops")
+		local repo = {
+			root = vim.fs.joinpath(vim.fn.getcwd(), "details-requeue"),
+			name = "details-requeue",
+			vcs = "git",
+			details_loaded = false,
+		}
+		local state = fake_details_state(repo)
+
+		ops.open_repo(state)
+		eq(#processes[repo.root], 1)
+		assert(state.lazyvcs_repo_cache[repo.root].loading_details)
+		assert(state.lazyvcs_loading_details[repo.root])
+
+		eq(ops.cancel_repo(state), 1)
+		eq(state.lazyvcs_repo_cache[repo.root].loading_details, false)
+		eq(state.lazyvcs_loading_details[repo.root], nil)
+
+		ops.open_repo(state)
+		eq(#processes[repo.root], 2, "expanding after cancellation must queue a replacement details load")
+		assert(state.lazyvcs_repo_cache[repo.root].loading_details)
+
+		processes[repo.root][1]:exit({ code = 143, signal = 15, stdout = "", stderr = "" })
+		assert(
+			state.lazyvcs_repo_cache[repo.root].loading_details,
+			"the cancelled child's late exit must not clear its replacement loading state"
+		)
+		processes[repo.root][2]:exit()
+		assert(state.lazyvcs_repo_cache[repo.root].details_loaded)
+	end)
+end
+
+local function test_source_control_details_cancel_isolated_between_sidebar_owners()
+	require("lazyvcs").setup({
+		source_control = {
+			background = {
+				git_workers = 4,
+			},
+		},
+	})
+
+	with_fake_details_jobs(function(processes)
+		local ops = require("lazyvcs.source_control.ops")
+		local repo = {
+			root = vim.fs.joinpath(vim.fn.getcwd(), "shared-details"),
+			name = "shared-details",
+			vcs = "git",
+			details_loaded = false,
+		}
+		local first = fake_details_state(repo)
+		local second = fake_details_state(repo)
+
+		ops.open_repo(first)
+		ops.open_repo(second)
+		eq(#processes[repo.root], 2)
+
+		eq(ops.cancel_repo(first), 1, "cancelling one sidebar must select only its details job")
+		eq(processes[repo.root][1].cancel_count, 1)
+		eq(processes[repo.root][2].cancel_count, 0, "the sibling sidebar's child must not be cancelled")
+		eq(first.lazyvcs_repo_cache[repo.root].loading_details, false)
+		assert(second.lazyvcs_repo_cache[repo.root].loading_details)
+
+		processes[repo.root][2]:exit()
+		assert(second.lazyvcs_repo_cache[repo.root].details_loaded)
+		eq(second.lazyvcs_repo_cache[repo.root].error, nil)
+		processes[repo.root][1]:exit({ code = 143, signal = 15, stdout = "", stderr = "" })
+	end)
+end
+
 local function with_fake_summary_hydration(run)
 	local util = require("lazyvcs.util")
 	local model = require("lazyvcs.source_control.model")
@@ -4161,6 +4321,194 @@ local function comparison_for_file(path, root)
 	}
 end
 
+local function fake_git_load_result(path, root)
+	return {
+		name = "git",
+		impl = require("lazyvcs.backends.git"),
+		root = root,
+		relpath = vim.fs.basename(path),
+		tracked = true,
+		base_label = "BASE",
+		base_lines = { "base" },
+	}
+end
+
+local function test_live_diff_async_open_does_not_reclaim_navigated_window()
+	require("lazyvcs").setup({ signs = { enabled = false } })
+	vim.cmd("silent! only")
+	local root = helpers.tempdir()
+	local first = vim.fs.joinpath(root, "first.txt")
+	local second = vim.fs.joinpath(root, "second.txt")
+	helpers.write_file(first, "first\n")
+	helpers.write_file(second, "second\n")
+	vim.cmd.edit(vim.fn.fnameescape(first))
+
+	local actions = require("lazyvcs.actions")
+	local backends = require("lazyvcs.backends")
+	local state = require("lazyvcs.state")
+	local Task = require("lazyvcs.backends.task")
+	local previous_load_async = backends.load_async
+	local deferred
+	local first_bufnr = vim.api.nvim_get_current_buf()
+	local ok, err = xpcall(function()
+		---@diagnostic disable-next-line: duplicate-set-field
+		backends.load_async = function(_, on_done)
+			deferred = Task.new(on_done)
+			return deferred
+		end
+
+		local task = actions.open({ silent = true })
+		eq(task, deferred)
+		vim.cmd.edit(vim.fn.fnameescape(second))
+		local second_bufnr = vim.api.nvim_get_current_buf()
+
+		assert(deferred:finish(fake_git_load_result(first, root)))
+		eq(vim.api.nvim_get_current_buf(), second_bufnr, "async completion must not restore the source buffer")
+		eq(state.get(first_bufnr), nil, "navigation must prevent the stale diff session from opening")
+		eq(diff_window_count(), 0)
+	end, debug.traceback)
+	backends.load_async = previous_load_async
+	if state.get(first_bufnr) then
+		pcall(actions.close, first_bufnr)
+	end
+	if not ok then
+		error(err, 0)
+	end
+end
+
+local function test_live_diff_cancelled_open_task_allows_future_open()
+	require("lazyvcs").setup({ signs = { enabled = false } })
+	vim.cmd("silent! only")
+	local root = helpers.tempdir()
+	local path = vim.fs.joinpath(root, "open-cancel.txt")
+	helpers.write_file(path, "working\n")
+	vim.cmd.edit(vim.fn.fnameescape(path))
+
+	local actions = require("lazyvcs.actions")
+	local backends = require("lazyvcs.backends")
+	local state = require("lazyvcs.state")
+	local Task = require("lazyvcs.backends.task")
+	local previous_load_async = backends.load_async
+	local tasks = {}
+	local opened
+	local ok, err = xpcall(function()
+		---@diagnostic disable-next-line: duplicate-set-field
+		backends.load_async = function(_, on_done)
+			local task = Task.new(on_done)
+			tasks[#tasks + 1] = task
+			return task
+		end
+
+		local first_task = actions.open({ silent = true })
+		assert(first_task:kill(), "the first open task should be cancellable")
+		local second_task = actions.open({
+			silent = true,
+			on_open = function(session)
+				opened = session
+			end,
+		})
+		assert(second_task ~= first_task, "a cancelled task must not remain cached as the pending open")
+		eq(#tasks, 2, "a later open must start a fresh backend request")
+		assert(second_task:finish(fake_git_load_result(path, root)))
+		assert(opened, "the replacement open should create a live diff session")
+	end, debug.traceback)
+	backends.load_async = previous_load_async
+	if opened and state.get(opened.editable_bufnr) then
+		pcall(actions.close, opened.editable_bufnr)
+	end
+	if not ok then
+		error(err, 0)
+	end
+end
+
+local function test_live_diff_close_during_inflight_transfer_does_not_reopen()
+	require("lazyvcs").setup({ signs = { enabled = false } })
+	vim.cmd("silent! only")
+	local root = helpers.tempdir()
+	local first = vim.fs.joinpath(root, "transfer-first.txt")
+	local second = vim.fs.joinpath(root, "transfer-second.txt")
+	helpers.write_file(first, "first\n")
+	helpers.write_file(second, "second\n")
+	vim.cmd.edit(vim.fn.fnameescape(first))
+
+	local actions = require("lazyvcs.actions")
+	local backends = require("lazyvcs.backends")
+	local state = require("lazyvcs.state")
+	local previous_load_async = backends.load_async
+	local pending
+	local session = assert(actions.open_target(comparison_for_file(first, root)))
+	local ok, err = xpcall(function()
+		---@diagnostic disable-next-line: duplicate-set-field
+		backends.load_async = function(path, on_done)
+			pending = {
+				path = path,
+				on_done = on_done,
+				killed = false,
+			}
+			function pending:kill()
+				self.killed = true
+				return true
+			end
+			return pending
+		end
+
+		vim.api.nvim_set_current_win(session.editable_win)
+		vim.cmd.badd(vim.fn.fnameescape(second))
+		vim.cmd.buffer(vim.fn.fnameescape(second))
+		wait_for(function()
+			return pending ~= nil
+		end, "transfer should start a deferred backend request")
+		eq(state.peek_pending_transfer(session.editable_win).handle, pending)
+
+		actions.close()
+		assert(pending.killed, "closing the session must cancel its in-flight transfer")
+		eq(state.get(session.editable_bufnr), nil)
+		eq(state.peek_pending_transfer(session.editable_win), nil)
+		eq(diff_window_count(), 0)
+
+		pending.on_done(fake_git_load_result(second, root))
+		eq(state.current(), nil, "a late transfer callback must not register a replacement session")
+		eq(diff_window_count(), 0, "a late transfer callback must not resurrect the diff layout")
+		eq(#vim.api.nvim_tabpage_list_wins(0), 1)
+	end, debug.traceback)
+	backends.load_async = previous_load_async
+	if state.get(session.editable_bufnr) then
+		pcall(actions.close, session.editable_bufnr)
+	end
+	if not ok then
+		error(err, 0)
+	end
+end
+
+local function test_live_diff_close_restores_exact_buffer_mapping()
+	require("lazyvcs").setup({ signs = { enabled = false } })
+	vim.cmd("silent! only")
+	local fixture = helpers.make_git_fixture()
+	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+	local bufnr = vim.api.nvim_get_current_buf()
+	vim.keymap.set("n", "q", function()
+		return "<CR>"
+	end, {
+		buffer = bufnr,
+		expr = true,
+		nowait = true,
+		remap = true,
+		replace_keycodes = false,
+		script = true,
+		silent = true,
+	})
+	local original = vim.fn.maparg("q", "n", false, true)
+
+	local actions = require("lazyvcs.actions")
+	local session = open_diff()
+	actions.close(session.editable_bufnr)
+
+	local restored = vim.fn.maparg("q", "n", false, true)
+	eq(restored, original, "closing LazyVCS must round-trip every attribute of the overwritten mapping")
+	eq(restored.replace_keycodes, 0)
+	eq(restored.script, 1)
+end
+
 local function test_live_diff_failed_transfer_resets_preexisting_diff_state()
 	require("lazyvcs").setup({ signs = { enabled = false } })
 	local root = helpers.tempdir()
@@ -4336,6 +4684,34 @@ local function test_source_control_comparison_failure_closes_plugin_created_edit
 	assert(ok, tostring(result))
 	eq(result, nil)
 	eq(#vim.api.nvim_tabpage_list_wins(0), 1, "failed comparison should close its plugin-owned editor split")
+	eq(vim.api.nvim_get_current_buf(), sidebar_buf)
+end
+
+local function test_source_control_comparison_bufread_error_closes_plugin_created_editor_split()
+	require("lazyvcs").setup({ signs = { enabled = false } })
+	vim.cmd("silent! only")
+	vim.cmd.enew()
+	local sidebar_buf = vim.api.nvim_get_current_buf()
+	vim.bo[sidebar_buf].filetype = "lazyvcs-source-control"
+	local root = helpers.tempdir()
+	local path = vim.fs.joinpath(root, "bufread-error.txt")
+	helpers.write_file(path, "working\n")
+	local group = vim.api.nvim_create_augroup("lazyvcs_test_comparison_bufread_error", { clear = true })
+	vim.api.nvim_create_autocmd("BufReadPost", {
+		group = group,
+		callback = function(args)
+			if vim.fs.normalize(vim.api.nvim_buf_get_name(args.buf)) == path then
+				error("forced comparison BufReadPost failure")
+			end
+		end,
+	})
+
+	local actions = require("lazyvcs.actions")
+	local ok, result = pcall(actions.open_target, comparison_for_file(path, root))
+	pcall(vim.api.nvim_del_augroup_by_id, group)
+	assert(ok, tostring(result))
+	eq(result, nil)
+	eq(#vim.api.nvim_tabpage_list_wins(0), 1, "BufReadPost failure must close the plugin-created editor split")
 	eq(vim.api.nvim_get_current_buf(), sidebar_buf)
 end
 
@@ -6151,6 +6527,22 @@ local cases = {
 		test_live_diff_sync_scroll_catches_unfocused_pane,
 	},
 	{
+		"test_live_diff_async_open_does_not_reclaim_navigated_window",
+		test_live_diff_async_open_does_not_reclaim_navigated_window,
+	},
+	{
+		"test_live_diff_cancelled_open_task_allows_future_open",
+		test_live_diff_cancelled_open_task_allows_future_open,
+	},
+	{
+		"test_live_diff_close_during_inflight_transfer_does_not_reopen",
+		test_live_diff_close_during_inflight_transfer_does_not_reopen,
+	},
+	{
+		"test_live_diff_close_restores_exact_buffer_mapping",
+		test_live_diff_close_restores_exact_buffer_mapping,
+	},
+	{
 		"test_live_diff_failed_transfer_resets_preexisting_diff_state",
 		test_live_diff_failed_transfer_resets_preexisting_diff_state,
 	},
@@ -6213,6 +6605,14 @@ local cases = {
 	{
 		"test_source_control_jobs_generation_isolated_for_equal_tostring_owners",
 		test_source_control_jobs_generation_isolated_for_equal_tostring_owners,
+	},
+	{
+		"test_source_control_details_cancel_clears_cached_loading_flag_and_requeues",
+		test_source_control_details_cancel_clears_cached_loading_flag_and_requeues,
+	},
+	{
+		"test_source_control_details_cancel_isolated_between_sidebar_owners",
+		test_source_control_details_cancel_isolated_between_sidebar_owners,
 	},
 	{
 		"test_source_control_hydration_cancel_one_of_two_repositories_requeues_without_stranding",
@@ -6305,6 +6705,10 @@ local cases = {
 	{
 		"test_source_control_comparison_failure_closes_plugin_created_editor_split",
 		test_source_control_comparison_failure_closes_plugin_created_editor_split,
+	},
+	{
+		"test_source_control_comparison_bufread_error_closes_plugin_created_editor_split",
+		test_source_control_comparison_bufread_error_closes_plugin_created_editor_split,
 	},
 	{
 		"test_aerial_integration_suspends_window_and_restores_buffer_state",
