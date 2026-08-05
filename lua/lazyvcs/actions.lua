@@ -489,21 +489,30 @@ schedule_rebalance = function(session)
 	end, 20)
 end
 
--- Run the repair now, not on a timer. This used to be a trailing 20 ms
--- `vim.defer_fn` whose tick every new event reset, so during a continuous wheel
--- scroll nothing corrected until the user stopped and the panes visibly drifted
--- apart and then snapped. `:syncbind` is pure in-process work -- no subprocess,
--- no redraw storm -- so there is nothing worth debouncing.
+-- Coalesce to the end of the gesture. Syncing on every event looks like the
+-- more responsive choice, and it was tried: measured over a wheel scroll on the
+-- unfocused pane it left the panes on *different* toplines (15 and 14), where
+-- coalescing lands both on the same one. `:syncbind` sets a relative offset
+-- from the source window, so running it against a position the user is still
+-- moving away from feeds a half-finished gesture back into the next one.
+--
+-- The wait is bounded by the gesture, not by the timer: the tick check means
+-- only the newest pending sync survives, and it fires 20 ms after the last
+-- event rather than after a fixed delay from the first.
 schedule_scroll_sync = function(session, source_win)
 	if not session or session.closing then
 		return
 	end
 
-	local live = state.get(session.editable_bufnr)
-	if not live or live.closing then
-		return
-	end
-	layout.sync_scroll(live, source_win)
+	session.scroll_sync_tick = (session.scroll_sync_tick or 0) + 1
+	local tick = session.scroll_sync_tick
+	vim.defer_fn(function()
+		local live = state.get(session.editable_bufnr)
+		if not live or live.closing or live.scroll_sync_tick ~= tick then
+			return
+		end
+		layout.sync_scroll(live, source_win)
+	end, 20)
 end
 
 local function has_scroll_delta(entry)

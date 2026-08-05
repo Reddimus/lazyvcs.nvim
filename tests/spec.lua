@@ -4068,24 +4068,21 @@ function align_specs.same_screen_row()
 	end
 end
 
-function align_specs.smoothscroll_off()
+function align_specs.native_binding()
 	local session
 	local ok, err = pcall(function()
 		with_diffopt_flag("followwrap", true, function()
 			require("lazyvcs").setup({ debounce_ms = 10 })
 			session = align_specs.open_wrapped_mismatch_session()
 
-			eq(
-				vim.wo[session.base_win].smoothscroll,
-				true,
-				"align_wrapped defaults to off, so smoothscroll gives screen-row scrolling"
-			)
 			eq(require("lazyvcs.align").apply(session), false, "alignment must not run when it is switched off")
+			eq(vim.wo[session.base_win].scrollbind, true, "the default keeps Neovim's own binding in charge")
 
 			local editable_win = session.editable_win
+			local had_wrap = vim.wo[editable_win].wrap
 			require("lazyvcs.actions").close()
 			session = nil
-			eq(vim.wo[editable_win].smoothscroll, false, "smoothscroll should be restored on close")
+			eq(vim.wo[editable_win].wrap, had_wrap, "window options should be restored on close")
 		end)
 	end)
 
@@ -6767,8 +6764,8 @@ local cases = {
 		align_specs.same_screen_row,
 	},
 	{
-		"test_live_diff_align_off_uses_smoothscroll_and_restores_it",
-		align_specs.smoothscroll_off,
+		"test_live_diff_align_off_leaves_native_binding_in_charge",
+		align_specs.native_binding,
 	},
 	{
 		"test_live_diff_sync_scroll_catches_unfocused_pane",

@@ -31,22 +31,16 @@ apart and never recovered.
   padding adds no text, so undo, marks, and the file on disk are untouched, and
   it is skipped while the same file is open in another window.
 
-- By default `'smoothscroll'` is now enabled for the session when the panes
-  wrap, so scrolling moves by screen rows instead of jumping a whole wrapped
-  line at a time, and the sub-line offset is carried across when one pane is
-  scrolled without focus.
 - `base_window.cursor_sync` (`true` by default) keeps the two cursors on
   corresponding lines.
 
 ### Fixed
 
-- Scroll repair is immediate. It was a trailing 20 ms debounce whose timer every
-  new event reset, so during a continuous wheel scroll nothing corrected until
-  you stopped — the panes visibly drifted apart and then snapped together.
-- A scroll event reporting **both** panes no longer declines to act. It returned
-  early on the assumption that native binding had already produced a correct
-  result, which silently swallowed every genuine misalignment; it now follows
-  the focused pane.
+- A scroll event reporting **both** panes now follows the focused pane instead
+  of declining to act, correcting the `topfill` and offset differences that were
+  previously swallowed. It still defers to Neovim when the panes wrap and
+  alignment is on: `:syncbind` sets a _relative_ offset that drifts under
+  `'wrap'`, so intervening there pulled correctly-bound panes apart.
 - `'scrollbind'` and `'cursorbind'` are re-asserted after `:diffthis`. Both are
   reset to the global value when a window edits another file, and an ftplugin or
   colorscheme loading afterwards could clear them — silently unbinding the pair

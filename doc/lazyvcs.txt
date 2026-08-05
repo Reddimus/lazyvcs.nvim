@@ -294,10 +294,10 @@ Main options:
                        Default true.
     base_window.align_wrapped
                        Keep corresponding lines on the same screen row
-                       when the panes wrap. "off" (default) enables
-                       'smoothscroll' so scrolling moves by screen rows;
-                       "auto" additionally pads the shorter side with
-                       virtual rows. See |lazyvcs-wrapped-diffs|.
+                       when the panes wrap. "off" (default) leaves
+                       Neovim's own binding in charge; "auto" pads the
+                       shorter side with virtual rows. See
+                       |lazyvcs-wrapped-diffs|.
 
 Live diff keymaps:
 
@@ -466,10 +466,6 @@ NOTES                                                           *lazyvcs-notes*
   occupying four screen rows on one side and one on the other pushes
   everything below it out of alignment, and the error accumulates down the
   file: the panes agree on the line and still render pages apart.
-
-  By default lazyvcs enables 'smoothscroll' for the session, so scrolling
-  moves by screen rows rather than jumping a whole wrapped line, and carries
-  the sub-line offset across when one pane is scrolled without focus.
 
   `base_window.align_wrapped = "auto"` additionally pairs corresponding text
   into units -- one unchanged line with one unchanged line, a changed block
