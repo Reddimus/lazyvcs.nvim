@@ -682,6 +682,11 @@ local function build_git_detail(repo, opts, status_stdout, raw_stdout)
 			behind = summary.sync.behind or 0,
 			upstream = summary.upstream,
 			branch = summary.branch,
+			-- Both are required by the publish test in `build_git_sync`. Dropping
+			-- them made a repo with no commits yet ("unborn") offer Publish
+			-- Branch, whose push fails with "src refspec does not match any".
+			unborn = summary.unborn,
+			detached = summary.detached,
 		}, counts, summary.sync.fetch_error),
 		{
 			ahead = summary.sync.ahead or 0,
@@ -1546,7 +1551,11 @@ function M.collect(state, opts)
 		loaded[#loaded + 1] = status
 	end
 
-	state.lazyvcs_show_clean = state.lazyvcs_show_clean == nil and source_opts.show_clean or state.lazyvcs_show_clean
+	-- Not `a == nil and b or c`: that yields nil, never false, so the default
+	-- `show_clean = false` never actually initialised the state.
+	if state.lazyvcs_show_clean == nil then
+		state.lazyvcs_show_clean = source_opts.show_clean
+	end
 	state.lazyvcs_selection_mode = state.lazyvcs_selection_mode or source_opts.selection_mode
 	state.lazyvcs_changes_view_mode = state.lazyvcs_changes_view_mode or source_opts.changes_view_mode
 	state.lazyvcs_changes_sort = state.lazyvcs_changes_sort or source_opts.changes_sort
