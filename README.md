@@ -250,11 +250,11 @@ vim.opt.diffopt:append("followwrap")
 
 LazyVCS does not change `diffopt`.
 
-Neovim's `'scrollbind'` binds **buffer lines**, not screen rows, so with wrapping
-on a line that occupies four screen rows on one side and one on the other pushes
-everything below it out of alignment — and because nothing reconciles the
-difference, the error accumulates down the file. The two panes agree on the line
-and still render pages apart.
+Neovim's `'scrollbind'` binds **buffer lines**, not screen rows, so with
+wrapping on a line that occupies four screen rows on one side and one on the
+other pushes everything below it out of alignment — and because nothing
+reconciles the difference, the error accumulates down the file. The two panes
+agree on the line and still render pages apart.
 
 LazyVCS closes that gap. Corresponding text is paired into units — one unchanged
 line with one unchanged line, a changed block with its counterpart as a whole —
@@ -264,11 +264,12 @@ with extmarks, so no text is added: undo, marks, and the file on disk are
 untouched, and it is removed when the session closes.
 
 This is controlled by `base_window.align_wrapped`, which defaults to `"auto"`
-(pad only while the panes actually wrap). Set it to `"off"` for native behaviour;
-LazyVCS then enables `'smoothscroll'` instead, so scrolling moves by screen rows
-rather than jumping a whole wrapped line at a time. The two cannot be combined:
-`'smoothscroll'` lets a pane stop part way into a line, and that position is
-invisible to `:syncbind`, which maps toplines through Neovim's own filler model.
+(pad only while the panes actually wrap). Set it to `"off"` for native
+behaviour; LazyVCS then enables `'smoothscroll'` instead, so scrolling moves by
+screen rows rather than jumping a whole wrapped line at a time. The two cannot
+be combined: `'smoothscroll'` lets a pane stop part way into a line, and that
+position is invisible to `:syncbind`, which maps toplines through Neovim's own
+filler model.
 
 `base_window.cursor_sync` (default `true`) keeps the two cursors on
 corresponding lines. `:diffthis` already sets `'cursorbind'`; LazyVCS re-asserts
@@ -486,9 +487,9 @@ Important source-control options:
 | `remote_refresh`              | `manual` or `on_open`                                    |
 | `selection_mode`              | `multiple` or `single` visible repos                     |
 | `changes_view_mode`           | `list` or `tree`                                         |
-| `changes_sort`                | `path` or `status`                                       |
+| `changes_sort`                | `path`, `name`, or `status`                              |
 | `confirm_mutations`           | Confirm repo/file mutations                              |
-| `sync_button_behavior`        | `picker` or `sync` for the Sync button                   |
+| `sync_button_behavior`        | `picker` or `direct` for the Sync button                 |
 | `always_show_repositories`    | Keep the Repositories section visible even with one repo |
 | `repositories_sort`           | `discovery_time`, `name`, or `path`                      |
 | `compact_folders`             | Collapse single-child folders in tree view               |

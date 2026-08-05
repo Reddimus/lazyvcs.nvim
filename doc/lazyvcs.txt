@@ -48,19 +48,19 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
                                                                     *:LazyVCS*
 :LazyVCS              Toggle the source-control sidebar (the default action).
 
-:LazyVCS sidebar {open|close|toggle|refresh} [path]
+:LazyVCS sidebar {open, close, toggle, refresh, cancel} [path]
                       Control the source-control sidebar. `open` and `toggle`
                       accept an optional directory to scan.
 
-:LazyVCS diff {open|close|toggle|refresh}
+:LazyVCS diff {open, close, toggle, refresh, cancel}
                       Control the live diff view for the current file.
                       Defaults to `toggle`.
 
-:LazyVCS hunk {next|prev|revert}
+:LazyVCS hunk {next, prev, revert}
                       Move between hunks or revert the hunk under the cursor.
                       Defaults to `next`.
 
-:LazyVCS blame {toggle|split|clear|log}
+:LazyVCS blame {toggle, split, clear, log}
                       `toggle` switches global inline blame using `blame.mode`,
                       `split` shows full-file blame in a fixed-width split,
                       `clear` disables inline blame, and `log` shows the
@@ -366,7 +366,7 @@ Source-control options:
     changes_sort       `path`, `name`, or `status`.
     compact_folders    Collapse single-child folder chains in tree mode.
     sync_button_behavior
-                       `picker` or `sync` for the Sync button.
+                       `picker` or `direct` for the Sync button.
     always_show_repositories
                        Keep the Repositories section visible with one repo.
     show_action_button Show the sidebar action button.

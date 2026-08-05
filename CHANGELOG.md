@@ -15,16 +15,16 @@ apart and never recovered.
 ### Added
 
 - `base_window.align_wrapped` (`"auto"` by default, or `"off"`) keeps
-  corresponding diff lines on the same screen row when the panes wrap.
-  Neovim's `'scrollbind'` binds buffer lines, not screen rows, so a line that
-  occupies four rows on one side and one on the other pushed everything below
-  it out of alignment — and because nothing reconciled the difference, the
-  error accumulated down the file. Corresponding text is now paired into units
-  and the shorter side padded with virtual rows. Measured against a wrapped
-  fixture in a real terminal, 18 of 31 visible lines were misaligned before and
-  0 after, with the residual permanent offset eliminated.
-  The padding uses extmarks, so no text is added: undo, marks, and the file on
-  disk are untouched, and it is cleared when the session closes.
+  corresponding diff lines on the same screen row when the panes wrap. Neovim's
+  `'scrollbind'` binds buffer lines, not screen rows, so a line that occupies
+  four rows on one side and one on the other pushed everything below it out of
+  alignment — and because nothing reconciled the difference, the error
+  accumulated down the file. Corresponding text is now paired into units and the
+  shorter side padded with virtual rows. Measured against a wrapped fixture in a
+  real terminal, 18 of 31 visible lines were misaligned before and 0 after, with
+  the residual permanent offset eliminated. The padding uses extmarks, so no
+  text is added: undo, marks, and the file on disk are untouched, and it is
+  cleared when the session closes.
 - `base_window.cursor_sync` (`true` by default) keeps the two cursors on
   corresponding lines.
 - With `align_wrapped = "off"`, `'smoothscroll'` is enabled for the session so
