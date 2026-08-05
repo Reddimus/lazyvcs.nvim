@@ -115,7 +115,10 @@ jobs:
           bash -n tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
 
       - name: Check whitespace
-        run: git diff-tree --check --no-commit-id --root -r HEAD
+        # `--cc` is required: without it diff-tree prints nothing at all for a
+        # merge commit, and on `pull_request` the checked-out sha IS the
+        # synthetic merge commit -- so this silently passed on every PR.
+        run: git diff-tree --check --cc --no-commit-id --root -r HEAD
 
   linux:
     name: Linux / Neovim ${{ matrix.version }}

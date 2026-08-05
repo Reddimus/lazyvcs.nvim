@@ -237,6 +237,8 @@ When the active editor window changes buffers, such as with AstroNvim `]b`,
 `[b`, or tabline buffer picking, LazyVCS reopens the live diff for supported
 Git/SVN buffers and closes the session cleanly for unsupported buffers.
 
+### Wrapped diffs
+
 LazyVCS mirrors the editable window's `wrap`, `linebreak`, and `breakindent`
 settings to the read-only base window. Native Neovim diff mode disables wrapping
 unless `followwrap` is present in `diffopt`, so add it in your Neovim or
@@ -246,9 +248,39 @@ AstroNvim options to preserve wrapping:
 vim.opt.diffopt:append("followwrap")
 ```
 
-LazyVCS does not change `diffopt`. With `followwrap`, corresponding lines can
-occupy different screen heights and appear visually misaligned when they wrap at
-different points.
+LazyVCS does not change `diffopt`.
+
+Neovim's `'scrollbind'` binds **buffer lines**, not screen rows, so with
+wrapping on a line that occupies four screen rows on one side and one on the
+other pushes everything below it out of alignment — and because nothing
+reconciles the difference, the error accumulates down the file. The two panes
+agree on the line and still render pages apart.
+
+By default LazyVCS enables `'smoothscroll'` for the session, so scrolling moves
+by screen rows instead of jumping a whole wrapped line at a time, and carries
+the sub-line offset across when one pane is scrolled without focus.
+
+`base_window.align_wrapped = "auto"` additionally pads the shorter side with
+virtual rows so corresponding lines start on the same screen row. This makes the
+panes line up **exactly while they are still** — measured on a wrapped fixture,
+18 of 31 visible lines misaligned before and 0 after. It is **off by default**,
+because the padding is drawn with extmarks that Neovim's own scroll binding
+cannot see: the two disagree about position _while scrolling_, and the panes can
+land on different lines until the view settles. Turn it on if you read diffs
+more than you scroll them:
+
+```lua
+opts = { base_window = { align_wrapped = "auto" } }
+```
+
+The padding adds no text, so undo, marks, and the file on disk are untouched,
+and it is removed when the session closes. It is also skipped while the same
+file is open in another window, since extmarks are buffer-scoped and the blank
+rows would show up there too.
+
+`base_window.cursor_sync` (default `true`) keeps the two cursors on
+corresponding lines. `:diffthis` already sets `'cursorbind'`; LazyVCS re-asserts
+it so a later ftplugin or colorscheme cannot silently unbind the pair.
 
 ```mermaid
 flowchart LR
@@ -317,6 +349,8 @@ require("lazyvcs").setup({
   session_keymaps = true,
   base_window = {
     width = 0.5,
+    cursor_sync = true, -- keep both cursors on corresponding lines
+    align_wrapped = "off", -- "auto" pads wrapped lines to the same screen row
   },
   signs = {
     enabled = true,
@@ -460,9 +494,9 @@ Important source-control options:
 | `remote_refresh`              | `manual` or `on_open`                                    |
 | `selection_mode`              | `multiple` or `single` visible repos                     |
 | `changes_view_mode`           | `list` or `tree`                                         |
-| `changes_sort`                | `path` or `status`                                       |
+| `changes_sort`                | `path`, `name`, or `status`                              |
 | `confirm_mutations`           | Confirm repo/file mutations                              |
-| `sync_button_behavior`        | `picker` or `sync` for the Sync button                   |
+| `sync_button_behavior`        | `picker` or `direct` for the Sync button                 |
 | `always_show_repositories`    | Keep the Repositories section visible even with one repo |
 | `repositories_sort`           | `discovery_time`, `name`, or `path`                      |
 | `compact_folders`             | Collapse single-child folders in tree view               |

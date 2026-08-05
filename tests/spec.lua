@@ -3863,16 +3863,42 @@ local function test_live_diff_sync_scroll_catches_unfocused_pane()
 		eq(editable_view.topline, 1, "test setup should leave the focused pane unmoved")
 		eq(base_view.topline, 25, "test setup should simulate an unfocused pane scroll")
 
+		-- Shaped like a real WinScrolled `v:event`: keyed by window-ID strings,
+		-- plus the "all" aggregate Neovim always includes.
 		local source = actions._test_scroll_event_source(session, {
+			all = { topline = 24 },
 			[tostring(session.base_win)] = { topline = 24 },
 		})
-		eq(source, session.base_win)
+		eq(source, session.base_win, "only the unfocused pane moved, so it is the source")
+
 		eq(
 			actions._test_scroll_event_source(session, {
+				all = { topline = 24 },
+				[tostring(session.editable_win)] = { topline = 24 },
+			}),
+			session.editable_win,
+			"only the focused pane moved, so it is the source"
+		)
+
+		-- Both panes moving used to return nil, on the assumption that native
+		-- binding had already produced a correct result. That silently declined
+		-- every genuine misalignment, so it now follows the focused pane.
+		vim.api.nvim_set_current_win(session.editable_win)
+		eq(
+			actions._test_scroll_event_source(session, {
+				all = { topline = 24 },
 				[tostring(session.base_win)] = { topline = 24 },
 				[tostring(session.editable_win)] = { topline = 24 },
 			}),
-			nil
+			session.editable_win,
+			"both panes moved, so the focused pane wins"
+		)
+
+		-- An event naming neither pane belongs to some other window entirely.
+		eq(
+			actions._test_scroll_event_source(session, { all = { topline = 3 }, ["9999"] = { topline = 3 } }),
+			nil,
+			"an unrelated window is not a source"
 		)
 
 		assert(require("lazyvcs.layout").sync_scroll(session, session.base_win))
@@ -3882,6 +3908,182 @@ local function test_live_diff_sync_scroll_catches_unfocused_pane()
 
 		actions.close()
 		session = nil
+	end)
+
+	if session then
+		require("lazyvcs.actions").close(session.editable_bufnr)
+	end
+	if not ok then
+		error(err)
+	end
+end
+
+local align_specs = {}
+
+function align_specs.pairs_units()
+	local align = require("lazyvcs.align")
+
+	local units = align.pair_units({}, 3, 3)
+	eq(#units, 3, "identical buffers pair every line one to one")
+	eq(units[2].base[1], 2)
+	eq(units[2].current[1], 2)
+
+	units = align.pair_units({ { base_start = 3, base_count = 1, current_start = 3, current_count = 1 } }, 5, 5)
+	eq(#units, 5, "a changed line does not desynchronise the pairing after it")
+	eq(units[3].base[1], 3, "the changed line is its own unit")
+	eq(units[3].current[1], 3)
+	eq(units[5].base[1], 5, "lines after the change realign")
+	eq(units[5].current[1], 5)
+
+	-- vim.diff "indices" form: count 0 means the range is empty and `start` is
+	-- the line the change sits after, so the anchor is still unchanged text.
+	units = align.pair_units({ { base_start = 2, base_count = 0, current_start = 3, current_count = 2 } }, 4, 6)
+	local insertion
+	for _, unit in ipairs(units) do
+		if unit.current and not unit.base then
+			insertion = unit
+		end
+	end
+	assert(insertion, "a pure insertion yields a unit with no base side")
+	eq(insertion.current[1], 3)
+
+	units = align.pair_units({ { base_start = 3, base_count = 2, current_start = 2, current_count = 0 } }, 6, 4)
+	local deletion
+	for _, unit in ipairs(units) do
+		if unit.base and not unit.current then
+			deletion = unit
+		end
+	end
+	assert(deletion, "a pure deletion yields a unit with no current side")
+	eq(deletion.base[1], 3)
+end
+
+-- Build a session whose two sides wrap to very different heights: the base has
+-- one long line where the working copy has a short one, and vice versa. Without
+-- alignment every line below the first mismatch renders on a different screen
+-- row on each side, and the offset never recovers.
+function align_specs.open_wrapped_mismatch_session()
+	local root = vim.fs.normalize(vim.fn.tempname())
+	vim.fn.mkdir(root, "p")
+	helpers.exec({ "git", "init" }, root)
+	helpers.exec({ "git", "config", "user.name", "lazyvcs-test" }, root)
+	helpers.exec({ "git", "config", "user.email", "lazyvcs@example.com" }, root)
+
+	local long_a = "AAAA " .. string.rep("alpha beta gamma delta ", 20)
+	local long_b = "BBBB " .. string.rep("omega psi chi phi ", 20)
+	local base, current = {}, {}
+	for i = 1, 10 do
+		base[i] = string.format("line %02d", i)
+		current[i] = string.format("line %02d", i)
+	end
+	base[11] = long_a
+	current[11] = "AAAA short"
+	base[12] = "BBBB short"
+	current[12] = long_b
+	for i = 13, 24 do
+		base[i] = string.format("line %02d", i)
+		current[i] = string.format("line %02d", i)
+	end
+
+	local file = root .. "/wrapped.txt"
+	helpers.write_file(file, table.concat(base, "\n") .. "\n")
+	helpers.exec({ "git", "add", "wrapped.txt" }, root)
+	helpers.exec({ "git", "commit", "-m", "init" }, root)
+	helpers.write_file(file, table.concat(current, "\n") .. "\n")
+
+	vim.cmd.edit(vim.fn.fnameescape(file))
+	vim.wo.wrap = true
+	vim.wo.linebreak = true
+	return open_diff()
+end
+
+---Screen row at which `lnum` is drawn, relative to the window's own first row.
+---`screenpos` and not `nvim_win_text_height`: the latter attributes virtual rows
+---to the line below them, which is exactly the padding being asserted here.
+function align_specs.pane_screen_row(winid, lnum)
+	local pos = vim.fn.screenpos(winid, lnum, 1)
+	if not pos or (pos.row or 0) == 0 then
+		return nil
+	end
+	return pos.row - 1 - vim.api.nvim_win_get_position(winid)[1]
+end
+
+function align_specs.same_screen_row()
+	local session
+	local ok, err = pcall(function()
+		with_diffopt_flag("followwrap", true, function()
+			require("lazyvcs").setup({ debounce_ms = 10, base_window = { align_wrapped = "auto" } })
+			session = align_specs.open_wrapped_mismatch_session()
+
+			eq(vim.wo[session.base_win].wrap, true, "followwrap should leave the base pane wrapped")
+			eq(vim.wo[session.editable_win].wrap, true, "followwrap should leave the editable pane wrapped")
+			eq(vim.wo[session.base_win].cursorbind, true, "cursor_sync defaults on")
+			eq(
+				vim.wo[session.base_win].smoothscroll,
+				false,
+				"smoothscroll must stay off while alignment owns the padding"
+			)
+
+			require("lazyvcs.align").apply(session)
+
+			-- Lines 13..24 are identical on both sides, so after the mismatched
+			-- pair above them they must face each other again.
+			local misaligned = {}
+			for _, lnum in ipairs({ 13, 16, 20 }) do
+				local base_row = align_specs.pane_screen_row(session.base_win, lnum)
+				local edit_row = align_specs.pane_screen_row(session.editable_win, lnum)
+				if base_row ~= edit_row then
+					misaligned[#misaligned + 1] =
+						string.format("line %d base=%s edit=%s", lnum, tostring(base_row), tostring(edit_row))
+				end
+			end
+			eq(#misaligned, 0, "corresponding lines should share a screen row: " .. table.concat(misaligned, "; "))
+
+			-- A second pass must not stack more padding on top of the first.
+			eq(require("lazyvcs.align").apply(session), false, "an unchanged plan should not be re-applied")
+			for _, lnum in ipairs({ 13, 20 }) do
+				eq(
+					align_specs.pane_screen_row(session.base_win, lnum),
+					align_specs.pane_screen_row(session.editable_win, lnum),
+					"alignment should be idempotent"
+				)
+			end
+
+			local editable_bufnr = session.editable_bufnr
+			require("lazyvcs.actions").close()
+			session = nil
+			eq(
+				#vim.api.nvim_buf_get_extmarks(editable_bufnr, require("lazyvcs.align").namespace(), 0, -1, {}),
+				0,
+				"closing the session should clear the alignment namespace"
+			)
+		end)
+	end)
+
+	if session then
+		require("lazyvcs.actions").close(session.editable_bufnr)
+	end
+	if not ok then
+		error(err)
+	end
+end
+
+function align_specs.native_binding()
+	local session
+	local ok, err = pcall(function()
+		with_diffopt_flag("followwrap", true, function()
+			require("lazyvcs").setup({ debounce_ms = 10 })
+			session = align_specs.open_wrapped_mismatch_session()
+
+			eq(require("lazyvcs.align").apply(session), false, "alignment must not run when it is switched off")
+			eq(vim.wo[session.base_win].scrollbind, true, "the default keeps Neovim's own binding in charge")
+
+			local editable_win = session.editable_win
+			local had_wrap = vim.wo[editable_win].wrap
+			require("lazyvcs.actions").close()
+			session = nil
+			eq(vim.wo[editable_win].wrap, had_wrap, "window options should be restored on close")
+		end)
 	end)
 
 	if session then
@@ -5019,6 +5221,13 @@ local function test_source_control_git_file_actions_commit_and_sync()
 
 	ops.revert_file(state, file_node)
 	wait_for(function()
+		-- `git checkout --` replaces the file, so there is a window in which it
+		-- does not exist. `readfile` *throws* on a missing file, and an error out
+		-- of a wait_for predicate fails the test outright instead of retrying --
+		-- which made this spuriously fail roughly one run in three.
+		if vim.fn.filereadable(fixture.file) ~= 1 then
+			return false
+		end
 		return vim.deep_equal(vim.fn.readfile(fixture.file), { "one", "two", "three" })
 			and session_state.get_repo_job(fixture.root) == nil
 	end, "git discard should finish in the background", ASYNC_TIMEOUT_MS)
@@ -6545,6 +6754,18 @@ local cases = {
 	{
 		"test_live_diff_without_followwrap_uses_native_nowrap_and_restores_editable_window",
 		test_live_diff_without_followwrap_uses_native_nowrap_and_restores_editable_window,
+	},
+	{
+		"test_live_diff_align_pairs_corresponding_text_into_units",
+		align_specs.pairs_units,
+	},
+	{
+		"test_live_diff_align_puts_wrapped_lines_on_the_same_screen_row",
+		align_specs.same_screen_row,
+	},
+	{
+		"test_live_diff_align_off_leaves_native_binding_in_charge",
+		align_specs.native_binding,
 	},
 	{
 		"test_live_diff_sync_scroll_catches_unfocused_pane",

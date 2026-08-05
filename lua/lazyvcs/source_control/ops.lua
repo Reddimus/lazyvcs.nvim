@@ -630,7 +630,12 @@ local function ensure_repo_details(state, repo)
 		jobs.command(repo, opts.kind, args, {
 			timeout_ms = opts.timeout_ms,
 			generation = generation,
-			scope = "details",
+			-- Per repository. The scheduler keys its staleness watermark on
+			-- (owner, scope), but the generation counter is per repo -- so a
+			-- shared "details" scope let a repo whose generation had advanced
+			-- raise the watermark above a sibling's, and the sibling's details
+			-- were cancelled as stale and never loaded.
+			scope = "details:" .. repo.root,
 			owner = state,
 			priority = 10,
 		}, on_done)

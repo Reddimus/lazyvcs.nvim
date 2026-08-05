@@ -11,7 +11,7 @@
   "workspace": {
     "checkThirdParty": false,
     "library": [
-      "${env:VIMRUNTIME}/lua"
+      "$VIMRUNTIME/lua"
     ]
   },
   "format": {

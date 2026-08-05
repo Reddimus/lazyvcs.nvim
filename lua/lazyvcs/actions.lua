@@ -489,6 +489,16 @@ schedule_rebalance = function(session)
 	end, 20)
 end
 
+-- Coalesce to the end of the gesture. Syncing on every event looks like the
+-- more responsive choice, and it was tried: measured over a wheel scroll on the
+-- unfocused pane it left the panes on *different* toplines (15 and 14), where
+-- coalescing lands both on the same one. `:syncbind` sets a relative offset
+-- from the source window, so running it against a position the user is still
+-- moving away from feeds a half-finished gesture back into the next one.
+--
+-- The wait is bounded by the gesture, not by the timer: the tick check means
+-- only the newest pending sync survives, and it fires 20 ms after the last
+-- event rather than after a fixed delay from the first.
 schedule_scroll_sync = function(session, source_win)
 	if not session or session.closing then
 		return
@@ -515,6 +525,11 @@ local function has_scroll_delta(entry)
 		)
 end
 
+-- Pick the pane whose position the other should follow.
+--
+-- `v:event` for WinScrolled is keyed by window-ID strings plus an "all" entry
+-- (:h WinScrolled); the `windows` indirection is only there for callers that
+-- pass a pre-shaped table.
 scroll_event_source = function(session, event)
 	if not session then
 		return nil
@@ -524,12 +539,40 @@ scroll_event_source = function(session, event)
 	local editable_scrolled = has_scroll_delta(windows[tostring(session.editable_win)])
 	local base_scrolled = has_scroll_delta(windows[tostring(session.base_win)])
 
+	-- Exactly one pane moved. This is the case Vim deliberately does not handle:
+	-- the wheel over a window without cursor focus ignores 'scrollbind'
+	-- (:h scrollbind-quickadj), so the moved pane is authoritative.
 	if base_scrolled and not editable_scrolled then
 		return session.base_win
 	end
 	if editable_scrolled and not base_scrolled then
 		return session.editable_win
 	end
+
+	-- Both moved, which is what 'scrollbind' does when the focused pane scrolls.
+	if base_scrolled and editable_scrolled then
+		-- When the panes wrap and alignment is active, leave the result alone.
+		-- `:syncbind` enforces a *relative offset* between the panes, and under
+		-- 'wrap' that offset drifts, because the same number of screen rows
+		-- covers a different number of buffer lines on each side. Running it
+		-- here actively pulls the panes apart: measured over 15 <C-e>, native
+		-- binding left 0 of 21 visible lines misaligned and a syncbind on top of
+		-- it left 21 of 21, worsening as the scroll continued. The padding
+		-- cannot compensate -- it only equalises unit heights below the topline.
+		if require("lazyvcs.align").is_active(session) then
+			return nil
+		end
+
+		-- Without wrapping there is no drift, and following the focused pane
+		-- corrects the topfill and sub-line offsets that returning nil here used
+		-- to decline silently.
+		local current = vim.api.nvim_get_current_win()
+		if current == session.editable_win or current == session.base_win then
+			return current
+		end
+		return session.editable_win
+	end
+
 	return nil
 end
 
@@ -612,7 +655,23 @@ attach_session = function(session)
 				return
 			end
 
-			local source_win = scroll_event_source(live, vim.v.event)
+			-- WinScrolled is global and one callback is registered per live
+			-- session, so bail immediately when neither pane is involved --
+			-- otherwise every session pays for every unrelated scroll.
+			local event = vim.v.event or {}
+			local windows = event.windows or event
+			if not (windows[tostring(live.editable_win)] or windows[tostring(live.base_win)]) then
+				return
+			end
+
+			-- Alignment is recomputed for the new viewport whether or not a sync
+			-- is needed. It is scoped to the visible range, so a scroll that
+			-- moved both panes correctly still changes which units need padding;
+			-- skipping it here left the panes carrying the previous viewport's
+			-- padding, which is a misalignment in its own right.
+			require("lazyvcs.align").schedule(live)
+
+			local source_win = scroll_event_source(live, event)
 			if source_win then
 				schedule_scroll_sync(live, source_win)
 			end

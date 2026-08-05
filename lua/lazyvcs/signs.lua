@@ -390,10 +390,20 @@ function M.setup()
 	end
 
 	augroup = vim.api.nvim_create_augroup("lazyvcs_signs", { clear = true })
-	vim.api.nvim_create_autocmd({ "BufReadPost", "BufEnter" }, {
+	vim.api.nvim_create_autocmd("BufReadPost", {
 		group = augroup,
 		callback = function(args)
 			M.refresh(args.buf, true)
+		end,
+	})
+	vim.api.nvim_create_autocmd("BufEnter", {
+		group = augroup,
+		callback = function(args)
+			-- Without `reload_base = true` this reuses the cached base. Passing it
+			-- here bypassed the `state.loaded` short-circuit and spawned (then
+			-- killed) a `git show :file` / `svn cat` on every single window or
+			-- buffer switch -- `<C-w>w`, `:bnext`, the tabline picker.
+			M.refresh(args.buf, false)
 		end,
 	})
 	vim.api.nvim_create_autocmd("BufWritePost", {
