@@ -121,6 +121,7 @@ local tracked_window_options = {
 	"diff",
 	"scrollbind",
 	"cursorbind",
+	"smoothscroll",
 	"foldenable",
 	"foldmethod",
 	"foldcolumn",
@@ -200,13 +201,62 @@ function M.open(session)
 
 	apply_diff(editable_win)
 	apply_diff(session.base_win)
-	vim.wo[editable_win].scrollbind = true
-	vim.wo[session.base_win].scrollbind = true
+
+	-- `:diffthis` already sets 'scrollbind' and 'cursorbind' and adds "hor" to
+	-- 'scrollopt' (:h diff.txt). Re-assert the two window-local ones anyway:
+	-- they are reset to the global value when a window edits another file, and
+	-- an ftplugin or colorscheme loaded after us can clear them, which silently
+	-- unbinds the pair with no other symptom than "scrolling stopped working".
+	local cursor_sync = session.opts.base_window.cursor_sync
+	for _, win in ipairs({ editable_win, session.base_win }) do
+		vim.wo[win].scrollbind = true
+		vim.wo[win].cursorbind = cursor_sync
+	end
+
+	M.apply_scroll_granularity(session)
 	vim.api.nvim_win_call(editable_win, function()
 		vim.cmd("silent syncbind")
 	end)
+
+	require("lazyvcs.align").apply(session)
 	session.tabpage = vim.api.nvim_win_get_tabpage(editable_win)
 	set_window_labels(session)
+end
+
+---True when either pane soft-wraps, so buffer lines and screen rows diverge.
+function M.panes_wrap(session)
+	return (util.win_is_valid(session.editable_win) and vim.wo[session.editable_win].wrap)
+		or (util.win_is_valid(session.base_win) and vim.wo[session.base_win].wrap)
+		or false
+end
+
+---Choose how the pair stays together when the panes wrap. The two available
+---mechanisms cannot be combined, so this picks one.
+---
+---`align_wrapped = "auto"` pads the shorter side with virtual rows so
+---corresponding lines share a screen row (see lazyvcs.align). That padding is
+---invisible to `:syncbind`, which maps toplines through Neovim's own filler
+---model -- so if a pane could also stop *part way into* a line, the two
+---mechanisms would compute different positions and fight. 'smoothscroll' is
+---exactly what allows a part-way stop, so alignment requires it off: scrolling
+---then moves whole buffer lines and both panes land on unit boundaries, where
+---the padding lines up.
+---
+---With alignment off, there is no padding to conflict with, and 'smoothscroll'
+---is strictly better -- without it one wheel tick over a line that wraps to six
+---rows jumps all six, because `skipcol` cannot represent a partial line.
+function M.apply_scroll_granularity(session)
+	if not M.panes_wrap(session) then
+		return false
+	end
+
+	local smooth = (session.opts.base_window.align_wrapped or "auto") ~= "auto"
+	for _, win in ipairs({ session.editable_win, session.base_win }) do
+		if util.win_is_valid(win) then
+			vim.wo[win].smoothscroll = smooth
+		end
+	end
+	return smooth
 end
 
 function M.rebalance(session)
@@ -240,7 +290,69 @@ function M.rebalance(session)
 	vim.wo[session.base_win].winfixwidth = base_fix
 	session.tabpage = vim.api.nvim_win_get_tabpage(session.editable_win)
 	set_window_labels(session)
+
+	-- A width change re-wraps every line, so all row math is stale and the panes
+	-- can be left offset. Re-sync rather than leaving the pair crooked until the
+	-- user happens to scroll.
+	M.sync_scroll(
+		session,
+		vim.api.nvim_get_current_win() == session.base_win and session.base_win or session.editable_win
+	)
+	require("lazyvcs.align").schedule(session)
 	return ok
+end
+
+---Columns actually available to text, i.e. the window minus the number, fold and
+---sign columns. `skipcol` counts virtual columns, so this is what converts it to
+---and from screen rows.
+local function text_width(winid)
+	local info = vim.fn.getwininfo(winid)[1]
+	local width = info and info.width or vim.api.nvim_win_get_width(winid)
+	local textoff = info and info.textoff or 0
+	return math.max(width - textoff, 1)
+end
+
+---Screen rows occupied by one buffer line, excluding any diff filler above it.
+---`start_vcol` is what excludes the filler (:h nvim_win_text_height); without it
+---every measurement is off by the filler height.
+local function line_rows(winid, lnum)
+	local ok, res = pcall(vim.api.nvim_win_text_height, winid, {
+		start_row = lnum - 1,
+		end_row = lnum - 1,
+		start_vcol = 0,
+	})
+	if not ok or type(res) ~= "table" then
+		return 1
+	end
+	return math.max(res.all or 1, 1)
+end
+
+---Copy how far the source pane is scrolled *into* its own top line onto the
+---target. `:syncbind` picks the diff-corresponding top line but always lands on
+---its first row, so without this the panes agree on the line and still sit up to
+---a full wrapped line apart. Only meaningful with 'smoothscroll' on.
+local function transfer_subline_offset(source_win, target_win)
+	if not (util.win_is_valid(source_win) and util.win_is_valid(target_win)) then
+		return
+	end
+	if not vim.wo[target_win].smoothscroll then
+		return
+	end
+
+	local source_view = vim.api.nvim_win_call(source_win, vim.fn.winsaveview)
+	local rows_in = math.floor((source_view.skipcol or 0) / text_width(source_win))
+
+	local target_view = vim.api.nvim_win_call(target_win, vim.fn.winsaveview)
+	local budget = line_rows(target_win, target_view.topline) - 1
+	local target_skipcol = math.max(math.min(rows_in, budget), 0) * text_width(target_win)
+	if target_skipcol == (target_view.skipcol or 0) then
+		return
+	end
+
+	target_view.skipcol = target_skipcol
+	pcall(vim.api.nvim_win_call, target_win, function()
+		vim.fn.winrestview(target_view)
+	end)
 end
 
 function M.sync_scroll(session, source_win)
@@ -256,11 +368,23 @@ function M.sync_scroll(session, source_win)
 		return false
 	end
 
+	local target_win = source_win == session.editable_win and session.base_win or session.editable_win
+
 	session.syncing_scroll = true
 	local ok = pcall(vim.api.nvim_win_call, source_win, function()
 		vim.cmd("silent! syncbind")
 	end)
-	session.syncing_scroll = false
+	-- Only meaningful with 'smoothscroll', which is on exactly when alignment is
+	-- off; see `apply_scroll_granularity` for why the two cannot combine.
+	pcall(transfer_subline_offset, source_win, target_win)
+
+	-- Clear on the next tick, not here: WinScrolled is dispatched from the main
+	-- loop rather than synchronously (:h WinScrolled), so the echo event caused
+	-- by the sync above arrives after this function has already returned. Held
+	-- across one tick, the flag actually suppresses it.
+	vim.schedule(function()
+		session.syncing_scroll = false
+	end)
 	return ok
 end
 
@@ -271,10 +395,13 @@ function M.refresh(session)
 			vim.cmd("silent diffupdate")
 		end)
 	end
+	require("lazyvcs.align").schedule(session)
 end
 
 function M.close(session, opts)
 	opts = opts or {}
+
+	require("lazyvcs.align").clear(session)
 
 	if util.win_is_valid(session.editable_win) then
 		pcall(vim.api.nvim_win_call, session.editable_win, function()

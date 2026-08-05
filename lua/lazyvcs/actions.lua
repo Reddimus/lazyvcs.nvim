@@ -489,20 +489,21 @@ schedule_rebalance = function(session)
 	end, 20)
 end
 
+-- Run the repair now, not on a timer. This used to be a trailing 20 ms
+-- `vim.defer_fn` whose tick every new event reset, so during a continuous wheel
+-- scroll nothing corrected until the user stopped and the panes visibly drifted
+-- apart and then snapped. `:syncbind` is pure in-process work -- no subprocess,
+-- no redraw storm -- so there is nothing worth debouncing.
 schedule_scroll_sync = function(session, source_win)
 	if not session or session.closing then
 		return
 	end
 
-	session.scroll_sync_tick = (session.scroll_sync_tick or 0) + 1
-	local tick = session.scroll_sync_tick
-	vim.defer_fn(function()
-		local live = state.get(session.editable_bufnr)
-		if not live or live.closing or live.scroll_sync_tick ~= tick then
-			return
-		end
-		layout.sync_scroll(live, source_win)
-	end, 20)
+	local live = state.get(session.editable_bufnr)
+	if not live or live.closing then
+		return
+	end
+	layout.sync_scroll(live, source_win)
 end
 
 local function has_scroll_delta(entry)
@@ -515,6 +516,11 @@ local function has_scroll_delta(entry)
 		)
 end
 
+-- Pick the pane whose position the other should follow.
+--
+-- `v:event` for WinScrolled is keyed by window-ID strings plus an "all" entry
+-- (:h WinScrolled); the `windows` indirection is only there for callers that
+-- pass a pre-shaped table.
 scroll_event_source = function(session, event)
 	if not session then
 		return nil
@@ -524,12 +530,28 @@ scroll_event_source = function(session, event)
 	local editable_scrolled = has_scroll_delta(windows[tostring(session.editable_win)])
 	local base_scrolled = has_scroll_delta(windows[tostring(session.base_win)])
 
+	-- Exactly one pane moved. This is the case Vim deliberately does not handle:
+	-- the wheel over a window without cursor focus ignores 'scrollbind'
+	-- (:h scrollbind-quickadj), so the moved pane is authoritative.
 	if base_scrolled and not editable_scrolled then
 		return session.base_win
 	end
 	if editable_scrolled and not base_scrolled then
 		return session.editable_win
 	end
+
+	-- Both moved. This used to return nil on the assumption that native binding
+	-- had already produced a correct result, which silently declined every
+	-- genuine topfill/sub-line misalignment. Follow the focused pane, which is
+	-- the one the user is driving.
+	if base_scrolled and editable_scrolled then
+		local current = vim.api.nvim_get_current_win()
+		if current == session.editable_win or current == session.base_win then
+			return current
+		end
+		return session.editable_win
+	end
+
 	return nil
 end
 
@@ -613,9 +635,14 @@ attach_session = function(session)
 			end
 
 			local source_win = scroll_event_source(live, vim.v.event)
-			if source_win then
-				schedule_scroll_sync(live, source_win)
+			if not source_win then
+				-- Neither pane is in this event: some unrelated window scrolled.
+				-- WinScrolled is global and one callback is registered per live
+				-- session, so without this every session pays for every scroll.
+				return
 			end
+			schedule_scroll_sync(live, source_win)
+			require("lazyvcs.align").schedule(live)
 		end,
 	})
 

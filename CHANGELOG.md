@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-08-05
+
+Live-diff synchronisation release. The two panes now stay together under every
+scroll gesture, including with soft wrapping on, where they previously drifted
+apart and never recovered.
+
+### Added
+
+- `base_window.align_wrapped` (`"auto"` by default, or `"off"`) keeps
+  corresponding diff lines on the same screen row when the panes wrap.
+  Neovim's `'scrollbind'` binds buffer lines, not screen rows, so a line that
+  occupies four rows on one side and one on the other pushed everything below
+  it out of alignment — and because nothing reconciled the difference, the
+  error accumulated down the file. Corresponding text is now paired into units
+  and the shorter side padded with virtual rows. Measured against a wrapped
+  fixture in a real terminal, 18 of 31 visible lines were misaligned before and
+  0 after, with the residual permanent offset eliminated.
+  The padding uses extmarks, so no text is added: undo, marks, and the file on
+  disk are untouched, and it is cleared when the session closes.
+- `base_window.cursor_sync` (`true` by default) keeps the two cursors on
+  corresponding lines.
+- With `align_wrapped = "off"`, `'smoothscroll'` is enabled for the session so
+  scrolling moves by screen rows instead of jumping a whole wrapped line. It is
+  mutually exclusive with alignment: `'smoothscroll'` lets a pane stop part way
+  into a line, and that position is invisible to `:syncbind`.
+
+### Fixed
+
+- Scroll repair is immediate. It was a trailing 20 ms debounce whose timer every
+  new event reset, so during a continuous wheel scroll nothing corrected until
+  you stopped — the panes visibly drifted apart and then snapped together.
+- A scroll event reporting **both** panes no longer declines to act. It returned
+  early on the assumption that native binding had already produced a correct
+  result, which silently swallowed every genuine misalignment; it now follows
+  the focused pane.
+- `'scrollbind'` and `'cursorbind'` are re-asserted after `:diffthis`. Both are
+  reset to the global value when a window edits another file, and an ftplugin or
+  colorscheme loading afterwards could clear them — silently unbinding the pair
+  with no symptom other than scrolling appearing to stop working.
+- Resizing the window or rebalancing the split re-synchronises the panes. Only
+  the widths were adjusted, which re-wraps every line and left the pair offset.
+- A `WinScrolled` event naming neither pane returns immediately. The autocmd is
+  global and one is registered per live session, so every session previously did
+  work for every unrelated scroll.
+- `'smoothscroll'` is saved and restored with the other tracked window options.
+
 ## [0.5.0] - 2026-07-28
 
 Hardening release. An exhaustive audit of the 0.4.x tree produced 32 confirmed
@@ -314,3 +360,4 @@ First tagged release.
 [0.4.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.4.0...v0.4.1
 [0.4.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.4.1...v0.4.2
 [0.5.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.4.2...v0.5.0
+[0.6.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.5.0...v0.6.0

@@ -289,6 +289,15 @@ Main options:
     set_winbar         Set simple winbar labels during live diff.
     session_keymaps    Add buffer-local live diff mappings.
     base_window.width  Left/base diff window width. Ratio when <= 1.
+    base_window.cursor_sync
+                       Keep both diff cursors on corresponding lines.
+                       Default true.
+    base_window.align_wrapped
+                       Keep corresponding lines on the same screen row
+                       when the panes wrap. "auto" (default) pads the
+                       shorter side with virtual rows; "off" leaves
+                       native behaviour and enables 'smoothscroll'
+                       instead. See |lazyvcs-wrapped-diffs|.
 
 Live diff keymaps:
 
@@ -444,14 +453,33 @@ NOTES                                                           *lazyvcs-notes*
 - Normal undo works after a hunk revert.
 - Live diff shows the VCS base (old) on the left and the editable file
   (new) on the right.
+                                                        *lazyvcs-wrapped-diffs*
 - LazyVCS mirrors the editable window's `wrap`, `linebreak`, and `breakindent`
   settings to the base window. Native diff mode disables wrapping unless
   `followwrap` is present in 'diffopt'. To preserve wrapping:
 >
     vim.opt.diffopt:append("followwrap")
 <
-  LazyVCS does not change 'diffopt'. Wrapped corresponding lines can occupy
-  different screen heights and appear visually misaligned.
+  LazyVCS does not change 'diffopt'.
+
+  'scrollbind' binds buffer lines, not screen rows. With wrapping on, a line
+  occupying four screen rows on one side and one on the other pushes
+  everything below it out of alignment, and the error accumulates down the
+  file: the panes agree on the line and still render pages apart.
+
+  LazyVCS pairs corresponding text into units -- one unchanged line with one
+  unchanged line, a changed block with its counterpart as a whole -- and pads
+  the shorter side with virtual rows so both occupy the same height, putting
+  corresponding lines on the same screen row. The padding uses extmarks, so no
+  text is added: undo, marks, and the file on disk are untouched, and it is
+  removed when the session closes.
+
+  `base_window.align_wrapped` controls this. "auto" (default) pads only while
+  the panes actually wrap. "off" leaves native behaviour and enables
+  'smoothscroll' instead, so scrolling moves by screen rows rather than
+  jumping a whole wrapped line. The two cannot be combined: 'smoothscroll'
+  lets a pane stop part way into a line, and that position is invisible to
+  |:syncbind|, which maps toplines through Neovim's own filler model.
 - Inline blame is one global toggle; with `blame.persist` it is saved to
   `stdpath('state')/lazyvcs/state.json` and restored on the next launch.
 - Forge Terminal MCP can help with local agent-driven TUI debugging, but it is

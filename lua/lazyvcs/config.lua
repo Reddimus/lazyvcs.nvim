@@ -4,6 +4,17 @@ local defaults = {
 	debounce_ms = 120,
 	base_window = {
 		width = 0.5,
+		-- Keep the two panes' cursors on corresponding lines. `:diffthis` already
+		-- sets 'cursorbind'; lazyvcs re-asserts it so a later ftplugin or
+		-- colorscheme cannot silently unbind the pair.
+		cursor_sync = true,
+		-- Keep corresponding lines on the same screen row when the panes wrap.
+		-- 'scrollbind' binds buffer lines, so with 'wrap' on (which needs
+		-- `followwrap` in 'diffopt') a line that occupies four rows on one side
+		-- and one on the other pushes everything below it out of alignment, and
+		-- the error accumulates. "auto" pads the shorter side with virtual rows
+		-- only while the panes actually wrap; "off" leaves native behaviour.
+		align_wrapped = "auto",
 	},
 	use_gitsigns = true,
 	set_winbar = true,
@@ -146,6 +157,8 @@ local function normalize(opts)
 	vim.validate("ai", opts.ai, "table")
 	vim.validate("commit_message", opts.ai.commit_message, "table")
 
+	vim.validate("base_window_cursor_sync", opts.base_window.cursor_sync, "boolean")
+	vim.validate("base_window_align_wrapped", opts.base_window.align_wrapped, "string")
 	vim.validate("signs_enabled", opts.signs.enabled, "boolean")
 	vim.validate("signs_text", opts.signs.text, "table")
 	vim.validate("blame_mode", opts.blame.mode, "string")
@@ -226,6 +239,9 @@ local function normalize(opts)
 
 	opts.debounce_ms = math.max(0, math.floor(opts.debounce_ms))
 	opts.base_window.width = normalize_width(opts.base_window.width)
+	if not vim.tbl_contains({ "auto", "off" }, opts.base_window.align_wrapped) then
+		error("lazyvcs base_window.align_wrapped must be 'auto' or 'off'")
+	end
 	opts.signs.debounce_ms = math.max(0, math.floor(opts.signs.debounce_ms))
 	opts.signs.sign_priority = math.max(1, math.floor(opts.signs.sign_priority))
 	opts.signs.max_file_bytes = math.max(0, math.floor(opts.signs.max_file_bytes))
