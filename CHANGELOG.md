@@ -14,23 +14,29 @@ apart and never recovered.
 
 ### Added
 
-- `base_window.align_wrapped` (`"auto"` by default, or `"off"`) keeps
+- `base_window.align_wrapped` (`"off"` by default, or `"auto"`) keeps
   corresponding diff lines on the same screen row when the panes wrap. Neovim's
   `'scrollbind'` binds buffer lines, not screen rows, so a line that occupies
   four rows on one side and one on the other pushed everything below it out of
   alignment — and because nothing reconciled the difference, the error
-  accumulated down the file. Corresponding text is now paired into units and the
+  accumulated down the file. Corresponding text is paired into units and the
   shorter side padded with virtual rows. Measured against a wrapped fixture in a
-  real terminal, 18 of 31 visible lines were misaligned before and 0 after, with
-  the residual permanent offset eliminated. The padding uses extmarks, so no
-  text is added: undo, marks, and the file on disk are untouched, and it is
-  cleared when the session closes.
+  real terminal, 18 of 31 visible lines were misaligned before and 0 after.
+
+  It is **off by default**. The padding is drawn with extmarks, which Neovim's
+  own scroll binding cannot see, so the two disagree about position _while
+  scrolling_ and the panes can land on different lines until the view settles.
+  With `"auto"` the result is exact once the view is still, which is the right
+  trade for reading a diff and the wrong one for scrolling through it. The
+  padding adds no text, so undo, marks, and the file on disk are untouched, and
+  it is skipped while the same file is open in another window.
+
+- By default `'smoothscroll'` is now enabled for the session when the panes
+  wrap, so scrolling moves by screen rows instead of jumping a whole wrapped
+  line at a time, and the sub-line offset is carried across when one pane is
+  scrolled without focus.
 - `base_window.cursor_sync` (`true` by default) keeps the two cursors on
   corresponding lines.
-- With `align_wrapped = "off"`, `'smoothscroll'` is enabled for the session so
-  scrolling moves by screen rows instead of jumping a whole wrapped line. It is
-  mutually exclusive with alignment: `'smoothscroll'` lets a pane stop part way
-  into a line, and that position is invisible to `:syncbind`.
 
 ### Fixed
 

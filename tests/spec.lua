@@ -4012,7 +4012,7 @@ function align_specs.same_screen_row()
 	local session
 	local ok, err = pcall(function()
 		with_diffopt_flag("followwrap", true, function()
-			require("lazyvcs").setup({ debounce_ms = 10 })
+			require("lazyvcs").setup({ debounce_ms = 10, base_window = { align_wrapped = "auto" } })
 			session = align_specs.open_wrapped_mismatch_session()
 
 			eq(vim.wo[session.base_win].wrap, true, "followwrap should leave the base pane wrapped")
@@ -4072,13 +4072,13 @@ function align_specs.smoothscroll_off()
 	local session
 	local ok, err = pcall(function()
 		with_diffopt_flag("followwrap", true, function()
-			require("lazyvcs").setup({ debounce_ms = 10, base_window = { align_wrapped = "off" } })
+			require("lazyvcs").setup({ debounce_ms = 10 })
 			session = align_specs.open_wrapped_mismatch_session()
 
 			eq(
 				vim.wo[session.base_win].smoothscroll,
 				true,
-				"with alignment off, smoothscroll gives screen-row scrolling instead"
+				"align_wrapped defaults to off, so smoothscroll gives screen-row scrolling"
 			)
 			eq(require("lazyvcs.align").apply(session), false, "alignment must not run when it is switched off")
 
@@ -5224,6 +5224,13 @@ local function test_source_control_git_file_actions_commit_and_sync()
 
 	ops.revert_file(state, file_node)
 	wait_for(function()
+		-- `git checkout --` replaces the file, so there is a window in which it
+		-- does not exist. `readfile` *throws* on a missing file, and an error out
+		-- of a wait_for predicate fails the test outright instead of retrying --
+		-- which made this spuriously fail roughly one run in three.
+		if vim.fn.filereadable(fixture.file) ~= 1 then
+			return false
+		end
 		return vim.deep_equal(vim.fn.readfile(fixture.file), { "one", "two", "three" })
 			and session_state.get_repo_job(fixture.root) == nil
 	end, "git discard should finish in the background", ASYNC_TIMEOUT_MS)

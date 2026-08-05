@@ -188,6 +188,13 @@ function M.open(session)
 
 	vim.cmd.wincmd("p")
 
+	-- Captured before we change anything: if the base window cannot be closed
+	-- later (`:only` from the left pane leaves it as the last window), it falls
+	-- back to the user's file still carrying our settings -- most damagingly
+	-- `winfixwidth`, which then silently refuses every resize for the rest of
+	-- the session.
+	session.base_window_options = capture_window_options(session.base_win)
+
 	vim.wo[session.base_win].number = vim.wo[editable_win].number
 	vim.wo[session.base_win].relativenumber = false
 	vim.wo[session.base_win].wrap = vim.wo[editable_win].wrap
@@ -250,7 +257,7 @@ function M.apply_scroll_granularity(session)
 		return false
 	end
 
-	local smooth = (session.opts.base_window.align_wrapped or "auto") ~= "auto"
+	local smooth = (session.opts.base_window.align_wrapped or "off") ~= "auto"
 	for _, win in ipairs({ session.editable_win, session.base_win }) do
 		if util.win_is_valid(win) then
 			vim.wo[win].smoothscroll = smooth
@@ -273,6 +280,14 @@ function M.rebalance(session)
 	if editable_width <= 0 or base_width <= 0 then
 		return false
 	end
+
+	-- Before the early return below, not after. Any width change re-wraps every
+	-- line and invalidates the row measurements, but a proportional resize
+	-- leaves the split still balanced -- so the early return fired and the
+	-- padding kept the old width's values. Nothing else covers it either: a pure
+	-- width change produces no topline/topfill/leftcol/skipcol delta, so the
+	-- WinScrolled path treats it as "not a scroll" and skips alignment too.
+	require("lazyvcs.align").schedule(session)
 
 	local total_width = editable_width + base_width
 	local target_base = math.max(math.floor(total_width / 2), 1)
@@ -424,7 +439,12 @@ function M.close(session, opts)
 		if session.opts.set_winbar then
 			restore_winbar(session.base_win, session.base_prev_winbar)
 		end
-		pcall(vim.api.nvim_win_close, session.base_win, true)
+		if not pcall(vim.api.nvim_win_close, session.base_win, true) then
+			-- The base window survived -- it was the last one in the tab. It now
+			-- shows the user's own file, so put back everything we changed.
+			restore_window_options(session.base_win, session.base_window_options)
+			vim.wo[session.base_win].winfixwidth = false
+		end
 	end
 
 	if util.buf_is_valid(session.base_bufnr) then

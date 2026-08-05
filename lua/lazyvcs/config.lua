@@ -10,11 +10,17 @@ local defaults = {
 		cursor_sync = true,
 		-- Keep corresponding lines on the same screen row when the panes wrap.
 		-- 'scrollbind' binds buffer lines, so with 'wrap' on (which needs
-		-- `followwrap` in 'diffopt') a line that occupies four rows on one side
-		-- and one on the other pushes everything below it out of alignment, and
-		-- the error accumulates. "auto" pads the shorter side with virtual rows
-		-- only while the panes actually wrap; "off" leaves native behaviour.
-		align_wrapped = "auto",
+		-- `followwrap` in 'diffopt') a line occupying four rows on one side and
+		-- one on the other pushes everything below it out of alignment, and the
+		-- error accumulates down the file.
+		--
+		-- "auto" pads the shorter side with virtual rows, which makes the panes
+		-- line up exactly while they are still. It is off by default because the
+		-- padding is invisible to Neovim's own scroll binding: the two disagree
+		-- about position *while scrolling*, and the panes can land on different
+		-- lines until the view settles. "off" keeps native behaviour and enables
+		-- 'smoothscroll' instead, so scrolling moves by screen rows.
+		align_wrapped = "off",
 	},
 	use_gitsigns = true,
 	set_winbar = true,

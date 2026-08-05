@@ -256,20 +256,27 @@ other pushes everything below it out of alignment — and because nothing
 reconciles the difference, the error accumulates down the file. The two panes
 agree on the line and still render pages apart.
 
-LazyVCS closes that gap. Corresponding text is paired into units — one unchanged
-line with one unchanged line, a changed block with its counterpart as a whole —
-and the shorter side is padded with virtual rows so both occupy the same height.
-Corresponding lines therefore start on the same screen row. The padding is drawn
-with extmarks, so no text is added: undo, marks, and the file on disk are
-untouched, and it is removed when the session closes.
+By default LazyVCS enables `'smoothscroll'` for the session, so scrolling moves
+by screen rows instead of jumping a whole wrapped line at a time, and carries
+the sub-line offset across when one pane is scrolled without focus.
 
-This is controlled by `base_window.align_wrapped`, which defaults to `"auto"`
-(pad only while the panes actually wrap). Set it to `"off"` for native
-behaviour; LazyVCS then enables `'smoothscroll'` instead, so scrolling moves by
-screen rows rather than jumping a whole wrapped line at a time. The two cannot
-be combined: `'smoothscroll'` lets a pane stop part way into a line, and that
-position is invisible to `:syncbind`, which maps toplines through Neovim's own
-filler model.
+`base_window.align_wrapped = "auto"` additionally pads the shorter side with
+virtual rows so corresponding lines start on the same screen row. This makes the
+panes line up **exactly while they are still** — measured on a wrapped fixture,
+18 of 31 visible lines misaligned before and 0 after. It is **off by default**,
+because the padding is drawn with extmarks that Neovim's own scroll binding
+cannot see: the two disagree about position _while scrolling_, and the panes can
+land on different lines until the view settles. Turn it on if you read diffs
+more than you scroll them:
+
+```lua
+opts = { base_window = { align_wrapped = "auto" } }
+```
+
+The padding adds no text, so undo, marks, and the file on disk are untouched,
+and it is removed when the session closes. It is also skipped while the same
+file is open in another window, since extmarks are buffer-scoped and the blank
+rows would show up there too.
 
 `base_window.cursor_sync` (default `true`) keeps the two cursors on
 corresponding lines. `:diffthis` already sets `'cursorbind'`; LazyVCS re-asserts
@@ -343,7 +350,7 @@ require("lazyvcs").setup({
   base_window = {
     width = 0.5,
     cursor_sync = true, -- keep both cursors on corresponding lines
-    align_wrapped = "auto", -- "auto" | "off"; align wrapped lines by screen row
+    align_wrapped = "off", -- "auto" pads wrapped lines to the same screen row
   },
   signs = {
     enabled = true,

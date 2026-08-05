@@ -67,27 +67,49 @@ end
 ---Between hunks the two buffers hold identical text, so those lines pair one to
 ---one; a hunk itself pairs as a single block, because its two sides have no
 ---line-level correspondence at all.
+---`base_stop` and `current_stop` bound the walk to the lines that can matter.
+---Pairing a whole file allocates one unit and two ranges per unchanged line --
+---measured at 4.2 ms and 1.4 MB of garbage for 5,000 lines, 13.6 ms and 4.7 MB
+---for 20,000 -- and everything outside the viewport is then discarded. Holding
+---the wheel down runs this once per event-loop turn, so the bound is what keeps
+---scrolling a large wrapped diff cheap.
 ---@param hunks table[]
 ---@param base_count integer
 ---@param current_count integer
+---@param base_stop integer|nil last base line worth pairing
+---@param current_stop integer|nil last current line worth pairing
 ---@return lazyvcs.align.Unit[]
-function M.pair_units(hunks, base_count, current_count)
+function M.pair_units(hunks, base_count, current_count, base_stop, current_stop)
 	local units = {}
 	local b, c = 1, 1
+	base_stop = base_stop or base_count
+	current_stop = current_stop or current_count
+
+	local function past_the_end()
+		return b > base_stop and c > current_stop
+	end
 
 	local function pair_unchanged(b_last, c_last)
 		local length = math.min(b_last - b + 1, c_last - c + 1)
 		for offset = 0, length - 1 do
-			units[#units + 1] = {
-				base = { b + offset, b + offset },
-				current = { c + offset, c + offset },
-			}
+			-- Skip the units that are certainly off screen, but keep advancing the
+			-- cursors: the pairing is positional, so stopping early would
+			-- mis-align everything after it.
+			if b + offset <= base_stop or c + offset <= current_stop then
+				units[#units + 1] = {
+					base = { b + offset, b + offset },
+					current = { c + offset, c + offset },
+				}
+			end
 		end
 		b = b + length
 		c = c + length
 	end
 
 	for _, hunk in ipairs(hunks or {}) do
+		if past_the_end() then
+			break
+		end
 		-- Where the identical run before this hunk ends. With an empty side the
 		-- anchor line itself is still unchanged text, so it belongs to the run.
 		local b_stop = hunk.base_count > 0 and (hunk.base_start - 1) or hunk.base_start
@@ -145,7 +167,7 @@ function M.apply(session)
 	if not session or session.closing then
 		return false
 	end
-	if (session.opts.base_window.align_wrapped or "auto") ~= "auto" then
+	if (session.opts.base_window.align_wrapped or "off") ~= "auto" then
 		return false
 	end
 
@@ -158,6 +180,9 @@ function M.apply(session)
 		return false
 	end
 	if vim.api.nvim_win_get_tabpage(base_win) ~= vim.api.nvim_win_get_tabpage(edit_win) then
+		-- The panes have been split across tabs (`<C-w>T`), so the padding has no
+		-- partner to line up with. Clear it rather than stranding it.
+		M.clear(session)
 		return false
 	end
 
@@ -168,11 +193,26 @@ function M.apply(session)
 		return false
 	end
 
+	-- Extmarks are buffer-scoped, not window-scoped, so padding the editable
+	-- buffer shows up in every other window displaying that file -- blank rows
+	-- injected into the user's ordinary view of their own file, in another split
+	-- or tab, for as long as the session lives. Alignment is cosmetic; showing
+	-- the file twice is not, so the file wins.
+	if #vim.fn.win_findbuf(edit_buf) > 1 then
+		M.clear(session)
+		return false
+	end
+
 	local base_first, base_last = visible_range(base_win, base_buf, 10)
 	local edit_first, edit_last = visible_range(edit_win, edit_buf, 10)
 
-	local units =
-		M.pair_units(session.hunks or {}, vim.api.nvim_buf_line_count(base_buf), vim.api.nvim_buf_line_count(edit_buf))
+	local units = M.pair_units(
+		session.hunks or {},
+		vim.api.nvim_buf_line_count(base_buf),
+		vim.api.nvim_buf_line_count(edit_buf),
+		base_last,
+		edit_last
+	)
 
 	-- Build the whole plan before touching the buffers. Measuring is read-only,
 	-- so the heights below are all taken against one consistent screen state.
@@ -224,7 +264,7 @@ function M.schedule(session)
 	if not session or session.closing then
 		return
 	end
-	if (session.opts.base_window.align_wrapped or "auto") ~= "auto" then
+	if (session.opts.base_window.align_wrapped or "off") ~= "auto" then
 		return
 	end
 	if session.align_pending then
@@ -253,6 +293,22 @@ function M.schedule(session)
 			pcall(layout.sync_scroll, session, source)
 		end
 	end)
+end
+
+---True when alignment is padding this session right now, i.e. it is enabled, the
+---panes wrap, and the layout is one it can act on. Callers use this to decide
+---whether Neovim's own binding has already produced the correct result.
+function M.is_active(session)
+	if not session or session.closing then
+		return false
+	end
+	if (session.opts.base_window.align_wrapped or "off") ~= "auto" then
+		return false
+	end
+	if not (util.win_is_valid(session.base_win) and util.win_is_valid(session.editable_win)) then
+		return false
+	end
+	return vim.wo[session.base_win].wrap or vim.wo[session.editable_win].wrap
 end
 
 function M.clear(session)

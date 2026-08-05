@@ -540,11 +540,23 @@ scroll_event_source = function(session, event)
 		return session.editable_win
 	end
 
-	-- Both moved. This used to return nil on the assumption that native binding
-	-- had already produced a correct result, which silently declined every
-	-- genuine topfill/sub-line misalignment. Follow the focused pane, which is
-	-- the one the user is driving.
+	-- Both moved, which is what 'scrollbind' does when the focused pane scrolls.
 	if base_scrolled and editable_scrolled then
+		-- When the panes wrap and alignment is active, leave the result alone.
+		-- `:syncbind` enforces a *relative offset* between the panes, and under
+		-- 'wrap' that offset drifts, because the same number of screen rows
+		-- covers a different number of buffer lines on each side. Running it
+		-- here actively pulls the panes apart: measured over 15 <C-e>, native
+		-- binding left 0 of 21 visible lines misaligned and a syncbind on top of
+		-- it left 21 of 21, worsening as the scroll continued. The padding
+		-- cannot compensate -- it only equalises unit heights below the topline.
+		if require("lazyvcs.align").is_active(session) then
+			return nil
+		end
+
+		-- Without wrapping there is no drift, and following the focused pane
+		-- corrects the topfill and sub-line offsets that returning nil here used
+		-- to decline silently.
 		local current = vim.api.nvim_get_current_win()
 		if current == session.editable_win or current == session.base_win then
 			return current
@@ -634,15 +646,26 @@ attach_session = function(session)
 				return
 			end
 
-			local source_win = scroll_event_source(live, vim.v.event)
-			if not source_win then
-				-- Neither pane is in this event: some unrelated window scrolled.
-				-- WinScrolled is global and one callback is registered per live
-				-- session, so without this every session pays for every scroll.
+			-- WinScrolled is global and one callback is registered per live
+			-- session, so bail immediately when neither pane is involved --
+			-- otherwise every session pays for every unrelated scroll.
+			local event = vim.v.event or {}
+			local windows = event.windows or event
+			if not (windows[tostring(live.editable_win)] or windows[tostring(live.base_win)]) then
 				return
 			end
-			schedule_scroll_sync(live, source_win)
+
+			-- Alignment is recomputed for the new viewport whether or not a sync
+			-- is needed. It is scoped to the visible range, so a scroll that
+			-- moved both panes correctly still changes which units need padding;
+			-- skipping it here left the panes carrying the previous viewport's
+			-- padding, which is a misalignment in its own right.
 			require("lazyvcs.align").schedule(live)
+
+			local source_win = scroll_event_source(live, event)
+			if source_win then
+				schedule_scroll_sync(live, source_win)
+			end
 		end,
 	})
 
