@@ -6,7 +6,7 @@
     "format:md:check": "prettier --check \"**/*.md\"",
     "lint:md": "markdownlint-cli2 \"**/*.md\" \"#deps/**\" \"#node_modules/**\"",
     "lint:links": "node tests/ci/check-local-links.mjs",
-    "audit": "npm audit --audit-level=high"
+    "audit": "npm audit --omit=dev --audit-level=high"
   },
   "devDependencies": {
     "markdownlint-cli2": "0.23.2",

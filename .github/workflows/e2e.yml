@@ -72,3 +72,19 @@ jobs:
           path: ${{ runner.temp }}/astronvim-canary
           if-no-files-found: ignore
           retention-days: 7
+
+  # Both canaries are continue-on-error so one broken upstream does not mask the
+  # other's result, but without this job the workflow reported green with both
+  # red -- so a nightly Neovim or AstroNvim regression stayed invisible.
+  result:
+    name: Canary result
+    if: always()
+    needs: [neovim-nightly, astronvim-v6]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fail when a canary failed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          printf 'nightly=%s astronvim=%s\n' \
+            "${{ needs.neovim-nightly.result }}" "${{ needs.astronvim-v6.result }}"
+          exit 1
