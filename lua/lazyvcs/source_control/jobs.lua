@@ -434,10 +434,25 @@ function M.cancel(filter, reason)
 	cancelling = cancelling + 1
 	local cancelled = 0
 	local ok, err = pcall(function()
-		while true do
+		-- Bounded. Every internal callback chain is finite, so convergence is
+		-- expected within a pass or two -- but a caller whose `on_done`
+		-- unconditionally enqueues a matching job would otherwise spin here
+		-- forever and freeze Neovim, which is far worse than leaving one job
+		-- running. Report rather than hang.
+		local MAX_PASSES = 32
+		for pass = 1, MAX_PASSES do
 			local selected = collect()
 			if #selected == 0 then
 				break
+			end
+			if pass == MAX_PASSES then
+				util.notify(
+					("lazyvcs: cancellation did not converge after %d passes; %d job(s) left running"):format(
+						MAX_PASSES,
+						#selected
+					),
+					vim.log.levels.WARN
+				)
 			end
 			cancelled = cancelled + #selected
 			for _, job in ipairs(selected) do
@@ -468,10 +483,15 @@ function M.cancel(filter, reason)
 	-- Only the outermost sweep releases the queues; a nested `M.cancel` reached
 	-- through a callback must not start work its caller is still cancelling.
 	if cancelling == 0 then
-		local pending = deferred_pumps
-		deferred_pumps = {}
-		for vcs in pairs(pending) do
+		-- Drain one at a time and clear each entry only once its pump has
+		-- returned. Swapping the whole table out first would strand every
+		-- remaining queue if one `pump` raised, leaving that work parked
+		-- forever with no worker ever scheduled to pick it up.
+		local vcs = next(deferred_pumps)
+		while vcs do
+			deferred_pumps[vcs] = nil
 			pump(vcs)
+			vcs = next(deferred_pumps)
 		end
 	end
 

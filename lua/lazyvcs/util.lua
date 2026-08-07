@@ -539,18 +539,26 @@ function M.truncate_display(text, max_width)
 	if vim.api.nvim_strwidth(text) <= max_width then
 		return text
 	end
-	if max_width <= 3 then
-		return vim.fn.strcharpart(text, 0, max_width)
-	end
-	local out = ""
-	for index = 0, vim.fn.strchars(text) - 1 do
-		local candidate = out .. vim.fn.strcharpart(text, index, 1)
-		if vim.api.nvim_strwidth(candidate) > max_width - 3 then
-			break
+	-- Accumulate by display width, never by codepoint count: taking
+	-- `max_width` characters would return two cells for `truncate_display(cjk, 1)`
+	-- and blow the budget the caller asked for.
+	local function fit(budget)
+		local out = ""
+		for index = 0, vim.fn.strchars(text) - 1 do
+			local candidate = out .. vim.fn.strcharpart(text, index, 1)
+			if vim.api.nvim_strwidth(candidate) > budget then
+				break
+			end
+			out = candidate
 		end
-		out = candidate
+		return out
 	end
-	return out .. "..."
+	-- Too narrow for content plus an ellipsis: spend the whole budget on
+	-- content rather than emitting a bare "..." that says nothing.
+	if max_width <= 3 then
+		return fit(max_width)
+	end
+	return fit(max_width - 3) .. "..."
 end
 
 return M

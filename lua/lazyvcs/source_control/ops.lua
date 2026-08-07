@@ -1367,6 +1367,13 @@ function M.switch_repo(state, node)
 	local switch_generation = (state.lazyvcs_switch_generations[switch_scope] or 0) + 1
 	state.lazyvcs_switch_generations[switch_scope] = switch_generation
 	return repo_switch.open_async(repo, {
+		-- Cancelling the enumeration does not stop the SVN chain -- its
+		-- callbacks read a cancelled `nil` result as "target absent" and run to
+		-- completion -- so the picker needs its own liveness test rather than
+		-- relying on the job being killed.
+		is_stale = function()
+			return state.lazyvcs_tearing_down == true or not window_exists(state)
+		end,
 		on_ready = function()
 			session_state.clear_repo_job(repo.root)
 			navigate_if_visible(state)

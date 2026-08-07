@@ -836,6 +836,15 @@ function M.navigate(state)
 		return
 	end
 	M.render(state)
+	-- Hydration needs repositories, and consuming the remote-refresh intent
+	-- against an empty spec list throws it away. `M.open`/`M.refresh` already
+	-- render rather than navigate while a scan is pending, but they are not the
+	-- only routes here -- sorting, cancelling, and late operation callbacks all
+	-- navigate too. Guard centrally; the discovery callback navigates again once
+	-- the specs land.
+	if state.lazyvcs_discovering then
+		return state
+	end
 	local remote_refresh = state.lazyvcs_remote_refresh
 	state.lazyvcs_remote_refresh = nil
 	start_summary_hydration(state, remote_refresh)

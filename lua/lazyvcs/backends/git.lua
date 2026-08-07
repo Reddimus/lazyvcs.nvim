@@ -35,7 +35,11 @@ local function get_root(path)
 	if not result then
 		return nil, err
 	end
-	return util.trim(result.stdout)
+	-- Canonicalize: the sidebar canonicalizes its roots, and identity is
+	-- compared with `==`. Git already resolves symlinks here, but a Windows
+	-- 8.3 short path or a case difference would still not match, and the
+	-- non-existent-path fallback keeps this total.
+	return util.canonical_path(util.trim(result.stdout))
 end
 
 local function is_tracked(root, relpath)
@@ -91,7 +95,7 @@ function M.probe_async(path, on_done, opts)
 		if not result then
 			return task:finish(nil, err)
 		end
-		local root = util.trim(result.stdout)
+		local root = util.canonical_path(util.trim(result.stdout))
 		if root == "" then
 			return task:finish(nil, "Git returned an empty working-tree root")
 		end
@@ -223,7 +227,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 		if err then
 			return task:finish(nil, err)
 		end
-		local root = util.trim(result.stdout)
+		local root = util.canonical_path(util.trim(result.stdout))
 		local relpath = util.relpath(root, path)
 
 		task:add(
@@ -653,7 +657,7 @@ function M.blame_lines_async(path, on_done, opts)
 			return task:finish(nil, err)
 		end
 
-		local root = util.trim(result.stdout)
+		local root = util.canonical_path(util.trim(result.stdout))
 		local relpath = util.relpath(root, path)
 		task:add(
 			util.system_start(
