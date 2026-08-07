@@ -6,6 +6,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-08-07
+
+Correctness release. Opening the source-control sidebar no longer blocks Neovim,
+and repository identity, job cancellation and text truncation are all fixed in
+ways that show up most on macOS.
+
+### Fixed
+
+- **Opening the sidebar froze Neovim while it looked for repositories.**
+  `native.open` rendered before starting discovery, and rendering fell back to
+  the synchronous discoverer: a recursive directory walk plus a blocking
+  `git rev-parse` **and** `svn info`, each with a 30-second cap. Because that
+  fallback also populated the spec list, the asynchronous discovery added in
+  0.5.0 could never start — it was unreachable code. The sidebar now paints
+  immediately, shows `Discovering repositories...` while the scan runs, and
+  fills in as results arrive. An unreachable Subversion server no longer costs a
+  minute of frozen editor.
+- **`R` (refresh) never looked for new repositories.** It cleared caches but
+  kept the existing spec list, so a repository created after the sidebar opened
+  stayed invisible until the sidebar was closed and reopened.
+- **The same repository could end up with two identities.** Roots were compared
+  as text, so `/tmp/work` and `/private/tmp/work` — the same directory on macOS,
+  where `/tmp` and `/var` are symlinks into `/private` — did not match. Git and
+  Subversion both report resolved paths, so a sidebar opened from an unresolved
+  path disagreed with its own backend and its caches, jobs and sessions stopped
+  matching. Roots are now canonicalised through `fs_realpath`.
+- **Cancelling background work could leave some of it running.** `jobs.cancel`
+  took one snapshot of matching jobs, but finishing a job runs its callback
+  synchronously, and those callbacks queue more work — so a job enqueued during
+  the sweep survived it. Cancellation now repeats until a pass finds nothing
+  new, and holds the queues until it has converged.
+- **Closing the sidebar did not cancel branch/target enumeration**, which could
+  still open a picker afterwards. Its jobs are now owned by the sidebar, scoped
+  per repository, and given their own generation — previously they borrowed the
+  hydration counter, whose watermark outlived the sidebar and could reject a new
+  sidebar's first enumeration as stale.
+- **Aborting one buffer transfer cancelled every other window's.** The abort
+  paths asked for the current window's pending transfer but then cleared all of
+  them, stranding unrelated sessions.
+- **Inline blame could be cut mid-character and overflow its width.**
+  `blame.max_width` is a column budget but was measured in bytes, so CJK text or
+  an emoji produced roughly double-width virtual text and could split a UTF-8
+  sequence. Truncation is now cell-aware, and the byte-budget helper never
+  splits a character.
+- **Git and Subversion were assumed missing for the rest of the session** if the
+  first probe failed. A GUI-launched Neovim inherits launchd's `PATH` on macOS,
+  so `/opt/homebrew/bin` is absent and both probes fail; correcting `PATH`
+  afterwards had no effect until restart. The probe now re-runs when `PATH`
+  changes.
+- `util.trim` returned two values (the trimmed string and the substitution
+  count), so both backends' `get_root` handed callers a number where an error
+  was expected.
+- A blame split leaked its autocommand group if construction failed partway, and
+  allocated a new namespace per buffer — namespaces cannot be deleted.
+- Failures to persist state were discarded silently; they now warn once.
+
+### Changed
+
+- The sidebar shows `Discovering repositories...` rather than
+  `No repositories selected` while a scan is in flight.
+
+### Documentation
+
+- Removed `:LazyVCS diff cancel` from `doc/lazyvcs.txt`; no such verb exists.
+- Documented the sidebar's `q` and `X` mappings, and that sidebar mappings are
+  fixed rather than configurable through `config.keymaps`.
+- Corrected the `:checkhealth lazyvcs` command in `CONTRIBUTING.md`, which could
+  not find the plugin as written.
+
+### Internal
+
+- The CI whitespace check used `git diff-tree --check --cc`. A combined diff
+  only lists files that differ from _every_ parent, so a pull request's own
+  changes were omitted and the check passed unconditionally. It now diffs an
+  explicit range.
+- Test fixtures no longer inherit the developer's git configuration; a
+  contributor with commit or tag signing enabled globally saw three unrelated
+  specs fail.
+- New specs live in `tests/spec_discovery.lua`: `tests/spec.lua` reached
+  LuaJIT's limit of 200 local variables per function.
+
 ## [0.6.0] - 2026-08-05
 
 Live-diff synchronisation release. The two panes now stay together under every

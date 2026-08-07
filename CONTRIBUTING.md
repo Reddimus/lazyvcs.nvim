@@ -32,7 +32,12 @@ nvim --headless -u NONE -l tests/native_smoke.lua   # startup smoke
 nvim --headless -u NONE -l tests/run.lua            # spec suite
 tests/minitest.sh                                   # sidebar UI tests
 nvim --headless -u NONE -c 'helptags doc' -c 'quitall'
-nvim --headless -u NONE -c 'checkhealth lazyvcs' -c 'quitall'
+# `-u NONE` alone cannot find the plugin, so the health provider never loads and
+# the check silently reports nothing. Put the checkout on the runtimepath and
+# source the plugin file first -- this is what `.github/workflows/verify.yml`
+# runs.
+nvim --headless -u NONE -c 'set rtp+=.' -c 'runtime plugin/lazyvcs.lua' \
+  -c 'checkhealth lazyvcs' -c 'quitall'
 ```
 
 `lua-language-server` needs `VIMRUNTIME` exported — `.luarc.json` resolves the

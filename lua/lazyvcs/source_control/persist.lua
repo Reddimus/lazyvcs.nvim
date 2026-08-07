@@ -17,12 +17,26 @@ local function load_cache()
 	return cache
 end
 
+-- Warn once per session on a persistence failure. `json_file.write` returns
+-- `nil, err` and both persistence layers used to discard it, so an unwritable
+-- state directory produced settings that silently never persisted and no way to
+-- tell that from "the feature does not work". Once, because this runs on every
+-- sidebar layout change and a repeated notification would be worse than the bug.
+local warned = false
+
 local function save_cache()
 	if cache == nil then
 		return
 	end
 
-	json_file.write(state_path(), cache)
+	local ok, err = json_file.write(state_path(), cache)
+	if not ok and not warned then
+		warned = true
+		require("lazyvcs.util").notify(
+			"Could not persist source-control layout: " .. tostring(err),
+			vim.log.levels.WARN
+		)
+	end
 end
 
 local function serialize_state(state)

@@ -225,20 +225,25 @@ local function handle_pending_transfer(target_bufnr)
 		return
 	end
 
+	-- Every abort below must name `pending.editable_win`. `peek_pending_transfer()`
+	-- looks up the CURRENT window, but `clear_pending_transfer()` reads a nil
+	-- argument as "clear every window" -- an asymmetry that made each of these
+	-- branches cancel and strand in-flight transfers belonging to unrelated
+	-- sessions in other windows.
 	if pending.tabpage ~= vim.api.nvim_get_current_tabpage() then
-		state.clear_pending_transfer()
+		state.clear_pending_transfer(pending.editable_win)
 		settle_aborted_transfer(pending)
 		return
 	end
 
 	if pending.editable_win ~= vim.api.nvim_get_current_win() then
-		state.clear_pending_transfer()
+		state.clear_pending_transfer(pending.editable_win)
 		settle_aborted_transfer(pending)
 		return
 	end
 
 	if target_bufnr == pending.editable_bufnr or target_bufnr == pending.base_bufnr then
-		state.clear_pending_transfer()
+		state.clear_pending_transfer(pending.editable_win)
 		settle_aborted_transfer(pending)
 		return
 	end
@@ -374,7 +379,11 @@ local function ensure_global_autocmds()
 			-- hit-enter prompt; report them instead so navigation always continues.
 			local ok, err = pcall(handle_pending_transfer, args.buf)
 			if not ok then
-				state.clear_pending_transfer()
+				-- Scope the reset to the window whose transfer just failed.
+				-- `handle_pending_transfer` only ever acts on the current
+				-- window's pending, so a bare call here would punish every
+				-- other session for this one's error.
+				state.clear_pending_transfer(vim.api.nvim_get_current_win())
 				util.notify("lazyvcs: buffer transfer failed: " .. one_line(err), vim.log.levels.ERROR)
 			end
 		end,

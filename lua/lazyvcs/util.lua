@@ -4,8 +4,15 @@ function M.notify(msg, level)
 	vim.notify(msg, level or vim.log.levels.INFO, { title = "lazyvcs.nvim" })
 end
 
+-- The outer parentheses are load-bearing: `gsub` returns (string, count), so
+-- without them `trim` returns two values. Both backends' `get_root` end with
+-- `return util.trim(result.stdout)`, so `local root, err = get_root(path)` was
+-- binding the substitution count to `err` -- normally 1, since the command
+-- output ends in a newline -- and any `load_err or err` fallback would surface
+-- that number to the user as an error message. See `layout.sanitize_root` for
+-- the same shape written correctly.
 function M.trim(text)
-	return (text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	return ((text or ""):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
 function M.split_lines(text)
@@ -362,6 +369,33 @@ end
 --- textual prefix, which happens on Windows when one side is an 8.3 short name
 --- (`C:/Users/RUNNER~1/...`) and the other is the long form
 --- (`C:/Users/runneradmin/...`) — the same directory, spelled differently.
+---Canonical identity for a repository or workspace root.
+---
+---`vim.fs.normalize` alone only fixes separators and `~`; it does not resolve
+---symlinks. That is enough for display but not for identity, and roots ARE
+---identities here: `state.path`, `repo.root`, the job scheduler's owner keys and
+---the session registry all compare them with `==`.
+---
+---The mismatch is routine on macOS, where `/tmp` and `/var` are symlinks into
+---`/private`. `git rev-parse --show-toplevel` and `svn info` both report the
+---resolved path, while a sidebar opened from `vim.fn.getcwd()` in `/tmp/work`
+---keeps the unresolved spelling — so the same repository ends up with two
+---identities and its cache entries, jobs and sessions stop matching. The test
+---fixtures already resolve at creation time for exactly this reason.
+---
+---Falls back to the normalized input when the path does not exist yet, so a
+---not-yet-created directory still gets a stable (if unresolved) identity.
+---@param path string|nil
+---@return string
+function M.canonical_path(path)
+	if not path or path == "" then
+		return path or ""
+	end
+	local normalized = vim.fs.normalize(path)
+	local resolved = vim.uv.fs_realpath(normalized)
+	return resolved and vim.fs.normalize(resolved) or normalized
+end
+
 ---@return string
 function M.relpath(root, path)
 	if not root or root == "" then
@@ -453,14 +487,70 @@ function M.buf_is_valid(bufnr)
 	return bufnr and bufnr ~= 0 and vim.api.nvim_buf_is_valid(bufnr)
 end
 
+---Truncate to a byte budget without ever splitting a UTF-8 sequence.
+---
+---Use this for payload and message budgets -- an API context cap, an error
+---string -- where the limit is about size, not screen space. `text:sub` alone
+---could cut mid-codepoint and hand Neovim invalid UTF-8, which renders as
+---replacement characters and can be rejected outright by the extmark API.
+---For anything that has to fit a column budget use `M.truncate_display`.
 function M.truncate(text, max_len)
 	if not text or #text <= max_len then
 		return text or ""
 	end
-	if max_len <= 3 then
-		return text:sub(1, max_len)
+	local function clip(budget)
+		if budget <= 0 then
+			return ""
+		end
+		if budget >= #text then
+			return text
+		end
+		-- Back up while the byte just past the cut is a UTF-8 continuation
+		-- byte (10xxxxxx, i.e. 0x80..0xBF), which means the cut landed inside
+		-- a multi-byte sequence.
+		local cut = budget
+		while cut > 0 do
+			local following = text:byte(cut + 1)
+			if not following or following < 0x80 or following >= 0xC0 then
+				break
+			end
+			cut = cut - 1
+		end
+		return text:sub(1, cut)
 	end
-	return text:sub(1, max_len - 3) .. "..."
+	if max_len <= 3 then
+		return clip(max_len)
+	end
+	return clip(max_len - 3) .. "..."
+end
+
+---Truncate to a terminal-cell budget, appending an ellipsis when it does not fit.
+---
+---`M.truncate` counts bytes, so `blame.max_width = 80` against a CJK author
+---name or an emoji in a commit subject produced virtual text roughly twice the
+---configured width, and could split a multi-byte character in the process.
+---Screen width is what a wrapped or right-aligned label actually needs.
+function M.truncate_display(text, max_width)
+	text = text or ""
+	max_width = max_width or 0
+	if max_width <= 0 then
+		return ""
+	end
+	if vim.api.nvim_strwidth(text) <= max_width then
+		return text
+	end
+	if max_width <= 3 then
+		return vim.fn.strcharpart(text, 0, max_width)
+	end
+	local out = ""
+	for index = 0, vim.fn.strchars(text) - 1 do
+		local candidate = out .. vim.fn.strcharpart(text, index, 1)
+		if vim.api.nvim_strwidth(candidate) > max_width - 3 then
+			break
+		end
+		out = candidate
+	end
+	return out .. "..."
 end
 
 return M

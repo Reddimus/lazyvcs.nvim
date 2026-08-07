@@ -10,10 +10,17 @@ local ASYNC_TIMEOUT_MS = 30000
 -- Mirror the svn backend's executable cache: backends/init.lua probes every
 -- backend for each path, so an unguarded call here would spawn a failing process
 -- on machines without Git.
-local git_checked, git_present = false, false
+--
+-- Keyed on PATH rather than cached once for the session. A GUI-launched Neovim
+-- (Finder, Dock, an IDE) inherits launchd's PATH on macOS, so `/opt/homebrew/bin`
+-- is missing and the first probe answers "no git". Caching that answer forever
+-- meant a config or user that corrected `vim.env.PATH` afterwards still saw the
+-- backend as unavailable until Neovim restarted.
+local git_cached_path, git_present = nil, false
 local function git_available()
-	if not git_checked then
-		git_checked = true
+	local path = vim.env.PATH or ""
+	if git_cached_path ~= path then
+		git_cached_path = path
 		git_present = vim.fn.executable("git") == 1
 	end
 	return git_present

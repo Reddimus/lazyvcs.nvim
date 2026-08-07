@@ -1,6 +1,32 @@
 local M = {}
 local temp_roots = {}
 
+-- Isolate every git invocation in this Neovim process -- the fixtures' own, and
+-- the ones the plugin makes through `vim.system` -- from the developer's git
+-- configuration. Setting these in `vim.env` means child processes inherit them.
+--
+-- A contributor with `commit.gpgsign` / `tag.gpgsign` set globally (normal for
+-- anyone who signs releases) turned the fixtures' `git tag v1.0.0` into a
+-- signed annotated tag and got `fatal: no tag message?` from three switch
+-- specs, and would hit the same on any plugin-driven `git commit`. CI has no
+-- global config, so this class of failure is invisible there and looks like a
+-- local-machine problem instead of the environment leak it is.
+--
+-- `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` are git 2.32+. `/dev/null` is not
+-- portable to Windows, so point both at an empty file.
+local function isolate_git_config()
+	local empty = vim.fs.normalize(vim.fn.tempname())
+	local handle = io.open(empty, "w")
+	if not handle then
+		return
+	end
+	handle:close()
+	vim.env.GIT_CONFIG_GLOBAL = empty
+	vim.env.GIT_CONFIG_SYSTEM = empty
+end
+
+isolate_git_config()
+
 local function join(...)
 	return vim.fs.normalize(table.concat({ ... }, "/"))
 end

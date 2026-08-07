@@ -33,12 +33,23 @@ return root
 end)()]])
 end
 
+-- Waits for repository discovery before capturing.
+--
+-- Discovery is asynchronous, so the sidebar's first paint shows
+-- "Discovering repositories..." and the repository rows arrive later. These
+-- cases used to read the buffer straight after `child.cmd(...)` and passed only
+-- because a two-repository fixture usually finishes inside the RPC round trip
+-- -- a race that would surface as a flake on a loaded runner, not a clean
+-- failure here.
 local function sidebar_state()
 	return child.lua_get([[(function()
 local state = require("lazyvcs.source_control.native")._state()
 if not state then
   return nil
 end
+vim.wait(15000, function()
+  return state.lazyvcs_discovering ~= true and state.lazyvcs_repo_specs ~= nil
+end, 10)
 return {
   winid = state.winid,
   bufnr = state.bufnr,

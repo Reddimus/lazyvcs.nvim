@@ -12,8 +12,10 @@ local function join(...)
 	return table.concat({ ... }, "/")
 end
 
+-- Canonical, not merely normalized: repo roots are identities compared with
+-- `==` against backend-reported paths. See `util.canonical_path`.
 local function normalize(path)
-	return vim.fs.normalize(path)
+	return util.canonical_path(path)
 end
 
 local function basename(path)
@@ -1528,7 +1530,15 @@ function M.collect(state, opts)
 		changes_sort = state.lazyvcs_changes_sort,
 	})
 	local root = normalize(opts.root or state.path or vim.fn.getcwd())
-	local repo_specs = state.lazyvcs_repo_specs or M.discover(root, opts.scan_depth or source_opts.scan_depth)
+	-- Never fall back to the synchronous `M.discover` here. Doing so made the
+	-- whole async discovery path dead code: `native.M.open` rendered before
+	-- starting discovery, this line populated `lazyvcs_repo_specs` on the UI
+	-- thread -- a recursive scandir walk plus blocking `git rev-parse` and
+	-- `svn info`, each capped at 30s -- and `start_discovery`'s
+	-- `lazyvcs_repo_specs ~= nil` guard then short-circuited forever. An
+	-- unreachable SVN server froze Neovim for a minute on sidebar open.
+	-- Callers own discovery; rendering only ever displays what it has.
+	local repo_specs = state.lazyvcs_repo_specs or {}
 	local repo_cache = state.lazyvcs_repo_cache or {}
 	local drafts = state.lazyvcs_commit_drafts or {}
 
@@ -1582,11 +1592,14 @@ function M.collect(state, opts)
 	end
 
 	if #change_nodes == 0 then
+		-- Discovery is asynchronous, so the first render legitimately has no
+		-- repositories yet. Saying "none selected" there reads as a result
+		-- rather than a pending state.
 		change_nodes[#change_nodes + 1] = {
 			id = root .. "::changes::empty",
 			type = "message",
-			name = "No repositories selected",
-			extra = {},
+			name = state.lazyvcs_discovering and "Discovering repositories..." or "No repositories selected",
+			extra = { discovering = state.lazyvcs_discovering == true },
 		}
 	end
 

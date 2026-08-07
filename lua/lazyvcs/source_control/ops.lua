@@ -1105,11 +1105,13 @@ local function repo_actions(repo)
 	end, actions)
 end
 
+-- `:LazyVCS sidebar cancel <path>` matches jobs by root, so the argument has to
+-- canonicalize the same way the job owners did.
 local function normalize_cancel_root(path)
 	if not path or path == "" then
 		return nil
 	end
-	return vim.fs.normalize(vim.fn.fnamemodify(path, ":p"))
+	return util.canonical_path(vim.fn.fnamemodify(path, ":p"))
 end
 
 function M.cancel(path, opts)
@@ -1357,6 +1359,13 @@ function M.switch_repo(state, node)
 		sync_text = "Branches",
 	})
 	local bg = config.get().source_control.background
+	-- One generation per enumeration, established here. Bumping it inside the
+	-- per-command runner below would make each step of the chain supersede the
+	-- previous one and cancel the enumeration's own earlier subprocesses.
+	state.lazyvcs_switch_generations = state.lazyvcs_switch_generations or {}
+	local switch_scope = "switch:" .. tostring(repo.root)
+	local switch_generation = (state.lazyvcs_switch_generations[switch_scope] or 0) + 1
+	state.lazyvcs_switch_generations[switch_scope] = switch_generation
 	return repo_switch.open_async(repo, {
 		on_ready = function()
 			session_state.clear_repo_job(repo.root)
@@ -1393,10 +1402,24 @@ function M.switch_repo(state, node)
 		end,
 		after_mutation = function() end,
 	}, function(args, opts, on_done)
+		-- `owner = state` so closing the sidebar actually cancels this.
+		-- Omitting it defaulted the owner to the repository-root string, which
+		-- `cancel_state_jobs` (filtering on `owner == state`) never matched, so
+		-- switch-target enumeration outlived the sidebar and could still pop a
+		-- picker after it was gone.
+		--
+		-- A per-repository scope with its own generation, rather than reusing
+		-- `lazyvcs_hydration_generation` under a shared `"switch"` scope: that
+		-- watermark is stored per (owner, scope) and persisted across sidebar
+		-- lifetimes for scalar owners, so a heavily-refreshed sidebar left a
+		-- high watermark that immediately rejected a fresh sidebar's switch job
+		-- as stale. With `owner = state` the generation lives in the weak-keyed
+		-- object table instead and dies with the sidebar.
 		jobs.command(repo, opts.kind or "switch", args, {
 			timeout_ms = bg.switch_timeout_ms,
-			generation = state.lazyvcs_hydration_generation or 0,
-			scope = "switch",
+			owner = state,
+			generation = switch_generation,
+			scope = switch_scope,
 			priority = 20,
 		}, on_done)
 	end)

@@ -33,12 +33,19 @@ local function load_cache()
 	return cache
 end
 
+-- Warn once per session; see the matching note in source_control/persist.lua.
+local warned = false
+
 local function save_cache()
 	if cache == nil then
 		return
 	end
 
-	json_file.write(state_path(), cache)
+	local ok, err = json_file.write(state_path(), cache)
+	if not ok and not warned then
+		warned = true
+		require("lazyvcs.util").notify("Could not persist LazyVCS state: " .. tostring(err), vim.log.levels.WARN)
+	end
 end
 
 --- Read a persisted value, returning `default` when the key is absent.

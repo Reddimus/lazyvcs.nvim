@@ -605,7 +605,9 @@ function format_picker_item(item, chunks)
 	local current = item.current and "✓ " or ""
 	local label = item.label or ""
 	local description = item_description(item)
-	local detail = util.truncate(item.subject or item.detail or "", 64)
+	-- A picker column, so this is a cell budget: commit subjects routinely carry
+	-- non-ASCII text and were overflowing the layout.
+	local detail = util.truncate_display(item.subject or item.detail or "", 64)
 	local category = group_label(item)
 
 	if not chunks then
