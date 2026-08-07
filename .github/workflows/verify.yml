@@ -115,10 +115,20 @@ jobs:
           bash -n tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
 
       - name: Check whitespace
-        # `--cc` is required: without it diff-tree prints nothing at all for a
-        # merge commit, and on `pull_request` the checked-out sha IS the
-        # synthetic merge commit -- so this silently passed on every PR.
-        run: git diff-tree --check --cc --no-commit-id --root -r HEAD
+        # On `pull_request` the checked-out sha is a synthetic merge commit, so
+        # this needs an explicit range. `--cc` was the wrong answer and made the
+        # check vacuous: a combined diff only lists files that differ from EVERY
+        # parent, and a PR's own changes are identical to its head parent, so
+        # they are omitted. Reproduced by adding trailing whitespace on a
+        # branch and merging -- `diff-tree --check --cc` exits 0 while
+        # `diff --check HEAD^1 HEAD` exits 2 and names the line.
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            git diff --check "HEAD^1" HEAD
+          else
+            git diff-tree --check --no-commit-id --root -r HEAD
+          fi
 
   linux:
     name: Linux / Neovim ${{ matrix.version }}

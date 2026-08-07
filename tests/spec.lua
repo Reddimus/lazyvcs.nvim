@@ -23,6 +23,17 @@ end
 -- NOT happen keep the short default.
 local ASYNC_TIMEOUT_MS = 15000
 
+-- Repository discovery is asynchronous, so `source_control_open` returns before
+-- `lazyvcs_repo_specs` is populated. Any test that reads the specs, the repo
+-- cache, or rendered repository rows must wait for the discovery callback
+-- first. Returns the state so call sites stay a single line.
+local function wait_for_discovery(state, msg)
+	wait_for(function()
+		return state.lazyvcs_discovering ~= true and state.lazyvcs_repo_specs ~= nil
+	end, msg or "repository discovery should complete", ASYNC_TIMEOUT_MS)
+	return state
+end
+
 local function async_command_runner(cwd)
 	return function(args, opts, on_done)
 		opts = opts or {}
@@ -2106,7 +2117,11 @@ local function test_source_control_duplicate_repo_names_use_root_identity()
 		},
 	})
 
-	local workspace = vim.fs.normalize(vim.fn.tempname())
+	-- `helpers.tempdir`, not a bare `tempname`: it resolves the path once at
+	-- creation. macOS puts temporary files under /var, a symlink to
+	-- /private/var, and repository roots are canonicalized identities, so an
+	-- unresolved fixture path no longer matches what discovery reports.
+	local workspace = helpers.tempdir()
 	local repo_a = workspace .. "/team-a/service"
 	local repo_b = workspace .. "/team-b/service"
 	vim.fn.mkdir(repo_a .. "/.git", "p")
@@ -2384,8 +2399,8 @@ local function test_source_control_tree_view_groups_files_into_folders()
 		},
 	})
 
-	local root = vim.fs.normalize(vim.fn.tempname())
-	vim.fn.mkdir(root, "p")
+	-- Resolved at creation; see the note in the duplicate-repo-names spec.
+	local root = helpers.tempdir()
 	helpers.exec({ "git", "init" }, root)
 	helpers.exec({ "git", "config", "user.name", "lazyvcs-test" }, root)
 	helpers.exec({ "git", "config", "user.email", "lazyvcs@example.com" }, root)
@@ -2771,7 +2786,7 @@ local function test_source_control_native_render_preserves_active_window_and_rep
 	local native = require("lazyvcs.source_control.native")
 	local editor_win = vim.api.nvim_get_current_win()
 	require("lazyvcs").source_control_open({ path = fixture.root, focus = false })
-	local state = assert(native._state(), "missing native state")
+	local state = wait_for_discovery(assert(native._state(), "missing native state"))
 	local spec = assert(state.lazyvcs_repo_specs[1], "missing repo spec")
 	state.lazyvcs_repo_cache[spec.root] = {
 		root = spec.root,
@@ -2830,7 +2845,7 @@ local function test_source_control_native_invalidated_cache_rehydrates()
 	local fixture = helpers.make_git_fixture()
 	local ops = require("lazyvcs.source_control.ops")
 	require("lazyvcs").source_control_open({ path = fixture.root })
-	local state = assert(require("lazyvcs.source_control.native")._state(), "missing native state")
+	local state = wait_for_discovery(assert(require("lazyvcs.source_control.native")._state(), "missing native state"))
 	local spec = assert(state.lazyvcs_repo_specs[1], "missing repo spec")
 
 	wait_for(function()
@@ -7044,6 +7059,21 @@ local cases = {
 	},
 	{ "test_transfer_to_unsupported_buffer_closes_session", test_transfer_to_unsupported_buffer_closes_session },
 }
+
+-- Cases declared in sibling modules. LuaJIT caps a function at 200 locals and
+-- this chunk declares every case above as a top-level `local function`, so it
+-- sits at that ceiling: adding one more here fails to load the whole file with
+-- "main function has more than 200 local variables". New cases go in a module
+-- that returns a factory taking this harness; see `tests/spec_discovery.lua`.
+vim.list_extend(
+	cases,
+	require("spec_discovery")({
+		helpers = helpers,
+		wait_for = wait_for,
+		wait_for_discovery = wait_for_discovery,
+		async_timeout_ms = ASYNC_TIMEOUT_MS,
+	})
+)
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,

@@ -605,7 +605,9 @@ function format_picker_item(item, chunks)
 	local current = item.current and "✓ " or ""
 	local label = item.label or ""
 	local description = item_description(item)
-	local detail = util.truncate(item.subject or item.detail or "", 64)
+	-- A picker column, so this is a cell budget: commit subjects routinely carry
+	-- non-ASCII text and were overflowing the layout.
+	local detail = util.truncate_display(item.subject or item.detail or "", 64)
 	local category = group_label(item)
 
 	if not chunks then
@@ -828,6 +830,15 @@ end
 function M.open_async(repo, opts, run_command)
 	opts = async_defaults(opts)
 	return M.collect_async(repo, run_command, function(context, err)
+		-- Cancelling the enumeration finalizes its jobs and invokes their
+		-- callbacks synchronously, and the SVN chain reads a cancelled `nil`
+		-- result as "target absent" rather than "stop" -- so it runs to
+		-- completion and arrives here with a usable context. During teardown the
+		-- sidebar window is still valid, so without this the picker could open
+		-- (and an error could be announced) for a sidebar that is going away.
+		if opts.is_stale and opts.is_stale() then
+			return
+		end
 		opts.on_ready(repo, err)
 		if not context then
 			opts.notify(err or ("Unable to load switch targets for " .. repo.name), vim.log.levels.ERROR)
@@ -851,6 +862,11 @@ function M.open_async(repo, opts, run_command)
 			after_mutation = opts.after_mutation,
 		}, function(choice)
 			if not choice then
+				return
+			end
+			-- Re-check: the picker is interactive, so the sidebar can be torn
+			-- down between it opening and a selection being made.
+			if opts.is_stale and opts.is_stale() then
 				return
 			end
 			if context.vcs == "git" then

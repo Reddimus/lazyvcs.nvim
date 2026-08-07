@@ -169,10 +169,12 @@ flowchart LR
   Sidebar --> Diff[Open changed files in live diff]
 ```
 
-Sidebar keys:
+Sidebar keys. These are buffer-local and fixed — unlike the live-diff mappings,
+`config.keymaps` does not reach them.
 
 | Key                 | Action                                                              |
 | ------------------- | ------------------------------------------------------------------- |
+| `q`                 | Close the sidebar                                                   |
 | `<CR>` / `l`        | Focus repo, toggle Changes repo rows, run action, or open file diff |
 | `h`                 | Collapse node                                                       |
 | `<Space>` / `<Tab>` | Toggle repo visibility; expand/collapse section rows                |

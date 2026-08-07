@@ -10,10 +10,17 @@ local ASYNC_TIMEOUT_MS = 30000
 -- Mirror the svn backend's executable cache: backends/init.lua probes every
 -- backend for each path, so an unguarded call here would spawn a failing process
 -- on machines without Git.
-local git_checked, git_present = false, false
+--
+-- Keyed on PATH rather than cached once for the session. A GUI-launched Neovim
+-- (Finder, Dock, an IDE) inherits launchd's PATH on macOS, so `/opt/homebrew/bin`
+-- is missing and the first probe answers "no git". Caching that answer forever
+-- meant a config or user that corrected `vim.env.PATH` afterwards still saw the
+-- backend as unavailable until Neovim restarted.
+local git_cached_path, git_present = nil, false
 local function git_available()
-	if not git_checked then
-		git_checked = true
+	local path = vim.env.PATH or ""
+	if git_cached_path ~= path then
+		git_cached_path = path
 		git_present = vim.fn.executable("git") == 1
 	end
 	return git_present
@@ -28,7 +35,11 @@ local function get_root(path)
 	if not result then
 		return nil, err
 	end
-	return util.trim(result.stdout)
+	-- Canonicalize: the sidebar canonicalizes its roots, and identity is
+	-- compared with `==`. Git already resolves symlinks here, but a Windows
+	-- 8.3 short path or a case difference would still not match, and the
+	-- non-existent-path fallback keeps this total.
+	return util.canonical_path(util.trim(result.stdout))
 end
 
 local function is_tracked(root, relpath)
@@ -84,7 +95,7 @@ function M.probe_async(path, on_done, opts)
 		if not result then
 			return task:finish(nil, err)
 		end
-		local root = util.trim(result.stdout)
+		local root = util.canonical_path(util.trim(result.stdout))
 		if root == "" then
 			return task:finish(nil, "Git returned an empty working-tree root")
 		end
@@ -216,7 +227,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 		if err then
 			return task:finish(nil, err)
 		end
-		local root = util.trim(result.stdout)
+		local root = util.canonical_path(util.trim(result.stdout))
 		local relpath = util.relpath(root, path)
 
 		task:add(
@@ -646,7 +657,7 @@ function M.blame_lines_async(path, on_done, opts)
 			return task:finish(nil, err)
 		end
 
-		local root = util.trim(result.stdout)
+		local root = util.canonical_path(util.trim(result.stdout))
 		local relpath = util.relpath(root, path)
 		task:add(
 			util.system_start(

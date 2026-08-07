@@ -12,10 +12,16 @@ local ASYNC_TIMEOUT_MS = 30000
 -- case — lazyvcs is Git-first) does not spawn a process that throws ENOENT on
 -- every session open. backends/init.lua probes every backend for each path, so
 -- an unguarded svn call here breaks Git workflows too.
-local svn_checked, svn_present = false, false
+--
+-- Keyed on PATH, not cached once for the session -- see the matching note in
+-- backends/git.lua. Subversion is the more likely of the two to arrive from a
+-- Homebrew prefix that a GUI-launched Neovim cannot see, since macOS has not
+-- shipped `svn` since Xcode 10.
+local svn_cached_path, svn_present = nil, false
 local function svn_available()
-	if not svn_checked then
-		svn_checked = true
+	local path = vim.env.PATH or ""
+	if svn_cached_path ~= path then
+		svn_cached_path = path
 		svn_present = vim.fn.executable("svn") == 1
 	end
 	return svn_present
@@ -30,7 +36,11 @@ local function get_root(path)
 	if not result then
 		return nil, err
 	end
-	return util.trim(result.stdout)
+	-- Canonicalize: the sidebar canonicalizes its roots, and identity is
+	-- compared with `==`. Git already resolves symlinks here, but a Windows
+	-- 8.3 short path or a case difference would still not match, and the
+	-- non-existent-path fallback keeps this total.
+	return util.canonical_path(util.trim(result.stdout))
 end
 
 local function is_versioned(path)
@@ -137,7 +147,7 @@ function M.probe_async(path, on_done, opts)
 		if not result then
 			return task:finish(nil, err)
 		end
-		local root = util.trim(result.stdout)
+		local root = util.canonical_path(util.trim(result.stdout))
 		if root == "" then
 			return task:finish(nil, "Subversion returned an empty working-copy root")
 		end
@@ -274,7 +284,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 		if err then
 			return task:finish(nil, err)
 		end
-		local root = util.trim(result.stdout)
+		local root = util.canonical_path(util.trim(result.stdout))
 		task:add(util.system_start({ "svn", "info", path }, {
 			cwd = cwd,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
@@ -706,7 +716,7 @@ function M.blame_lines_async(path, on_done, opts)
 				if err then
 					return task:finish(nil, err)
 				end
-				local root = util.trim(result.stdout)
+				local root = util.canonical_path(util.trim(result.stdout))
 				task:add(
 					util.system_lines_start(
 						{ "svn", "status", "--depth", "empty", path },

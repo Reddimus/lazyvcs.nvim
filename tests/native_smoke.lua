@@ -44,6 +44,17 @@ require("lazyvcs").source_control_open({ path = root })
 local state = assert(require("lazyvcs.source_control.native")._state(), "missing native source-control state")
 assert(vim.api.nvim_buf_is_valid(state.bufnr), "native sidebar buffer is invalid")
 
+-- The sidebar paints immediately and discovers repositories asynchronously, so
+-- the first frame legitimately shows "Discovering repositories...". Waiting
+-- here is the point: asserting repository rows without it is what previously
+-- made the synchronous discovery path look correct.
+assert(
+	vim.wait(15000, function()
+		return state.lazyvcs_discovering ~= true and state.lazyvcs_repo_specs ~= nil
+	end, 10),
+	"repository discovery should complete"
+)
+
 local text = table.concat(vim.api.nvim_buf_get_lines(state.bufnr, 0, -1, false), "\n")
 assert(text:match("Repositories %(2%)"), text)
 assert(text:match("team%-a/service"), text)

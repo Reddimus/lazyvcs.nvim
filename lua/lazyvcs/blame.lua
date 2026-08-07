@@ -121,8 +121,14 @@ local function clear_inline(bufnr)
 	inline_views[bufnr] = nil
 end
 
+-- One namespace for every blame split, not one per buffer. Namespaces have no
+-- deletion API, so keying the name on `bufnr` leaked a new one for every split
+-- ever opened in a session. Extmarks are already buffer-scoped, so a shared
+-- namespace is sufficient to isolate and clear them.
+local split_ns_id = vim.api.nvim_create_namespace("lazyvcs_blame_split")
+
 local function highlight_blame(bufnr, lines)
-	local highlight_ns = vim.api.nvim_create_namespace("lazyvcs_blame_split_" .. bufnr)
+	local highlight_ns = split_ns_id
 	for idx, line in ipairs(lines) do
 		local revision = line:match("^%s*(%S+)")
 		if revision then
@@ -164,12 +170,16 @@ end
 local function format_inline_blame(entry)
 	local blame_opts = config.get().blame
 	if entry.uncommitted then
-		return util.truncate(blame_opts.uncommitted_text, blame_opts.max_width)
+		return util.truncate_display(blame_opts.uncommitted_text, blame_opts.max_width)
 	end
-	local text = blame_opts.format:gsub("{(%w+)}", function(key)
+	-- Parenthesised: `gsub` returns (string, count) and this is a return value.
+	local text = (blame_opts.format:gsub("{(%w+)}", function(key)
 		return tostring(entry[key] or "")
-	end)
-	return util.truncate(text, blame_opts.max_width)
+	end))
+	-- `max_width` is a column budget, so measure cells rather than bytes: a CJK
+	-- author name or an emoji in a commit subject otherwise produced virtual
+	-- text about twice the configured width.
+	return util.truncate_display(text, blame_opts.max_width)
 end
 
 local function render_loading_inline(bufnr)
@@ -184,7 +194,7 @@ local function render_loading_inline(bufnr)
 	end
 	view.last_line = line
 	view.loading_visible = true
-	set_inline_text(bufnr, line, util.truncate(config.get().blame.loading_text, config.get().blame.max_width))
+	set_inline_text(bufnr, line, util.truncate_display(config.get().blame.loading_text, config.get().blame.max_width))
 end
 
 local function render_inline(bufnr)
@@ -506,6 +516,11 @@ function M.blame_split(resolved)
 		local created_buf
 		local created_win
 		local source_options
+		-- Hoisted alongside `created_buf`/`created_win` so the failure cleanup
+		-- below can actually delete it. Declared inside the xpcall body, the
+		-- group survived a mid-construction error and its CursorMoved
+		-- autocommands kept firing against a window that no longer existed.
+		local split_augroup
 		local ok, build_err = xpcall(function()
 			local blame_opts = config.get().blame
 			local width = 0
@@ -550,7 +565,7 @@ function M.blame_split(resolved)
 			source_options = capture_win_options(source_win, { "scrollbind", "cursorbind" })
 			apply_win_options(source_win, { scrollbind = true, cursorbind = true })
 
-			local split_augroup = vim.api.nvim_create_augroup(
+			split_augroup = vim.api.nvim_create_augroup(
 				"lazyvcs_blame_" .. source_bufnr .. "_" .. tostring(vim.uv.hrtime()),
 				{ clear = true }
 			)
@@ -629,6 +644,9 @@ function M.blame_split(resolved)
 			pcall(vim.api.nvim_set_current_win, callback_win)
 		end
 		if not ok then
+			if split_augroup then
+				pcall(vim.api.nvim_del_augroup_by_id, split_augroup)
+			end
 			if source_options and util.win_is_valid(source_win) then
 				apply_win_options(source_win, source_options)
 			end

@@ -33,12 +33,41 @@ return root
 end)()]])
 end
 
+-- Block in the child until discovery has settled. `sidebar_state()` does this
+-- itself, but cases that reach into `lazyvcs_line_nodes` or
+-- `lazyvcs_repo_specs` through their own `child.lua` call need it too --
+-- otherwise they read the loading frame, where those tables are empty.
+local function wait_for_discovery()
+	child.lua([[
+local state = require("lazyvcs.source_control.native")._state()
+if state then
+  -- Assert on the wait: swallowing a timeout would surface as a confusing
+  -- downstream assertion about missing repository rows rather than naming the
+  -- real cause.
+  assert(vim.wait(15000, function()
+    return state.lazyvcs_discovering ~= true and state.lazyvcs_repo_specs ~= nil
+  end, 10), "repository discovery did not finish")
+end
+]])
+end
+
+-- Waits for repository discovery before capturing.
+--
+-- Discovery is asynchronous, so the sidebar's first paint shows
+-- "Discovering repositories..." and the repository rows arrive later. These
+-- cases used to read the buffer straight after `child.cmd(...)` and passed only
+-- because a two-repository fixture usually finishes inside the RPC round trip
+-- -- a race that would surface as a flake on a loaded runner, not a clean
+-- failure here.
 local function sidebar_state()
 	return child.lua_get([[(function()
 local state = require("lazyvcs.source_control.native")._state()
 if not state then
   return nil
 end
+assert(vim.wait(15000, function()
+  return state.lazyvcs_discovering ~= true and state.lazyvcs_repo_specs ~= nil
+end, 10), "repository discovery did not finish")
 return {
   winid = state.winid,
   bufnr = state.bufnr,
@@ -105,6 +134,7 @@ end
 T["native sidebar"]["space toggles section rows without repo lookup errors"] = function()
 	local workspace = make_workspace()
 	child.cmd("LazyVCS sidebar open " .. vim.fn.fnameescape(workspace))
+	wait_for_discovery()
 	child.lua([[
 local state = require("lazyvcs.source_control.native")._state()
 vim.api.nvim_set_current_win(state.winid)
@@ -129,6 +159,7 @@ end
 T["native sidebar"]["render preserves editor focus and metadata spacing"] = function()
 	local workspace = make_workspace()
 	child.cmd("LazyVCS sidebar open " .. vim.fn.fnameescape(workspace))
+	wait_for_discovery()
 	local result = child.lua_get([[(function()
 local native = require("lazyvcs.source_control.native")
 local state = native._state()

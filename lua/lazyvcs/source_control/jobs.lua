@@ -22,6 +22,10 @@ local pumping = {
 	git = false,
 	svn = false,
 }
+-- Depth counter rather than a boolean: `M.cancel` can re-enter through a
+-- cancelled job's own `on_done` callback.
+local cancelling = 0
+local deferred_pumps = {}
 local running = {}
 local history = {}
 local object_generations = setmetatable({}, { __mode = "k" })
@@ -226,6 +230,15 @@ local function start_job(job)
 end
 
 pump = function(vcs)
+	-- While a cancellation sweep is running, starting queued work would race
+	-- the sweep: `finish` pumps synchronously, so a job enqueued by a cancelled
+	-- job's own callback could start and outlive the very sweep meant to stop
+	-- it. Record the request and let `M.cancel` drain it once the sweep has
+	-- converged.
+	if cancelling > 0 then
+		deferred_pumps[vcs] = true
+		return
+	end
 	if pumping[vcs] then
 		return
 	end
@@ -288,11 +301,13 @@ local function insert_job(queue, job)
 	queue[#queue + 1] = job
 end
 
+-- Scheduler owner keys are derived from this, so it must agree with the
+-- identity the sidebar and backends use. See `util.canonical_path`.
 local function normalize_root(root)
 	if not root or root == "" then
 		return root
 	end
-	return vim.fs.normalize(root)
+	return util.canonical_path(root)
 end
 
 local function finite_option(name, value, default)
@@ -386,49 +401,104 @@ function M.cancel(filter, reason)
 		return true
 	end
 	reason = reason or "cancelled"
-	local selected = {}
 
-	for vcs, queue in pairs(queues) do
-		local kept = {}
-		for _, job in ipairs(queue) do
+	local function collect()
+		local selected = {}
+		for vcs, queue in pairs(queues) do
+			local kept = {}
+			for _, job in ipairs(queue) do
+				local ok, matches = pcall(filter, job)
+				if ok and matches and not job.finalized then
+					selected[#selected + 1] = job
+				else
+					kept[#kept + 1] = job
+				end
+			end
+			queues[vcs] = kept
+		end
+		for _, job in pairs(running) do
 			local ok, matches = pcall(filter, job)
 			if ok and matches and not job.finalized then
 				selected[#selected + 1] = job
-			else
-				kept[#kept + 1] = job
 			end
 		end
-		queues[vcs] = kept
+		return selected
 	end
-	for _, job in pairs(running) do
-		local ok, matches = pcall(filter, job)
-		if ok and matches and not job.finalized then
-			selected[#selected + 1] = job
+
+	-- Cancellation has to converge, not just snapshot. `finish` invokes the
+	-- job's `on_done` synchronously, and those callbacks enqueue work -- a
+	-- cancelled mutation runs `finish_repo_job`, whose cancelled path navigates
+	-- the repository and schedules fresh hydration. A job enqueued that way was
+	-- outside the original snapshot, so "cancel everything for this owner" left
+	-- newly-queued matching jobs alive. Sweep until a pass finds nothing new.
+	cancelling = cancelling + 1
+	local cancelled = 0
+	local ok, err = pcall(function()
+		-- Bounded. Every internal callback chain is finite, so convergence is
+		-- expected within a pass or two -- but a caller whose `on_done`
+		-- unconditionally enqueues a matching job would otherwise spin here
+		-- forever and freeze Neovim, which is far worse than leaving one job
+		-- running. Report rather than hang.
+		local MAX_PASSES = 32
+		for pass = 1, MAX_PASSES do
+			local selected = collect()
+			if #selected == 0 then
+				break
+			end
+			if pass == MAX_PASSES then
+				util.notify(
+					("lazyvcs: cancellation did not converge after %d passes; %d job(s) left running"):format(
+						MAX_PASSES,
+						#selected
+					),
+					vim.log.levels.WARN
+				)
+			end
+			cancelled = cancelled + #selected
+			for _, job in ipairs(selected) do
+				if type(job.generation) == "number" then
+					local latest = latest_generation(job.owner, job.scope)
+					set_latest_generation(job.owner, job.scope, math.max(latest or job.generation, job.generation + 1))
+				end
+				job.termination_requested = true
+				job.termination_reason = reason
+				if job.started then
+					cancel_handle(job.handle, reason)
+				end
+				local message = reason == "cancelled" and "Cancelled" or ("Cancelled: " .. reason)
+				if not job.finalized then
+					finish(job, "cancelled", nil, message, {
+						code = 130,
+						stdout = "",
+						stderr = message,
+						cancelled = true,
+						reason = reason,
+					})
+				end
+			end
+		end
+	end)
+	cancelling = cancelling - 1
+
+	-- Only the outermost sweep releases the queues; a nested `M.cancel` reached
+	-- through a callback must not start work its caller is still cancelling.
+	if cancelling == 0 then
+		-- Drain one at a time and clear each entry only once its pump has
+		-- returned. Swapping the whole table out first would strand every
+		-- remaining queue if one `pump` raised, leaving that work parked
+		-- forever with no worker ever scheduled to pick it up.
+		local vcs = next(deferred_pumps)
+		while vcs do
+			deferred_pumps[vcs] = nil
+			pump(vcs)
+			vcs = next(deferred_pumps)
 		end
 	end
 
-	for _, job in ipairs(selected) do
-		if type(job.generation) == "number" then
-			local latest = latest_generation(job.owner, job.scope)
-			set_latest_generation(job.owner, job.scope, math.max(latest or job.generation, job.generation + 1))
-		end
-		job.termination_requested = true
-		job.termination_reason = reason
-		if job.started then
-			cancel_handle(job.handle, reason)
-		end
-		local message = reason == "cancelled" and "Cancelled" or ("Cancelled: " .. reason)
-		if not job.finalized then
-			finish(job, "cancelled", nil, message, {
-				code = 130,
-				stdout = "",
-				stderr = message,
-				cancelled = true,
-				reason = reason,
-			})
-		end
+	if not ok then
+		error(err, 0)
 	end
-	return #selected
+	return cancelled
 end
 
 function M.cancel_repo(root, opts)

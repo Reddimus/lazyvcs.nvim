@@ -4,6 +4,7 @@ local jobs = require("lazyvcs.source_control.jobs")
 local model = require("lazyvcs.source_control.model")
 local ops = require("lazyvcs.source_control.ops")
 local persist = require("lazyvcs.source_control.persist")
+local util = require("lazyvcs.util")
 
 local M = {}
 
@@ -13,8 +14,10 @@ local strwidth = vim.api.nvim_strwidth
 local lifecycle_augroup
 local invalidate_hydration
 
+-- Canonical, not merely normalized: `state.path` is an identity that gets
+-- compared against backend-reported roots. See `util.canonical_path`.
 local function normalize(path)
-	return vim.fs.normalize(path or vim.fn.getcwd())
+	return util.canonical_path(path or vim.fn.getcwd())
 end
 
 local function tabid()
@@ -89,7 +92,9 @@ local function compact_sync_text(sync)
 	if status == "publish" then
 		return "Pub"
 	end
-	return text:gsub("%s+", "")
+	-- Parenthesised so this returns one value, not (string, count) -- see the
+	-- note on `util.trim`.
+	return (text:gsub("%s+", ""))
 end
 
 local function repo_count_text(counts)
@@ -147,6 +152,21 @@ local function compose_right_meta(primary, sync, counts, max_width)
 	return fit_right_text(primary, max_width, 8) or ""
 end
 
+-- Cancel any in-flight discovery and return the state to "nothing known yet",
+-- so the next `start_discovery` actually runs instead of short-circuiting.
+-- Bumping the generation is what makes a late callback from the killed scan a
+-- no-op rather than a write into a state that has moved on.
+local function reset_discovery(state)
+	if state.lazyvcs_discovery_handle and type(state.lazyvcs_discovery_handle.kill) == "function" then
+		pcall(state.lazyvcs_discovery_handle.kill, state.lazyvcs_discovery_handle, 15)
+	end
+	state.lazyvcs_discovery_handle = nil
+	state.lazyvcs_discovery_generation = (state.lazyvcs_discovery_generation or 0) + 1
+	state.lazyvcs_discovering = false
+	state.lazyvcs_repo_specs = nil
+	state.lazyvcs_discovery_error = nil
+end
+
 local function reset_for_path(state, path)
 	if state.lazyvcs_repo_root == path then
 		return
@@ -155,26 +175,28 @@ local function reset_for_path(state, path)
 		state.lazyvcs_invalidate_hydration(state, nil, "source path changed")
 	end
 	state.lazyvcs_repo_root = path
-	if state.lazyvcs_discovery_handle and type(state.lazyvcs_discovery_handle.kill) == "function" then
-		pcall(state.lazyvcs_discovery_handle.kill, state.lazyvcs_discovery_handle, 15)
-	end
-	state.lazyvcs_discovery_handle = nil
-	state.lazyvcs_discovery_generation = (state.lazyvcs_discovery_generation or 0) + 1
-	state.lazyvcs_discovering = false
-	state.lazyvcs_repo_specs = nil
+	reset_discovery(state)
 	state.lazyvcs_repo_cache = {}
 	state.lazyvcs_loading_details = {}
 	state.lazyvcs_hydration_generation = (state.lazyvcs_hydration_generation or 0) + 1
 	state.lazyvcs_hydration_active = false
 	state.lazyvcs_hydration_pending = 0
 	state.lazyvcs_expanded = {}
-	state.lazyvcs_discovery_error = nil
 	persist.apply_state(state, path)
 end
 
+---Begin asynchronous repository discovery if the state does not already know
+---its specs.
+---
+---@return boolean pending `true` when discovery is in flight, so the caller
+---should render a loading state and leave `M.navigate` to the callback;
+---`false` when the specs are already known and the caller should navigate now.
 local function start_discovery(state)
-	if state.lazyvcs_discovering or state.lazyvcs_repo_specs ~= nil then
-		return
+	if state.lazyvcs_discovering then
+		return true
+	end
+	if state.lazyvcs_repo_specs ~= nil then
+		return false
 	end
 	state.lazyvcs_discovering = true
 	state.lazyvcs_repo_specs = {}
@@ -200,6 +222,7 @@ local function start_discovery(state)
 		end,
 		{ entry_budget = 64 }
 	)
+	return true
 end
 
 local function icon(node)
@@ -813,6 +836,15 @@ function M.navigate(state)
 		return
 	end
 	M.render(state)
+	-- Hydration needs repositories, and consuming the remote-refresh intent
+	-- against an empty spec list throws it away. `M.open`/`M.refresh` already
+	-- render rather than navigate while a scan is pending, but they are not the
+	-- only routes here -- sorting, cancelling, and late operation callbacks all
+	-- navigate too. Guard centrally; the discovery callback navigates again once
+	-- the specs land.
+	if state.lazyvcs_discovering then
+		return state
+	end
 	local remote_refresh = state.lazyvcs_remote_refresh
 	state.lazyvcs_remote_refresh = nil
 	start_summary_hydration(state, remote_refresh)
@@ -856,8 +888,19 @@ function M.open(opts)
 	local state = prepare_state(opts.path or opts.root)
 	ensure_window(state, { focus = opts.focus })
 	state.lazyvcs_remote_refresh = should_remote_refresh(state)
-	M.navigate(state)
-	start_discovery(state)
+	-- Discovery starts BEFORE the first paint. Rendering first used to populate
+	-- `lazyvcs_repo_specs` synchronously through `model.collect`, which both
+	-- blocked the UI thread and left `start_discovery` with nothing to do.
+	--
+	-- While discovery is pending, render rather than navigate: `M.navigate`
+	-- consumes `lazyvcs_remote_refresh` and kicks off hydration, and doing that
+	-- against an empty spec list would silently drop the on-open remote
+	-- refresh. The discovery callback navigates once the specs land.
+	if start_discovery(state) then
+		M.render(state)
+	else
+		M.navigate(state)
+	end
 	return state
 end
 
@@ -924,7 +967,16 @@ function M.refresh(remote_refresh)
 	state.lazyvcs_loading_details = {}
 	state.lazyvcs_remote_refresh = remote_refresh ~= false
 	persist.save_state(state)
-	M.navigate(state)
+	-- Rediscover, don't just re-hydrate. Refresh previously kept
+	-- `lazyvcs_repo_specs` untouched, so a repository created (or removed)
+	-- after the sidebar opened stayed invisible until the sidebar was closed
+	-- and reopened -- which is the one thing `R` is expected to fix.
+	reset_discovery(state)
+	if start_discovery(state) then
+		M.render(state)
+	else
+		M.navigate(state)
+	end
 end
 
 function M.cancel(path)

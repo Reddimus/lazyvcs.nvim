@@ -52,7 +52,7 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
                       Control the source-control sidebar. `open` and `toggle`
                       accept an optional directory to scan.
 
-:LazyVCS diff {open, close, toggle, refresh, cancel}
+:LazyVCS diff {open, close, toggle, refresh}
                       Control the live diff view for the current file.
                       Defaults to `toggle`.
 
@@ -110,8 +110,10 @@ When the active editor window changes buffers, such as with AstroNvim ]b, [b,
 or tabline buffer picking, lazyvcs reopens live diff for supported Git/SVN
 buffers and closes the session cleanly for unsupported buffers.
 
-Source-control sidebar mappings:
+Source-control sidebar mappings. Unlike the live-diff mappings above, these are
+buffer-local and fixed; `config.keymaps` does not reach them.
 
+    q            close the sidebar
     <CR>, l      focus repo, toggle Changes repo rows, run action, or open file
                  diff
     h            collapse node
@@ -129,6 +131,7 @@ Source-control sidebar mappings:
     gr           revert Git or SVN file
     v            toggle list/tree changes
     S            cycle file sort
+    X            cancel this repository's in-flight background jobs
 
 With snacks.nvim installed, b opens a VS Code-style Git branch picker with
 commands pinned first, current branch marked, and no numeric prefixes. Without

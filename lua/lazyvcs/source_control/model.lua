@@ -12,9 +12,20 @@ local function join(...)
 	return table.concat({ ... }, "/")
 end
 
+-- Separator/`~` normalization only. Deliberately NOT `util.canonical_path`:
+-- this is applied to changed-file paths and node ids too, and resolving a
+-- tracked symlink there would make the sidebar open the link's target instead
+-- of the versioned link itself -- besides costing an `fs_realpath` syscall per
+-- entry while parsing a large status result on the main thread.
 local function normalize(path)
 	return vim.fs.normalize(path)
 end
+
+-- Repository and workspace ROOTS are identities: they are compared with `==`
+-- against what `git rev-parse --show-toplevel` and `svn info` report, and both
+-- resolve symlinks. Canonicalize only at those boundaries -- at most once per
+-- repository, not once per scanned directory or changed file.
+local canonical_root = util.canonical_path
 
 local function basename(path)
 	return vim.fs.basename(path)
@@ -171,7 +182,7 @@ local function scan_repos(root, max_depth, depth, repos, seen)
 	local kind = repo_kind(root)
 	if kind then
 		repos[#repos + 1] = {
-			root = root,
+			root = canonical_root(root),
 			name = basename(root),
 			vcs = kind,
 			order = #repos + 1,
@@ -219,7 +230,7 @@ local function annotate_repos(root, repos)
 end
 
 function M.discover(root, max_depth)
-	root = normalize(root)
+	root = canonical_root(root)
 	local repos = {}
 	scan_repos(root, max_depth, 0, repos, {})
 
@@ -233,7 +244,7 @@ function M.discover(root, max_depth)
 			if kind then
 				repos[#repos + 1] = {
 					vcs = kind,
-					root = normalize(enclosing),
+					root = canonical_root(enclosing),
 					name = vim.fs.basename(enclosing),
 					order = 1,
 				}
@@ -252,7 +263,7 @@ end
 ---in bounded batches so large workspaces yield back to Neovim between scans.
 function M.discover_async(root, max_depth, on_done, opts)
 	opts = opts or {}
-	root = normalize(root)
+	root = canonical_root(root)
 	max_depth = math.max(0, max_depth or 0)
 	local task = Task.new(on_done)
 	local repos = {}
@@ -274,7 +285,7 @@ function M.discover_async(root, max_depth, on_done, opts)
 			if backend and enclosing then
 				repos[1] = {
 					vcs = backend.name,
-					root = normalize(enclosing),
+					root = canonical_root(enclosing),
 					name = basename(enclosing),
 					order = 1,
 				}
@@ -301,7 +312,7 @@ function M.discover_async(root, max_depth, on_done, opts)
 					local kind = repo_kind(frame.root)
 					if kind then
 						repos[#repos + 1] = {
-							root = frame.root,
+							root = canonical_root(frame.root),
 							name = basename(frame.root),
 							vcs = kind,
 							order = #repos + 1,
@@ -1527,8 +1538,16 @@ function M.collect(state, opts)
 		changes_view_mode = state.lazyvcs_changes_view_mode,
 		changes_sort = state.lazyvcs_changes_sort,
 	})
-	local root = normalize(opts.root or state.path or vim.fn.getcwd())
-	local repo_specs = state.lazyvcs_repo_specs or M.discover(root, opts.scan_depth or source_opts.scan_depth)
+	local root = canonical_root(opts.root or state.path or vim.fn.getcwd())
+	-- Never fall back to the synchronous `M.discover` here. Doing so made the
+	-- whole async discovery path dead code: `native.M.open` rendered before
+	-- starting discovery, this line populated `lazyvcs_repo_specs` on the UI
+	-- thread -- a recursive scandir walk plus blocking `git rev-parse` and
+	-- `svn info`, each capped at 30s -- and `start_discovery`'s
+	-- `lazyvcs_repo_specs ~= nil` guard then short-circuited forever. An
+	-- unreachable SVN server froze Neovim for a minute on sidebar open.
+	-- Callers own discovery; rendering only ever displays what it has.
+	local repo_specs = state.lazyvcs_repo_specs or {}
 	local repo_cache = state.lazyvcs_repo_cache or {}
 	local drafts = state.lazyvcs_commit_drafts or {}
 
@@ -1565,8 +1584,21 @@ function M.collect(state, opts)
 	source_opts.changes_sort = state.lazyvcs_changes_sort
 
 	ordered_repositories(loaded, source_opts.repositories_sort)
-	normalize_visibility_state(state, loaded, source_opts)
-	apply_remote_error_notifications(state, loaded, source_opts)
+	-- Not while discovery is in flight. `normalize_visibility_state` drops every
+	-- override whose repository is not in `loaded` and clears the focused
+	-- repository on the same test -- and during the loading render `loaded` is
+	-- empty by construction, so it would erase the layout `persist.apply_state`
+	-- had just restored. Closing the sidebar afterwards would then write the
+	-- erased layout back to disk, losing it permanently.
+	if state.lazyvcs_discovering then
+		-- `normalize_visibility_state` owns initialising these; keep them
+		-- defined so the render below never indexes a nil table.
+		state.lazyvcs_repo_visibility = state.lazyvcs_repo_visibility or {}
+		state.lazyvcs_repo_visibility_overrides = state.lazyvcs_repo_visibility_overrides or {}
+	else
+		normalize_visibility_state(state, loaded, source_opts)
+		apply_remote_error_notifications(state, loaded, source_opts)
+	end
 
 	local repo_selector_nodes = {}
 	for _, repo in ipairs(loaded) do
@@ -1582,11 +1614,14 @@ function M.collect(state, opts)
 	end
 
 	if #change_nodes == 0 then
+		-- Discovery is asynchronous, so the first render legitimately has no
+		-- repositories yet. Saying "none selected" there reads as a result
+		-- rather than a pending state.
 		change_nodes[#change_nodes + 1] = {
 			id = root .. "::changes::empty",
 			type = "message",
-			name = "No repositories selected",
-			extra = {},
+			name = state.lazyvcs_discovering and "Discovering repositories..." or "No repositories selected",
+			extra = { discovering = state.lazyvcs_discovering == true },
 		}
 	end
 
