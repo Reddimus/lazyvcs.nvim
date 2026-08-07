@@ -204,6 +204,16 @@ local ok, err = xpcall(function()
   require("lazyvcs").source_control_open({ path = workspace })
   local state = assert(require("lazyvcs.source_control.native")._state(), "missing native source-control state")
   assert(vim.api.nvim_buf_is_valid(state.bufnr), "native source-control buffer is invalid")
+
+  -- Repository discovery is asynchronous, so the sidebar's first frame reads
+  -- "Discovering repositories..." and the rows arrive afterwards. Reading the
+  -- buffer straight after `source_control_open` asserted against that first
+  -- frame. The Subversion repository in this fixture makes the wait real: it
+  -- spawns `svn info` as well as `git rev-parse`.
+  assert(vim.wait(60000, function()
+    return state.lazyvcs_discovering ~= true and state.lazyvcs_repo_specs ~= nil
+  end, 25), "repository discovery did not finish")
+
   local text = table.concat(vim.api.nvim_buf_get_lines(state.bufnr, 0, -1, false), "\n")
   assert(text:match("Repositories %(2%)"), text)
   assert(text:match("git%-repo"), text)
