@@ -41,9 +41,12 @@ local function wait_for_discovery()
 	child.lua([[
 local state = require("lazyvcs.source_control.native")._state()
 if state then
-  vim.wait(15000, function()
+  -- Assert on the wait: swallowing a timeout would surface as a confusing
+  -- downstream assertion about missing repository rows rather than naming the
+  -- real cause.
+  assert(vim.wait(15000, function()
     return state.lazyvcs_discovering ~= true and state.lazyvcs_repo_specs ~= nil
-  end, 10)
+  end, 10), "repository discovery did not finish")
 end
 ]])
 end
@@ -62,9 +65,9 @@ local state = require("lazyvcs.source_control.native")._state()
 if not state then
   return nil
 end
-vim.wait(15000, function()
+assert(vim.wait(15000, function()
   return state.lazyvcs_discovering ~= true and state.lazyvcs_repo_specs ~= nil
-end, 10)
+end, 10), "repository discovery did not finish")
 return {
   winid = state.winid,
   bufnr = state.bufnr,
