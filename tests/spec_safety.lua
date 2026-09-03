@@ -109,6 +109,34 @@ return function(ctx)
 		)
 	end
 
+	local function test_buffer_guard_preserves_a_tracked_symlink_path()
+		local root = vim.fn.tempname()
+		local outside = vim.fn.tempname()
+		vim.fn.mkdir(root, "p")
+		vim.fn.writefile({ "outside" }, outside)
+		local link = root .. "/tracked-link"
+		assert(vim.uv.fs_symlink(outside, link), "test symlink should be created")
+
+		local ok, err = xpcall(function()
+			vim.cmd.edit(vim.fn.fnameescape(link))
+			vim.api.nvim_buf_set_lines(0, 0, -1, false, { "unsaved through symlink" })
+			local modified = require("lazyvcs.source_control.buffer_guard").modified(root, { link })
+
+			assert(#modified == 1, "a modified tracked symlink must block repository mutation")
+			assert(
+				modified[1].path == require("lazyvcs.util").canonical_entry_path(link),
+				"the guard must report the repository entry, not its target"
+			)
+		end, debug.traceback)
+		pcall(vim.cmd, "bdelete!")
+		pcall(vim.fn.delete, link)
+		pcall(vim.fn.delete, root, "rf")
+		pcall(vim.fn.delete, outside)
+		if not ok then
+			error(err, 0)
+		end
+	end
+
 	local function test_buffer_discard_rechecks_before_restore()
 		require("lazyvcs").setup({ source_control = { confirm_mutations = false } })
 
@@ -519,6 +547,10 @@ return function(ctx)
 		{
 			"test_buffer_discard_refuses_modified_current_buffer",
 			test_buffer_discard_refuses_modified_current_buffer,
+		},
+		{
+			"test_buffer_guard_preserves_a_tracked_symlink_path",
+			test_buffer_guard_preserves_a_tracked_symlink_path,
 		},
 		{
 			"test_buffer_discard_rechecks_before_restore",

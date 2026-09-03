@@ -416,6 +416,25 @@ function M.canonical_path(path)
 	return resolved and vim.fs.normalize(resolved) or normalized
 end
 
+---Resolve a repository entry without following its final symlink.
+---Intermediate directory symlinks still resolve, so membership checks use the
+---real checkout while a tracked symlink remains identified by its own path.
+---@param path string?
+---@return string
+function M.canonical_entry_path(path)
+	if not path or path == "" then
+		return path or ""
+	end
+	local normalized = vim.fs.normalize(path)
+	local parent = vim.fs.dirname(normalized)
+	local name = vim.fs.basename(normalized)
+	local resolved_parent = vim.uv.fs_realpath(parent)
+	if not resolved_parent then
+		return normalized
+	end
+	return vim.fs.normalize(resolved_parent .. "/" .. name)
+end
+
 ---@return string
 function M.relpath(root, path)
 	if not root or root == "" then

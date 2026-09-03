@@ -15,14 +15,14 @@ function M.modified(repo_root, paths)
 	if paths then
 		selected = {}
 		for _, path in ipairs(paths) do
-			selected[util.canonical_path(path)] = true
+			selected[util.canonical_entry_path(path)] = true
 		end
 	end
 
 	local found = {}
 	for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
 		if vim.api.nvim_buf_is_loaded(bufnr) and vim.bo[bufnr].modified and util.is_real_file_buffer(bufnr) then
-			local path = util.canonical_path(util.buf_path(bufnr))
+			local path = util.canonical_entry_path(util.buf_path(bufnr))
 			if path_is_in_root(root, path) and (not selected or selected[path]) then
 				found[#found + 1] = { bufnr = bufnr, path = path }
 			end
