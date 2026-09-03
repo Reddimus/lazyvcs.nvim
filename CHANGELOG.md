@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-09-03
+
+Safety and maintenance release. Repository actions now protect unsaved buffer
+changes without blocking operations that leave the worktree untouched.
+
+### Fixed
+
+- Worktree-changing Git and Subversion operations stop before overwriting a
+  modified buffer in the target repository.
+- The buffer guard resolves relative paths, repository symlinks, tracked
+  symlinks, and external aliases that point back to tracked files.
+- Push-only sync and creating a branch at the current `HEAD` remain available
+  with modified buffers because neither operation rewrites the worktree.
+- Mutation failures keep bounded output so a noisy process cannot grow memory
+  without limit. Truncated streams retain their beginning and report omitted
+  bytes.
+- Safety cleanup tests use valid Lua types under strict language-server checks.
+
+### Documentation
+
+- Replaced the long README reference manual with a first-run guide and links to
+  the complete built-in help.
+
+### Internal
+
+- Kept CodeQL setup and analysis actions on the same version and grouped their
+  dependency updates.
+- Updated the checkout action and hardened pull-request review automation.
+
 ## [0.6.1] - 2026-08-07
 
 Correctness release. Opening the source-control sidebar no longer blocks Neovim,
