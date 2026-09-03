@@ -20,7 +20,8 @@ changes without blocking operations that leave the worktree untouched.
 - Push-only sync and creating a branch at the current `HEAD` remain available
   with modified buffers because neither operation rewrites the worktree.
 - Mutation failures keep bounded output so a noisy process cannot grow memory
-  without limit while preserving the useful start and end of the error.
+  without limit. Truncated streams retain their beginning and report omitted
+  bytes.
 - Safety cleanup tests use valid Lua types under strict language-server checks.
 
 ### Documentation

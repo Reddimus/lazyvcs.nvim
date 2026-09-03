@@ -15,7 +15,8 @@ AstroNvim on Linux, macOS, and Windows.
 - Navigate, preview, and revert hunks without leaving the buffer.
 - Show inline or split blame for Git and SVN files.
 - Use installed pickers and commit-message providers when available.
-- Keep repository scans and VCS commands off Neovim's UI thread.
+- Scan repositories in small batches and keep VCS commands off Neovim's UI
+  thread.
 
 ## Requirements
 
@@ -51,7 +52,7 @@ no required Lua dependencies. It detects `gitsigns.nvim`, `snacks.nvim`,
 
 ## First run
 
-Open a file inside a Git or SVN working copy, then try:
+Start Neovim from inside a Git or SVN working copy, open a file, then try:
 
 ```vim
 :LazyVCS
@@ -84,11 +85,11 @@ and `q` to close. See `:help lazyvcs-mappings` for the full list.
 ## Configure
 
 Defaults are conservative. This example enables remote refresh when the sidebar
-opens and keeps blame off until requested:
+opens and keeps blame off until requested without persisting the toggle:
 
 ```lua
 opts = {
-  blame = { mode = "off" },
+  blame = { mode = "inline", persist = false },
   source_control = {
     remote_refresh = "on_open",
     scan_depth = 3,
