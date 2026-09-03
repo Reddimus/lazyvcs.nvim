@@ -6,6 +6,10 @@ updates:
       interval: weekly
     commit-message:
       prefix: "ci"
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action/*"
 
   # Development-only documentation tooling is grouped into one maintenance PR.
   - package-ecosystem: npm
