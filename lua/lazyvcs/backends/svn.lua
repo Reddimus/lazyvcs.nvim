@@ -383,7 +383,8 @@ function M.revert_file_async(path, on_done, opts)
 				end
 				return task:finish(nil, tracked_err)
 			end
-			task:add(util.system_start({ "svn", "revert", path }, {
+			local start = opts.start or util.system_start
+			task:add(start({ "svn", "revert", path }, {
 				cwd = info.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 			}, function(result, revert_err)
