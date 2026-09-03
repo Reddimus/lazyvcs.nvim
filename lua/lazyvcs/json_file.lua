@@ -1,3 +1,5 @@
+local fs = require("lazyvcs.fs")
+
 local M = {}
 
 local VERSION = 1
@@ -48,7 +50,7 @@ function M.write(path, value)
 	if not fd then
 		return nil, open_err or "Could not open temporary state file"
 	end
-	local written, write_err = vim.uv.fs_write(fd, encoded, 0)
+	local written, write_err = fs.write_all(fd, encoded, 0)
 	if written then
 		pcall(vim.uv.fs_fsync, fd)
 	end

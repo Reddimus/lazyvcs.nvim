@@ -7,6 +7,7 @@
 ---@field helpers table
 ---@field wait_for fun(predicate: function, msg: string?, timeout: number?)
 ---@field async_timeout_ms number
+---@field open_diff fun(): table
 
 ---@param ctx LazyVcsSafetySpecContext
 ---@return table[] cases
@@ -14,6 +15,7 @@ return function(ctx)
 	local helpers = ctx.helpers
 	local wait_for = ctx.wait_for
 	local ASYNC_TIMEOUT_MS = ctx.async_timeout_ms
+	local open_diff = ctx.open_diff
 
 	local function find_first_node(root, node_type)
 		if root.type == node_type then
@@ -107,6 +109,507 @@ return function(ctx)
 			vim.deep_equal(vim.fn.readfile(fixture.file), disk_before),
 			"buffer discard must not change the file while the current buffer is modified"
 		)
+	end
+
+	local function test_buffer_discard_session_choice_suppresses_second_prompt()
+		require("lazyvcs").setup({ source_control = { confirm_mutations = true } })
+
+		local fixture = helpers.make_git_fixture()
+		local backends = require("lazyvcs.backends")
+		local buffer_ops = require("lazyvcs.buffer_ops")
+		local confirm = require("lazyvcs.source_control.confirm")
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+
+		local previous_confirm_open = confirm.open
+		local previous_is_versioned = backends.is_versioned_async
+		local previous_revert = backends.revert_file_async
+		local prompt_count = 0
+		local revert_count = 0
+		---@diagnostic disable-next-line: duplicate-set-field
+		confirm.open = function(_, on_choice)
+			prompt_count = prompt_count + 1
+			on_choice("confirm_session")
+			return {}
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		backends.is_versioned_async = function(_, on_done)
+			vim.schedule(function()
+				on_done(true)
+			end)
+			return {}
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		backends.revert_file_async = function(_, on_done)
+			revert_count = revert_count + 1
+			vim.schedule(function()
+				on_done({ code = 0, stdout = "", stderr = "" })
+			end)
+			return {}
+		end
+
+		local ok, err = xpcall(function()
+			buffer_ops.revert_buffer()
+			wait_for(function()
+				return revert_count == 1
+			end, "first direct discard should reach the backend", ASYNC_TIMEOUT_MS)
+			buffer_ops.revert_buffer()
+			wait_for(function()
+				return revert_count == 2
+			end, "second direct discard should reach the backend", ASYNC_TIMEOUT_MS)
+			assert(prompt_count == 1, "option 2 should suppress the second direct discard prompt")
+		end, debug.traceback)
+		backends.is_versioned_async = previous_is_versioned
+		backends.revert_file_async = previous_revert
+		confirm.open = previous_confirm_open
+		if confirm._test_reset_session then
+			confirm._test_reset_session()
+		end
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_buffer_discard_cancel_releases_request_owner()
+		require("lazyvcs").setup({ source_control = { confirm_mutations = true } })
+
+		local fixture = helpers.make_git_fixture()
+		local backends = require("lazyvcs.backends")
+		local buffer_ops = require("lazyvcs.buffer_ops")
+		local confirm = require("lazyvcs.source_control.confirm")
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+
+		local previous_confirm_open = confirm.open
+		local previous_is_versioned = backends.is_versioned_async
+		local previous_revert = backends.revert_file_async
+		local revert_count = 0
+		---@diagnostic disable-next-line: duplicate-set-field
+		confirm.open = function(_, on_choice)
+			on_choice("cancel")
+			return {}
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		backends.is_versioned_async = function(_, on_done)
+			on_done(true)
+			return {}
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		backends.revert_file_async = function()
+			revert_count = revert_count + 1
+			return {}
+		end
+
+		local ok, err = xpcall(function()
+			local owner = assert(buffer_ops.revert_buffer(), "discard request should return its owner")
+			assert(owner.active == false, "canceling the confirmation should release the discard request owner")
+			assert(revert_count == 0, "canceling the confirmation must not reach the backend")
+		end, debug.traceback)
+		backends.is_versioned_async = previous_is_versioned
+		backends.revert_file_async = previous_revert
+		confirm.open = previous_confirm_open
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_source_control_confirm_session_survives_sidebar_reopen()
+		require("lazyvcs").setup({ source_control = { confirm_mutations = true } })
+
+		local root = helpers.tempdir()
+		local confirm = require("lazyvcs.source_control.confirm")
+		local model = require("lazyvcs.source_control.model")
+		local native = require("lazyvcs.source_control.native")
+		local ops = require("lazyvcs.source_control.ops")
+		local persist = require("lazyvcs.source_control.persist")
+		local util = require("lazyvcs.util")
+		local previous_confirm_open = confirm.open
+		local previous_discover = model.discover_async
+		local previous_save_state = persist.save_state
+		local previous_system_start = util.system_start
+		local prompt_count = 0
+		local mutation_count = 0
+		---@diagnostic disable-next-line: duplicate-set-field
+		confirm.open = function(_, on_choice)
+			prompt_count = prompt_count + 1
+			on_choice("confirm_session")
+			return {}
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		model.discover_async = function()
+			return { kill = function() end }
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		persist.save_state = function() end
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.system_start = function(args, _, on_exit)
+			assert(table.concat(args, " "):match("^git add"), "unexpected mutation command")
+			mutation_count = mutation_count + 1
+			local result = { code = 0, stdout = "", stderr = "" }
+			on_exit(result, nil, result)
+			return {}
+		end
+
+		local repo = {
+			root = root,
+			name = "repo",
+			vcs = "git",
+			counts = { local_changes = 1, staged = 0, remote = 0 },
+		}
+		local node = {
+			type = "file",
+			path = root .. "/changed.txt",
+			extra = { repo_root = root, relpath = "changed.txt" },
+		}
+		local function stage_from_open_sidebar()
+			local state = native.open({ path = root, focus = false })
+			state.lazyvcs_repo_cache[root] = repo
+			ops.stage_file(state, node)
+		end
+
+		local ok, err = xpcall(function()
+			stage_from_open_sidebar()
+			wait_for(function()
+				return mutation_count == 1
+			end, "first sidebar mutation should start", ASYNC_TIMEOUT_MS)
+			native.close()
+			stage_from_open_sidebar()
+			wait_for(function()
+				return mutation_count == 2
+			end, "reopened sidebar mutation should start", ASYNC_TIMEOUT_MS)
+			assert(prompt_count == 1, "sidebar reopen should not restore mutation prompts for this session")
+		end, debug.traceback)
+		pcall(native.close)
+		model.discover_async = previous_discover
+		persist.save_state = previous_save_state
+		util.system_start = previous_system_start
+		confirm.open = previous_confirm_open
+		if confirm._test_reset_session then
+			confirm._test_reset_session()
+		end
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_direct_hunk_revert_uses_session_confirmation()
+		require("lazyvcs").setup({
+			debounce_ms = 0,
+			use_gitsigns = false,
+			source_control = { confirm_mutations = true },
+		})
+
+		local fixture = helpers.make_git_fixture()
+		local confirm = require("lazyvcs.source_control.confirm")
+		local signs = require("lazyvcs.signs")
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+		local bufnr = vim.api.nvim_get_current_buf()
+		local loaded = false
+		signs.refresh(bufnr, true, function(state)
+			loaded = state ~= nil
+		end)
+		wait_for(function()
+			return loaded
+		end, "direct signs state should load", ASYNC_TIMEOUT_MS)
+
+		local previous_confirm_open = confirm.open
+		local prompt_count = 0
+		---@diagnostic disable-next-line: duplicate-set-field
+		confirm.open = function(_, on_choice)
+			prompt_count = prompt_count + 1
+			on_choice("confirm_session")
+			return {}
+		end
+
+		local ok, err = xpcall(function()
+			vim.api.nvim_win_set_cursor(0, { 2, 0 })
+			signs.revert_hunk()
+			assert(vim.api.nvim_buf_get_lines(bufnr, 1, 2, false)[1] == "two", "first hunk revert should apply")
+			vim.api.nvim_buf_set_lines(bufnr, 1, 2, false, { "changed again" })
+			signs.refresh(bufnr, false)
+			vim.api.nvim_win_set_cursor(0, { 2, 0 })
+			signs.revert_hunk()
+			assert(vim.api.nvim_buf_get_lines(bufnr, 1, 2, false)[1] == "two", "second hunk revert should apply")
+			assert(prompt_count == 1, "option 2 should suppress the second direct hunk revert prompt")
+		end, debug.traceback)
+		confirm.open = previous_confirm_open
+		if confirm._test_reset_session then
+			confirm._test_reset_session()
+		end
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_direct_hunk_revert_refuses_stale_buffer_state()
+		require("lazyvcs").setup({
+			debounce_ms = 0,
+			use_gitsigns = false,
+			source_control = { confirm_mutations = true },
+		})
+
+		local fixture = helpers.make_git_fixture()
+		local confirm = require("lazyvcs.source_control.confirm")
+		local signs = require("lazyvcs.signs")
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+		local bufnr = vim.api.nvim_get_current_buf()
+		local loaded = false
+		signs.refresh(bufnr, true, function(state)
+			loaded = state ~= nil
+		end)
+		wait_for(function()
+			return loaded
+		end, "direct signs state should load", ASYNC_TIMEOUT_MS)
+
+		local previous_confirm_open = confirm.open
+		local confirm_choice
+		---@diagnostic disable-next-line: duplicate-set-field
+		confirm.open = function(_, on_choice)
+			confirm_choice = on_choice
+			return {}
+		end
+
+		local ok, err = xpcall(function()
+			vim.api.nvim_win_set_cursor(0, { 2, 0 })
+			signs.revert_hunk()
+			assert(type(confirm_choice) == "function", "hunk revert should wait for confirmation")
+			vim.api.nvim_buf_set_lines(bufnr, 1, 2, false, { "edited while confirmation was open" })
+			confirm_choice("confirm")
+			assert(
+				vim.api.nvim_buf_get_lines(bufnr, 1, 2, false)[1] == "edited while confirmation was open",
+				"confirmation must not reset a hunk after its buffer changes"
+			)
+		end, debug.traceback)
+		confirm.open = previous_confirm_open
+		if confirm._test_reset_session then
+			confirm._test_reset_session()
+		end
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_gitsigns_hunk_revert_refuses_changed_window()
+		require("lazyvcs").setup({
+			use_gitsigns = true,
+			source_control = { confirm_mutations = true },
+		})
+
+		local fixture = helpers.make_git_fixture()
+		local backends = require("lazyvcs.backends")
+		local confirm = require("lazyvcs.source_control.confirm")
+		local signs = require("lazyvcs.signs")
+		local previous_gitsigns = package.loaded["gitsigns"]
+		local previous_resolve_cached = backends.resolve_cached
+		local reset_count = 0
+		package.loaded["gitsigns"] = {
+			reset_hunk = function()
+				reset_count = reset_count + 1
+			end,
+		}
+		---@diagnostic disable-next-line: duplicate-set-field
+		backends.resolve_cached = function()
+			return { name = "git" }
+		end
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+
+		local previous_confirm_open = confirm.open
+		local confirm_choice
+		---@diagnostic disable-next-line: duplicate-set-field
+		confirm.open = function(_, on_choice)
+			confirm_choice = on_choice
+			return {}
+		end
+
+		local ok, err = xpcall(function()
+			signs.revert_hunk()
+			assert(type(confirm_choice) == "function", "gitsigns revert should wait for confirmation")
+			vim.cmd.enew()
+			confirm_choice("confirm")
+			assert(reset_count == 0, "confirmation must not invoke gitsigns in a different buffer")
+		end, debug.traceback)
+		confirm.open = previous_confirm_open
+		package.loaded["gitsigns"] = previous_gitsigns
+		backends.resolve_cached = previous_resolve_cached
+		if confirm._test_reset_session then
+			confirm._test_reset_session()
+		end
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_live_diff_hunk_revert_refuses_stale_buffer_state()
+		require("lazyvcs").setup({
+			debounce_ms = 0,
+			use_gitsigns = false,
+			source_control = { confirm_mutations = true },
+		})
+
+		local fixture = helpers.make_git_fixture()
+		local actions = require("lazyvcs.actions")
+		local confirm = require("lazyvcs.source_control.confirm")
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+		local session = open_diff()
+		vim.api.nvim_set_current_win(session.editable_win)
+		vim.api.nvim_win_set_cursor(session.editable_win, { 2, 0 })
+
+		local previous_confirm_open = confirm.open
+		local confirm_choice
+		---@diagnostic disable-next-line: duplicate-set-field
+		confirm.open = function(_, on_choice)
+			confirm_choice = on_choice
+			return {}
+		end
+
+		local ok, err = xpcall(function()
+			actions.revert_hunk()
+			assert(type(confirm_choice) == "function", "live-diff hunk revert should wait for confirmation")
+			vim.api.nvim_buf_set_lines(session.editable_bufnr, 1, 2, false, { "edited while confirmation was open" })
+			confirm_choice("confirm")
+			assert(
+				vim.api.nvim_buf_get_lines(session.editable_bufnr, 1, 2, false)[1]
+					== "edited while confirmation was open",
+				"live-diff confirmation must not revert edits made after the prompt opened"
+			)
+		end, debug.traceback)
+		confirm.open = previous_confirm_open
+		if confirm._test_reset_session then
+			confirm._test_reset_session()
+		end
+		actions.close(session.editable_bufnr)
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_json_file_completes_partial_writes_before_replace()
+		local json_file = require("lazyvcs.json_file")
+		local root = helpers.tempdir()
+		local path = root .. "/state.json"
+		local previous_write = vim.uv.fs_write
+		local write_calls = 0
+		---@diagnostic disable-next-line: duplicate-set-field
+		vim.uv.fs_write = function(fd, data, offset)
+			write_calls = write_calls + 1
+			if write_calls == 1 then
+				local partial = math.max(1, math.floor(#data / 2))
+				return previous_write(fd, data:sub(1, partial), offset)
+			end
+			return previous_write(fd, data, offset)
+		end
+
+		local ok, err = xpcall(function()
+			assert(json_file.write(path, { replacement = "complete" }))
+			assert(write_calls >= 2, "a partial state write should continue with the remaining bytes")
+			assert(
+				vim.deep_equal(json_file.read(path), { replacement = "complete" }),
+				"atomic replacement must contain the full JSON document"
+			)
+			assert(vim.fn.glob(path .. ".tmp.*") == "", "a completed partial write should not leave a temporary file")
+
+			local stalled_calls = 0
+			---@diagnostic disable-next-line: duplicate-set-field
+			vim.uv.fs_write = function(fd, data, offset)
+				stalled_calls = stalled_calls + 1
+				if stalled_calls == 1 then
+					return previous_write(fd, data:sub(1, 1), offset)
+				end
+				return 0
+			end
+			local replaced, replace_err = json_file.write(path, { replacement = "truncated" })
+			assert(not replaced and replace_err, "a partial write that stops making progress should fail")
+			assert(
+				vim.deep_equal(json_file.read(path), { replacement = "complete" }),
+				"a stalled partial write must leave the previous state intact"
+			)
+			assert(vim.fn.glob(path .. ".tmp.*") == "", "a stalled partial write should remove its temporary file")
+		end, debug.traceback)
+		vim.uv.fs_write = previous_write
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_ai_attachment_completes_partial_writes_before_provider_start()
+		require("lazyvcs").setup({
+			ai = {
+				commit_message = {
+					provider = "copilot_cli",
+					confirm_privacy = false,
+				},
+			},
+		})
+
+		local ai = require("lazyvcs.source_control.ai")
+		local util = require("lazyvcs.util")
+		local previous_system_start = util.system_start
+		local previous_write = vim.uv.fs_write
+		local attachment_path
+		local attachment_content
+		local write_calls = 0
+		ai._test_reset_privacy()
+		ai._test_set_executable_checker(function(name)
+			return name == "copilot"
+		end)
+		---@diagnostic disable-next-line: duplicate-set-field
+		vim.uv.fs_write = function(fd, data, offset)
+			write_calls = write_calls + 1
+			if write_calls == 1 then
+				local partial = math.max(1, math.floor(#data / 2))
+				return previous_write(fd, data:sub(1, partial), offset)
+			end
+			return previous_write(fd, data, offset)
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.system_start = function(args, _, on_exit)
+			local command = table.concat(args, " ")
+			if command:match("^git diff %-%-staged") then
+				local result = {
+					code = 0,
+					stdout = "diff --git a/app.lua b/app.lua\n+return 'complete attachment'\n",
+					stderr = "",
+				}
+				on_exit(result, nil, result)
+			elseif command:match("^copilot ") then
+				for index, arg in ipairs(args) do
+					if arg == "--attachment" then
+						attachment_path = args[index + 1]
+						break
+					end
+				end
+				assert(attachment_path, "Copilot CLI should receive a private attachment")
+				attachment_content = table.concat(vim.fn.readfile(attachment_path, "b"), "\n")
+				local result = { code = 0, stdout = "Describe complete attachment\n", stderr = "" }
+				on_exit(result, nil, result)
+			else
+				error("unexpected command: " .. command)
+			end
+			return {}
+		end
+
+		local message
+		local generate_err
+		local ok, err = xpcall(function()
+			ai.generate({ vcs = "git", root = helpers.tempdir() }, function(generated, callback_err)
+				message = generated
+				generate_err = callback_err
+			end)
+			wait_for(function()
+				return message ~= nil or generate_err ~= nil
+			end, "Copilot CLI generation should finish", ASYNC_TIMEOUT_MS)
+			assert(not generate_err, generate_err)
+			assert(write_calls >= 2, "a partial attachment write should continue with the remaining bytes")
+			assert(
+				attachment_content:match("complete attachment"),
+				"the provider must receive the complete private attachment"
+			)
+			assert(not vim.uv.fs_stat(attachment_path), "the private attachment should be deleted after generation")
+		end, debug.traceback)
+		vim.uv.fs_write = previous_write
+		util.system_start = previous_system_start
+		ai._test_reset_privacy()
+		if not ok then
+			error(err, 0)
+		end
 	end
 
 	local function test_buffer_guard_preserves_a_tracked_symlink_path()
@@ -754,6 +1257,42 @@ return function(ctx)
 		{
 			"test_buffer_discard_refuses_modified_current_buffer",
 			test_buffer_discard_refuses_modified_current_buffer,
+		},
+		{
+			"test_buffer_discard_session_choice_suppresses_second_prompt",
+			test_buffer_discard_session_choice_suppresses_second_prompt,
+		},
+		{
+			"test_buffer_discard_cancel_releases_request_owner",
+			test_buffer_discard_cancel_releases_request_owner,
+		},
+		{
+			"test_source_control_confirm_session_survives_sidebar_reopen",
+			test_source_control_confirm_session_survives_sidebar_reopen,
+		},
+		{
+			"test_direct_hunk_revert_uses_session_confirmation",
+			test_direct_hunk_revert_uses_session_confirmation,
+		},
+		{
+			"test_direct_hunk_revert_refuses_stale_buffer_state",
+			test_direct_hunk_revert_refuses_stale_buffer_state,
+		},
+		{
+			"test_gitsigns_hunk_revert_refuses_changed_window",
+			test_gitsigns_hunk_revert_refuses_changed_window,
+		},
+		{
+			"test_live_diff_hunk_revert_refuses_stale_buffer_state",
+			test_live_diff_hunk_revert_refuses_stale_buffer_state,
+		},
+		{
+			"test_json_file_completes_partial_writes_before_replace",
+			test_json_file_completes_partial_writes_before_replace,
+		},
+		{
+			"test_ai_attachment_completes_partial_writes_before_provider_start",
+			test_ai_attachment_completes_partial_writes_before_provider_start,
 		},
 		{
 			"test_buffer_guard_preserves_a_tracked_symlink_path",

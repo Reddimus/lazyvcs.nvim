@@ -104,14 +104,10 @@ function M.revert_buffer()
 			return
 		end
 		local backend_name = backend and backend.name or "VCS"
-		confirm.open({
+		confirm.mutation({
 			prompt = string.format("Discard all %s worktree changes in this file?", backend_name:upper()),
-		}, function(choice)
+		}, function()
 			if not owner.active then
-				return
-			end
-			if choice ~= "confirm" and choice ~= "confirm_session" then
-				owner:finish()
 				return
 			end
 			if not buffer_guard.check(root or util.dir_of(path), { path }) then
@@ -147,6 +143,8 @@ function M.revert_buffer()
 					return util.system_start(args, opts, on_exit)
 				end,
 			}))
+		end, function()
+			owner:finish()
 		end)
 	end))
 	return owner

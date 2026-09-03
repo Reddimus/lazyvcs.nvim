@@ -5,6 +5,7 @@ local diff = require("lazyvcs.diff")
 local aerial = require("lazyvcs.integrations.aerial")
 local editor = require("lazyvcs.integrations.editor")
 local layout = require("lazyvcs.layout")
+local confirm = require("lazyvcs.source_control.confirm")
 local state = require("lazyvcs.state")
 local util = require("lazyvcs.util")
 
@@ -1059,12 +1060,35 @@ function M.revert_hunk()
 		util.notify("No modified hunk at the cursor", vim.log.levels.WARN)
 		return
 	end
-
-	if not session.backend_impl.revert_hunk(session, hunk) then
-		diff.reset_hunk(session.editable_bufnr, session.base_lines, hunk)
+	local context = util.capture_buffer_context(session.editable_win)
+	if not context then
+		return false
 	end
 
-	schedule_refresh(session.editable_bufnr)
+	return confirm.mutation({ prompt = "Revert hunk under cursor?" }, function()
+		if state.get(session.editable_bufnr) ~= session then
+			return
+		end
+		if not util.buffer_context_is_unchanged(context) then
+			util.notify("Hunk context changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
+			return false
+		end
+		return vim.api.nvim_win_call(session.editable_win, function()
+			refresh(session.editable_bufnr)
+			line = vim.api.nvim_win_get_cursor(session.editable_win)[1]
+			hunk = diff.find_current_hunk(session.hunks or {}, line)
+			if not hunk then
+				util.notify("No modified hunk at the cursor", vim.log.levels.WARN)
+				return false
+			end
+			if not session.backend_impl.revert_hunk(session, hunk) then
+				diff.reset_hunk(session.editable_bufnr, session.base_lines, hunk)
+			end
+
+			schedule_refresh(session.editable_bufnr)
+			return true
+		end)
+	end)
 end
 
 function M.jump_to_hunk(direction)

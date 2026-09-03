@@ -1,7 +1,9 @@
 local compat = require("lazyvcs.compat")
+local config = require("lazyvcs.config")
 local modal = require("lazyvcs.source_control.modal")
 
 local M = {}
+local mutation_prompts_suppressed = false
 
 local options = {
 	{ key = "1", label = "Confirm", action = "confirm" },
@@ -135,6 +137,27 @@ function M.open(opts, on_choice)
 		end,
 		owner = owner,
 	}
+end
+
+function M.mutation(opts, on_confirm, on_cancel)
+	if not config.get().source_control.confirm_mutations or mutation_prompts_suppressed then
+		return on_confirm()
+	end
+	return M.open(opts, function(choice)
+		if choice == "confirm_session" then
+			mutation_prompts_suppressed = true
+		end
+		if choice == "confirm" or choice == "confirm_session" then
+			return on_confirm()
+		end
+		if on_cancel then
+			return on_cancel()
+		end
+	end)
+end
+
+function M._test_reset_session()
+	mutation_prompts_suppressed = false
 end
 
 return M
