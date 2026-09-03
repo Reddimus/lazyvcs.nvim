@@ -579,7 +579,8 @@ function M.revert_file_async(path, on_done, opts)
 				end
 				return task:finish(nil, tracked_err)
 			end
-			task:add(util.system_start({ "git", "restore", "--worktree", "--", relpath }, {
+			local start = opts.start or util.system_start
+			task:add(start({ "git", "restore", "--worktree", "--", relpath }, {
 				cwd = info.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 			}, function(result, restore_err)

@@ -174,6 +174,16 @@ function M.system_start(args, opts, on_exit)
 		return bounded_text(value, limit)
 	end
 
+	local function stream_truncated(name, fallback)
+		local stream = streams[name]
+		if stream.omitted > 0 then
+			return true
+		end
+		return #stream.chunks == 0
+			and #(type(fallback) == "string" and fallback or "")
+				> (name == "stdout" and stdout_limit or stderr_limit)
+	end
+
 	local function bounded_result(result)
 		if type(result) ~= "table" then
 			return result
@@ -183,6 +193,8 @@ function M.system_start(args, opts, on_exit)
 			signal = result.signal,
 			stdout = stream_value("stdout", result.stdout),
 			stderr = stream_value("stderr", result.stderr),
+			stdout_truncated = stream_truncated("stdout", result.stdout),
+			stderr_truncated = stream_truncated("stderr", result.stderr),
 			cancelled = result.cancelled,
 			timed_out = result.timed_out,
 			reason = result.reason,
@@ -227,6 +239,8 @@ function M.system_start(args, opts, on_exit)
 				code = 124,
 				stdout = "",
 				stderr = message,
+				stdout_truncated = streams.stdout.omitted > 0,
+				stderr_truncated = false,
 				timed_out = true,
 				reason = "timeout",
 			}
@@ -237,6 +251,8 @@ function M.system_start(args, opts, on_exit)
 				code = 130,
 				stdout = "",
 				stderr = message,
+				stdout_truncated = streams.stdout.omitted > 0,
+				stderr_truncated = false,
 				cancelled = true,
 				reason = cancel_reason or "cancelled",
 			}
@@ -290,6 +306,7 @@ function M.system_start(args, opts, on_exit)
 			stdout = "",
 			stderr = "Working directory does not exist: " .. opts.cwd,
 		}
+		result = bounded_result(result)
 		complete(nil, M.system_error(result), result)
 		return wrapper
 	end
@@ -302,6 +319,8 @@ function M.system_start(args, opts, on_exit)
 		if forced_result then
 			forced_result.raw.stdout = bounded_raw and bounded_raw.stdout or ""
 			forced_result.raw.signal = bounded_raw and bounded_raw.signal or nil
+			forced_result.raw.stdout_truncated = bounded_raw and bounded_raw.stdout_truncated or false
+			forced_result.raw.stderr_truncated = false
 			complete(forced_result.result, forced_result.err, forced_result.raw)
 			return
 		end
@@ -313,6 +332,7 @@ function M.system_start(args, opts, on_exit)
 	end)
 	if not ok then
 		local result = { code = 127, stdout = "", stderr = M.spawn_error(args, proc) }
+		result = bounded_result(result)
 		complete(nil, M.system_error(result), result)
 		return wrapper
 	end

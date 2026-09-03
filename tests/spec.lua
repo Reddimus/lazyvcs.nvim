@@ -7074,6 +7074,14 @@ vim.list_extend(
 		async_timeout_ms = ASYNC_TIMEOUT_MS,
 	})
 )
+vim.list_extend(
+	cases,
+	require("spec_safety")({
+		helpers = helpers,
+		wait_for = wait_for,
+		async_timeout_ms = ASYNC_TIMEOUT_MS,
+	})
+)
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,

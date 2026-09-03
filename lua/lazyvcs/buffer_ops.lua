@@ -4,6 +4,7 @@
 -- did nothing in a Git repository. Everything here dispatches through
 -- `lazyvcs.backends`, so the same commands work in both VCSes.
 local backends = require("lazyvcs.backends")
+local buffer_guard = require("lazyvcs.source_control.buffer_guard")
 local picker = require("lazyvcs.picker")
 local signs = require("lazyvcs.signs")
 local confirm = require("lazyvcs.source_control.confirm")
@@ -97,7 +98,11 @@ function M.revert_buffer()
 			owner:finish()
 			return util.notify(version_err or "Current buffer is not a tracked Git or SVN file", vim.log.levels.WARN)
 		end
-		local backend = backends.resolve_cached(path)
+		local backend, root = backends.resolve_cached(path)
+		if not buffer_guard.check(root or util.dir_of(path), { path }) then
+			owner:finish()
+			return
+		end
 		local backend_name = backend and backend.name or "VCS"
 		confirm.open({
 			prompt = string.format("Discard all %s worktree changes in this file?", backend_name:upper()),
@@ -106,6 +111,10 @@ function M.revert_buffer()
 				return
 			end
 			if choice ~= "confirm" and choice ~= "confirm_session" then
+				owner:finish()
+				return
+			end
+			if not buffer_guard.check(root or util.dir_of(path), { path }) then
 				owner:finish()
 				return
 			end
@@ -121,7 +130,23 @@ function M.revert_buffer()
 					vim.cmd("checktime " .. bufnr)
 					signs.refresh(bufnr, true)
 				end
-			end))
+			end, {
+				start = function(args, opts, on_exit)
+					local guard_err = buffer_guard.error(root or util.dir_of(path), { path })
+					if guard_err then
+						local raw = {
+							code = 1,
+							stdout = "",
+							stderr = guard_err,
+							stdout_truncated = false,
+							stderr_truncated = false,
+						}
+						on_exit(nil, guard_err, raw)
+						return {}
+					end
+					return util.system_start(args, opts, on_exit)
+				end,
+			}))
 		end)
 	end))
 	return owner

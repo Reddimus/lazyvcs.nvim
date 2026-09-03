@@ -6,6 +6,12 @@ local svn_xml = require("lazyvcs.backends.xml")
 
 local M = {}
 
+local function truncated_output_error(result, command)
+	if result and result.stdout_truncated then
+		return command .. " output was truncated; repository state was not loaded"
+	end
+end
+
 local uv = vim.uv
 
 local function join(...)
@@ -989,6 +995,10 @@ function M.load_repo_summary_async(repo, opts, run_command, on_done)
 				if not status then
 					return on_done(nil, status_err)
 				end
+				local truncated_err = truncated_output_error(status, "Git status")
+				if truncated_err then
+					return on_done(nil, truncated_err)
+				end
 				local branch_info = parse_git_summary(util.split_lines(status.stdout))
 				if not (opts.remote_refresh and branch_info.upstream) then
 					return on_done(build_git_summary(repo, opts, status.stdout, nil))
@@ -997,6 +1007,10 @@ function M.load_repo_summary_async(repo, opts, run_command, on_done)
 					{ "git", "remote" },
 					{ kind = "remote", timeout_ms = opts.status_timeout_ms },
 					function(remotes)
+						local remotes_truncated_err = truncated_output_error(remotes, "Git remote list")
+						if remotes_truncated_err then
+							return on_done(nil, remotes_truncated_err)
+						end
 						if not remotes or #util.split_lines(remotes.stdout) == 0 then
 							return on_done(build_git_summary(repo, opts, status.stdout, nil))
 						end
@@ -1014,6 +1028,10 @@ function M.load_repo_summary_async(repo, opts, run_command, on_done)
 								}, { kind = "summary", timeout_ms = opts.status_timeout_ms }, function(
 									refreshed
 								)
+									local refreshed_truncated_err = truncated_output_error(refreshed, "Git status")
+									if refreshed_truncated_err then
+										return on_done(nil, refreshed_truncated_err)
+									end
 									on_done(
 										build_git_summary(
 											repo,
@@ -1044,10 +1062,18 @@ function M.load_repo_summary_async(repo, opts, run_command, on_done)
 		if not status then
 			return on_done(nil, status_err)
 		end
+		local truncated_err = truncated_output_error(status, "SVN status")
+		if truncated_err then
+			return on_done(nil, truncated_err)
+		end
 		run_command(
 			{ "svn", "info", "--xml", repo.root },
 			{ kind = "summary", timeout_ms = opts.status_timeout_ms },
 			function(info)
+				local info_truncated_err = truncated_output_error(info, "SVN info")
+				if info_truncated_err then
+					return on_done(nil, info_truncated_err)
+				end
 				on_done(build_svn_summary(repo, opts, status.stdout, info and info.stdout or nil))
 			end
 		)
@@ -1064,12 +1090,20 @@ function M.load_repo_details_async(repo, opts, run_command, on_done)
 				if not status then
 					return on_done(nil, status_err)
 				end
+				local truncated_err = truncated_output_error(status, "Git status")
+				if truncated_err then
+					return on_done(nil, truncated_err)
+				end
 				run_command(
 					{ "git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=no" },
 					{ kind = "details", timeout_ms = opts.status_timeout_ms },
 					function(files, files_err)
 						if not files then
 							return on_done(nil, files_err)
+						end
+						local files_truncated_err = truncated_output_error(files, "Git status")
+						if files_truncated_err then
+							return on_done(nil, files_truncated_err)
 						end
 						on_done(build_git_detail(repo, opts, status.stdout, files.stdout))
 					end
@@ -1091,10 +1125,18 @@ function M.load_repo_details_async(repo, opts, run_command, on_done)
 		if not status then
 			return on_done(nil, status_err)
 		end
+		local truncated_err = truncated_output_error(status, "SVN status")
+		if truncated_err then
+			return on_done(nil, truncated_err)
+		end
 		run_command(
 			{ "svn", "info", "--xml", repo.root },
 			{ kind = "details", timeout_ms = opts.status_timeout_ms },
 			function(info)
+				local info_truncated_err = truncated_output_error(info, "SVN info")
+				if info_truncated_err then
+					return on_done(nil, info_truncated_err)
+				end
 				on_done(build_svn_detail(repo, opts, status.stdout, info and info.stdout or nil))
 			end
 		)

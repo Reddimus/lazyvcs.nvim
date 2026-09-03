@@ -1,4 +1,5 @@
 local ai = require("lazyvcs.source_control.ai")
+local buffer_guard = require("lazyvcs.source_control.buffer_guard")
 local confirm = require("lazyvcs.source_control.confirm")
 local config = require("lazyvcs.config")
 local input = require("lazyvcs.source_control.input")
@@ -254,6 +255,11 @@ local function start_repo_job(state, repo, spec)
 		notify_repo_busy(repo, job)
 		return false
 	end
+	if spec.guard_modified_buffers and not buffer_guard.check(repo.root) then
+		session_state.clear_repo_job(repo.root)
+		navigate_if_visible(state)
+		return false
+	end
 
 	clear_repo_job_errors(repo.root)
 	if spec.close_sessions then
@@ -296,6 +302,24 @@ end
 local function start_command(repo, kind, args, on_done, opts)
 	opts = opts or {}
 	local timeout = opts.timeout_ms or config.get().source_control.background.mutation_timeout_ms
+	local process_start
+	if opts.guard_modified_buffers then
+		process_start = function(command, process_opts, on_exit)
+			local guard_err = buffer_guard.error(repo.root, opts.guard_paths)
+			if guard_err then
+				local raw = {
+					code = 1,
+					stdout = "",
+					stderr = guard_err,
+					stdout_truncated = false,
+					stderr_truncated = false,
+				}
+				on_exit(nil, guard_err, raw)
+				return {}
+			end
+			return util.system_start(command, process_opts, on_exit)
+		end
+	end
 	return jobs.command(repo, kind, args, {
 		cwd = opts.cwd or repo.root,
 		timeout_ms = timeout,
@@ -305,6 +329,7 @@ local function start_command(repo, kind, args, on_done, opts)
 		scope = opts.scope or "mutation",
 		generation = opts.generation or mutation_generations[repo.root],
 		priority = opts.priority or 100,
+		start = process_start,
 	}, function(result, err, raw)
 		on_done(result, err, raw)
 	end)
@@ -545,7 +570,9 @@ local function start_git_fast_forward(repo, on_done)
 							if current ~= branch then
 								return on_done(nil, "Branch changed while preparing to fast-forward; retry the action.")
 							end
-							start_command(repo, "git_merge", { "git", "merge", "--ff-only", upstream.full }, on_done)
+							start_command(repo, "git_merge", { "git", "merge", "--ff-only", upstream.full }, on_done, {
+								guard_modified_buffers = true,
+							})
 						end)
 					end)
 				end
@@ -591,7 +618,8 @@ local function start_git_sync(repo, on_done)
 								repo,
 								"git_merge",
 								{ "git", "merge", "--ff-only", upstream.full },
-								on_done
+								on_done,
+								{ guard_modified_buffers = true }
 							)
 						end
 						if branch_state.ahead > 0 then
@@ -868,6 +896,9 @@ function M.revert_file(state, node)
 	local section = node.extra.section
 	local change_kind = node.extra.change_kind
 	local status = node.extra.status or ""
+	if not buffer_guard.check(repo.root, { node.path }) then
+		return
+	end
 	local action
 	local prompt
 	local args
@@ -896,12 +927,22 @@ function M.revert_file(state, node)
 		args = { "svn", "revert", "--", relpath }
 	end
 	confirm_mutation(state, prompt, function()
-		start_simple_repo_job(state, repo, {
-			action = action,
-			label = "Discarding " .. relpath .. "...",
-			sync_text = "Discard",
-			remote_refresh = false,
-		}, action, args)
+		start_simple_repo_job(
+			state,
+			repo,
+			{
+				action = action,
+				label = "Discarding " .. relpath .. "...",
+				sync_text = "Discard",
+				remote_refresh = false,
+			},
+			action,
+			args,
+			{
+				guard_modified_buffers = true,
+				guard_paths = { node.path },
+			}
+		)
 	end)
 end
 
@@ -1253,6 +1294,7 @@ local function execute_repo_action(state, repo, action, node)
 			remote_refresh = true,
 			checktime = true,
 			close_sessions = true,
+			guard_modified_buffers = true,
 			start = function(resolve, reject)
 				start_git_fast_forward(repo, function(result, err, raw)
 					if err then
@@ -1290,13 +1332,14 @@ local function execute_repo_action(state, repo, action, node)
 			remote_refresh = true,
 			checktime = true,
 			close_sessions = true,
+			guard_modified_buffers = true,
 			start = function(resolve, reject)
 				start_command(repo, "svn_update", { "svn", "update", repo.root }, function(result, err, raw)
 					if err then
 						return reject(err, raw)
 					end
 					resolve(result, raw)
-				end)
+				end, { guard_modified_buffers = true })
 			end,
 		})
 		return
@@ -1311,6 +1354,7 @@ local function execute_repo_action(state, repo, action, node)
 				remote_refresh = true,
 				checktime = true,
 				close_sessions = true,
+				guard_modified_buffers = true,
 				start = function(resolve, reject)
 					start_git_sync(repo, function(result, err, raw)
 						if err then
@@ -1328,13 +1372,14 @@ local function execute_repo_action(state, repo, action, node)
 				remote_refresh = true,
 				checktime = true,
 				close_sessions = true,
+				guard_modified_buffers = true,
 				start = function(resolve, reject)
 					start_command(repo, "svn_update", { "svn", "update", repo.root }, function(result, err, raw)
 						if err then
 							return reject(err, raw)
 						end
 						resolve(result, raw)
-					end)
+					end, { guard_modified_buffers = true })
 				end,
 			})
 		end
@@ -1391,13 +1436,17 @@ function M.switch_repo(state, node)
 					remote_refresh = false,
 					checktime = true,
 					close_sessions = true,
+					guard_modified_buffers = true,
 					start = function(resolve, reject)
 						start_command(target_repo, "switch_mutation", args, function(result, err, raw)
 							if err then
 								return reject(err, raw)
 							end
 							resolve(result, raw)
-						end, { cwd = mutation_opts.cwd or target_repo.root })
+						end, {
+							cwd = mutation_opts.cwd or target_repo.root,
+							guard_modified_buffers = true,
+						})
 					end,
 					after_success = function(result)
 						if type(mutation_opts.on_success) == "function" then
