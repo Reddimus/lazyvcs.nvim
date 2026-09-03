@@ -139,6 +139,27 @@ return function(ctx)
 		end
 	end
 
+	local function test_buffer_guard_matches_an_external_alias_to_a_tracked_file()
+		local fixture = helpers.make_git_fixture()
+		local alias = vim.fn.tempname()
+		assert(vim.uv.fs_symlink(fixture.file, alias), "test symlink should be created")
+
+		local ok, err = xpcall(function()
+			vim.cmd.edit(vim.fn.fnameescape(alias))
+			vim.api.nvim_buf_set_lines(0, 0, -1, false, { "unsaved through external alias" })
+			local modified = require("lazyvcs.source_control.buffer_guard").modified(fixture.root, { fixture.file })
+
+			assert(#modified == 1, "a modified regular file opened through an alias must block repository mutation")
+		end, debug.traceback)
+		pcall(function()
+			vim.cmd("bdelete!")
+		end)
+		pcall(vim.fn.delete, alias)
+		if not ok then
+			error(err, 0)
+		end
+	end
+
 	local function test_buffer_discard_rechecks_before_restore()
 		require("lazyvcs").setup({ source_control = { confirm_mutations = false } })
 
@@ -553,6 +574,10 @@ return function(ctx)
 		{
 			"test_buffer_guard_preserves_a_tracked_symlink_path",
 			test_buffer_guard_preserves_a_tracked_symlink_path,
+		},
+		{
+			"test_buffer_guard_matches_an_external_alias_to_a_tracked_file",
+			test_buffer_guard_matches_an_external_alias_to_a_tracked_file,
 		},
 		{
 			"test_buffer_discard_rechecks_before_restore",
