@@ -55,9 +55,9 @@ no required Lua dependencies. It detects `gitsigns.nvim`, `snacks.nvim`,
 Start Neovim from inside a Git or SVN working copy, open a file, then try:
 
 ```vim
-:LazyVCS
 :LazyVCS diff open
 :LazyVCS blame toggle
+:LazyVCS
 ```
 
 The live diff puts the VCS base on the left and the editable file on the right.
@@ -84,8 +84,9 @@ and `q` to close. See `:help lazyvcs-mappings` for the full list.
 
 ## Configure
 
-Defaults are conservative. This example enables remote refresh when the sidebar
-opens and keeps blame off until requested without persisting the toggle:
+Defaults are conservative. Replace `opts = {}` in the install spec with this
+example to refresh remotes when the sidebar opens and keep blame off until
+requested without persisting the toggle:
 
 ```lua
 opts = {
