@@ -741,6 +741,7 @@ local function git_create_branch(repo, base_ref, context, opts)
 			kind = "command",
 			action = "git_create_branch",
 			label = name,
+			preserves_worktree = base_ref == nil,
 		}, opts, args)
 	end)
 end

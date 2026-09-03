@@ -1354,7 +1354,6 @@ local function execute_repo_action(state, repo, action, node)
 				remote_refresh = true,
 				checktime = true,
 				close_sessions = true,
-				guard_modified_buffers = true,
 				start = function(resolve, reject)
 					start_git_sync(repo, function(result, err, raw)
 						if err then
@@ -1429,6 +1428,7 @@ function M.switch_repo(state, node)
 		run_mutation = function(target_repo, choice, args, mutation_opts)
 			local label = choice and (choice.label or choice.short or choice.text or choice.name) or "selected target"
 			confirm_mutation(state, "Switch " .. target_repo.name .. " to " .. label .. "?", function()
+				local guard_worktree = not (choice and choice.preserves_worktree)
 				start_repo_job(state, target_repo, {
 					action = "switch",
 					label = "Switching...",
@@ -1436,7 +1436,7 @@ function M.switch_repo(state, node)
 					remote_refresh = false,
 					checktime = true,
 					close_sessions = true,
-					guard_modified_buffers = true,
+					guard_modified_buffers = guard_worktree,
 					start = function(resolve, reject)
 						start_command(target_repo, "switch_mutation", args, function(result, err, raw)
 							if err then
@@ -1445,7 +1445,7 @@ function M.switch_repo(state, node)
 							resolve(result, raw)
 						end, {
 							cwd = mutation_opts.cwd or target_repo.root,
-							guard_modified_buffers = true,
+							guard_modified_buffers = guard_worktree,
 						})
 					end,
 					after_success = function(result)

@@ -328,7 +328,6 @@ return function(ctx)
 		local ok, err = xpcall(function()
 			for _, case in ipairs({
 				{ action = "pull", vcs = "git" },
-				{ action = "sync", vcs = "git" },
 				{ action = "update", vcs = "svn" },
 			}) do
 				repo.vcs = case.vcs
@@ -346,6 +345,191 @@ return function(ctx)
 				)
 			end
 		end, debug.traceback)
+		util.system_start = previous_system_start
+		session_state.clear_repo_job(fixture.root)
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_source_control_sync_refuses_modified_buffer_before_merge()
+		require("lazyvcs").setup({ source_control = { confirm_mutations = false, sync_button_behavior = "direct" } })
+
+		local fixture = helpers.make_git_fixture()
+		local ops = require("lazyvcs.source_control.ops")
+		local session_state = require("lazyvcs.state")
+		local util = require("lazyvcs.util")
+		local repo = {
+			root = fixture.root,
+			name = "repo",
+			vcs = "git",
+			branch = "main",
+			counts = { local_changes = 1, staged = 0, remote = 1 },
+			sync = { status = "incoming" },
+		}
+		local state = {
+			path = fixture.root,
+			lazyvcs_commit_drafts = {},
+			lazyvcs_repo_cache = { [fixture.root] = repo },
+		}
+		local node = {
+			type = "repo_changes",
+			path = fixture.root,
+			extra = { repo_root = fixture.root },
+		}
+		local responses = {
+			["git branch --show-current"] = "main\n",
+			["git for-each-ref --format=%(upstream:short) refs/heads/main"] = "origin/main\n",
+			["git fetch --prune --quiet origin"] = "",
+			["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## main...origin/main [behind 1]\n M sample.txt\n",
+		}
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+		vim.api.nvim_buf_set_lines(0, 0, -1, false, { "unsaved editor text" })
+
+		local previous_system_start = util.system_start
+		local calls = {}
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.system_start = function(args, _, on_exit)
+			local key = table.concat(args, " ")
+			calls[#calls + 1] = key
+			assert(responses[key] ~= nil, "unexpected command: " .. key)
+			local result = { code = 0, stdout = responses[key], stderr = "" }
+			on_exit(result, nil, result)
+			return {}
+		end
+
+		local ok, err = xpcall(function()
+			ops.sync_repo(state, node)
+			assert(not vim.tbl_contains(calls, "git merge --ff-only origin/main"), "sync must guard its merge")
+			local job = assert(session_state.get_repo_job(fixture.root), "refused sync should report its failure")
+			assert(job.status == "error", "refused sync should finish as an error")
+		end, debug.traceback)
+		util.system_start = previous_system_start
+		session_state.clear_repo_job(fixture.root)
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_source_control_sync_push_allows_modified_buffer()
+		require("lazyvcs").setup({
+			source_control = {
+				confirm_mutations = false,
+				sync_button_behavior = "direct",
+			},
+		})
+
+		local fixture = helpers.make_git_fixture()
+		local ops = require("lazyvcs.source_control.ops")
+		local session_state = require("lazyvcs.state")
+		local util = require("lazyvcs.util")
+		local repo = {
+			root = fixture.root,
+			name = "repo",
+			vcs = "git",
+			branch = "main",
+			counts = { local_changes = 1, staged = 0, remote = 1 },
+			sync = { status = "outgoing" },
+		}
+		local state = {
+			path = fixture.root,
+			lazyvcs_commit_drafts = {},
+			lazyvcs_repo_cache = { [fixture.root] = repo },
+		}
+		local node = {
+			type = "repo_changes",
+			path = fixture.root,
+			extra = { repo_root = fixture.root },
+		}
+		local responses = {
+			["git branch --show-current"] = "main\n",
+			["git for-each-ref --format=%(upstream:short) refs/heads/main"] = "origin/main\n",
+			["git fetch --prune --quiet origin"] = "",
+			["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## main...origin/main [ahead 1]\n M sample.txt\n",
+			["git push origin main:main"] = "",
+		}
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+		vim.api.nvim_buf_set_lines(0, 0, -1, false, { "unsaved editor text" })
+
+		local previous_system_start = util.system_start
+		local calls = {}
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.system_start = function(args, _, on_exit)
+			local key = table.concat(args, " ")
+			calls[#calls + 1] = key
+			assert(responses[key] ~= nil, "unexpected command: " .. key)
+			local result = { code = 0, stdout = responses[key], stderr = "" }
+			on_exit(result, nil, result)
+			return {}
+		end
+
+		local ok, err = xpcall(function()
+			ops.sync_repo(state, node)
+			assert(vim.tbl_contains(calls, "git push origin main:main"), "push-only sync must remain available")
+		end, debug.traceback)
+		util.system_start = previous_system_start
+		session_state.clear_repo_job(fixture.root)
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_source_control_create_branch_allows_modified_buffer()
+		require("lazyvcs").setup({ source_control = { confirm_mutations = false } })
+
+		local fixture = helpers.make_git_fixture()
+		local ops = require("lazyvcs.source_control.ops")
+		local repo_switch = require("lazyvcs.source_control.switch")
+		local session_state = require("lazyvcs.state")
+		local util = require("lazyvcs.util")
+		local repo = {
+			root = fixture.root,
+			name = "repo",
+			vcs = "git",
+			counts = { local_changes = 1, staged = 0, remote = 0 },
+			sync = { status = "dirty" },
+		}
+		local state = {
+			path = fixture.root,
+			lazyvcs_commit_drafts = {},
+			lazyvcs_repo_cache = { [fixture.root] = repo },
+			lazyvcs_render = function() end,
+		}
+		local node = {
+			type = "repo_changes",
+			path = fixture.root,
+			extra = { repo_root = fixture.root },
+		}
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+		vim.api.nvim_buf_set_lines(0, 0, -1, false, { "unsaved editor text" })
+
+		local previous_open_async = repo_switch.open_async
+		local previous_system_start = util.system_start
+		local mutation_started = false
+		---@diagnostic disable-next-line: duplicate-set-field
+		repo_switch.open_async = function(target_repo, opts)
+			opts.on_ready(target_repo)
+			opts.run_mutation(
+				target_repo,
+				{ kind = "command", action = "git_create_branch", preserves_worktree = true, label = "save-work" },
+				{ "git", "switch", "-c", "save-work" },
+				{ cwd = target_repo.root }
+			)
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.system_start = function(args, _, on_exit)
+			assert(table.concat(args, " ") == "git switch -c save-work", "unexpected branch command")
+			mutation_started = true
+			local result = { code = 0, stdout = "", stderr = "" }
+			on_exit(result, nil, result)
+			return {}
+		end
+
+		local ok, err = xpcall(function()
+			ops.switch_repo(state, node)
+			assert(mutation_started, "creating a branch at current HEAD must remain available")
+		end, debug.traceback)
+		repo_switch.open_async = previous_open_async
 		util.system_start = previous_system_start
 		session_state.clear_repo_job(fixture.root)
 		if not ok then
@@ -590,6 +774,18 @@ return function(ctx)
 		{
 			"test_source_control_revision_mutations_refuse_loaded_modified_buffers",
 			test_source_control_revision_mutations_refuse_loaded_modified_buffers,
+		},
+		{
+			"test_source_control_sync_refuses_modified_buffer_before_merge",
+			test_source_control_sync_refuses_modified_buffer_before_merge,
+		},
+		{
+			"test_source_control_sync_push_allows_modified_buffer",
+			test_source_control_sync_push_allows_modified_buffer,
+		},
+		{
+			"test_source_control_create_branch_allows_modified_buffer",
+			test_source_control_create_branch_allows_modified_buffer,
 		},
 		{
 			"test_source_control_pull_rechecks_buffers_before_merge",
