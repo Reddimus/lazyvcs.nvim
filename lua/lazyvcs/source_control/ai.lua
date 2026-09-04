@@ -1,4 +1,5 @@
 local config = require("lazyvcs.config")
+local fs = require("lazyvcs.fs")
 local util = require("lazyvcs.util")
 
 local M = {}
@@ -249,7 +250,7 @@ local function write_private_attachment(prompt)
 	if not fd then
 		return nil, err
 	end
-	local written, write_err = vim.uv.fs_write(fd, prompt, 0)
+	local written, write_err = fs.write_all(fd, prompt, 0)
 	if written then
 		pcall(vim.uv.fs_fsync, fd)
 	end

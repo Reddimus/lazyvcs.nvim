@@ -2360,7 +2360,6 @@ local function test_source_control_confirm_session_choice_disables_more_prompts(
 	helpers.write_file(root .. "/changed.txt", "changed\n")
 
 	local state = {
-		lazyvcs_confirm_mutations = true,
 		lazyvcs_commit_drafts = {},
 		lazyvcs_repo_cache = {
 			[root] = {
@@ -2387,7 +2386,6 @@ local function test_source_control_confirm_session_choice_disables_more_prompts(
 		local result = vim.system({ "git", "diff", "--cached", "--name-only" }, { cwd = root, text = true }):wait()
 		return result.stdout:match("changed%.txt") ~= nil
 	end, "stage confirmation did not run git add")
-	eq(state.lazyvcs_confirm_mutations, false)
 end
 
 local function test_source_control_tree_view_groups_files_into_folders()
@@ -4194,6 +4192,7 @@ end
 local function test_svn_signs_render_and_revert_without_live_diff()
 	require("lazyvcs").setup({
 		debounce_ms = 10,
+		source_control = { confirm_mutations = false },
 		signs = {
 			debounce_ms = 10,
 		},
@@ -4456,7 +4455,7 @@ local function test_setup_is_idempotent_and_respects_sign_toggle()
 end
 
 local function test_git_integration()
-	require("lazyvcs").setup({ debounce_ms = 10 })
+	require("lazyvcs").setup({ debounce_ms = 10, source_control = { confirm_mutations = false } })
 
 	local fixture = helpers.make_git_fixture()
 	vim.cmd.edit(fixture.file)
@@ -5197,6 +5196,7 @@ local function test_source_control_git_file_actions_commit_and_sync()
 		source_control = {
 			scan_depth = 1,
 			show_clean = true,
+			confirm_mutations = false,
 			sync_button_behavior = "direct",
 		},
 	})
@@ -5330,6 +5330,7 @@ end
 local function test_source_control_git_sync_uses_explicit_upstream_fast_forward()
 	require("lazyvcs").setup({
 		source_control = {
+			confirm_mutations = false,
 			sync_button_behavior = "direct",
 		},
 	})
@@ -5395,7 +5396,7 @@ local function test_source_control_git_sync_uses_explicit_upstream_fast_forward(
 end
 
 local function test_source_control_git_pull_action_uses_explicit_upstream_fast_forward()
-	require("lazyvcs").setup()
+	require("lazyvcs").setup({ source_control = { confirm_mutations = false } })
 
 	local ops = require("lazyvcs.source_control.ops")
 	local util = require("lazyvcs.util")
@@ -5464,6 +5465,7 @@ end
 local function test_source_control_git_sync_pushes_to_configured_upstream()
 	require("lazyvcs").setup({
 		source_control = {
+			confirm_mutations = false,
 			sync_button_behavior = "direct",
 		},
 	})
@@ -5531,7 +5533,7 @@ local function test_source_control_git_sync_pushes_to_configured_upstream()
 end
 
 local function test_source_control_git_publish_branch_sets_upstream_to_origin()
-	require("lazyvcs").setup()
+	require("lazyvcs").setup({ source_control = { confirm_mutations = false } })
 
 	local ops = require("lazyvcs.source_control.ops")
 	local util = require("lazyvcs.util")
@@ -5598,6 +5600,7 @@ end
 local function test_source_control_git_sync_without_upstream_publishes_branch()
 	require("lazyvcs").setup({
 		source_control = {
+			confirm_mutations = false,
 			sync_button_behavior = "direct",
 		},
 	})
@@ -5662,7 +5665,7 @@ local function test_source_control_git_sync_without_upstream_publishes_branch()
 end
 
 local function test_source_control_git_push_uses_configured_upstream()
-	require("lazyvcs").setup()
+	require("lazyvcs").setup({ source_control = { confirm_mutations = false } })
 
 	local ops = require("lazyvcs.source_control.ops")
 	local util = require("lazyvcs.util")
@@ -5724,7 +5727,7 @@ local function test_source_control_git_push_uses_configured_upstream()
 end
 
 local function test_source_control_git_publish_falls_back_to_single_remote()
-	require("lazyvcs").setup()
+	require("lazyvcs").setup({ source_control = { confirm_mutations = false } })
 
 	local ops = require("lazyvcs.source_control.ops")
 	local util = require("lazyvcs.util")
@@ -5789,7 +5792,7 @@ local function test_source_control_git_publish_falls_back_to_single_remote()
 end
 
 local function test_source_control_git_publish_requires_unambiguous_remote()
-	require("lazyvcs").setup()
+	require("lazyvcs").setup({ source_control = { confirm_mutations = false } })
 
 	local ops = require("lazyvcs.source_control.ops")
 	local util = require("lazyvcs.util")
@@ -5865,7 +5868,7 @@ local function test_source_control_git_publish_requires_unambiguous_remote()
 end
 
 local function test_source_control_git_publish_requires_a_remote()
-	require("lazyvcs").setup()
+	require("lazyvcs").setup({ source_control = { confirm_mutations = false } })
 
 	local ops = require("lazyvcs.source_control.ops")
 	local util = require("lazyvcs.util")
@@ -5941,7 +5944,7 @@ local function test_source_control_git_publish_requires_a_remote()
 end
 
 local function test_source_control_git_publish_rejects_detached_head()
-	require("lazyvcs").setup()
+	require("lazyvcs").setup({ source_control = { confirm_mutations = false } })
 
 	local ops = require("lazyvcs.source_control.ops")
 	local util = require("lazyvcs.util")
@@ -6003,7 +6006,11 @@ local function test_source_control_git_publish_rejects_detached_head()
 end
 
 local function test_svn_integration()
-	require("lazyvcs").setup({ debounce_ms = 10, use_gitsigns = false })
+	require("lazyvcs").setup({
+		debounce_ms = 10,
+		use_gitsigns = false,
+		source_control = { confirm_mutations = false },
+	})
 
 	local fixture = helpers.make_svn_fixture()
 	vim.cmd.edit(fixture.file)
@@ -6030,6 +6037,7 @@ local function test_source_control_svn_commit_and_update()
 		source_control = {
 			scan_depth = 1,
 			show_clean = true,
+			confirm_mutations = false,
 			sync_button_behavior = "direct",
 		},
 	})
@@ -6475,6 +6483,7 @@ local function test_source_control_switch_repo_closes_matching_sessions_and_refr
 		source_control = {
 			scan_depth = 1,
 			show_clean = true,
+			confirm_mutations = false,
 		},
 	})
 
@@ -7080,6 +7089,7 @@ vim.list_extend(
 		helpers = helpers,
 		wait_for = wait_for,
 		async_timeout_ms = ASYNC_TIMEOUT_MS,
+		open_diff = open_diff,
 	})
 )
 

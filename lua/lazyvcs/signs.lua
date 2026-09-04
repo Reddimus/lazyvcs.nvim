@@ -2,6 +2,7 @@ local backends = require("lazyvcs.backends")
 local config = require("lazyvcs.config")
 local compat = require("lazyvcs.compat")
 local diff = require("lazyvcs.diff")
+local confirm = require("lazyvcs.source_control.confirm")
 local util = require("lazyvcs.util")
 
 local M = {}
@@ -61,23 +62,55 @@ local function defers_to_gitsigns(backend_name)
 	return package.loaded["gitsigns"] ~= nil or pcall(require, "gitsigns")
 end
 
-local function call_gitsigns(method, ...)
+local function gitsigns_api()
 	local bufnr = vim.api.nvim_get_current_buf()
 	local path = util.buf_path(bufnr)
 	local backend = path and backends.resolve_cached(path) or nil
 	if not backend or not defers_to_gitsigns(backend.name) then
-		return false
+		return nil
 	end
 	local ok, gitsigns = pcall(require, "gitsigns")
 	if not ok then
-		return false
+		return nil
+	end
+	return gitsigns
+end
+
+local function gitsigns_method(method)
+	local gitsigns = gitsigns_api()
+	if not gitsigns then
+		return nil
 	end
 	local fn = gitsigns[method]
 	if type(fn) ~= "function" then
+		return nil
+	end
+	return fn
+end
+
+local function call_gitsigns(method, ...)
+	local fn = gitsigns_method(method)
+	if not fn then
 		return false
 	end
 	local invoked = pcall(fn, ...)
 	return invoked
+end
+
+local function with_unchanged_buffer(context, callback)
+	if not util.buffer_context_is_unchanged(context) then
+		util.notify("Hunk context changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
+		return false
+	end
+
+	local ok, result = pcall(vim.api.nvim_win_call, context.winid, function()
+		return callback()
+	end)
+	if not ok then
+		util.notify("Unable to restore the confirmed hunk context", vim.log.levels.WARN)
+		return false
+	end
+	return result
 end
 
 local function supported_buffer(bufnr)
@@ -259,7 +292,10 @@ local function with_current_state(on_ready)
 	local state = buffers[bufnr]
 	if state and state.loaded then
 		render(bufnr)
-		on_ready(state)
+		local result = on_ready(state)
+		if result ~= nil then
+			return result
+		end
 		return true
 	end
 	M.refresh(bufnr, true, function(loaded, err)
@@ -284,19 +320,98 @@ function M.current_state(bufnr)
 end
 
 function M.revert_hunk()
-	if call_gitsigns("reset_hunk") then
-		return true
+	local context = util.capture_buffer_context()
+	if not context then
+		return false
 	end
-	local bufnr = vim.api.nvim_get_current_buf()
+	local reset_hunk = gitsigns_method("reset_hunk")
+	if reset_hunk then
+		local gitsigns = gitsigns_api()
+		if not gitsigns or type(gitsigns.get_hunks) ~= "function" then
+			util.notify("gitsigns.nvim cannot report hunk state; update it before reverting", vim.log.levels.WARN)
+			return false
+		end
+		local ok, hunks = pcall(gitsigns.get_hunks, context.bufnr)
+		if not ok or type(hunks) ~= "table" then
+			util.notify("Unable to read gitsigns.nvim hunk state", vim.log.levels.WARN)
+			return false
+		end
+		local confirmed_hunks = vim.deepcopy(hunks)
+		local function context_is_unchanged()
+			if not util.buffer_context_is_unchanged(context) then
+				util.notify(
+					"Hunk context changed while confirmation was open; nothing was reverted",
+					vim.log.levels.WARN
+				)
+				return false
+			end
+			local current_ok, current_hunks = pcall(gitsigns.get_hunks, context.bufnr)
+			if not current_ok or not vim.deep_equal(current_hunks, confirmed_hunks) then
+				util.notify("Hunk base changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
+				return false
+			end
+			return true
+		end
+		return confirm.mutation({
+			prompt = "Revert hunk under cursor?",
+			before_confirm = context_is_unchanged,
+		}, function()
+			if not context_is_unchanged() then
+				return false
+			end
+			return with_unchanged_buffer(context, function()
+				return pcall(reset_hunk)
+			end)
+		end)
+	end
+	local bufnr = context.bufnr
 	return with_current_state(function(state)
-		local line = vim.api.nvim_win_get_cursor(0)[1]
+		context = util.capture_buffer_context()
+		if not context then
+			return false
+		end
+		local line = context.cursor[1]
 		local hunk = diff.find_current_hunk(state.hunks or {}, line)
 		if not hunk then
 			util.notify("No modified hunk at the cursor", vim.log.levels.WARN)
 			return
 		end
-		diff.reset_hunk(bufnr, state.base_lines, hunk)
-		schedule(bufnr)
+		local confirmed_base_lines = vim.deepcopy(state.base_lines)
+		local confirmed_hunk = vim.deepcopy(hunk)
+		local function context_is_unchanged()
+			if not util.buffer_context_is_unchanged(context) then
+				util.notify(
+					"Hunk context changed while confirmation was open; nothing was reverted",
+					vim.log.levels.WARN
+				)
+				return false
+			end
+			local live = buffers[bufnr]
+			local current_hunk = live and diff.find_current_hunk(live.hunks or {}, context.cursor[1]) or nil
+			if
+				not live
+				or not live.loaded
+				or not vim.deep_equal(live.base_lines, confirmed_base_lines)
+				or not vim.deep_equal(current_hunk, confirmed_hunk)
+			then
+				util.notify("Hunk base changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
+				return false
+			end
+			return true
+		end
+		return confirm.mutation({
+			prompt = "Revert hunk under cursor?",
+			before_confirm = context_is_unchanged,
+		}, function()
+			if not context_is_unchanged() then
+				return false
+			end
+			return with_unchanged_buffer(context, function()
+				diff.reset_hunk(bufnr, confirmed_base_lines, confirmed_hunk)
+				schedule(bufnr)
+				return true
+			end)
+		end)
 	end)
 end
 
