@@ -182,8 +182,10 @@ function M.mutation(opts, on_confirm, on_cancel)
 	end)
 end
 
-function M._test_reset_session()
-	mutation_prompts_suppressed = false
+if vim.env.LAZYVCS_TEST_GROUP and vim.env.LAZYVCS_TEST_GROUP ~= "" then
+	function M._test_reset_session()
+		mutation_prompts_suppressed = false
+	end
 end
 
 return M

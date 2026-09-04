@@ -111,7 +111,7 @@ return function(ctx)
 		)
 	end
 
-	local function test_buffer_discard_session_choice_suppresses_second_prompt()
+	local function test_buffer_discard_prompts_after_session_suppression()
 		require("lazyvcs").setup({ source_control = { confirm_mutations = true } })
 
 		local fixture = helpers.make_git_fixture()
@@ -128,7 +128,7 @@ return function(ctx)
 		---@diagnostic disable-next-line: duplicate-set-field
 		confirm.open = function(_, on_choice)
 			prompt_count = prompt_count + 1
-			on_choice("confirm_session")
+			on_choice(prompt_count == 1 and "confirm_session" or "cancel")
 			return {}
 		end
 		---@diagnostic disable-next-line: duplicate-set-field
@@ -148,15 +148,25 @@ return function(ctx)
 		end
 
 		local ok, err = xpcall(function()
-			buffer_ops.revert_buffer()
+			local mutation_count = 0
+			confirm.mutation({ prompt = "Stage sample.txt?" }, function()
+				mutation_count = mutation_count + 1
+			end)
+			assert(mutation_count == 1, "the setup mutation should run")
+			assert(prompt_count == 1, "the setup mutation should suppress later lightweight prompts")
+
+			local owner = assert(buffer_ops.revert_buffer(), "discard request should return its owner")
 			wait_for(function()
-				return revert_count == 1
-			end, "first direct discard should reach the backend", ASYNC_TIMEOUT_MS)
-			buffer_ops.revert_buffer()
-			wait_for(function()
-				return revert_count == 2
-			end, "second direct discard should reach the backend", ASYNC_TIMEOUT_MS)
-			assert(prompt_count == 1, "option 2 should suppress the second direct discard prompt")
+				return owner.active == false
+			end, "file discard should resolve", ASYNC_TIMEOUT_MS)
+			assert(
+				prompt_count == 2 and revert_count == 0,
+				string.format(
+					"file discard ran %d time(s) after %d prompt(s); it must show and honor its own prompt",
+					revert_count,
+					prompt_count
+				)
+			)
 		end, debug.traceback)
 		backends.is_versioned_async = previous_is_versioned
 		backends.revert_file_async = previous_revert
@@ -164,6 +174,55 @@ return function(ctx)
 		if confirm._test_reset_session then
 			confirm._test_reset_session()
 		end
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_buffer_discard_prompts_when_mutation_confirmations_are_disabled()
+		require("lazyvcs").setup({ source_control = { confirm_mutations = false } })
+
+		local fixture = helpers.make_git_fixture()
+		local backends = require("lazyvcs.backends")
+		local buffer_ops = require("lazyvcs.buffer_ops")
+		local confirm = require("lazyvcs.source_control.confirm")
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+
+		local previous_confirm_open = confirm.open
+		local previous_is_versioned = backends.is_versioned_async
+		local previous_revert = backends.revert_file_async
+		local prompt_count = 0
+		local revert_count = 0
+		---@diagnostic disable-next-line: duplicate-set-field
+		confirm.open = function(_, on_choice)
+			prompt_count = prompt_count + 1
+			on_choice("cancel")
+			return {}
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		backends.is_versioned_async = function(_, on_done)
+			vim.schedule(function()
+				on_done(true)
+			end)
+			return {}
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		backends.revert_file_async = function()
+			revert_count = revert_count + 1
+			return {}
+		end
+
+		local ok, err = xpcall(function()
+			local owner = assert(buffer_ops.revert_buffer(), "discard request should return its owner")
+			wait_for(function()
+				return owner.active == false
+			end, "file discard should resolve", ASYNC_TIMEOUT_MS)
+			assert(prompt_count == 1, "disabling mutation prompts must not disable the file-discard prompt")
+			assert(revert_count == 0, "canceling the file-discard prompt must not reach the backend")
+		end, debug.traceback)
+		backends.is_versioned_async = previous_is_versioned
+		backends.revert_file_async = previous_revert
+		confirm.open = previous_confirm_open
 		if not ok then
 			error(err, 0)
 		end
@@ -334,6 +393,49 @@ return function(ctx)
 		if confirm._test_reset_session then
 			confirm._test_reset_session()
 		end
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_direct_hunk_revert_returns_failed_validation()
+		require("lazyvcs").setup({
+			debounce_ms = 0,
+			use_gitsigns = false,
+			source_control = { confirm_mutations = false },
+		})
+
+		local fixture = helpers.make_git_fixture()
+		local signs = require("lazyvcs.signs")
+		local util = require("lazyvcs.util")
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+		local bufnr = vim.api.nvim_get_current_buf()
+		local loaded = false
+		signs.refresh(bufnr, true, function(state)
+			loaded = state ~= nil
+		end)
+		wait_for(function()
+			return loaded
+		end, "direct signs state should load", ASYNC_TIMEOUT_MS)
+
+		local previous_context_is_unchanged = util.buffer_context_is_unchanged
+		local check_count = 0
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.buffer_context_is_unchanged = function()
+			check_count = check_count + 1
+			return check_count == 1
+		end
+
+		local ok, err = xpcall(function()
+			vim.api.nvim_win_set_cursor(0, { 2, 0 })
+			local changed_line = vim.api.nvim_buf_get_lines(bufnr, 1, 2, false)[1]
+			assert(signs.revert_hunk() == false, "a failed hunk validation should be returned to the caller")
+			assert(
+				vim.api.nvim_buf_get_lines(bufnr, 1, 2, false)[1] == changed_line,
+				"failed hunk validation must preserve the buffer"
+			)
+		end, debug.traceback)
+		util.buffer_context_is_unchanged = previous_context_is_unchanged
 		if not ok then
 			error(err, 0)
 		end
@@ -1479,8 +1581,12 @@ return function(ctx)
 			test_buffer_discard_refuses_modified_current_buffer,
 		},
 		{
-			"test_buffer_discard_session_choice_suppresses_second_prompt",
-			test_buffer_discard_session_choice_suppresses_second_prompt,
+			"test_buffer_discard_prompts_after_session_suppression",
+			test_buffer_discard_prompts_after_session_suppression,
+		},
+		{
+			"test_buffer_discard_prompts_when_mutation_confirmations_are_disabled",
+			test_buffer_discard_prompts_when_mutation_confirmations_are_disabled,
 		},
 		{
 			"test_buffer_discard_cancel_releases_request_owner",
@@ -1493,6 +1599,10 @@ return function(ctx)
 		{
 			"test_direct_hunk_revert_uses_session_confirmation",
 			test_direct_hunk_revert_uses_session_confirmation,
+		},
+		{
+			"test_direct_hunk_revert_returns_failed_validation",
+			test_direct_hunk_revert_returns_failed_validation,
 		},
 		{
 			"test_direct_hunk_revert_requires_explicit_confirmation",

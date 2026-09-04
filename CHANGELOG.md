@@ -14,8 +14,8 @@ Safety release for repository mutations and background work.
 
 - Destructive actions confirm consistently and refuse to act when the buffer,
   cursor, or selected hunk changed while the confirmation was open.
-- Cancelling a repository operation clears work owned by both the sidebar and
-  the repository.
+- Whole-file discards always show their own confirmation, even when
+  `confirm_mutations` is off or session prompts have been suppressed.
 - Configuration and JSON writes handle partial writes without leaving a
   truncated file.
 - The supported-version table in `SECURITY.md` matches the current release.

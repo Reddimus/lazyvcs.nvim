@@ -292,7 +292,10 @@ local function with_current_state(on_ready)
 	local state = buffers[bufnr]
 	if state and state.loaded then
 		render(bufnr)
-		on_ready(state)
+		local result = on_ready(state)
+		if result ~= nil then
+			return result
+		end
 		return true
 	end
 	M.refresh(bufnr, true, function(loaded, err)
@@ -396,7 +399,7 @@ function M.revert_hunk()
 			end
 			return true
 		end
-		confirm.mutation({
+		return confirm.mutation({
 			prompt = "Revert hunk under cursor?",
 			before_confirm = context_is_unchanged,
 		}, function()
