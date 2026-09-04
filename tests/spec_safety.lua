@@ -339,6 +339,48 @@ return function(ctx)
 		end
 	end
 
+	local function test_direct_hunk_revert_requires_explicit_confirmation()
+		require("lazyvcs").setup({
+			debounce_ms = 0,
+			use_gitsigns = false,
+			source_control = { confirm_mutations = true },
+		})
+
+		local fixture = helpers.make_git_fixture()
+		local confirm = require("lazyvcs.source_control.confirm")
+		local signs = require("lazyvcs.signs")
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+		local bufnr = vim.api.nvim_get_current_buf()
+		local loaded = false
+		signs.refresh(bufnr, true, function(state)
+			loaded = state ~= nil
+		end)
+		wait_for(function()
+			return loaded
+		end, "direct signs state should load", ASYNC_TIMEOUT_MS)
+
+		local previous_confirm_open = confirm.open
+		---@diagnostic disable-next-line: duplicate-set-field
+		confirm.open = function(_, on_choice)
+			on_choice(nil)
+			return {}
+		end
+
+		local ok, err = xpcall(function()
+			vim.api.nvim_win_set_cursor(0, { 2, 0 })
+			local before = vim.api.nvim_buf_get_lines(bufnr, 1, 2, false)[1]
+			signs.revert_hunk()
+			assert(
+				vim.api.nvim_buf_get_lines(bufnr, 1, 2, false)[1] == before,
+				"hunk revert must not run for an unknown confirmation choice"
+			)
+		end, debug.traceback)
+		confirm.open = previous_confirm_open
+		if not ok then
+			error(err, 0)
+		end
+	end
+
 	local function test_direct_hunk_revert_refuses_stale_buffer_state()
 		require("lazyvcs").setup({
 			debounce_ms = 0,
@@ -387,6 +429,41 @@ return function(ctx)
 		end
 	end
 
+	local function test_sign_state_isolated_and_cleared_on_wipe()
+		require("lazyvcs").setup({
+			use_gitsigns = false,
+			signs = { debounce_ms = 0 },
+		})
+
+		local fixture = helpers.make_git_transfer_fixture()
+		local signs = require("lazyvcs.signs")
+		local function load(path)
+			vim.cmd.edit(vim.fn.fnameescape(path))
+			local bufnr = vim.api.nvim_get_current_buf()
+			local loaded
+			signs.refresh(bufnr, true, function(state)
+				loaded = state
+			end)
+			wait_for(function()
+				return loaded ~= nil
+			end, "sign state should load for " .. path, ASYNC_TIMEOUT_MS)
+			return bufnr, loaded
+		end
+
+		local first_bufnr, first_state = load(fixture.file1)
+		local second_bufnr, second_state = load(fixture.file2)
+		assert(first_bufnr ~= second_bufnr, "fixtures should use separate buffers")
+		assert(first_state ~= second_state, "sign state must not be shared between buffers")
+		assert(first_state.path == fixture.file1, "first buffer should keep its own sign path")
+		assert(second_state.path == fixture.file2, "second buffer should keep its own sign path")
+		assert(vim.deep_equal(first_state.base_lines, fixture.base1), "first buffer should keep its own base")
+		assert(vim.deep_equal(second_state.base_lines, fixture.base2), "second buffer should keep its own base")
+
+		vim.api.nvim_buf_delete(first_bufnr, { force = true })
+		assert(signs.current_state(first_bufnr) == nil, "wiping a buffer must remove its sign state")
+		assert(signs.current_state(second_bufnr) == second_state, "wiping one buffer must preserve another's state")
+	end
+
 	local function test_gitsigns_hunk_revert_refuses_changed_window()
 		require("lazyvcs").setup({
 			use_gitsigns = true,
@@ -400,7 +477,11 @@ return function(ctx)
 		local previous_gitsigns = package.loaded["gitsigns"]
 		local previous_resolve_cached = backends.resolve_cached
 		local reset_count = 0
+		local hunks = { { added = { start = 2, count = 1 }, removed = { start = 2, count = 1 } } }
 		package.loaded["gitsigns"] = {
+			get_hunks = function()
+				return hunks
+			end,
 			reset_hunk = function()
 				reset_count = reset_count + 1
 			end,
@@ -425,6 +506,61 @@ return function(ctx)
 			vim.cmd.enew()
 			confirm_choice("confirm")
 			assert(reset_count == 0, "confirmation must not invoke gitsigns in a different buffer")
+		end, debug.traceback)
+		confirm.open = previous_confirm_open
+		package.loaded["gitsigns"] = previous_gitsigns
+		backends.resolve_cached = previous_resolve_cached
+		if confirm._test_reset_session then
+			confirm._test_reset_session()
+		end
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_gitsigns_hunk_revert_refuses_changed_hunk_state()
+		require("lazyvcs").setup({
+			use_gitsigns = true,
+			source_control = { confirm_mutations = true },
+		})
+
+		local fixture = helpers.make_git_fixture()
+		local backends = require("lazyvcs.backends")
+		local confirm = require("lazyvcs.source_control.confirm")
+		local signs = require("lazyvcs.signs")
+		local previous_gitsigns = package.loaded["gitsigns"]
+		local previous_resolve_cached = backends.resolve_cached
+		local hunks = { { added = { start = 2, count = 1 }, removed = { start = 2, count = 1 } } }
+		local reset_count = 0
+		package.loaded["gitsigns"] = {
+			get_hunks = function()
+				return hunks
+			end,
+			reset_hunk = function()
+				reset_count = reset_count + 1
+			end,
+		}
+		---@diagnostic disable-next-line: duplicate-set-field
+		backends.resolve_cached = function()
+			return { name = "git" }
+		end
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+		vim.api.nvim_win_set_cursor(0, { 2, 0 })
+
+		local previous_confirm_open = confirm.open
+		local confirm_choice
+		---@diagnostic disable-next-line: duplicate-set-field
+		confirm.open = function(_, on_choice)
+			confirm_choice = on_choice
+			return {}
+		end
+
+		local ok, err = xpcall(function()
+			signs.revert_hunk()
+			assert(type(confirm_choice) == "function", "gitsigns revert should wait for confirmation")
+			hunks = { { added = { start = 4, count = 1 }, removed = { start = 4, count = 1 } } }
+			confirm_choice("confirm")
+			assert(reset_count == 0, "confirmation must not invoke gitsigns after its hunk state changes")
 		end, debug.traceback)
 		confirm.open = previous_confirm_open
 		package.loaded["gitsigns"] = previous_gitsigns
@@ -479,6 +615,90 @@ return function(ctx)
 		if not ok then
 			error(err, 0)
 		end
+	end
+
+	local function test_live_diff_hunk_revert_refuses_changed_base_state()
+		require("lazyvcs").setup({
+			debounce_ms = 0,
+			use_gitsigns = false,
+			source_control = { confirm_mutations = true },
+		})
+
+		local fixture = helpers.make_git_fixture()
+		local actions = require("lazyvcs.actions")
+		local confirm = require("lazyvcs.source_control.confirm")
+		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+		local session = open_diff()
+		vim.api.nvim_set_current_win(session.editable_win)
+		vim.api.nvim_win_set_cursor(session.editable_win, { 2, 0 })
+		local changed_line = vim.api.nvim_buf_get_lines(session.editable_bufnr, 1, 2, false)[1]
+
+		local previous_confirm_open = confirm.open
+		local confirm_choice
+		---@diagnostic disable-next-line: duplicate-set-field
+		confirm.open = function(_, on_choice)
+			confirm_choice = on_choice
+			return {}
+		end
+
+		local ok, err = xpcall(function()
+			actions.revert_hunk()
+			assert(type(confirm_choice) == "function", "live-diff hunk revert should wait for confirmation")
+			session.base_lines[2] = "base changed while confirmation was open"
+			confirm_choice("confirm")
+			assert(
+				vim.api.nvim_buf_get_lines(session.editable_bufnr, 1, 2, false)[1] == changed_line,
+				"live-diff confirmation must not revert against a changed comparison base"
+			)
+		end, debug.traceback)
+		confirm.open = previous_confirm_open
+		if confirm._test_reset_session then
+			confirm._test_reset_session()
+		end
+		actions.close(session.editable_bufnr)
+		if not ok then
+			error(err, 0)
+		end
+	end
+
+	local function test_confirmation_validates_before_restoring_cursor()
+		local confirm = require("lazyvcs.source_control.confirm")
+		local original_win = vim.api.nvim_get_current_win()
+		vim.api.nvim_buf_set_lines(0, 0, -1, false, { "one", "two", "three" })
+		vim.api.nvim_win_set_cursor(original_win, { 2, 0 })
+		local observed_line
+		local chosen
+
+		local popup = confirm.open({
+			prompt = "Confirm test?",
+			before_confirm = function()
+				observed_line = vim.api.nvim_win_get_cursor(original_win)[1]
+				return false
+			end,
+		}, function(choice)
+			chosen = choice
+		end)
+		vim.api.nvim_win_set_cursor(original_win, { 3, 0 })
+		popup.owner:finish("confirm")
+
+		assert(observed_line == 3, "confirmation must validate the live cursor before restoring it")
+		assert(chosen == "cancel", "failed pre-confirm validation must cancel the mutation")
+	end
+
+	local function test_confirmation_fails_closed_when_validation_is_unknown()
+		local confirm = require("lazyvcs.source_control.confirm")
+		local chosen
+		local popup = confirm.open({
+			prompt = "Confirm test?",
+			before_confirm = function()
+				return nil
+			end,
+		}, function(choice)
+			chosen = choice
+		end)
+
+		popup.owner:finish("confirm")
+		assert(chosen == "cancel", "unknown pre-confirm validation must cancel the mutation")
 	end
 
 	local function test_json_file_completes_partial_writes_before_replace()
@@ -1275,16 +1495,40 @@ return function(ctx)
 			test_direct_hunk_revert_uses_session_confirmation,
 		},
 		{
+			"test_direct_hunk_revert_requires_explicit_confirmation",
+			test_direct_hunk_revert_requires_explicit_confirmation,
+		},
+		{
 			"test_direct_hunk_revert_refuses_stale_buffer_state",
 			test_direct_hunk_revert_refuses_stale_buffer_state,
+		},
+		{
+			"test_sign_state_isolated_and_cleared_on_wipe",
+			test_sign_state_isolated_and_cleared_on_wipe,
 		},
 		{
 			"test_gitsigns_hunk_revert_refuses_changed_window",
 			test_gitsigns_hunk_revert_refuses_changed_window,
 		},
 		{
+			"test_gitsigns_hunk_revert_refuses_changed_hunk_state",
+			test_gitsigns_hunk_revert_refuses_changed_hunk_state,
+		},
+		{
 			"test_live_diff_hunk_revert_refuses_stale_buffer_state",
 			test_live_diff_hunk_revert_refuses_stale_buffer_state,
+		},
+		{
+			"test_live_diff_hunk_revert_refuses_changed_base_state",
+			test_live_diff_hunk_revert_refuses_changed_base_state,
+		},
+		{
+			"test_confirmation_validates_before_restoring_cursor",
+			test_confirmation_validates_before_restoring_cursor,
+		},
+		{
+			"test_confirmation_fails_closed_when_validation_is_unknown",
+			test_confirmation_fails_closed_when_validation_is_unknown,
 		},
 		{
 			"test_json_file_completes_partial_writes_before_replace",

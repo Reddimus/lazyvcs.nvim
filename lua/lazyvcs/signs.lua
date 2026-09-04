@@ -62,7 +62,7 @@ local function defers_to_gitsigns(backend_name)
 	return package.loaded["gitsigns"] ~= nil or pcall(require, "gitsigns")
 end
 
-local function gitsigns_method(method)
+local function gitsigns_api()
 	local bufnr = vim.api.nvim_get_current_buf()
 	local path = util.buf_path(bufnr)
 	local backend = path and backends.resolve_cached(path) or nil
@@ -71,6 +71,14 @@ local function gitsigns_method(method)
 	end
 	local ok, gitsigns = pcall(require, "gitsigns")
 	if not ok then
+		return nil
+	end
+	return gitsigns
+end
+
+local function gitsigns_method(method)
+	local gitsigns = gitsigns_api()
+	if not gitsigns then
 		return nil
 	end
 	local fn = gitsigns[method]
@@ -315,7 +323,39 @@ function M.revert_hunk()
 	end
 	local reset_hunk = gitsigns_method("reset_hunk")
 	if reset_hunk then
-		return confirm.mutation({ prompt = "Revert hunk under cursor?" }, function()
+		local gitsigns = gitsigns_api()
+		if not gitsigns or type(gitsigns.get_hunks) ~= "function" then
+			util.notify("gitsigns.nvim cannot report hunk state; update it before reverting", vim.log.levels.WARN)
+			return false
+		end
+		local ok, hunks = pcall(gitsigns.get_hunks, context.bufnr)
+		if not ok or type(hunks) ~= "table" then
+			util.notify("Unable to read gitsigns.nvim hunk state", vim.log.levels.WARN)
+			return false
+		end
+		local confirmed_hunks = vim.deepcopy(hunks)
+		local function context_is_unchanged()
+			if not util.buffer_context_is_unchanged(context) then
+				util.notify(
+					"Hunk context changed while confirmation was open; nothing was reverted",
+					vim.log.levels.WARN
+				)
+				return false
+			end
+			local current_ok, current_hunks = pcall(gitsigns.get_hunks, context.bufnr)
+			if not current_ok or not vim.deep_equal(current_hunks, confirmed_hunks) then
+				util.notify("Hunk base changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
+				return false
+			end
+			return true
+		end
+		return confirm.mutation({
+			prompt = "Revert hunk under cursor?",
+			before_confirm = context_is_unchanged,
+		}, function()
+			if not context_is_unchanged() then
+				return false
+			end
 			return with_unchanged_buffer(context, function()
 				return pcall(reset_hunk)
 			end)
@@ -333,20 +373,38 @@ function M.revert_hunk()
 			util.notify("No modified hunk at the cursor", vim.log.levels.WARN)
 			return
 		end
-		confirm.mutation({ prompt = "Revert hunk under cursor?" }, function()
+		local confirmed_base_lines = vim.deepcopy(state.base_lines)
+		local confirmed_hunk = vim.deepcopy(hunk)
+		local function context_is_unchanged()
+			if not util.buffer_context_is_unchanged(context) then
+				util.notify(
+					"Hunk context changed while confirmation was open; nothing was reverted",
+					vim.log.levels.WARN
+				)
+				return false
+			end
+			local live = buffers[bufnr]
+			local current_hunk = live and diff.find_current_hunk(live.hunks or {}, context.cursor[1]) or nil
+			if
+				not live
+				or not live.loaded
+				or not vim.deep_equal(live.base_lines, confirmed_base_lines)
+				or not vim.deep_equal(current_hunk, confirmed_hunk)
+			then
+				util.notify("Hunk base changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
+				return false
+			end
+			return true
+		end
+		confirm.mutation({
+			prompt = "Revert hunk under cursor?",
+			before_confirm = context_is_unchanged,
+		}, function()
+			if not context_is_unchanged() then
+				return false
+			end
 			return with_unchanged_buffer(context, function()
-				local live = buffers[bufnr]
-				if not live or not live.loaded then
-					util.notify("Hunk state expired while confirmation was open", vim.log.levels.WARN)
-					return false
-				end
-				render(bufnr)
-				local current_hunk = diff.find_current_hunk(live.hunks or {}, context.cursor[1])
-				if not current_hunk then
-					util.notify("No modified hunk at the confirmed cursor", vim.log.levels.WARN)
-					return false
-				end
-				diff.reset_hunk(bufnr, live.base_lines, current_hunk)
+				diff.reset_hunk(bufnr, confirmed_base_lines, confirmed_hunk)
 				schedule(bufnr)
 				return true
 			end)

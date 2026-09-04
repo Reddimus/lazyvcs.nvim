@@ -85,6 +85,16 @@ function M.open(opts, on_choice)
 		previous_win = previous_win,
 		previous_cursor = previous_cursor,
 		cancel_value = "cancel",
+		before_finish = function(value)
+			if
+				(value == "confirm" or value == "confirm_session")
+				and type(opts.before_confirm) == "function"
+				and opts.before_confirm() ~= true
+			then
+				return "cancel"
+			end
+			return value
+		end,
 		on_finish = on_choice,
 	})
 
@@ -140,19 +150,35 @@ function M.open(opts, on_choice)
 end
 
 function M.mutation(opts, on_confirm, on_cancel)
-	if not config.get().source_control.confirm_mutations or mutation_prompts_suppressed then
-		return on_confirm()
+	opts = opts or {}
+	local validation_ran = false
+	local function validate()
+		validation_ran = true
+		return type(opts.before_confirm) ~= "function" or opts.before_confirm() == true
 	end
-	return M.open(opts, function(choice)
-		if choice == "confirm_session" then
-			mutation_prompts_suppressed = true
-		end
-		if choice == "confirm" or choice == "confirm_session" then
-			return on_confirm()
-		end
+	local function cancel()
 		if on_cancel then
 			return on_cancel()
 		end
+	end
+	if not config.get().source_control.confirm_mutations or mutation_prompts_suppressed then
+		if not validate() then
+			return cancel()
+		end
+		return on_confirm()
+	end
+	local open_opts = vim.tbl_extend("force", opts, { before_confirm = validate })
+	return M.open(open_opts, function(choice)
+		if choice == "confirm" or choice == "confirm_session" then
+			if not validation_ran and not validate() then
+				return cancel()
+			end
+			if choice == "confirm_session" then
+				mutation_prompts_suppressed = true
+			end
+			return on_confirm()
+		end
+		return cancel()
 	end)
 end
 

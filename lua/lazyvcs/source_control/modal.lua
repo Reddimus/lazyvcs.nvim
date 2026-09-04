@@ -24,6 +24,7 @@ function M.new(opts)
 		previous_cursor = opts.previous_cursor,
 		cancel_value = opts.cancel_value,
 		on_finish = opts.on_finish,
+		before_finish = opts.before_finish,
 		closed = false,
 	}
 
@@ -47,6 +48,10 @@ function M.new(opts)
 			return false
 		end
 		self.closed = true
+		if type(self.before_finish) == "function" then
+			local ok, replacement = pcall(self.before_finish, value)
+			value = ok and replacement or self.cancel_value
+		end
 		cancel_task(self.task)
 		self.task = nil
 		if self.augroup then

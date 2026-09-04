@@ -1064,25 +1064,34 @@ function M.revert_hunk()
 	if not context then
 		return false
 	end
-
-	return confirm.mutation({ prompt = "Revert hunk under cursor?" }, function()
+	local confirmed_base_lines = vim.deepcopy(session.base_lines)
+	local confirmed_hunk = vim.deepcopy(hunk)
+	local function context_is_unchanged()
 		if state.get(session.editable_bufnr) ~= session then
-			return
+			return false
 		end
 		if not util.buffer_context_is_unchanged(context) then
 			util.notify("Hunk context changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
 			return false
 		end
+		local current_hunk = diff.find_current_hunk(session.hunks or {}, context.cursor[1])
+		if
+			not vim.deep_equal(session.base_lines, confirmed_base_lines)
+			or not vim.deep_equal(current_hunk, confirmed_hunk)
+		then
+			util.notify("Hunk base changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
+			return false
+		end
+		return true
+	end
+
+	return confirm.mutation({ prompt = "Revert hunk under cursor?", before_confirm = context_is_unchanged }, function()
+		if not context_is_unchanged() then
+			return false
+		end
 		return vim.api.nvim_win_call(session.editable_win, function()
-			refresh(session.editable_bufnr)
-			line = vim.api.nvim_win_get_cursor(session.editable_win)[1]
-			hunk = diff.find_current_hunk(session.hunks or {}, line)
-			if not hunk then
-				util.notify("No modified hunk at the cursor", vim.log.levels.WARN)
-				return false
-			end
-			if not session.backend_impl.revert_hunk(session, hunk) then
-				diff.reset_hunk(session.editable_bufnr, session.base_lines, hunk)
+			if not session.backend_impl.revert_hunk(session, confirmed_hunk) then
+				diff.reset_hunk(session.editable_bufnr, confirmed_base_lines, confirmed_hunk)
 			end
 
 			schedule_refresh(session.editable_bufnr)
