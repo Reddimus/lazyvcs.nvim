@@ -1,0 +1,1717 @@
+local config = require("lazyvcs.config")
+local runtime_state = require("lazyvcs.state")
+local util = require("lazyvcs.util")
+local Task = require("lazyvcs.backends.task")
+local svn_xml = require("lazyvcs.backends.xml")
+
+local M = {}
+
+local function truncated_output_error(result, command)
+	if result and result.stdout_truncated then
+		return command .. " output was truncated; repository state was not loaded"
+	end
+end
+
+local uv = vim.uv
+
+local function join(...)
+	return table.concat({ ... }, "/")
+end
+
+-- Separator/`~` normalization only. Deliberately NOT `util.canonical_path`:
+-- this is applied to changed-file paths and node ids too, and resolving a
+-- tracked symlink there would make the sidebar open the link's target instead
+-- of the versioned link itself -- besides costing an `fs_realpath` syscall per
+-- entry while parsing a large status result on the main thread.
+local function normalize(path)
+	return vim.fs.normalize(path)
+end
+
+-- Repository and workspace ROOTS are identities: they are compared with `==`
+-- against what `git rev-parse --show-toplevel` and `svn info` report, and both
+-- resolve symlinks. Canonicalize only at those boundaries -- at most once per
+-- repository, not once per scanned directory or changed file.
+local canonical_root = util.canonical_path
+
+local function basename(path)
+	return vim.fs.basename(path)
+end
+
+local function is_dir(path)
+	local stat = uv.fs_stat(path)
+	return stat and stat.type == "directory" or false
+end
+
+local function file_exists(path)
+	return uv.fs_stat(path) ~= nil
+end
+
+local parse_svn_status_xml = svn_xml.parse_status
+local parse_svn_info_xml = svn_xml.parse_info
+
+local function svn_branch_from_info(raw)
+	local info = parse_svn_info_xml(raw)
+	if not info or not info.url or info.url == "" then
+		return "svn"
+	end
+
+	local rel = tostring(info.url)
+	if info.root and info.root ~= "" and rel:sub(1, #info.root) == info.root then
+		rel = rel:sub(#info.root + 2)
+	end
+	rel = rel:gsub("^projects/", "")
+	if rel == "trunk" then
+		return "trunk"
+	end
+	local branch = rel:match("^branches/(.+)$")
+	if branch then
+		return branch
+	end
+	return rel ~= "" and rel or "svn"
+end
+
+local function resolve_svn_entry_path(repo_root, entry_path)
+	local normalized = normalize(entry_path)
+	if normalized == repo_root or normalized:sub(1, #repo_root + 1) == repo_root .. "/" then
+		return normalized, util.relpath(repo_root, normalized) or normalized
+	end
+	local absolute = normalize(join(repo_root, entry_path))
+	return absolute, util.relpath(repo_root, absolute) or entry_path
+end
+
+local function repo_kind(path)
+	-- Worktrees and submodules store `.git` as a pointer file, not a directory.
+	if file_exists(join(path, ".git")) then
+		return "git"
+	end
+	if is_dir(join(path, ".svn")) then
+		return "svn"
+	end
+end
+
+function M.repo_selector_id(root)
+	return normalize(root) .. "::selector"
+end
+
+function M.repo_changes_id(root)
+	return normalize(root) .. "::repo_changes"
+end
+
+local function section_node_id(root, id)
+	return normalize(root) .. "::section::" .. id
+end
+
+local function folder_node_id(root, section, path)
+	return string.format("%s::folder::%s::%s", normalize(root), section, path)
+end
+
+local function sync_badge(text, status, highlight)
+	return {
+		text = text,
+		status = status,
+		highlight = highlight,
+	}
+end
+
+local function make_counts(previous)
+	return {
+		local_changes = previous and previous.counts and previous.counts.local_changes or 0,
+		staged = previous and previous.counts and previous.counts.staged or 0,
+		remote = previous and previous.counts and previous.counts.remote or 0,
+	}
+end
+
+local function placeholder_status(repo, previous)
+	return {
+		root = repo.root,
+		name = repo.name,
+		vcs = repo.vcs,
+		order = repo.order,
+		relpath = repo.relpath,
+		path_label = repo.path_label,
+		branch = previous and previous.branch or nil,
+		upstream = previous and previous.upstream or nil,
+		sections = previous and previous.sections or {},
+		counts = make_counts(previous),
+		sync = previous and previous.sync or sync_badge("…", "loading", "Comment"),
+		error = previous and previous.error or nil,
+		summary_loaded = previous and previous.summary_loaded or false,
+		details_loaded = previous and previous.details_loaded or false,
+		loading_details = previous and previous.loading_details or false,
+		loading_summary = previous and previous.loading_summary or false,
+		refreshing_summary = previous and previous.refreshing_summary or false,
+	}
+end
+
+local function apply_repo_job(status)
+	local job = runtime_state.get_repo_job(status.root)
+	if not job then
+		status.job = nil
+		return status
+	end
+
+	status.job = job
+	if job.status == "running" then
+		status.sync = sync_badge(job.sync_text or job.label or "Busy", "busy", "LazyVcsBusy")
+		status.error = nil
+	elseif job.status == "error" then
+		status.sync = sync_badge("!", "error", "DiagnosticError")
+		status.error = job.error or status.error
+	end
+	return status
+end
+
+function M.make_error(repo, previous, err, opts)
+	opts = opts or {}
+	local status = placeholder_status(repo, previous)
+	status.sync = sync_badge("!", "error", "DiagnosticError")
+	status.error = err
+	status.remote_error = opts.remote_refresh and err or nil
+	status.summary_loaded = true
+	status.loading_details = false
+	status.loading_summary = false
+	status.refreshing_summary = false
+	return apply_repo_job(status)
+end
+
+function M.make_placeholder(repo, previous)
+	return apply_repo_job(placeholder_status(repo, previous))
+end
+
+local function scan_repos(root, max_depth, depth, repos, seen)
+	root = normalize(root)
+	if seen[root] then
+		return
+	end
+	seen[root] = true
+
+	local kind = repo_kind(root)
+	if kind then
+		repos[#repos + 1] = {
+			root = canonical_root(root),
+			name = basename(root),
+			vcs = kind,
+			order = #repos + 1,
+		}
+		if depth >= max_depth then
+			return
+		end
+	end
+
+	if depth >= max_depth then
+		return
+	end
+
+	local fd = uv.fs_scandir(root)
+	if not fd then
+		return
+	end
+
+	while true do
+		local name, entry_type = uv.fs_scandir_next(fd)
+		if not name then
+			break
+		end
+		if entry_type == "directory" and name ~= ".git" and name ~= ".svn" then
+			scan_repos(join(root, name), max_depth, depth + 1, repos, seen)
+		end
+	end
+end
+
+local function annotate_repos(root, repos)
+	local name_counts = {}
+	for _, repo in ipairs(repos) do
+		name_counts[repo.name] = (name_counts[repo.name] or 0) + 1
+	end
+
+	for _, repo in ipairs(repos) do
+		repo.relpath = util.relpath(root, repo.root) or repo.name
+		if name_counts[repo.name] > 1 then
+			repo.path_label = repo.relpath
+		else
+			local parent = vim.fs.dirname(repo.relpath)
+			repo.path_label = parent and parent ~= "." and parent ~= repo.relpath and parent or nil
+		end
+	end
+end
+
+function M.discover(root, max_depth)
+	root = canonical_root(root)
+	local repos = {}
+	scan_repos(root, max_depth, 0, repos, {})
+
+	-- The scan only walks downward, so opening the sidebar from anywhere inside a
+	-- working copy (the common case: `cd repo/src && nvim`) found nothing at all.
+	-- Fall back to the enclosing working copy.
+	if #repos == 0 then
+		local enclosing = require("lazyvcs.backends").root(root)
+		if enclosing then
+			local kind = repo_kind(enclosing)
+			if kind then
+				repos[#repos + 1] = {
+					vcs = kind,
+					root = canonical_root(enclosing),
+					name = vim.fs.basename(enclosing),
+					order = 1,
+				}
+			end
+		end
+	end
+
+	annotate_repos(root, repos)
+	table.sort(repos, function(a, b)
+		return a.order < b.order
+	end)
+	return repos
+end
+
+---Incremental, cancellable repository discovery. Directory entries are consumed
+---in bounded batches so large workspaces yield back to Neovim between scans.
+function M.discover_async(root, max_depth, on_done, opts)
+	opts = opts or {}
+	root = canonical_root(root)
+	max_depth = math.max(0, max_depth or 0)
+	local task = Task.new(on_done)
+	local repos = {}
+	local seen = {}
+	local stack = {
+		{ root = root, depth = 0, entered = false },
+	}
+	local budget = math.max(1, opts.entry_budget or 128)
+
+	local function finish()
+		if #repos > 0 then
+			annotate_repos(root, repos)
+			table.sort(repos, function(a, b)
+				return a.order < b.order
+			end)
+			return task:finish(repos)
+		end
+		task:add(require("lazyvcs.backends").resolve_async(root, function(backend, enclosing)
+			if backend and enclosing then
+				repos[1] = {
+					vcs = backend.name,
+					root = canonical_root(enclosing),
+					name = basename(enclosing),
+					order = 1,
+				}
+			end
+			annotate_repos(root, repos)
+			task:finish(repos)
+		end, { timeout_ms = opts.timeout_ms }))
+	end
+
+	local function step()
+		if task.cancelled or task.done then
+			return
+		end
+		local consumed = 0
+		while #stack > 0 and consumed < budget do
+			local frame = stack[#stack]
+			if not frame.entered then
+				frame.entered = true
+				frame.root = normalize(frame.root)
+				if seen[frame.root] then
+					table.remove(stack)
+				else
+					seen[frame.root] = true
+					local kind = repo_kind(frame.root)
+					if kind then
+						repos[#repos + 1] = {
+							root = canonical_root(frame.root),
+							name = basename(frame.root),
+							vcs = kind,
+							order = #repos + 1,
+						}
+					end
+					if frame.depth >= max_depth then
+						table.remove(stack)
+					else
+						frame.scanner = uv.fs_scandir(frame.root)
+						if not frame.scanner then
+							table.remove(stack)
+						end
+					end
+				end
+				consumed = consumed + 1
+			else
+				local name, entry_type = uv.fs_scandir_next(frame.scanner)
+				consumed = consumed + 1
+				if not name then
+					table.remove(stack)
+				elseif entry_type == "directory" and name ~= ".git" and name ~= ".svn" then
+					stack[#stack + 1] = {
+						root = join(frame.root, name),
+						depth = frame.depth + 1,
+						entered = false,
+					}
+				end
+			end
+		end
+		if #stack == 0 then
+			return finish()
+		end
+		vim.schedule(step)
+	end
+
+	vim.schedule(step)
+	return task
+end
+
+local function parse_git_branch(line)
+	local branch = util.trim((line or ""):gsub("^##%s*", ""))
+	local upstream
+	local ahead = 0
+	local behind = 0
+	local branch_name = branch
+	local detached = false
+	local unborn = false
+
+	local initial = branch:match("^No commits yet on (.+)$") or branch:match("^Initial commit on (.+)$")
+	if initial then
+		branch_name = initial
+		unborn = true
+	elseif
+		branch:match("^HEAD %(no branch%)$")
+		or branch:match("^HEAD %(detached at .+%)$")
+		or branch:match("^HEAD %(detached from .+%)$")
+	then
+		branch_name = "HEAD"
+		detached = true
+	end
+
+	if not detached and not unborn then
+		local lhs, rhs, suffix = branch:match("^(.-)%.%.%.([^ ]+)(.*)$")
+		if lhs and rhs then
+			branch_name = lhs
+			upstream = rhs
+			ahead = tonumber((suffix or ""):match("ahead (%d+)") or "0") or 0
+			behind = tonumber((suffix or ""):match("behind (%d+)") or "0") or 0
+		end
+	end
+
+	return {
+		branch = branch_name,
+		upstream = upstream,
+		ahead = ahead,
+		behind = behind,
+		detached = detached,
+		unborn = unborn,
+	}
+end
+
+local function parse_git_summary(lines)
+	local branch_info = {
+		branch = "HEAD",
+		upstream = nil,
+		ahead = 0,
+		behind = 0,
+		detached = true,
+		unborn = false,
+	}
+	if lines[1] then
+		branch_info = parse_git_branch(lines[1])
+	end
+
+	local counts = {
+		local_changes = 0,
+		staged = 0,
+		remote = 0,
+	}
+	local seen = {}
+
+	for idx = 2, #lines do
+		local line = lines[idx]
+		if line ~= "" then
+			local relpath = line:sub(4)
+			if not seen[relpath] then
+				seen[relpath] = true
+				counts.local_changes = counts.local_changes + 1
+			end
+			local index = line:sub(1, 1)
+			if index ~= " " and index ~= "?" then
+				counts.staged = counts.staged + 1
+			end
+		end
+	end
+
+	return branch_info, counts
+end
+
+local function git_kind_from_char(char, fallback)
+	local map = {
+		M = "modified",
+		A = "added",
+		D = "deleted",
+		R = "renamed",
+		C = "renamed",
+		T = "modified",
+		U = "conflict",
+		["?"] = "untracked",
+		["!"] = "conflict",
+	}
+	return map[char] or fallback or "modified"
+end
+
+local function git_sort_weight(item)
+	local map = {
+		conflict = 1,
+		deleted = 2,
+		modified = 3,
+		renamed = 4,
+		replaced = 4,
+		added = 5,
+		untracked = 6,
+		ignored = 8,
+		remote = 7,
+	}
+	return map[item.extra.change_kind] or 99
+end
+
+local function sort_items(items, sort_key)
+	table.sort(items, function(a, b)
+		if sort_key == "status" then
+			local aw = git_sort_weight(a)
+			local bw = git_sort_weight(b)
+			if aw ~= bw then
+				return aw < bw
+			end
+			return a.extra.relpath < b.extra.relpath
+		end
+		if sort_key == "name" then
+			local an = vim.fs.basename(a.extra.relpath)
+			local bn = vim.fs.basename(b.extra.relpath)
+			if an ~= bn then
+				return an < bn
+			end
+		end
+		return a.extra.relpath < b.extra.relpath
+	end)
+end
+
+local function make_file_item(repo, section, opts)
+	return {
+		id = string.format("%s::%s::%s::%s", repo.root, section, opts.relpath, opts.status or opts.change_kind),
+		type = "file",
+		name = opts.display_name or opts.relpath,
+		path = opts.path,
+		extra = {
+			repo_root = repo.root,
+			vcs = repo.vcs,
+			relpath = opts.relpath,
+			change_kind = opts.change_kind,
+			status = opts.status,
+			section = section,
+			deleted = opts.deleted or false,
+			renamed_from = opts.renamed_from,
+			wc_item = opts.wc_item,
+			wc_props = opts.wc_props,
+			repos_item = opts.repos_item,
+			repos_props = opts.repos_props,
+			base_revision = opts.base_revision,
+			property_only = opts.property_only or false,
+		},
+	}
+end
+
+local function build_git_sync(branch_info, counts, fetch_error)
+	if fetch_error then
+		return sync_badge("!", "error", "DiagnosticError")
+	end
+	if
+		not branch_info.upstream
+		and not branch_info.unborn
+		and not branch_info.detached
+		and branch_info.branch
+		and branch_info.branch ~= ""
+		and branch_info.branch ~= "HEAD"
+	then
+		return sync_badge("Publish", "publish", "DiagnosticInfo")
+	end
+	if branch_info.behind > 0 and branch_info.ahead > 0 then
+		return sync_badge(
+			string.format("%d↓ %d↑", branch_info.behind, branch_info.ahead),
+			"diverged",
+			"DiagnosticWarn"
+		)
+	end
+	if branch_info.behind > 0 then
+		return sync_badge(string.format("%d↓", branch_info.behind), "incoming", "DiagnosticInfo")
+	end
+	if branch_info.ahead > 0 then
+		return sync_badge(string.format("%d↑", branch_info.ahead), "outgoing", "DiagnosticHint")
+	end
+	if counts.local_changes > 0 then
+		return sync_badge("", "dirty", "Comment")
+	end
+	return sync_badge("", "synced", "Comment")
+end
+
+local function build_git_summary(repo, opts, status_stdout, fetch_error)
+	opts = opts or {}
+	local previous = opts.previous or {}
+	local branch_info, counts = parse_git_summary(util.split_lines(status_stdout))
+
+	return apply_repo_job({
+		root = repo.root,
+		name = repo.name,
+		vcs = repo.vcs,
+		order = repo.order,
+		relpath = repo.relpath,
+		path_label = repo.path_label,
+		branch = branch_info.branch,
+		detached = branch_info.detached,
+		unborn = branch_info.unborn,
+		upstream = branch_info.upstream,
+		sections = previous.sections or {},
+		counts = counts,
+		sync = vim.tbl_extend("force", build_git_sync(branch_info, counts, fetch_error), {
+			ahead = branch_info.ahead,
+			behind = branch_info.behind,
+			fetch_error = fetch_error,
+		}),
+		error = nil,
+		summary_loaded = true,
+		details_loaded = previous.details_loaded or false,
+		loading_details = false,
+		loading_summary = false,
+	})
+end
+
+local function parse_git_entries(root, raw, sort_key)
+	local sections = {
+		merge = { id = "merge", label = "Merge Changes", items = {} },
+		staged = { id = "staged", label = "Staged Changes", items = {} },
+		changes = { id = "changes", label = "Changes", items = {} },
+		untracked = { id = "untracked", label = "Untracked Changes", items = {} },
+	}
+	local counts = {
+		local_changes = 0,
+		staged = 0,
+		remote = 0,
+	}
+
+	local items = vim.split(raw or "", "\0", { plain = true, trimempty = true })
+	local seen = {}
+	local idx = 1
+
+	while idx <= #items do
+		local entry = items[idx]
+		local status = entry:sub(1, 2)
+		local index = status:sub(1, 1)
+		local worktree = status:sub(2, 2)
+		local relpath = entry:sub(4)
+		local renamed_from
+
+		if status:find("R", 1, true) or status:find("C", 1, true) then
+			renamed_from = items[idx + 1]
+			idx = idx + 1
+		end
+
+		if not seen[relpath] then
+			seen[relpath] = true
+			counts.local_changes = counts.local_changes + 1
+		end
+
+		local abs_path = normalize(join(root, relpath))
+		if status == "??" then
+			sections.untracked.items[#sections.untracked.items + 1] = make_file_item(
+				{ root = root, vcs = "git" },
+				"untracked",
+				{
+					path = abs_path,
+					relpath = relpath,
+					status = status,
+					change_kind = "untracked",
+				}
+			)
+		elseif index == "U" or worktree == "U" or status == "AA" or status == "DD" then
+			sections.merge.items[#sections.merge.items + 1] = make_file_item({ root = root, vcs = "git" }, "merge", {
+				path = abs_path,
+				relpath = relpath,
+				status = status,
+				change_kind = "conflict",
+				display_name = renamed_from and string.format("%s <- %s", relpath, renamed_from) or relpath,
+				renamed_from = renamed_from,
+			})
+		else
+			if index ~= " " and index ~= "?" then
+				counts.staged = counts.staged + 1
+				sections.staged.items[#sections.staged.items + 1] = make_file_item(
+					{ root = root, vcs = "git" },
+					"staged",
+					{
+						path = abs_path,
+						relpath = relpath,
+						status = index .. " ",
+						change_kind = git_kind_from_char(index, "modified"),
+						deleted = index == "D" and not file_exists(abs_path),
+						display_name = renamed_from and string.format("%s <- %s", relpath, renamed_from) or relpath,
+						renamed_from = renamed_from,
+					}
+				)
+			end
+
+			if worktree ~= " " then
+				sections.changes.items[#sections.changes.items + 1] = make_file_item(
+					{ root = root, vcs = "git" },
+					"changes",
+					{
+						path = abs_path,
+						relpath = relpath,
+						status = " " .. worktree,
+						change_kind = git_kind_from_char(worktree, "modified"),
+						deleted = worktree == "D" and not file_exists(abs_path),
+						display_name = renamed_from and string.format("%s <- %s", relpath, renamed_from) or relpath,
+						renamed_from = renamed_from,
+					}
+				)
+			end
+		end
+
+		idx = idx + 1
+	end
+
+	local ordered = {}
+	for _, id in ipairs({ "merge", "staged", "changes", "untracked" }) do
+		if #sections[id].items > 0 then
+			sort_items(sections[id].items, sort_key)
+			ordered[#ordered + 1] = sections[id]
+		end
+	end
+
+	return ordered, counts
+end
+
+local function build_git_detail(repo, opts, status_stdout, raw_stdout)
+	opts = opts or {}
+	local previous = opts.previous or {}
+	local fetch_error = opts.fetch_error or (previous.sync and previous.sync.fetch_error)
+	local summary = build_git_summary(repo, opts, status_stdout, fetch_error)
+	local sort_key = opts.changes_sort or config.get().source_control.changes_sort
+	local sections, counts = parse_git_entries(repo.root, raw_stdout, sort_key)
+	summary.sections = sections
+	summary.counts = counts
+	summary.sync = vim.tbl_extend(
+		"force",
+		build_git_sync({
+			ahead = summary.sync.ahead or 0,
+			behind = summary.sync.behind or 0,
+			upstream = summary.upstream,
+			branch = summary.branch,
+			-- Both are required by the publish test in `build_git_sync`. Dropping
+			-- them made a repo with no commits yet ("unborn") offer Publish
+			-- Branch, whose push fails with "src refspec does not match any".
+			unborn = summary.unborn,
+			detached = summary.detached,
+		}, counts, summary.sync.fetch_error),
+		{
+			ahead = summary.sync.ahead or 0,
+			behind = summary.sync.behind or 0,
+			fetch_error = summary.sync.fetch_error,
+		}
+	)
+	summary.details_loaded = true
+	summary.loading_details = false
+	return apply_repo_job(summary)
+end
+
+local function build_svn_sync(counts)
+	if counts.local_changes > 0 and counts.remote > 0 then
+		return sync_badge(
+			string.format("%d↓ %d↑", counts.remote, counts.local_changes),
+			"diverged",
+			"DiagnosticWarn"
+		)
+	elseif counts.remote > 0 then
+		return sync_badge(string.format("%d↓", counts.remote), "incoming", "DiagnosticInfo")
+	elseif counts.local_changes > 0 then
+		return sync_badge(string.format("%d↑", counts.local_changes), "outgoing", "DiagnosticHint")
+	end
+	return sync_badge("", "synced", "Comment")
+end
+
+local function svn_props_changed(value)
+	return value ~= nil and value ~= "" and value ~= "none" and value ~= "normal"
+end
+
+local function svn_local_changed(entry)
+	if not entry or entry.wc_item == "external" then
+		return false
+	end
+	return entry.tree_conflicted == true
+		or (entry.wc_item ~= "normal" and entry.wc_item ~= "none")
+		or svn_props_changed(entry.wc_props)
+end
+
+local function svn_remote_changed(entry)
+	if not entry or entry.wc_item == "external" then
+		return false
+	end
+	return (entry.repos_item ~= "normal" and entry.repos_item ~= "none") or svn_props_changed(entry.repos_props)
+end
+
+local function svn_change_kind(item, remote)
+	local kinds = {
+		added = "added",
+		conflicted = "conflict",
+		deleted = "deleted",
+		ignored = "ignored",
+		incomplete = "conflict",
+		merged = "modified",
+		missing = "deleted",
+		modified = remote and "remote" or "modified",
+		obstructed = "conflict",
+		replaced = "replaced",
+		unversioned = "untracked",
+	}
+	return kinds[item]
+end
+
+local function build_svn_summary(repo, opts, status_stdout, info_stdout)
+	opts = opts or {}
+	local previous = opts.previous or {}
+	local entries = parse_svn_status_xml(status_stdout)
+
+	local counts = {
+		local_changes = 0,
+		staged = 0,
+		remote = previous.counts and previous.counts.remote or 0,
+	}
+
+	local remote_count = 0
+	for _, entry in ipairs(entries) do
+		if entry.wc_item ~= "external" then
+			if svn_local_changed(entry) then
+				counts.local_changes = counts.local_changes + 1
+			end
+			if opts.remote_refresh and svn_remote_changed(entry) then
+				remote_count = remote_count + 1
+			end
+		end
+	end
+	counts.remote = opts.remote_refresh and remote_count or counts.remote
+
+	return apply_repo_job({
+		root = repo.root,
+		name = repo.name,
+		vcs = repo.vcs,
+		order = repo.order,
+		relpath = repo.relpath,
+		path_label = repo.path_label,
+		branch = svn_branch_from_info(info_stdout),
+		sections = previous.sections or {},
+		counts = counts,
+		sync = build_svn_sync(counts),
+		error = nil,
+		summary_loaded = true,
+		details_loaded = previous.details_loaded or false,
+		loading_details = false,
+		loading_summary = false,
+	})
+end
+
+local function build_svn_detail(repo, opts, status_stdout, info_stdout)
+	opts = opts or {}
+	local previous = opts.previous or {}
+	local entries = parse_svn_status_xml(status_stdout)
+
+	local sections = {
+		changes = { id = "changes", label = "Changes", items = {} },
+		untracked = { id = "untracked", label = "Unversioned", items = {} },
+		remote = { id = "remote", label = "Remote Changes", items = {} },
+	}
+	local counts = {
+		local_changes = 0,
+		staged = 0,
+		remote = previous.counts and previous.counts.remote or 0,
+	}
+	local remote_count = 0
+	for _, entry in ipairs(entries) do
+		if entry.wc_item ~= "external" then
+			local abs_path, relpath = resolve_svn_entry_path(repo.root, entry.path)
+			local local_property_only = (entry.wc_item == "normal" or entry.wc_item == "none")
+				and svn_props_changed(entry.wc_props)
+			local kind = svn_change_kind(entry.wc_item, false)
+			if entry.tree_conflicted then
+				kind = "conflict"
+			end
+			if local_property_only then
+				kind = "modified"
+			end
+			if svn_local_changed(entry) and kind then
+				local section_id = entry.wc_item == "unversioned" and "untracked" or "changes"
+				sections[section_id].items[#sections[section_id].items + 1] = make_file_item(
+					{ root = repo.root, vcs = "svn" },
+					section_id,
+					{
+						path = abs_path,
+						relpath = relpath,
+						status = local_property_only and "properties" or entry.wc_item,
+						change_kind = kind,
+						deleted = kind == "deleted" and not file_exists(abs_path),
+						wc_item = entry.wc_item,
+						wc_props = entry.wc_props,
+						repos_item = entry.repos_item,
+						repos_props = entry.repos_props,
+						base_revision = entry.revision,
+						property_only = local_property_only,
+					}
+				)
+				counts.local_changes = counts.local_changes + 1
+			end
+			if opts.remote_refresh and svn_remote_changed(entry) then
+				local remote_property_only = (entry.repos_item == "normal" or entry.repos_item == "none")
+					and svn_props_changed(entry.repos_props)
+				local remote_kind = svn_change_kind(entry.repos_item, true)
+				if remote_property_only then
+					remote_kind = "remote"
+				end
+				sections.remote.items[#sections.remote.items + 1] = make_file_item(
+					{ root = repo.root, vcs = "svn" },
+					"remote",
+					{
+						path = abs_path,
+						relpath = relpath,
+						status = remote_property_only and "properties" or entry.repos_item,
+						change_kind = remote_kind or "remote",
+						deleted = entry.repos_item == "deleted",
+						wc_item = entry.wc_item,
+						wc_props = entry.wc_props,
+						repos_item = entry.repos_item,
+						repos_props = entry.repos_props,
+						base_revision = entry.revision,
+						property_only = remote_property_only,
+					}
+				)
+				remote_count = remote_count + 1
+			end
+		end
+	end
+
+	counts.remote = opts.remote_refresh and remote_count or counts.remote
+	local sort_key = opts.changes_sort or config.get().source_control.changes_sort
+	local ordered = {}
+	for _, id in ipairs({ "changes", "untracked", "remote" }) do
+		if #sections[id].items > 0 then
+			sort_items(sections[id].items, sort_key)
+			ordered[#ordered + 1] = sections[id]
+		end
+	end
+
+	return apply_repo_job({
+		root = repo.root,
+		name = repo.name,
+		vcs = repo.vcs,
+		order = repo.order,
+		relpath = repo.relpath,
+		path_label = repo.path_label,
+		branch = svn_branch_from_info(info_stdout),
+		sections = ordered,
+		counts = counts,
+		sync = build_svn_sync(counts),
+		error = nil,
+		summary_loaded = true,
+		details_loaded = true,
+		loading_details = false,
+	})
+end
+
+local function mark_node_disabled(node, disabled, busy_label)
+	if not disabled or type(node) ~= "table" then
+		return node
+	end
+	node = vim.deepcopy(node)
+	local function mark(current)
+		current.extra = current.extra or {}
+		current.extra.disabled = true
+		current.extra.busy_label = busy_label
+		for _, child in ipairs(current.children or {}) do
+			mark(child)
+		end
+	end
+	mark(node)
+	return node
+end
+
+local function section_content_signature(repo, section, source_opts)
+	local parts = {
+		repo.root,
+		section.id,
+		source_opts.changes_view_mode,
+		source_opts.changes_sort,
+		tostring(source_opts.compact_folders),
+		tostring(#section.items),
+	}
+	for _, item in ipairs(section.items) do
+		local extra = item.extra or {}
+		parts[#parts + 1] = table.concat({
+			tostring(item.id or ""),
+			tostring(extra.relpath or item.path or ""),
+			tostring(extra.status or ""),
+			tostring(extra.change_kind or ""),
+			tostring(extra.renamed_from or ""),
+		}, "\31")
+	end
+	return table.concat(parts, "\30")
+end
+
+local function cached_section_children(state, key, build)
+	state.lazyvcs_section_cache = state.lazyvcs_section_cache or {
+		entries = {},
+		order = {},
+	}
+	local cache = state.lazyvcs_section_cache
+	local hit = cache.entries[key]
+	if hit then
+		for index, cached_key in ipairs(cache.order) do
+			if cached_key == key then
+				table.remove(cache.order, index)
+				break
+			end
+		end
+		cache.order[#cache.order + 1] = key
+		return hit
+	end
+
+	local value = build()
+	cache.entries[key] = value
+	cache.order[#cache.order + 1] = key
+	local limit = 32
+	while #cache.order > limit do
+		local expired = table.remove(cache.order, 1)
+		cache.entries[expired] = nil
+	end
+	return value
+end
+
+function M.load_repo_summary_async(repo, opts, run_command, on_done)
+	opts = opts or {}
+	if repo.vcs == "git" then
+		run_command(
+			{ "git", "status", "--branch", "--porcelain=v1", "--untracked-files=all", "--ignored=no" },
+			{ kind = "summary", timeout_ms = opts.status_timeout_ms },
+			function(status, status_err)
+				if not status then
+					return on_done(nil, status_err)
+				end
+				local truncated_err = truncated_output_error(status, "Git status")
+				if truncated_err then
+					return on_done(nil, truncated_err)
+				end
+				local branch_info = parse_git_summary(util.split_lines(status.stdout))
+				if not (opts.remote_refresh and branch_info.upstream) then
+					return on_done(build_git_summary(repo, opts, status.stdout, nil))
+				end
+				run_command(
+					{ "git", "remote" },
+					{ kind = "remote", timeout_ms = opts.status_timeout_ms },
+					function(remotes)
+						local remotes_truncated_err = truncated_output_error(remotes, "Git remote list")
+						if remotes_truncated_err then
+							return on_done(nil, remotes_truncated_err)
+						end
+						if not remotes or #util.split_lines(remotes.stdout) == 0 then
+							return on_done(build_git_summary(repo, opts, status.stdout, nil))
+						end
+						run_command(
+							{ "git", "fetch", "--all", "--prune", "--quiet" },
+							{ kind = "remote", timeout_ms = opts.remote_timeout_ms },
+							function(_, fetch_err)
+								run_command({
+									"git",
+									"status",
+									"--branch",
+									"--porcelain=v1",
+									"--untracked-files=all",
+									"--ignored=no",
+								}, { kind = "summary", timeout_ms = opts.status_timeout_ms }, function(
+									refreshed
+								)
+									local refreshed_truncated_err = truncated_output_error(refreshed, "Git status")
+									if refreshed_truncated_err then
+										return on_done(nil, refreshed_truncated_err)
+									end
+									on_done(
+										build_git_summary(
+											repo,
+											opts,
+											refreshed and refreshed.stdout or status.stdout,
+											fetch_err
+										)
+									)
+								end)
+							end
+						)
+					end
+				)
+			end
+		)
+		return
+	end
+
+	local args = { "svn", "status", "--xml" }
+	if opts.remote_refresh then
+		args[#args + 1] = "-u"
+	end
+	args[#args + 1] = repo.root
+	run_command(args, {
+		kind = opts.remote_refresh and "remote" or "summary",
+		timeout_ms = opts.remote_refresh and opts.remote_timeout_ms or opts.status_timeout_ms,
+	}, function(status, status_err)
+		if not status then
+			return on_done(nil, status_err)
+		end
+		local truncated_err = truncated_output_error(status, "SVN status")
+		if truncated_err then
+			return on_done(nil, truncated_err)
+		end
+		run_command(
+			{ "svn", "info", "--xml", repo.root },
+			{ kind = "summary", timeout_ms = opts.status_timeout_ms },
+			function(info)
+				local info_truncated_err = truncated_output_error(info, "SVN info")
+				if info_truncated_err then
+					return on_done(nil, info_truncated_err)
+				end
+				on_done(build_svn_summary(repo, opts, status.stdout, info and info.stdout or nil))
+			end
+		)
+	end)
+end
+
+function M.load_repo_details_async(repo, opts, run_command, on_done)
+	opts = opts or {}
+	if repo.vcs == "git" then
+		run_command(
+			{ "git", "status", "--branch", "--porcelain=v1", "--untracked-files=all", "--ignored=no" },
+			{ kind = "details", timeout_ms = opts.status_timeout_ms },
+			function(status, status_err)
+				if not status then
+					return on_done(nil, status_err)
+				end
+				local truncated_err = truncated_output_error(status, "Git status")
+				if truncated_err then
+					return on_done(nil, truncated_err)
+				end
+				run_command(
+					{ "git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=no" },
+					{ kind = "details", timeout_ms = opts.status_timeout_ms },
+					function(files, files_err)
+						if not files then
+							return on_done(nil, files_err)
+						end
+						local files_truncated_err = truncated_output_error(files, "Git status")
+						if files_truncated_err then
+							return on_done(nil, files_truncated_err)
+						end
+						on_done(build_git_detail(repo, opts, status.stdout, files.stdout))
+					end
+				)
+			end
+		)
+		return
+	end
+
+	local args = { "svn", "status", "--xml" }
+	if opts.remote_refresh then
+		args[#args + 1] = "-u"
+	end
+	args[#args + 1] = repo.root
+	run_command(args, {
+		kind = opts.remote_refresh and "remote" or "details",
+		timeout_ms = opts.remote_refresh and opts.remote_timeout_ms or opts.status_timeout_ms,
+	}, function(status, status_err)
+		if not status then
+			return on_done(nil, status_err)
+		end
+		local truncated_err = truncated_output_error(status, "SVN status")
+		if truncated_err then
+			return on_done(nil, truncated_err)
+		end
+		run_command(
+			{ "svn", "info", "--xml", repo.root },
+			{ kind = "details", timeout_ms = opts.status_timeout_ms },
+			function(info)
+				local info_truncated_err = truncated_output_error(info, "SVN info")
+				if info_truncated_err then
+					return on_done(nil, info_truncated_err)
+				end
+				on_done(build_svn_detail(repo, opts, status.stdout, info and info.stdout or nil))
+			end
+		)
+	end)
+end
+
+local function repo_visible(repo, show_clean)
+	if show_clean then
+		return true
+	end
+	if not repo.summary_loaded then
+		return true
+	end
+	return repo.sync.status == "error"
+		or repo.sync.status == "incoming"
+		or repo.sync.status == "outgoing"
+		or repo.sync.status == "diverged"
+		or repo.sync.status == "publish"
+		or repo.counts.local_changes > 0
+		or repo.counts.remote > 0
+end
+
+local function first_interesting_repo(repos, show_clean)
+	for _, repo in ipairs(repos) do
+		if repo_visible(repo, show_clean) then
+			return repo.root
+		end
+	end
+	return nil
+end
+
+local function ordered_repositories(repos, sort_key)
+	table.sort(repos, function(a, b)
+		if sort_key == "name" then
+			if a.name ~= b.name then
+				return a.name < b.name
+			end
+			return a.root < b.root
+		end
+		if sort_key == "path" then
+			return a.root < b.root
+		end
+		return (a.order or 0) < (b.order or 0)
+	end)
+	return repos
+end
+
+local function branch_label(repo)
+	if repo.vcs == "git" and repo.branch and repo.branch ~= "" then
+		return " " .. repo.branch
+	end
+	if repo.vcs == "svn" then
+		if repo.branch and repo.branch ~= "" and repo.branch ~= "svn" then
+			return "svn " .. repo.branch
+		end
+		return "svn"
+	end
+	return ""
+end
+
+local function primary_action(repo)
+	if repo.job and repo.job.status == "running" then
+		return { label = repo.job.label or "Working...", action = repo.job.action or "busy" }
+	end
+	if repo.vcs == "svn" then
+		if repo.counts.remote > 0 then
+			return { label = "Update", action = "update" }
+		end
+		return { label = "Commit", action = "commit" }
+	end
+	if repo.sync.status == "publish" then
+		return { label = "Publish Branch", action = "push" }
+	end
+	if repo.sync.status == "incoming" or repo.sync.status == "outgoing" or repo.sync.status == "diverged" then
+		return { label = "Sync Changes", action = "sync" }
+	end
+	return { label = "Commit", action = "commit" }
+end
+
+local function folder_tree_from_items(repo, section, items, compact)
+	local root = { name = "", path = "", folders = {}, files = {} }
+
+	for _, item in ipairs(items) do
+		local relpath = item.extra.relpath
+		local segments = vim.split(relpath, "/", { plain = true })
+		local cursor = root
+		local current_path = {}
+		for idx = 1, #segments - 1 do
+			current_path[#current_path + 1] = segments[idx]
+			local key = table.concat(current_path, "/")
+			cursor.folders[key] = cursor.folders[key]
+				or {
+					name = segments[idx],
+					path = key,
+					folders = {},
+					files = {},
+				}
+			cursor = cursor.folders[key]
+		end
+		cursor.files[#cursor.files + 1] = item
+	end
+
+	local function render_folder(node)
+		local label = node.name
+		local current = node
+		if compact then
+			while vim.tbl_count(current.folders) == 1 and #current.files == 0 do
+				local _, only = next(current.folders)
+				if not only then
+					break
+				end
+				label = label .. "/" .. only.name
+				current = only
+			end
+		end
+
+		local children = {}
+		local folders = vim.tbl_values(current.folders)
+		table.sort(folders, function(a, b)
+			return a.path < b.path
+		end)
+		for _, folder in ipairs(folders) do
+			children[#children + 1] = render_folder(folder)
+		end
+		for _, file in ipairs(current.files) do
+			children[#children + 1] = file
+		end
+
+		return {
+			id = folder_node_id(repo.root, section.id, current.path),
+			type = "folder",
+			name = label,
+			loaded = true,
+			children = children,
+			extra = {
+				repo_root = repo.root,
+				section = section.id,
+			},
+		}
+	end
+
+	local nodes = {}
+	local folders = vim.tbl_values(root.folders)
+	table.sort(folders, function(a, b)
+		return a.path < b.path
+	end)
+	for _, folder in ipairs(folders) do
+		nodes[#nodes + 1] = render_folder(folder)
+	end
+	for _, file in ipairs(root.files) do
+		nodes[#nodes + 1] = file
+	end
+	return nodes
+end
+
+local function make_section_node(repo, section, source_opts, state)
+	local id = section_node_id(repo.root, section.id)
+	local force_repo = state.lazyvcs_force_expand and state.lazyvcs_force_expand[M.repo_changes_id(repo.root)]
+	local expanded = state.lazyvcs_expanded and state.lazyvcs_expanded[id] == true or force_repo == true
+	local children
+	if expanded then
+		local cache_key = section_content_signature(repo, section, source_opts)
+		children = cached_section_children(state, cache_key, function()
+			local items = vim.deepcopy(section.items)
+			sort_items(items, source_opts.changes_sort)
+			return source_opts.changes_view_mode == "tree"
+					and folder_tree_from_items(repo, section, items, source_opts.compact_folders)
+				or items
+		end)
+	else
+		-- Native rendering currently determines expandability from `#children`.
+		-- A single inert sentinel keeps the disclosure marker without touching
+		-- any file item; the next render materializes real children after expand.
+		children = {
+			{
+				id = id .. "::lazy",
+				type = "lazy_placeholder",
+				name = "",
+				extra = { lazy = true },
+			},
+		}
+	end
+
+	return {
+		id = id,
+		type = "section",
+		name = string.format("%s (%d)", section.label, #section.items),
+		loaded = true,
+		children = children,
+		extra = {
+			repo_root = repo.root,
+			section_id = section.id,
+			lazy = not expanded,
+		},
+	}
+end
+
+local function make_repo_change_children(repo, source_opts, state)
+	local draft = repo.draft ~= "" and repo.draft or ""
+	local placeholder = "Commit message"
+	local primary = primary_action(repo)
+	local disabled = repo.job and repo.job.status == "running"
+	local children = {
+		{
+			id = repo.root .. "::commit",
+			type = "commit_input",
+			name = draft ~= "" and draft or placeholder,
+			extra = {
+				repo_root = repo.root,
+				placeholder = placeholder,
+				draft = draft,
+				primary_label = primary.label,
+				show_input_action_button = source_opts.show_input_action_button,
+				disabled = disabled,
+				busy_label = primary.label,
+			},
+		},
+	}
+
+	if source_opts.show_action_button then
+		children[#children + 1] = {
+			id = repo.root .. "::action",
+			type = "action_button",
+			name = primary.label,
+			extra = {
+				repo_root = repo.root,
+				action = primary.action,
+				label = primary.label,
+				disabled = disabled,
+				busy_label = primary.label,
+			},
+		}
+	end
+
+	local remote_error = (repo.sync and repo.sync.fetch_error) or repo.remote_error
+	if source_opts.remote_error_notifications == "inline" and remote_error and remote_error ~= "" then
+		children[#children + 1] = {
+			id = repo.root .. "::remote_error",
+			type = "message",
+			name = "Remote refresh failed: " .. tostring(remote_error),
+			extra = {
+				repo_root = repo.root,
+				error = true,
+				remote_error = true,
+				disabled = disabled,
+			},
+		}
+	end
+
+	if repo.details_loaded then
+		if #repo.sections == 0 then
+			children[#children + 1] = {
+				id = repo.root .. "::clean",
+				type = "message",
+				name = "No changes",
+				extra = {
+					repo_root = repo.root,
+					disabled = disabled,
+					busy_label = primary.label,
+				},
+			}
+			return children
+		end
+		for _, section in ipairs(repo.sections) do
+			children[#children + 1] =
+				mark_node_disabled(make_section_node(repo, section, source_opts, state), disabled, primary.label)
+		end
+		return children
+	end
+
+	local message
+	if disabled then
+		message = primary.label
+	elseif repo.loading_details then
+		message = "Loading changes..."
+	elseif not repo.summary_loaded then
+		message = "Loading repository status..."
+	elseif repo.counts.local_changes == 0 and repo.counts.remote == 0 then
+		message = "Working tree clean"
+	else
+		message = "Press <CR> to load changes"
+	end
+
+	children[#children + 1] = {
+		id = repo.root .. "::loading",
+		type = "message",
+		name = message,
+		extra = {
+			repo_root = repo.root,
+			disabled = disabled,
+			busy_label = primary.label,
+		},
+	}
+	return children
+end
+
+local function normalize_visibility_state(state, repos, _source_opts)
+	local available = {}
+	for _, repo in ipairs(repos) do
+		available[repo.root] = true
+	end
+
+	state.lazyvcs_repo_visibility_overrides = state.lazyvcs_repo_visibility_overrides or {}
+	for root, _ in pairs(vim.deepcopy(state.lazyvcs_repo_visibility_overrides)) do
+		if not available[root] then
+			state.lazyvcs_repo_visibility_overrides[root] = nil
+		end
+	end
+	state.lazyvcs_repo_visibility = {}
+
+	if state.lazyvcs_focused_repo and not available[state.lazyvcs_focused_repo] then
+		state.lazyvcs_focused_repo = nil
+	end
+
+	if state.lazyvcs_selection_mode == "single" then
+		local focused = state.lazyvcs_focused_repo
+		local override = focused and state.lazyvcs_repo_visibility_overrides[focused]
+		local focused_repo
+		for _, repo in ipairs(repos) do
+			if repo.root == focused then
+				focused_repo = repo
+				break
+			end
+		end
+		if
+			not focused_repo
+			or override == false
+			or (override == nil and not repo_visible(focused_repo, state.lazyvcs_show_clean))
+		then
+			focused = nil
+			for _, repo in ipairs(repos) do
+				if state.lazyvcs_repo_visibility_overrides[repo.root] == true then
+					focused = repo.root
+					break
+				end
+			end
+			focused = focused or first_interesting_repo(repos, state.lazyvcs_show_clean)
+		end
+		state.lazyvcs_focused_repo = focused
+		if focused then
+			state.lazyvcs_repo_visibility[focused] = true
+		end
+		return
+	end
+
+	for _, repo in ipairs(repos) do
+		local explicit = state.lazyvcs_repo_visibility_overrides[repo.root]
+		if explicit ~= nil then
+			state.lazyvcs_repo_visibility[repo.root] = explicit
+		else
+			state.lazyvcs_repo_visibility[repo.root] = repo_visible(repo, state.lazyvcs_show_clean)
+		end
+	end
+
+	if not state.lazyvcs_focused_repo or not state.lazyvcs_repo_visibility[state.lazyvcs_focused_repo] then
+		state.lazyvcs_focused_repo = nil
+		for _, repo in ipairs(repos) do
+			if state.lazyvcs_repo_visibility[repo.root] then
+				state.lazyvcs_focused_repo = repo.root
+				break
+			end
+		end
+	end
+end
+
+local function apply_remote_error_notifications(state, repos, source_opts)
+	state.lazyvcs_remote_error_notified = state.lazyvcs_remote_error_notified or {}
+	local available = {}
+	local generation = state.lazyvcs_hydration_generation or 0
+	for _, repo in ipairs(repos) do
+		available[repo.root] = true
+		local remote_error = (repo.sync and repo.sync.fetch_error) or repo.remote_error
+		if source_opts.remote_error_notifications == "notify" and remote_error and remote_error ~= "" then
+			local signature = tostring(generation) .. "\0" .. tostring(remote_error)
+			if state.lazyvcs_remote_error_notified[repo.root] ~= signature then
+				state.lazyvcs_remote_error_notified[repo.root] = signature
+				util.notify(
+					string.format("Remote refresh failed for %s: %s", repo.name, remote_error),
+					vim.log.levels.WARN
+				)
+			end
+		elseif not remote_error then
+			state.lazyvcs_remote_error_notified[repo.root] = nil
+		end
+	end
+	for root in pairs(vim.deepcopy(state.lazyvcs_remote_error_notified)) do
+		if not available[root] then
+			state.lazyvcs_remote_error_notified[root] = nil
+		end
+	end
+end
+
+local function make_repo_selector_node(repo, state)
+	return {
+		id = M.repo_selector_id(repo.root),
+		path = repo.root,
+		type = "repo_selector",
+		name = repo.name,
+		loaded = true,
+		extra = {
+			repo_root = repo.root,
+			vcs = repo.vcs,
+			branch = branch_label(repo),
+			sync = repo.sync,
+			counts = repo.counts,
+			path_label = repo.path_label,
+			visible = state.lazyvcs_repo_visibility[repo.root] == true,
+			focused = state.lazyvcs_focused_repo == repo.root,
+			disabled = repo.job and repo.job.status == "running",
+			refreshing_summary = repo.refreshing_summary,
+		},
+	}
+end
+
+local function make_repo_changes_node(repo, source_opts, state)
+	return {
+		id = M.repo_changes_id(repo.root),
+		path = repo.root,
+		type = "repo_changes",
+		name = repo.name,
+		loaded = true,
+		children = make_repo_change_children(repo, source_opts, state),
+		extra = {
+			repo_root = repo.root,
+			vcs = repo.vcs,
+			branch = branch_label(repo),
+			sync = repo.sync,
+			counts = repo.counts,
+			path_label = repo.path_label,
+			disabled = repo.job and repo.job.status == "running",
+			refreshing_summary = repo.refreshing_summary,
+		},
+	}
+end
+
+function M.collect(state, opts)
+	opts = opts or {}
+	local source_opts = vim.tbl_extend("force", config.get().source_control, {
+		show_clean = state.lazyvcs_show_clean,
+		selection_mode = state.lazyvcs_selection_mode,
+		changes_view_mode = state.lazyvcs_changes_view_mode,
+		changes_sort = state.lazyvcs_changes_sort,
+	})
+	local root = canonical_root(opts.root or state.path or vim.fn.getcwd())
+	-- Never fall back to the synchronous `M.discover` here. Doing so made the
+	-- whole async discovery path dead code: `native.M.open` rendered before
+	-- starting discovery, this line populated `lazyvcs_repo_specs` on the UI
+	-- thread -- a recursive scandir walk plus blocking `git rev-parse` and
+	-- `svn info`, each capped at 30s -- and `start_discovery`'s
+	-- `lazyvcs_repo_specs ~= nil` guard then short-circuited forever. An
+	-- unreachable SVN server froze Neovim for a minute on sidebar open.
+	-- Callers own discovery; rendering only ever displays what it has.
+	local repo_specs = state.lazyvcs_repo_specs or {}
+	local repo_cache = state.lazyvcs_repo_cache or {}
+	local drafts = state.lazyvcs_commit_drafts or {}
+
+	state.lazyvcs_repo_specs = repo_specs
+	state.lazyvcs_repo_cache = repo_cache
+
+	local loaded = {}
+	for _, spec in ipairs(repo_specs) do
+		local status = apply_repo_job(repo_cache[spec.root] or placeholder_status(spec))
+		if status.loading_summary and status.summary_loaded then
+			status.refreshing_summary = true
+		elseif status.loading_summary then
+			status.sync = sync_badge("…", "loading", "LazyVcsBusy")
+			status.refreshing_summary = false
+		end
+		status.draft = drafts[spec.root] or ""
+		status.order = spec.order
+		status.relpath = spec.relpath
+		status.path_label = spec.path_label
+		loaded[#loaded + 1] = status
+	end
+
+	-- Not `a == nil and b or c`: that yields nil, never false, so the default
+	-- `show_clean = false` never actually initialised the state.
+	if state.lazyvcs_show_clean == nil then
+		state.lazyvcs_show_clean = source_opts.show_clean
+	end
+	state.lazyvcs_selection_mode = state.lazyvcs_selection_mode or source_opts.selection_mode
+	state.lazyvcs_changes_view_mode = state.lazyvcs_changes_view_mode or source_opts.changes_view_mode
+	state.lazyvcs_changes_sort = state.lazyvcs_changes_sort or source_opts.changes_sort
+	source_opts.show_clean = state.lazyvcs_show_clean
+	source_opts.selection_mode = state.lazyvcs_selection_mode
+	source_opts.changes_view_mode = state.lazyvcs_changes_view_mode
+	source_opts.changes_sort = state.lazyvcs_changes_sort
+
+	ordered_repositories(loaded, source_opts.repositories_sort)
+	-- Not while discovery is in flight. `normalize_visibility_state` drops every
+	-- override whose repository is not in `loaded` and clears the focused
+	-- repository on the same test -- and during the loading render `loaded` is
+	-- empty by construction, so it would erase the layout `persist.apply_state`
+	-- had just restored. Closing the sidebar afterwards would then write the
+	-- erased layout back to disk, losing it permanently.
+	if state.lazyvcs_discovering then
+		-- `normalize_visibility_state` owns initialising these; keep them
+		-- defined so the render below never indexes a nil table.
+		state.lazyvcs_repo_visibility = state.lazyvcs_repo_visibility or {}
+		state.lazyvcs_repo_visibility_overrides = state.lazyvcs_repo_visibility_overrides or {}
+	else
+		normalize_visibility_state(state, loaded, source_opts)
+		apply_remote_error_notifications(state, loaded, source_opts)
+	end
+
+	local repo_selector_nodes = {}
+	for _, repo in ipairs(loaded) do
+		repo_cache[repo.root] = repo
+		repo_selector_nodes[#repo_selector_nodes + 1] = make_repo_selector_node(repo, state)
+	end
+
+	local change_nodes = {}
+	for _, repo in ipairs(loaded) do
+		if state.lazyvcs_repo_visibility[repo.root] then
+			change_nodes[#change_nodes + 1] = make_repo_changes_node(repo, source_opts, state)
+		end
+	end
+
+	if #change_nodes == 0 then
+		-- Discovery is asynchronous, so the first render legitimately has no
+		-- repositories yet. Saying "none selected" there reads as a result
+		-- rather than a pending state.
+		change_nodes[#change_nodes + 1] = {
+			id = root .. "::changes::empty",
+			type = "message",
+			name = state.lazyvcs_discovering and "Discovering repositories..." or "No repositories selected",
+			extra = { discovering = state.lazyvcs_discovering == true },
+		}
+	end
+
+	local children = {}
+	local hydration_extra = {
+		hydration_active = state.lazyvcs_hydration_active == true,
+		hydration_pending = state.lazyvcs_hydration_pending or 0,
+	}
+	if state.lazyvcs_discovery_error then
+		children[#children + 1] = {
+			id = root .. "::discovery_error",
+			type = "message",
+			name = "Repository discovery failed: " .. tostring(state.lazyvcs_discovery_error),
+			extra = {
+				error = true,
+				discovery_error = true,
+			},
+		}
+	end
+	if #repo_specs > 1 or source_opts.always_show_repositories then
+		children[#children + 1] = {
+			id = root .. "::repositories",
+			type = "view_section",
+			name = string.format("Repositories (%d)", #repo_selector_nodes),
+			loaded = true,
+			children = repo_selector_nodes,
+			extra = { section = "repositories" },
+		}
+	end
+
+	children[#children + 1] = {
+		id = root .. "::changes",
+		type = "view_section",
+		name = string.format("Changes (%d)", #change_nodes),
+		loaded = true,
+		children = change_nodes,
+		extra = { section = "changes" },
+	}
+
+	return {
+		id = root,
+		path = root,
+		type = "root",
+		name = "Source Control for " .. root,
+		loaded = true,
+		children = children,
+		extra = vim.tbl_extend("force", { repo_count = #repo_selector_nodes }, hydration_extra),
+	}
+end
+
+return M

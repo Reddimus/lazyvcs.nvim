@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verification:
+    name: Verification
+    uses: ./.github/workflows/verify.yml
+    with:
+      ref: ${{ github.sha }}
+
+  required:
+    name: Required CI
+    if: always()
+    needs:
+      - verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every verification job
+        env:
+          VERIFICATION_RESULT: ${{ needs.verification.result }}
+        run: test "${VERIFICATION_RESULT}" = "success"

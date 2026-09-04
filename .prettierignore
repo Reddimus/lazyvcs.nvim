@@ -1,0 +1,12 @@
+.git/
+deps/
+node_modules/
+doc/tags
+*.log
+*.tmp
+*.tar.gz
+*.zip
+
+# Workflow `run:` values are shell commands; prettier folds them across lines,
+# which is valid YAML but needless churn in diffs.
+.github/workflows/
