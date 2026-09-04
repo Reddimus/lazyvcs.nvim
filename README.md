@@ -1,6 +1,6 @@
 # lazyvcs.nvim
 
-[![CI](https://github.com/Reddimus/lazyvcs.nvim/actions/workflows/ci.yml/badge.svg)](https://github.com/Reddimus/lazyvcs.nvim/actions/workflows/ci.yml)
+[![CI](https://github.com/Reddimus/lazyvcs.nvim/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Reddimus/lazyvcs.nvim/actions/workflows/ci.yml)
 
 `lazyvcs.nvim` brings Git and Subversion workflows into Neovim. It provides a
 source-control sidebar, an editable live diff, gutter signs, hunk actions, and
