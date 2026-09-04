@@ -526,6 +526,40 @@ function M.buf_is_valid(bufnr)
 	return bufnr and bufnr ~= 0 and vim.api.nvim_buf_is_valid(bufnr)
 end
 
+function M.capture_buffer_context(winid)
+	winid = winid or vim.api.nvim_get_current_win()
+	if not M.win_is_valid(winid) then
+		return nil
+	end
+	local bufnr = vim.api.nvim_win_get_buf(winid)
+	if not M.buf_is_valid(bufnr) then
+		return nil
+	end
+	return {
+		winid = winid,
+		bufnr = bufnr,
+		path = M.buf_path(bufnr),
+		changedtick = vim.api.nvim_buf_get_changedtick(bufnr),
+		cursor = vim.api.nvim_win_get_cursor(winid),
+	}
+end
+
+function M.buffer_context_is_unchanged(context)
+	if
+		not context
+		or not M.win_is_valid(context.winid)
+		or not M.buf_is_valid(context.bufnr)
+		or vim.api.nvim_win_get_buf(context.winid) ~= context.bufnr
+	then
+		return false
+	end
+	local cursor = vim.api.nvim_win_get_cursor(context.winid)
+	return M.buf_path(context.bufnr) == context.path
+		and vim.api.nvim_buf_get_changedtick(context.bufnr) == context.changedtick
+		and cursor[1] == context.cursor[1]
+		and cursor[2] == context.cursor[2]
+end
+
 ---Truncate to a byte budget without ever splitting a UTF-8 sequence.
 ---
 ---Use this for payload and message budgets -- an API context cap, an error

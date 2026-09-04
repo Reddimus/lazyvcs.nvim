@@ -153,21 +153,10 @@ local function refresh_repo(state, repo_root, remote_refresh)
 	navigate_if_visible(state)
 end
 
-local function confirm_mutation(state, message, on_confirm)
-	if not state.lazyvcs_confirm_mutations then
-		return on_confirm()
-	end
-	confirm.open({
+local function confirm_mutation(_, message, on_confirm)
+	return confirm.mutation({
 		prompt = message,
-	}, function(choice)
-		if choice == "confirm_session" then
-			state.lazyvcs_confirm_mutations = false
-			return on_confirm()
-		end
-		if choice == "confirm" then
-			on_confirm()
-		end
-	end)
+	}, on_confirm)
 end
 
 local function close_sessions_for_repo(repo_root)

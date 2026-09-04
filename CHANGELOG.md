@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-09-03
+
+Safety release for repository mutations and background work.
+
+### Fixed
+
+- Destructive actions confirm consistently and refuse to act when the buffer,
+  cursor, or selected hunk changed while the confirmation was open.
+- Whole-file discards always show their own confirmation, even when
+  `confirm_mutations` is off or session prompts have been suppressed.
+- Configuration and JSON writes handle partial writes without leaving a
+  truncated file.
+- The supported-version table in `SECURITY.md` matches the current release.
+
 ## [0.6.2] - 2026-09-03
 
 Safety and maintenance release. Repository actions now protect unsaved buffer

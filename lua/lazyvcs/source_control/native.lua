@@ -857,7 +857,6 @@ local function prepare_state(path)
 	states[id] = state
 	state.tabid = id
 	state.path = normalize(path or state.path or vim.fn.getcwd())
-	state.lazyvcs_confirm_mutations = config.get().source_control.confirm_mutations
 	if state.lazyvcs_auto_expand_width == nil then
 		state.lazyvcs_auto_expand_width = config.get().source_control.auto_expand_width
 	end

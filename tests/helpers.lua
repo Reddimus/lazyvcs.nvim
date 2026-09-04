@@ -48,6 +48,11 @@ end
 M.tempdir = tempdir
 
 function M.cleanup()
+	local confirm = package.loaded["lazyvcs.source_control.confirm"]
+	if confirm and type(confirm._test_reset_session) == "function" then
+		confirm._test_reset_session()
+	end
+
 	local function belongs_to_fixture(path)
 		if not path or path == "" then
 			return false
