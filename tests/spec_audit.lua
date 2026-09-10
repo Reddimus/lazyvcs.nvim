@@ -4,6 +4,29 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_comparison_retry_recovers_repository_resolution",
+			function()
+				local fixture = ctx.helpers.make_git_fixture()
+				local gitdir = fixture.root .. "/.git"
+				local hidden = fixture.root .. "/saved-git"
+				assert(vim.uv.fs_rename(gitdir, hidden))
+				require("lazyvcs.backends").invalidate()
+				local compare = require("lazyvcs.compare")
+				local s = compare.open({ path = fixture.file, base = "HEAD" })
+				wait_for(function()
+					return s.message == "Comparison unavailable"
+				end)
+				assert(not table.concat(vim.api.nvim_buf_get_lines(s.right, 0, -1, false), "\n"):find("b:", 1, true))
+				assert(vim.uv.fs_rename(hidden, gitdir))
+				compare.refresh(s)
+				wait_for(function()
+					return s.snapshot ~= nil or (s.message == "Comparison unavailable" and s.job == nil)
+				end)
+				assert(s.snapshot and #s.items == 1, s.message)
+				compare.close(s)
+			end,
+		},
+		{
 			"test_git_conflict_comparison_missing_index_stages",
 			function()
 				local fixture = ctx.helpers.make_git_fixture()
@@ -467,7 +490,7 @@ return function(ctx)
 				local compare = require("lazyvcs.compare")
 				local session = compare.open({ path = fixture.root, base = "HEAD" })
 				wait_for(function()
-					return session.snapshot ~= nil or session.message:match("fatal")
+					return session.snapshot ~= nil or session.message == "Comparison unavailable"
 				end)
 				assert(session.snapshot, session.message)
 				assert(#session.items == 2, vim.inspect(session.items))

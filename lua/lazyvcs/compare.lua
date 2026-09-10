@@ -92,7 +92,7 @@ end
 local function failure(s, err)
 	message(s, "Comparison unavailable")
 	write(s.left, vim.list_extend({ "Comparison unavailable", "" }, util.split_lines(tostring(err))))
-	write(s.right, { "b: choose another base", "R: retry", "q: close" })
+	write(s.right, s.context and { "b: choose another base", "R: retry", "q: close" } or { "R: retry", "q: close" })
 end
 
 local function selected(s)
@@ -170,9 +170,33 @@ end
 
 function M.refresh(s, context_checked)
 	s = s or sessions[vim.api.nvim_get_current_tabpage()]
-	if not s or not alive(s) or not s.provider then
+	if not s or not alive(s) then
 		return
 	end
+	if not s.provider then
+		cancel(s, "job")
+		s.generation = (s.generation or 0) + 1
+		local generation = s.generation
+		if s.resolution_failed then
+			backends.invalidate()
+		end
+		message(s, "Finding repository...")
+		s.job = backends.resolve_async(s.path, function(backend, root, err)
+			if not alive(s) or generation ~= s.generation then
+				return
+			end
+			s.job = nil
+			if not backend then
+				s.resolution_failed = true
+				return failure(s, err)
+			end
+			s.resolution_failed = nil
+			s.root, s.vcs, s.provider = root, backend.name, common.provider(backend.name)
+			M.refresh(s)
+		end)
+		return
+	end
+
 	if not context_checked then
 		cancel(s, "job")
 		cancel(s, "preview_job")
@@ -338,6 +362,7 @@ function M.open(opts)
 	local path = opts.path or (util.is_real_file_buffer(current_buf) and util.buf_path(current_buf)) or vim.fn.getcwd()
 	local s = {
 		origin_win = vim.api.nvim_get_current_win(),
+		path = path,
 		base = opts.base,
 		explicit_base = opts.base ~= nil,
 		include_untracked = opts.include_untracked ~= false,
@@ -453,35 +478,7 @@ function M.open(opts)
 		end,
 	})
 	vim.api.nvim_set_current_win(s.sidewin)
-	message(s, "Finding repository...")
-	s.job = backends.resolve_async(path, function(backend, root, err)
-		if not alive(s) then
-			return
-		end
-		if not backend then
-			s.job = nil
-			return failure(s, err)
-		end
-		s.root, s.vcs, s.provider = root, backend.name, common.provider(backend.name)
-		s.job = s.provider.context(s, function(context, context_err)
-			if not alive(s) then
-				return
-			end
-			s.job = nil
-			if not context then
-				return failure(s, context_err)
-			end
-			s.context = context
-			if not s.base and context.branch and context.branch ~= "" then
-				s.base = json.read(state_path())[root .. "\n" .. context.branch]
-			end
-			if s.base then
-				M.refresh(s, true)
-			else
-				choose_base(s)
-			end
-		end)
-	end)
+	M.refresh(s)
 	return s
 end
 
