@@ -8,6 +8,41 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_source_control_comparison_generic_row_asks_for_repository",
+			function()
+				local fixture = ctx.helpers.make_mixed_source_control_fixture()
+				local native = require("lazyvcs.source_control.native")
+				local state = native.open({ path = fixture.root })
+				ctx.wait_for(function()
+					return not state.lazyvcs_discovering and state.lazyvcs_line_nodes
+				end, "workspace discovery", 15000)
+				vim.api.nvim_win_set_cursor(state.winid, { 1, 0 })
+				local context = assert(native.comparison_context())
+				assert(not context.path and #context.repos >= 2)
+				local picker = require("lazyvcs.picker")
+				local original, picked = picker.select, false
+				---@diagnostic disable-next-line: duplicate-set-field
+				picker.select = function(items, _, done)
+					picked = true
+					for _, item in ipairs(items) do
+						if item.root == fixture.git_dirty then
+							return done(item)
+						end
+					end
+					error("visible repository missing")
+				end
+				local ok, err = pcall(compare.open, { base = "HEAD" })
+				picker.select = original
+				assert(ok, err)
+				assert(picked, "generic row silently chose the focused repository")
+				local session = assert(compare.current())
+				ready(session)
+				assert(session.root == fixture.git_dirty)
+				compare.close(session)
+				native.close()
+			end,
+		},
+		{
 			"test_comparison_edit_recovers_after_origin_tab_closes",
 			function()
 				local fixture = ctx.helpers.make_git_fixture()
