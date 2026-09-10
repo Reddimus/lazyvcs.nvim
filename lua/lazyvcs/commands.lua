@@ -168,9 +168,14 @@ local spec = {
 		},
 	},
 	blame = {
-		desc = "Inline and split blame",
+		desc = "Inline, split, and selected-line blame",
 		default = "toggle",
 		verbs = {
+			selection = {
+				run = function()
+					return require("lazyvcs.blame_selection").open()
+				end,
+			},
 			toggle = {
 				run = function()
 					blame().blame()
@@ -255,6 +260,12 @@ end
 
 local function dispatch(opts)
 	local args = opts.fargs
+	if opts.range and opts.range > 0 then
+		if args[1] == "blame" and (args[2] == nil or args[2] == "selection") then
+			return require("lazyvcs.blame_selection").open(opts.line1, opts.line2)
+		end
+		return fail("A line range is supported only for LazyVCS blame selection")
+	end
 
 	-- Bare `:LazyVCS` toggles the sidebar, the most common entry point.
 	if #args == 0 then
@@ -337,10 +348,14 @@ local function complete(arg_lead, cmd_line)
 end
 
 function M.setup()
+	vim.keymap.set("x", "<Plug>(LazyVCSBlameSelection)", function()
+		require("lazyvcs.blame_selection").open()
+	end, { desc = "Blame selected lines" })
 	pcall(vim.api.nvim_del_user_command, "LazyVCS")
 	vim.api.nvim_create_user_command("LazyVCS", dispatch, {
 		desc = "lazyvcs: Git/SVN source control, diff, hunks, blame",
 		nargs = "*",
+		range = true,
 		complete = complete,
 	})
 end

@@ -100,24 +100,6 @@ local function uncommitted_blame_lines(path, contents)
 	return out
 end
 
-local function map_blame(lines, base, current)
-	local out, b, c = {}, 1, 1
-	for _, hunk in ipairs(require("lazyvcs.diff").compute_hunks(base, current)) do
-		local first = hunk.current_count == 0 and hunk.current_start + 1 or hunk.current_start
-		while c < first do
-			out[c], b, c = lines[b], b + 1, c + 1
-		end
-		for _ = 1, hunk.current_count do
-			out[c], c = "     - - -", c + 1
-		end
-		b = hunk.base_start + hunk.base_count + (hunk.base_count == 0 and 1 or 0)
-	end
-	while c <= #current do
-		out[c], b, c = lines[b] or "     - - -", b + 1, c + 1
-	end
-	return out
-end
-
 local function load_base_lines(path, root)
 	local code, status_err = status_code(path)
 	if not code then
@@ -737,6 +719,16 @@ function M.blame_lines_async(path, on_done, opts)
 		return task
 	end
 
+	local stat, stat_err, stat_code = vim.uv.fs_stat(path)
+	if not stat then
+		local task = Task.new(on_done)
+		vim.schedule(function()
+			local missing = stat_code == "ENOENT" or stat_code == "ENOTDIR"
+			task:finish(nil, not missing and stat_err or nil)
+		end)
+		return task
+	end
+
 	local cwd = util.dir_of(path)
 	local task = Task.new(on_done)
 	task:add(
@@ -778,8 +770,11 @@ function M.blame_lines_async(path, on_done, opts)
 								process.lines(
 									{ "svn", "blame", "-v", literal_target(path) },
 									{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
-									function(lines, blame_err)
+									function(lines, blame_err, raw)
 										if not lines then
+											if is_unversioned_error(blame_err, raw) then
+												return task:finish(nil, nil, root)
+											end
 											if is_added_base_error(blame_err) then
 												local blame, read_err = uncommitted_blame_lines(path)
 												return task:finish(blame, read_err, root)
@@ -800,7 +795,16 @@ function M.blame_lines_async(path, on_done, opts)
 											if not ok then
 												return task:finish(nil, tostring(current))
 											end
-											task:finish(map_blame(lines, base, current), nil, root)
+											task:finish(
+												require("lazyvcs.backends.blame_mapping").map(
+													lines,
+													base,
+													current,
+													"     - - -"
+												),
+												nil,
+												root
+											)
 										end))
 									end
 								)

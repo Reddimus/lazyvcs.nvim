@@ -45,6 +45,9 @@ tar -C /opt/nvim --strip-components=1 -xzf "${archive}"
 ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim
 nvim --version | sed -n '1,5p' >/artifacts/nvim-version.log
 
+git --version >/artifacts/git-version.log
+nvim --headless -u NONE -l /work/lazyvcs.nvim/tests/run.lua >/artifacts/spec.log 2>&1
+
 export HOME=/tmp/lazyvcs-native/home
 export XDG_CONFIG_HOME="${HOME}/.config"
 export XDG_DATA_HOME="${HOME}/.local/share"

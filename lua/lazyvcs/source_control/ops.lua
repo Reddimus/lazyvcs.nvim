@@ -1113,6 +1113,7 @@ end
 
 local function repo_actions(repo)
 	local actions = {
+		{ label = "Compare against base...", action = "compare" },
 		{ label = "Commit", action = "commit" },
 		{ label = "Generate Commit Message", action = "generate", enabled = ai.available() },
 		{ label = "Refresh", action = "refresh" },
@@ -1207,6 +1208,13 @@ function M.cancel_repo(state, node)
 end
 
 local function execute_repo_action(state, repo, action, node)
+	if action == "compare" then
+		if window_exists(state) then
+			vim.api.nvim_set_current_win(state.winid)
+			return require("lazyvcs.compare").open({ path = repo.root })
+		end
+		return
+	end
 	if action == "cancel" then
 		return M.cancel_repo(state, node)
 	end

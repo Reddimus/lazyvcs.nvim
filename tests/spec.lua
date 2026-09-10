@@ -1080,6 +1080,8 @@ local function test_svn_async_blame_cancels_active_child_process()
 	local backend = require("lazyvcs.backends.svn")
 	local util = require("lazyvcs.util")
 	local original_system_start = util.system_start
+	local path = vim.fn.tempname()
+	helpers.write_file(path, "line\n")
 
 	-- Guarantee the global monkey-patch is restored even if an assertion
 	-- fails, so a failure here cannot contaminate later tests.
@@ -1102,10 +1104,10 @@ local function test_svn_async_blame_cancels_active_child_process()
 		end
 
 		local completed = false
-		local job = backend.blame_lines_async("/tmp/wc/sample.txt", function()
+		local job = backend.blame_lines_async(path, function()
 			completed = true
 		end)
-		callbacks[1]({ stdout = "/tmp/wc\n", code = 0 })
+		callbacks[1]({ stdout = vim.fs.dirname(path) .. "\n", code = 0 })
 		eq(#handles, 2)
 		job:kill()
 		assert(handles[2].killed, "active svn blame child process should be killed")
@@ -1114,6 +1116,7 @@ local function test_svn_async_blame_cancels_active_child_process()
 	end)
 
 	util.system_start = original_system_start
+	vim.fn.delete(path)
 	if not ok then
 		error(err)
 	end
@@ -7094,6 +7097,7 @@ vim.list_extend(
 )
 
 vim.list_extend(cases, require("spec_audit")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_compare")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,

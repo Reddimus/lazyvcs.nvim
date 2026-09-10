@@ -14,7 +14,12 @@ package.path = table.concat({
 
 local MiniTest = require("mini.test")
 
-MiniTest.run_file(repo_root .. "/tests/minitest_native_sidebar.lua", {
+MiniTest.run({
+	collect = {
+		find_files = function()
+			return { repo_root .. "/tests/minitest_native_sidebar.lua", repo_root .. "/tests/minitest_compare.lua" }
+		end,
+	},
 	execute = {
 		reporter = MiniTest.gen_reporter.stdout({ group_depth = 2 }),
 	},

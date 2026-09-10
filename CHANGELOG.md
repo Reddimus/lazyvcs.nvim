@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-10
+
+### Added
+
+- Open repository comparisons with `C` or repository actions in source control.
+- Blame visually selected lines in editor buffers and comparison text panes.
+
+### Changed
+
+- Comparison rows show filenames first, theme colors, and the previewed-file
+  marker.
+- In Compare, `e` fits the sidebar width and `o` edits the file.
+- The sidebar mapping returns to source control; reopening refreshes the
+  existing comparison and preserves your place.
+
+### Fixed
+
+- Keep saved-pane attribution pinned on older Git versions.
+- Skip automatic SVN blame for new unsaved files without an SVN error.
+- Preserve manual widths, selection, and preview positions across refreshes and
+  resizing.
+- Keep help and metadata separate from pending text previews.
+- Avoid orphaned blank buffers and editing into plugin-owned windows.
+
 ## [0.7.1] - 2026-09-10
 
 ### Fixed
@@ -524,4 +548,5 @@ First tagged release.
 [0.6.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.6.0...v0.6.1
 [0.6.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.6.1...v0.6.2
 [0.7.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.6.2...v0.7.0
+[0.8.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.7.0...v0.7.1

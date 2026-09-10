@@ -711,7 +711,7 @@ local function setup_buffer(state)
 			"s/.: repository actions   b: switch branch or target",
 			"c: commit   e: edit commit message or auto-fit width",
 			"ga: stage   gu: unstage   gr: revert   gm: generate commit message",
-			"v: tree/list   S: change sort order",
+			"v: tree/list   S: change sort order   C: compare against base",
 		})
 	end, "Show source control help")
 	bind(bufnr, "<space>", function()
@@ -735,6 +735,9 @@ local function setup_buffer(state)
 	bind(bufnr, ".", function()
 		M.dispatch("repo_actions")
 	end, "Repository actions")
+	bind(bufnr, "C", function()
+		require("lazyvcs.compare").open()
+	end, "Compare repository against base")
 	bind(bufnr, "c", function()
 		M.dispatch("commit_repo")
 	end, "Commit repository")
@@ -901,6 +904,10 @@ local function prepare_state(path)
 end
 
 function M.open(opts)
+	local compare = package.loaded["lazyvcs.compare"]
+	if compare and compare.current() then
+		return compare.source_control("open", opts)
+	end
 	opts = opts or {}
 	local state = prepare_state(opts.path or opts.root)
 	ensure_window(state, { focus = opts.focus })
@@ -961,11 +968,19 @@ local function teardown_state(state, opts)
 end
 
 function M.close()
+	local compare = package.loaded["lazyvcs.compare"]
+	if compare and compare.current() then
+		return compare.source_control("close", nil)
+	end
 	local state = states[tabid()]
 	teardown_state(state, { close_window = true })
 end
 
 function M.toggle(opts)
+	local compare = package.loaded["lazyvcs.compare"]
+	if compare and compare.current() then
+		return compare.source_control("toggle", opts)
+	end
 	local state = states[tabid()]
 	if state and valid_win(state.winid) then
 		M.close()
@@ -975,6 +990,10 @@ function M.toggle(opts)
 end
 
 function M.refresh(remote_refresh)
+	local compare = package.loaded["lazyvcs.compare"]
+	if compare and compare.current() then
+		return compare.source_control("refresh", nil)
+	end
 	local state = states[tabid()]
 	if not state then
 		return M.open()
@@ -997,6 +1016,10 @@ function M.refresh(remote_refresh)
 end
 
 function M.cancel(path)
+	local compare = package.loaded["lazyvcs.compare"]
+	if compare and compare.current() then
+		return compare.source_control("cancel", path)
+	end
 	local normalized = path and path ~= "" and normalize(vim.fn.fnamemodify(path, ":p")) or nil
 	local state = states[tabid()]
 	local hydration_count = state and invalidate_hydration(state, normalized, "user") or 0
@@ -1106,6 +1129,29 @@ function M.dispatch(action)
 	if action == "cancel_repo" and type(ops.cancel_repo) == "function" then
 		return ops.cancel_repo(state, node)
 	end
+end
+
+function M.comparison_context()
+	local state = states[tabid()]
+	if not state or vim.api.nvim_get_current_win() ~= state.winid then
+		return nil
+	end
+	local node = current_node(state)
+	local root = node and node.extra and node.extra.repo_root
+	local repos = {}
+	for _, repo in ipairs(state.lazyvcs_repo_specs or {}) do
+		if state.lazyvcs_repo_visibility and state.lazyvcs_repo_visibility[repo.root] then
+			repos[#repos + 1] = repo
+		end
+	end
+	return {
+		path = root,
+		repos = repos,
+		origin_tab = state.tabid,
+		origin_win = state.winid,
+		origin_edit_win = state.editor_winid,
+		origin_sidebar_path = state.path,
+	}
 end
 
 function M._state()
