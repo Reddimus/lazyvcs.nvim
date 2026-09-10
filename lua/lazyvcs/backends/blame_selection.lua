@@ -4,6 +4,18 @@ local util = require("lazyvcs.util")
 local M = {}
 local legacy_git = {}
 
+local function index_git_entries(raw, entries)
+	local indexed, index = {}, 0
+	for _, line in ipairs(raw) do
+		local oid, number = line:match("^(%x+)%s+%d+%s+(%d+)")
+		if oid and (#oid == 40 or #oid == 64) then
+			index = index + 1
+			indexed[tonumber(number)] = entries[index]
+		end
+	end
+	return indexed
+end
+
 function M.load(target, contents, callback)
 	local task = Task.new(callback)
 	local backends = require("lazyvcs.backends")
@@ -12,15 +24,7 @@ function M.load(target, contents, callback)
 			if task:is_active() then
 				local entries = raw and backend.parse_blame_entries(raw)
 				if entries and backend.name == "git" then
-					local indexed, index = {}, 0
-					for _, line in ipairs(raw) do
-						local oid, number = line:match("^(%x+)%s+%d+%s+(%d+)")
-						if oid and (#oid == 40 or #oid == 64) then
-							index = index + 1
-							indexed[tonumber(number)] = entries[index]
-						end
-					end
-					entries = indexed
+					entries = index_git_entries(raw, entries)
 				end
 				task:finish(entries, err)
 			end
@@ -49,14 +53,20 @@ function M.load(target, contents, callback)
 			local function historical(relpath, retry)
 				task:add(
 					process.lines(
-						{ "git", "blame", "--line-porcelain", revision, "--", relpath },
+						{ "git", "show", revision .. ":" .. relpath },
 						{ cwd = root },
-						function(raw, err)
+						function(base_lines, err)
 							if not task:is_active() then
 								return
 							end
-							if not raw then
-								if type(err) == "string" and err:find("no such path", 1, true) then
+							if not base_lines then
+								if
+									type(err) == "string"
+									and (
+										err:find("does not exist in", 1, true)
+										or err:find("exists on disk, but not in", 1, true)
+									)
+								then
 									if item.old_path and not retry then
 										return historical(item.old_path, true)
 									end
@@ -64,20 +74,63 @@ function M.load(target, contents, callback)
 								end
 								return task:finish(nil, err)
 							end
-							local base_lines = {}
-							for _, line in ipairs(raw) do
-								if line:sub(1, 1) == "\t" then
-									base_lines[#base_lines + 1] = line:sub(2)
+							local indices = {}
+							for i = 1, #base_lines do
+								indices[i] = i
+							end
+							local mapped = require("lazyvcs.backends.blame_mapping").map(
+								indices,
+								base_lines,
+								util.split_lines(contents),
+								false
+							)
+							local ranges, wanted, entries = {}, {}, {}
+							for number = target.first, target.last do
+								local old = mapped[number]
+								if old then
+									wanted[old] = number
+									local range = ranges[#ranges]
+									if range and old == range[2] + 1 then
+										range[2] = old
+									else
+										ranges[#ranges + 1] = { old, old }
+									end
+								else
+									entries[number] = { uncommitted = true, backend = "git" }
 								end
 							end
-							task:finish(
-								require("lazyvcs.backends.blame_mapping").map(
-									backend.parse_blame_entries(raw),
-									base_lines,
-									util.split_lines(contents),
-									{ uncommitted = true, backend = "git" }
-								)
-							)
+							local next_range = 1
+							local function chunk()
+								if not task:is_active() then
+									return
+								end
+								if next_range > #ranges then
+									return task:finish(entries)
+								end
+								local args = { "git", "blame", "--line-porcelain" }
+								-- Bound argv size on Windows when deletions split the selected history.
+								local ending = math.min(#ranges, next_range + 127)
+								for i = next_range, ending do
+									vim.list_extend(args, { "-L", ranges[i][1] .. "," .. ranges[i][2] })
+								end
+								next_range = ending + 1
+								vim.list_extend(args, { revision, "--", relpath })
+								task:add(process.lines(args, { cwd = root }, function(raw, blame_err)
+									if not task:is_active() then
+										return
+									end
+									if not raw then
+										return task:finish(nil, blame_err)
+									end
+									for old, entry in pairs(index_git_entries(raw, backend.parse_blame_entries(raw))) do
+										if wanted[old] then
+											entries[wanted[old]] = entry
+										end
+									end
+									chunk()
+								end))
+							end
+							chunk()
 						end
 					)
 				)

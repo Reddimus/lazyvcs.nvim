@@ -8,6 +8,48 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_blame_selection_large_git_history_uses_selected_ranges",
+			function()
+				local fixture = ctx.helpers.make_git_fixture()
+				local lines = {}
+				for i = 1, 9000 do
+					lines[i] = "original line " .. i
+				end
+				ctx.helpers.write_file(fixture.file, table.concat(lines, "\n") .. "\n")
+				ctx.helpers.exec({ "git", "add", "sample.txt" }, fixture.root)
+				ctx.helpers.exec({ "git", "commit", "-m", "large historical file" }, fixture.root)
+				local head = vim.trim(ctx.helpers.exec({ "git", "rev-parse", "HEAD" }, fixture.root))
+				local target = {
+					path = fixture.file,
+					side = "saved",
+					first = 9000,
+					last = 9000,
+					snapshot = { vcs = "git", root = fixture.root, head = head },
+					item = { relpath = "sample.txt" },
+				}
+				local function check(contents)
+					local done, entries, failure
+					require("lazyvcs.backends.blame_selection").load(target, contents, function(result, err)
+						done, entries, failure = true, result, err
+					end)
+					ctx.wait_for(function()
+						return done
+					end, "large history blame", 15000)
+					assert(entries, failure)
+					assert(entries[target.last].full_revision == head)
+				end
+				check(table.concat(lines, "\n") .. "\n")
+				target.first, target.last = 1, 2
+				check(lines[1] .. "\n" .. lines[9000] .. "\n")
+				local fragmented = {}
+				for i = 1, 260 do
+					fragmented[i] = lines[2 * i - 1]
+				end
+				target.last = #fragmented
+				check(table.concat(fragmented, "\n") .. "\n")
+			end,
+		},
+		{
 			"test_comparison_edit_fixed_origin_does_not_leak_blank_buffer",
 			function()
 				local fixture = ctx.helpers.make_git_fixture()

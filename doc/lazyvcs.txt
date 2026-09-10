@@ -275,7 +275,7 @@ arguments it uses the active visual selection or cursor line. An optional map: >
 Editor blame includes unsaved contents. Compare base panes use the pinned
 revision and original rename path. Git saved panes use the captured HEAD and
 saved preview contents; SVN saved panes map working-copy BASE to those contents.
-Older Git versions map pinned historical blame through the saved contents.
+Older Git versions map saved lines to the pinned blob before requesting blame.
 Metadata and directory previews have no line attribution. Modern Git requests only the
 selected range; SVN loads file blame once. Files are limited to 1 MiB and command
 output is bounded. Changed or closed source buffers invalidate pending results.
