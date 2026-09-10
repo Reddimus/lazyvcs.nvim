@@ -8,6 +8,29 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_svn_blame_new_unsaved_file_is_ineligible",
+			function()
+				local fixture = ctx.helpers.make_svn_fixture()
+				local done, blame, blame_err = false, nil, nil
+				local util = require("lazyvcs.util")
+				local original, calls = util.system_start, 0
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.system_start = function(...)
+					calls = calls + 1
+					return original(...)
+				end
+				require("lazyvcs.backends.svn").blame_lines_async(fixture.root .. "/.config", function(lines, err)
+					done, blame, blame_err = true, lines, err
+				end, { root = fixture.root, contents = "unsaved\n" })
+				ctx.wait_for(function()
+					return done
+				end, "new SVN file blame", 15000)
+				util.system_start = original
+				assert(blame == nil and blame_err == nil, tostring(blame_err))
+				assert(calls == 0, "unsaved new file launched SVN commands")
+			end,
+		},
+		{
 			"test_source_control_comparison_generic_row_asks_for_repository",
 			function()
 				local fixture = ctx.helpers.make_mixed_source_control_fixture()
