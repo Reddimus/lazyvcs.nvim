@@ -1148,6 +1148,9 @@ function M.cancel(path, opts)
 	opts = opts or {}
 	local root = normalize_cancel_root(path)
 	local count = jobs.cancel(function(job)
+		if job.kind == "buffer" then
+			return false
+		end
 		if root and job.root ~= root then
 			return false
 		end

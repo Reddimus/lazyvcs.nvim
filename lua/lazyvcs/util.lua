@@ -7,7 +7,7 @@ end
 local function command_options(args, opts)
 	opts = vim.tbl_extend("force", {}, opts or {})
 	if args[1] == "git" then
-		opts.env = vim.tbl_extend("force", opts.env or {}, { GIT_LITERAL_PATHSPECS = "1" })
+		opts.env = vim.tbl_extend("force", opts.env or {}, { GIT_LITERAL_PATHSPECS = "1", LC_ALL = "C" })
 	end
 	return opts
 end

@@ -259,7 +259,7 @@ local function load_inline(bufnr, path, backend)
 		live.handle = nil
 		if not lines then
 			live.entries = nil
-			live.error = err or true
+			live.error = (not err or not err:match("^Cancelled")) and (err or true) or nil
 			pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns_id, 0, -1)
 			if err and not err:match("^Cancelled") then
 				util.notify(err, vim.log.levels.DEBUG)

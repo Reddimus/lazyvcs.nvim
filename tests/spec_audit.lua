@@ -4,6 +4,77 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_git_conflict_comparison_missing_index_stages",
+			function()
+				local fixture = ctx.helpers.make_git_fixture()
+				local util = require("lazyvcs.util")
+				local oid = util.trim(ctx.helpers.exec({ "git", "rev-parse", "HEAD:sample.txt" }, fixture.root))
+				for _, stages in ipairs({ { 2, 3 }, { 1, 2 }, { 1, 3 } }) do
+					local records = { "0 " .. string.rep("0", #oid) .. "\tsample.txt" }
+					local present = {}
+					for _, stage in ipairs(stages) do
+						present[stage] = true
+						records[#records + 1] = "100644 " .. oid .. " " .. stage .. "\tsample.txt"
+					end
+					local result = vim.system({ "git", "update-index", "--index-info" }, {
+						cwd = fixture.root,
+						stdin = table.concat(records, "\n") .. "\n",
+						text = true,
+					}):wait()
+					assert(result.code == 0, result.stderr)
+					local done, loaded, failure
+					require("lazyvcs.backends.git").load_diff_target_async(
+						{ root = fixture.root, path = fixture.file, relpath = "sample.txt", section = "merge" },
+						function(value, err)
+							loaded, failure, done = value, err, true
+						end
+					)
+					wait_for(function()
+						return done
+					end)
+					assert(loaded, failure)
+					for stage, key in ipairs({ "base", "ours", "theirs" }) do
+						assert(#loaded[key].lines == (present[stage] and 3 or 0), key)
+					end
+				end
+			end,
+		},
+		{
+			"test_source_control_buffer_workers_reserve_capacity_and_cancel_scope",
+			function()
+				local jobs = require("lazyvcs.source_control.jobs")
+				for _, vcs in ipairs({ "git", "svn" }) do
+					local repo = { root = vim.fn.getcwd(), vcs = vcs }
+					local pending, started = {}, {}
+					local function start(args, _, callback)
+						local name = args[1]
+						started[name], pending[name] = true, callback
+						return {
+							kill = function()
+								callback(nil, "Cancelled", { code = 130, cancelled = true })
+							end,
+						}
+					end
+					local workers = vcs == "git" and 4 or 1
+					for i = 1, workers do
+						jobs.command(repo, "hydration", { "background" .. i }, { start = start })
+					end
+					local reserved = vcs == "git" and 2 or 1
+					for i = 1, reserved + 1 do
+						jobs.command(repo, "buffer", { "buffer" .. i }, { start = start })
+					end
+					assert(started.buffer1 and not started["buffer" .. (reserved + 1)])
+					require("lazyvcs.source_control.ops").cancel(nil, { all_owners = true })
+					assert(not started["buffer" .. (reserved + 1)], "sidebar cancellation consumed editor work")
+					pending.buffer1({ code = 0, stdout = "", stderr = "" })
+					assert(started["buffer" .. (reserved + 1)], "reserved worker was not released")
+					for i = 2, reserved + 1 do
+						pending["buffer" .. i]({ code = 0, stdout = "", stderr = "" })
+					end
+				end
+			end,
+		},
+		{
 			"test_svn_comparison_skips_vanished_untracked_file",
 			function()
 				local fixture = ctx.helpers.make_svn_fixture()
@@ -15,7 +86,7 @@ return function(ctx)
 				local original, vanished = vim.uv.fs_lstat, false
 				---@diagnostic disable-next-line: duplicate-set-field
 				vim.uv.fs_lstat = function(target, callback)
-					if target == path then
+					if vim.fs.normalize(target) == vim.fs.normalize(path) then
 						vim.fn.delete(path)
 						vanished = true
 					end

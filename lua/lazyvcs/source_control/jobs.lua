@@ -13,14 +13,20 @@ local MAX_GENERATION_KEYS = 4096
 local queues = {
 	git = {},
 	svn = {},
+	git_buffer = {},
+	svn_buffer = {},
 }
 local active = {
 	git = 0,
 	svn = 0,
+	git_buffer = 0,
+	svn_buffer = 0,
 }
 local pumping = {
 	git = false,
 	svn = false,
+	git_buffer = false,
+	svn_buffer = false,
 }
 -- Depth counter rather than a boolean: `M.cancel` can re-enter through a
 -- cancelled job's own `on_done` callback.
@@ -68,6 +74,12 @@ local function background_config()
 end
 
 local function worker_limit(vcs)
+	if vcs == "git_buffer" then
+		return 2
+	end
+	if vcs == "svn_buffer" then
+		return 1
+	end
 	local bg = background_config()
 	if vcs == "svn" then
 		return math.max(1, bg.svn_workers or 1)
@@ -151,7 +163,7 @@ local function release_worker(job)
 	end
 	job.worker_released = true
 	running[job.id] = nil
-	active[job.vcs] = math.max(0, active[job.vcs] - 1)
+	active[job.queue] = math.max(0, active[job.queue] - 1)
 end
 
 local function finish(job, status, result, err, raw)
@@ -166,7 +178,7 @@ local function finish(job, status, result, err, raw)
 
 	record(job, status, err)
 	invoke_done(job, result, err, raw or result)
-	pump(job.vcs)
+	pump(job.queue)
 	return true
 end
 
@@ -174,7 +186,7 @@ local function on_process_exit(job, result, err, raw)
 	job.process_exited = true
 	if job.finalized then
 		release_worker(job)
-		pump(job.vcs)
+		pump(job.queue)
 		return
 	end
 
@@ -229,7 +241,7 @@ local function start_job(job)
 	job.started = true
 	job.started_at = vim.uv.hrtime()
 	running[job.id] = job
-	active[job.vcs] = active[job.vcs] + 1
+	active[job.queue] = active[job.queue] + 1
 
 	local starter = job.start or util.system_start
 	local ok, handle = pcall(starter, job.args, {
@@ -363,6 +375,7 @@ function M.command(repo, kind, args, opts, on_done)
 	next_id = next_id + 1
 	next_seq = next_seq + 1
 	local vcs = repo.vcs == "svn" and "svn" or "git"
+	local queue = kind == "buffer" and (vcs .. "_buffer") or vcs
 	local root = normalize_root(repo.root)
 	local owner = opts.owner or root
 	local scope = opts.scope or kind or "command"
@@ -384,6 +397,7 @@ function M.command(repo, kind, args, opts, on_done)
 		owner = owner,
 		owner_id = opts.owner_id,
 		vcs = vcs,
+		queue = queue,
 		kind = kind or "command",
 		args = vim.deepcopy(args),
 		cwd = opts.cwd or root,
@@ -422,14 +436,14 @@ function M.command(repo, kind, args, opts, on_done)
 		end
 	end
 
-	if #queues[vcs] >= 4096 then
+	if #queues[queue] >= 4096 then
 		vim.schedule(function()
 			finish(job, "error", nil, "VCS job queue is full; retry after pending work finishes")
 		end)
 		return job.id
 	end
-	insert_job(queues[vcs], job)
-	pump(vcs)
+	insert_job(queues[queue], job)
+	pump(queue)
 	return job.id
 end
 

@@ -428,8 +428,8 @@ Source-control options:
 
 Background scheduling options, under source_control.background:
 
-    git_workers        Concurrent Git subprocesses. Default 4.
-    svn_workers        Concurrent SVN subprocesses. Default 1.
+    git_workers        Concurrent repository Git subprocesses. Default 4.
+    svn_workers        Concurrent repository SVN subprocesses. Default 1.
     status_timeout_ms  Timeout for status and hydration commands.
     remote_timeout_ms  Timeout for fetch and remote-status commands.
     switch_timeout_ms  Timeout for branch and ref switching.
@@ -437,6 +437,9 @@ Background scheduling options, under source_control.background:
                        Timeout for stage, commit, push, and other
                        mutations. Must be greater than zero.
     history_limit      Entries retained for :LazyVCS profile.
+
+Editor requests use two additional Git workers and one additional SVN worker.
+Sidebar cancellation does not cancel editor requests.
 
 Every scheduled command is cancellable and bounded. A mutation that hangs
 forever cannot be distinguished from one still in progress, so

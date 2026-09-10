@@ -442,7 +442,7 @@ function M.load_diff_target_async(target, on_done, opts)
 			task:add(process.lines({ "git", "show", "--no-ext-diff", source.object }, {
 				cwd = comparison.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-			}, function(lines, err)
+			}, function(lines, err, raw)
 				pending = pending - 1
 				if failed then
 					return
@@ -450,8 +450,18 @@ function M.load_diff_target_async(target, on_done, opts)
 				if not lines then
 					if
 						source.allow_missing
+						and raw
+						and raw.code == 128
+						and not raw.timed_out
+						and not raw.cancelled
+						and not raw.stderr_truncated
 						and type(err) == "string"
-						and (err:match("does not exist in") or err:match("exists on disk, but not in"))
+						and (
+							err:match("does not exist in")
+							or err:match("exists on disk, but not in")
+							or err:match("is in the index, but not at stage")
+							or err:match("does not exist %(neither")
+						)
 					then
 						side.lines = {}
 						return complete()

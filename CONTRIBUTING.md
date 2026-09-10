@@ -119,7 +119,9 @@ symlinks. Git rename detection has a limit of 1000 candidates. Repository
 resolution uses at most 512 cached directories and shares concurrent probes for
 one directory. Wrapped alignment takes O(log hunks + visible units) time and
 O(visible units) space. The scheduler uses a priority heap with O(log queued)
-enqueue/dequeue and a 4096-job queue limit per backend.
+enqueue/dequeue and a 4096-job limit per queue. Editor commands have separate
+queues with two Git workers and one SVN worker, so background operations cannot
+consume their capacity. Sidebar cancellation leaves editor requests running.
 
 Use disposable repositories for mutation tests. For live terminal validation,
 exercise keyboard and mouse actions in both vanilla Neovim and AstroNvim; verify
