@@ -8,6 +8,26 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_comparison_edit_fixed_origin_does_not_leak_blank_buffer",
+			function()
+				local fixture = ctx.helpers.make_git_fixture()
+				vim.cmd.edit(vim.fn.fnameescape(fixture.file))
+				local origin = vim.api.nvim_get_current_win()
+				vim.wo.winfixbuf = true
+				local before = #vim.fn.getbufinfo({ buflisted = 1 })
+				local s = assert(compare.open({ path = fixture.root, base = "HEAD" }))
+				ready(s)
+				vim.api.nvim_feedkeys("o", "x", false)
+				local editor = vim.api.nvim_get_current_win()
+				assert(editor ~= origin and vim.api.nvim_buf_get_name(0) == fixture.file)
+				local count = #vim.fn.getbufinfo({ buflisted = 1 })
+				compare.close(s)
+				vim.wo[origin].winfixbuf = false
+				vim.api.nvim_win_close(editor, true)
+				assert(count == before, "editing leaked a listed empty buffer")
+			end,
+		},
+		{
 			"test_svn_blame_new_unsaved_file_is_ineligible",
 			function()
 				local fixture = ctx.helpers.make_svn_fixture()

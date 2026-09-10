@@ -100,24 +100,6 @@ local function uncommitted_blame_lines(path, contents)
 	return out
 end
 
-local function map_blame(lines, base, current)
-	local out, b, c = {}, 1, 1
-	for _, hunk in ipairs(require("lazyvcs.diff").compute_hunks(base, current)) do
-		local first = hunk.current_count == 0 and hunk.current_start + 1 or hunk.current_start
-		while c < first do
-			out[c], b, c = lines[b], b + 1, c + 1
-		end
-		for _ = 1, hunk.current_count do
-			out[c], c = "     - - -", c + 1
-		end
-		b = hunk.base_start + hunk.base_count + (hunk.base_count == 0 and 1 or 0)
-	end
-	while c <= #current do
-		out[c], b, c = lines[b] or "     - - -", b + 1, c + 1
-	end
-	return out
-end
-
 local function load_base_lines(path, root)
 	local code, status_err = status_code(path)
 	if not code then
@@ -813,7 +795,16 @@ function M.blame_lines_async(path, on_done, opts)
 											if not ok then
 												return task:finish(nil, tostring(current))
 											end
-											task:finish(map_blame(lines, base, current), nil, root)
+											task:finish(
+												require("lazyvcs.backends.blame_mapping").map(
+													lines,
+													base,
+													current,
+													"     - - -"
+												),
+												nil,
+												root
+											)
 										end))
 									end
 								)

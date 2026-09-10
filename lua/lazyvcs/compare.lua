@@ -401,7 +401,7 @@ local function editor_window(win)
 		and vim.bo[vim.api.nvim_win_get_buf(win)].buftype == ""
 end
 
-local function origin_window(s, editing)
+local function origin_window(s, editing, buf)
 	local win = editing and s.origin_edit_win or s.origin_win
 	if valid(win) and (not editing or editor_window(win)) then
 		return win
@@ -414,9 +414,9 @@ local function origin_window(s, editing)
 			end
 		end
 		vim.api.nvim_set_current_tabpage(s.origin_tab)
-		vim.cmd("rightbelow new")
+		vim.cmd(buf and "rightbelow sbuffer " .. buf or "rightbelow new")
 	else
-		vim.cmd("tabnew")
+		vim.cmd(buf and "tab sbuffer " .. buf or "tabnew")
 		s.origin_tab = vim.api.nvim_get_current_tabpage()
 	end
 	s.origin_edit_win = vim.api.nvim_get_current_win()
@@ -493,15 +493,15 @@ local function edit(s)
 	if not vim.uv.fs_lstat(path) then
 		return util.notify("This path is deleted from the working tree", vim.log.levels.INFO)
 	end
-	local win = origin_window(s, true)
-	vim.api.nvim_set_current_win(win)
-	if vim.wo.winfixbuf or (vim.bo.modified and not vim.o.hidden) then
-		vim.cmd("rightbelow new")
-		s.origin_edit_win = vim.api.nvim_get_current_win()
-	end
 	local buf = vim.fn.bufadd(path)
 	vim.bo[buf].buflisted = true
 	vim.fn.bufload(buf)
+	local win = origin_window(s, true, buf)
+	vim.api.nvim_set_current_win(win)
+	if vim.wo.winfixbuf or (vim.bo.modified and not vim.o.hidden) then
+		vim.cmd("rightbelow sbuffer " .. buf)
+		s.origin_edit_win = vim.api.nvim_get_current_win()
+	end
 	vim.api.nvim_win_set_buf(0, buf)
 end
 local function help(s)

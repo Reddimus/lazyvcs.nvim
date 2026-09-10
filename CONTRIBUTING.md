@@ -135,4 +135,5 @@ actual buffer contents and repository state as well as the rendered screen.
 Comparison rows take O(displayed bytes) time and space per snapshot. Width
 changes use cached measurements; cursor movement does not load previews.
 Selection blame sends one bounded request chain, never a command per line. Git
-uses line ranges; SVN maps file blame through the captured buffer contents.
+uses line ranges when supported; older Git and SVN map historical blame through
+the captured contents. CI also runs native E2E with Ubuntu 22.04 Git.

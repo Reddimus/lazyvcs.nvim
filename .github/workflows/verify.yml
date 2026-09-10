@@ -314,6 +314,12 @@ jobs:
           E2E_ARTIFACT_DIR: ${{ runner.temp }}/native-e2e
         run: tests/e2e/ubuntu-native.sh
 
+      - name: Run native E2E with Ubuntu 22.04 Git
+        env:
+          UBUNTU_IMAGE: ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc
+          E2E_ARTIFACT_DIR: ${{ runner.temp }}/native-old-git-e2e
+        run: tests/e2e/ubuntu-native.sh
+
       - name: Run pinned AstroNvim v6 E2E
         env:
           E2E_ARTIFACT_DIR: ${{ runner.temp }}/astronvim-e2e
@@ -327,6 +333,7 @@ jobs:
           path: |
             ${{ runner.temp }}/native-e2e
             ${{ runner.temp }}/astronvim-e2e
+            ${{ runner.temp }}/native-old-git-e2e
           if-no-files-found: warn
           retention-days: 14
 

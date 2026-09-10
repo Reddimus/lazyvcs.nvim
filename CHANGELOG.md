@@ -23,6 +23,7 @@ and this project adheres to
 
 ### Fixed
 
+- Keep saved-pane attribution pinned on older Git versions.
 - Skip automatic SVN blame for new unsaved files without an SVN error.
 - Preserve manual widths, selection, and preview positions across refreshes and
   resizing.

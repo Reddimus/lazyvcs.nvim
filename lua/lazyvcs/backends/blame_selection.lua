@@ -2,6 +2,7 @@ local Task = require("lazyvcs.backends.task")
 local process = require("lazyvcs.backends.process")
 local util = require("lazyvcs.util")
 local M = {}
+local legacy_git = {}
 
 function M.load(target, contents, callback)
 	local task = Task.new(callback)
@@ -37,7 +38,54 @@ function M.load(target, contents, callback)
 			local base = target.side == "base"
 			local revision = base and snapshot.revision or snapshot.head
 			local path = base and (item.old_path or item.relpath) or item.relpath
+			local executable = vim.fn.exepath("git")
+			local function uncommitted()
+				local entries = {}
+				for number = target.first, target.last do
+					entries[number] = { uncommitted = true, backend = "git" }
+				end
+				task:finish(entries)
+			end
+			local function historical(relpath, retry)
+				task:add(
+					process.lines(
+						{ "git", "blame", "--line-porcelain", revision, "--", relpath },
+						{ cwd = root },
+						function(raw, err)
+							if not task:is_active() then
+								return
+							end
+							if not raw then
+								if type(err) == "string" and err:find("no such path", 1, true) then
+									if item.old_path and not retry then
+										return historical(item.old_path, true)
+									end
+									return uncommitted()
+								end
+								return task:finish(nil, err)
+							end
+							local base_lines = {}
+							for _, line in ipairs(raw) do
+								if line:sub(1, 1) == "\t" then
+									base_lines[#base_lines + 1] = line:sub(2)
+								end
+							end
+							task:finish(
+								require("lazyvcs.backends.blame_mapping").map(
+									backend.parse_blame_entries(raw),
+									base_lines,
+									util.split_lines(contents),
+									{ uncommitted = true, backend = "git" }
+								)
+							)
+						end
+					)
+				)
+			end
 			local function blame(relpath, retry)
+				if not base and legacy_git[executable] then
+					return historical(relpath, retry)
+				end
 				local args = { "git", "blame", "--line-porcelain", "-L", target.first .. "," .. target.last }
 				if not base then
 					vim.list_extend(args, { "--contents", "-" })
@@ -47,15 +95,20 @@ function M.load(target, contents, callback)
 					if not task:is_active() then
 						return
 					end
+					if
+						not base
+						and not raw
+						and type(err) == "string"
+						and err:find("cannot use --contents", 1, true)
+					then
+						legacy_git[executable] = true
+						return historical(relpath, retry)
+					end
 					if not base and not raw and type(err) == "string" and err:find("no such path", 1, true) then
 						if item.old_path and not retry then
 							return blame(item.old_path, true)
 						end
-						local entries = {}
-						for _ in ipairs(util.split_lines(contents)) do
-							entries[#entries + 1] = { uncommitted = true, backend = "git" }
-						end
-						return task:finish(entries)
+						return uncommitted()
 					end
 					finish(raw, err)
 				end))
