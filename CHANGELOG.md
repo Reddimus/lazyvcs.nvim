@@ -27,7 +27,8 @@ and this project adheres to
   alignment limits work and allocations to the visible viewports. Editor
   requests have reserved workers so sidebar commands cannot block them.
 - Conflict comparisons handle missing index stages, including add/add and
-  delete/modify conflicts. Git diagnostics use a stable locale.
+  delete/modify conflicts. Automatic signs skip unmerged index entries. Git
+  diagnostics use a stable locale.
 - Signs defer to gitsigns before loading content and reuse unchanged renders.
 - Blame and signs check both disk and buffer sizes.
 

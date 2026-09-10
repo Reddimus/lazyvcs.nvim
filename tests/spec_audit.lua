@@ -36,6 +36,14 @@ return function(ctx)
 					for stage, key in ipairs({ "base", "ours", "theirs" }) do
 						assert(#loaded[key].lines == (present[stage] and 3 or 0), key)
 					end
+					done = false
+					require("lazyvcs.backends.git").load_base_async(fixture.file, function(value, err)
+						loaded, failure, done = value, err, true
+					end)
+					wait_for(function()
+						return done
+					end)
+					assert(loaded == nil and failure == nil, failure or "unmerged index was used for automatic signs")
 				end
 			end,
 		},

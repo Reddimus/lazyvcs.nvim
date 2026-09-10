@@ -235,7 +235,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 
 		task:add(
 			process.start(
-				{ "git", "ls-files", "--error-unmatch", "--", relpath },
+				{ "git", "ls-files", "--stage", "-z", "--error-unmatch", "--", relpath },
 				{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
 				function(_, tracked_err, raw)
 					if not task:is_active() then
@@ -259,6 +259,19 @@ local function load_payload_async(path, on_done, opts, base_only)
 							payload.impl = M
 						end
 						return task:finish(payload)
+					end
+
+					if raw and (raw.stdout_truncated or raw.stderr_truncated) then
+						return task:finish(nil, "Git index output was truncated")
+					end
+					if raw and not raw.stdout:match("^%d+ %x+ 0\t") then
+						if base_only then
+							return task:finish(nil)
+						end
+						return task:finish(
+							nil,
+							"Unmerged index; open this file from the sidebar's Merge Changes section"
+						)
 					end
 
 					task:add(process.lines({ "git", "show", ":" .. relpath }, {
