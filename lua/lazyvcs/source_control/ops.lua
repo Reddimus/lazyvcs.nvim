@@ -913,7 +913,7 @@ function M.revert_file(state, node)
 	else
 		action = "svn_revert"
 		prompt = "Discard local SVN changes for " .. relpath .. " in " .. repo.name .. "?"
-		args = { "svn", "revert", "--", relpath }
+		args = { "svn", "revert", "--", util.svn_target(relpath) }
 	end
 	confirm_mutation(state, prompt, function()
 		start_simple_repo_job(
@@ -1026,7 +1026,7 @@ function M.commit_repo(state, node)
 				start_command(
 					repo,
 					"svn_commit",
-					{ "svn", "commit", "-m", message, repo.root },
+					{ "svn", "commit", "-m", message, util.svn_target(repo.root) },
 					function(result, err, raw)
 						if err then
 							return reject(err, raw)
@@ -1148,6 +1148,9 @@ function M.cancel(path, opts)
 	opts = opts or {}
 	local root = normalize_cancel_root(path)
 	local count = jobs.cancel(function(job)
+		if job.kind == "buffer" then
+			return false
+		end
 		if root and job.root ~= root then
 			return false
 		end
@@ -1323,12 +1326,18 @@ local function execute_repo_action(state, repo, action, node)
 			close_sessions = true,
 			guard_modified_buffers = true,
 			start = function(resolve, reject)
-				start_command(repo, "svn_update", { "svn", "update", repo.root }, function(result, err, raw)
-					if err then
-						return reject(err, raw)
-					end
-					resolve(result, raw)
-				end, { guard_modified_buffers = true })
+				start_command(
+					repo,
+					"svn_update",
+					{ "svn", "update", util.svn_target(repo.root) },
+					function(result, err, raw)
+						if err then
+							return reject(err, raw)
+						end
+						resolve(result, raw)
+					end,
+					{ guard_modified_buffers = true }
+				)
 			end,
 		})
 		return
@@ -1362,12 +1371,18 @@ local function execute_repo_action(state, repo, action, node)
 				close_sessions = true,
 				guard_modified_buffers = true,
 				start = function(resolve, reject)
-					start_command(repo, "svn_update", { "svn", "update", repo.root }, function(result, err, raw)
-						if err then
-							return reject(err, raw)
-						end
-						resolve(result, raw)
-					end, { guard_modified_buffers = true })
+					start_command(
+						repo,
+						"svn_update",
+						{ "svn", "update", util.svn_target(repo.root) },
+						function(result, err, raw)
+							if err then
+								return reject(err, raw)
+							end
+							resolve(result, raw)
+						end,
+						{ guard_modified_buffers = true }
+					)
 				end,
 			})
 		end

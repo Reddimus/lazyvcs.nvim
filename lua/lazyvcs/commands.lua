@@ -49,12 +49,38 @@ local function show_profile(args)
 	if #lines == 0 then
 		lines[1] = "No lazyvcs source-control jobs recorded."
 	end
-	vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO, { title = "lazyvcs source control profile" })
+	require("lazyvcs.util").show_text("lazyvcs job profile", lines)
 end
 
 -- Each entry is either a leaf (`run`) or a group of verbs (`verbs` + `default`).
 ---@type table<string, table>
 local spec = {
+	compare = {
+		desc = "Total saved comparison",
+		default = "open",
+		verbs = {
+			open = {
+				run = function(a)
+					require("lazyvcs.compare").open({ base = path_arg(a) })
+				end,
+			},
+			base = {
+				run = function()
+					require("lazyvcs.compare").base()
+				end,
+			},
+			refresh = {
+				run = function()
+					require("lazyvcs.compare").refresh()
+				end,
+			},
+			close = {
+				run = function()
+					require("lazyvcs.compare").close()
+				end,
+			},
+		},
+	},
 	sidebar = {
 		desc = "Source-control sidebar",
 		default = "toggle",

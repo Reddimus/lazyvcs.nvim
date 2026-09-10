@@ -28,7 +28,9 @@ case "${os}/${arch}" in
 		;;
 esac
 
-archive="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/${asset}"
+download_dir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/lazyvcs-nvim.XXXXXX")"
+trap 'rm -rf -- "${download_dir}"' EXIT
+archive="${download_dir}/${asset}"
 url="https://github.com/neovim/neovim/releases/download/${version}/${asset}"
 curl --fail --location --retry 5 --retry-all-errors --silent --show-error \
 	"${url}" --output "${archive}"

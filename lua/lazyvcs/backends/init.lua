@@ -16,12 +16,30 @@ local backends = { git, svn }
 -- That used to run on every call, including per-keystroke sign refreshes. Cache
 -- the answer per directory; `M.invalidate` clears it on directory changes.
 local probe_cache = {}
+local probe_order, probe_cursor = {}, 0
+local in_flight = {}
+local cache_generation = 0
+
+local function cache_put(key, value)
+	if not probe_cache[key] then
+		probe_cursor = probe_cursor % 512 + 1
+		local previous = probe_order[probe_cursor]
+		if previous then
+			probe_cache[previous] = nil
+		end
+		probe_order[probe_cursor] = key
+	end
+	probe_cache[key] = value
+end
 
 -- How long a "no working copy here" answer stays cached.
 local NEGATIVE_TTL_MS = 5000
 
 function M.invalidate()
 	probe_cache = {}
+	probe_order, probe_cursor = {}, 0
+	cache_generation = cache_generation + 1
+	in_flight = {}
 end
 
 --- Resolve the backend owning `path`.
@@ -58,11 +76,11 @@ function M.resolve(path)
 
 	if not best then
 		local err = "No Git or SVN working copy found for " .. path
-		probe_cache[key] = { err = err, at = vim.uv.now() }
+		cache_put(key, { err = err, at = vim.uv.now() })
 		return nil, nil, err
 	end
 
-	probe_cache[key] = best
+	cache_put(key, best)
 	return best.backend, best.root
 end
 
@@ -106,10 +124,31 @@ function M.resolve_async(path, on_done, opts)
 		probe_cache[key] = nil
 	end
 
-	local pending = #backends
-	local best
-	local errors = {}
+	local shared = in_flight[key]
+	if shared then
+		shared.listeners[task] = true
+	else
+		shared = { listeners = { [task] = true }, owner = Task.new(), generation = cache_generation }
+		in_flight[key] = shared
+	end
+	task:on_cancel(function()
+		shared.listeners[task] = nil
+		if next(shared.listeners) == nil then
+			shared.owner:kill()
+			if in_flight[key] == shared then
+				in_flight[key] = nil
+			end
+		end
+	end)
+	if shared.started then
+		return task
+	end
+	shared.started = true
+	local pending, best, errors = #backends, nil, {}
 	local function completed(backend, info, err)
+		if not shared.owner:is_active() then
+			return
+		end
 		if info and info.root and (not best or #info.root > #best.root) then
 			best = { backend = backend, root = info.root }
 		elseif err and err ~= "" then
@@ -119,18 +158,26 @@ function M.resolve_async(path, on_done, opts)
 		if pending > 0 then
 			return
 		end
-		if best then
-			probe_cache[key] = best
-			return task:finish(best.backend, best.root, nil)
+		if in_flight[key] == shared then
+			in_flight[key] = nil
 		end
 		local generic = "No Git or SVN working copy found for " .. path
-		local err = #errors == 0 and generic or (generic .. ": " .. table.concat(errors, "; "))
-		probe_cache[key] = { err = err, at = vim.uv.now() }
-		task:finish(nil, nil, err)
+		local failure = not best and (#errors == 0 and generic or generic .. ": " .. table.concat(errors, "; ")) or nil
+		if shared.generation == cache_generation then
+			cache_put(key, best or { err = failure, at = vim.uv.now() })
+		end
+		shared.owner:finish()
+		for listener in pairs(shared.listeners) do
+			local ok, callback_err =
+				pcall(listener.finish, listener, best and best.backend, best and best.root, failure)
+			if not ok then
+				util.notify("Repository resolution callback failed: " .. tostring(callback_err), vim.log.levels.ERROR)
+			end
+		end
+		shared.listeners = {}
 	end
-
 	for _, backend in ipairs(backends) do
-		task:add(backend.probe_async(key, function(info, err)
+		shared.owner:add(backend.probe_async(key, function(info, err)
 			completed(backend, info, err)
 		end, opts))
 	end
@@ -150,7 +197,7 @@ end
 function M.load_async(path, on_done, opts)
 	opts = opts or {}
 	local task = Task.new(on_done)
-	task:add(M.resolve_async(path, function(backend, _, err)
+	task:add(M.resolve_async(path, function(backend, root, err)
 		if not task:is_active() then
 			return
 		end
@@ -159,7 +206,7 @@ function M.load_async(path, on_done, opts)
 		end
 		task:add(backend.load_async(path, function(result, load_err)
 			task:finish(result, load_err)
-		end, opts))
+		end, vim.tbl_extend("force", opts, { root = root })))
 	end, opts))
 	return task
 end
@@ -189,7 +236,7 @@ M.revision_log = dispatch("revision_log")
 function M.load_base_async(path, on_done, opts)
 	opts = opts or {}
 	local task = Task.new(on_done)
-	task:add(M.resolve_async(path, function(backend, _, err)
+	task:add(M.resolve_async(path, function(backend, root, err)
 		if not task:is_active() then
 			return
 		end
@@ -198,7 +245,7 @@ function M.load_base_async(path, on_done, opts)
 		end
 		task:add(backend.load_base_async(path, function(result, load_err)
 			task:finish(result, load_err)
-		end, opts))
+		end, vim.tbl_extend("force", opts, { root = root })))
 	end, opts))
 	return task
 end
@@ -339,7 +386,12 @@ function M.load_diff_target_async(target, on_done, opts)
 	target = normalize_target(target)
 	local task = Task.new(on_done)
 	local function load(backend)
-		local comparison, err = backend.resolve_diff_target(target)
+		local comparison, err
+		if target.left and target.right then
+			comparison = target
+		else
+			comparison, err = backend.resolve_diff_target(target)
+		end
 		if not comparison then
 			return task:finish(nil, err)
 		end

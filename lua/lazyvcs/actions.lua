@@ -1136,7 +1136,7 @@ function M.refresh_current()
 	end
 	session.base_generation = (session.base_generation or 0) + 1
 	local generation = session.base_generation
-	session.refresh_job = backends.load_base_async(session.source_path, function(result, err)
+	local function loaded(result, err)
 		local live = state.get(session.editable_bufnr)
 		if not live or live ~= session or live.closing or live.base_generation ~= generation then
 			return
@@ -1145,6 +1145,18 @@ function M.refresh_current()
 		if not result then
 			util.notify(err or "Could not refresh the VCS comparison base", vim.log.levels.WARN)
 			return
+		end
+		if live.comparison then
+			live.comparison = result
+			result.base_label = result.left.label
+			result.base_lines = result.left.lines or {}
+			if live.readonly_comparison and util.buf_is_valid(live.editable_bufnr) then
+				vim.bo[live.editable_bufnr].modifiable = true
+				vim.bo[live.editable_bufnr].readonly = false
+				vim.api.nvim_buf_set_lines(live.editable_bufnr, 0, -1, false, result.right.lines or {})
+				vim.bo[live.editable_bufnr].modifiable = false
+				vim.bo[live.editable_bufnr].readonly = true
+			end
 		end
 		live.root = result.root
 		live.relpath = result.relpath
@@ -1158,7 +1170,12 @@ function M.refresh_current()
 			vim.bo[live.base_bufnr].readonly = true
 		end
 		refresh(live.editable_bufnr)
-	end)
+	end
+	if session.comparison then
+		session.refresh_job = backends.load_diff_target_async(session.comparison, loaded)
+	else
+		session.refresh_job = backends.load_base_async(session.source_path, loaded)
+	end
 end
 
 function M.rebalance(target)

@@ -2,140 +2,84 @@
 
 [![CI](https://github.com/Reddimus/lazyvcs.nvim/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Reddimus/lazyvcs.nvim/actions/workflows/ci.yml)
 
-`lazyvcs.nvim` brings Git and Subversion workflows into Neovim. It provides a
-source-control sidebar, an editable live diff, gutter signs, hunk actions, and
-blame without requiring Neo-tree. It works with vanilla Neovim, lazy.nvim, and
-AstroNvim on Linux, macOS, and Windows.
-
-## Features
-
-- Browse nested Git and SVN repositories in one native sidebar.
-- Stage, unstage, revert, commit, sync, and switch branches or SVN targets.
-- Edit a file beside its Git index or SVN `BASE` version.
-- Navigate, preview, and revert hunks without leaving the buffer.
-- Show inline or split blame for Git and SVN files.
-- Use installed pickers and commit-message providers when available.
-- Scan repositories in small batches and keep VCS commands off Neovim's UI
-  thread.
+Git and Subversion in Neovim: a repository sidebar, editable live diffs, branch
+comparisons, hunk actions, and blame. Works with vanilla Neovim and AstroNvim on
+Linux, macOS, and Windows. No required Lua dependencies.
 
 ## Requirements
 
-- Neovim 0.11 or newer
-- `git` for Git repositories
-- `svn` for Subversion working copies
-- A Nerd Font for sidebar icons, recommended but optional
+- Neovim 0.11 or newer.
+- `git` or `svn` for the repositories you use.
+- A Nerd Font for icons, optional.
 
 ## Install
 
-Add this lazy.nvim spec, restart Neovim, then run `:checkhealth lazyvcs`:
+With lazy.nvim:
 
 ```lua
 {
   "Reddimus/lazyvcs.nvim",
   main = "lazyvcs",
   event = { "BufReadPost", "BufNewFile" },
-  cmd = { "LazyVCS" },
-  keys = {
-    { "<leader>vs", "<cmd>LazyVCS<cr>", desc = "Toggle VCS sidebar" },
-    { "<leader>vo", "<cmd>LazyVCS diff open<cr>", desc = "Open VCS diff" },
-    { "<leader>vr", "<cmd>LazyVCS hunk revert<cr>", desc = "Revert VCS hunk" },
-    { "]v", "<cmd>LazyVCS hunk next<cr>", desc = "Next VCS hunk" },
-    { "[v", "<cmd>LazyVCS hunk prev<cr>", desc = "Previous VCS hunk" },
-  },
+  cmd = "LazyVCS",
   opts = {},
 }
 ```
 
-For AstroNvim, save the same spec as `lua/plugins/lazyvcs.lua`. The plugin has
-no required Lua dependencies. It detects `gitsigns.nvim`, `snacks.nvim`,
-`fzf-lua`, and supported commit-message providers if they are already present.
+For AstroNvim, put `return { ... }` around this spec and save it as
+`lua/plugins/lazyvcs.lua`. Restart Neovim and run `:checkhealth lazyvcs`.
 
-## First run
+Without a plugin manager, clone the repository into
+`stdpath("data")/site/pack/plugins/start/lazyvcs.nvim` and add
+`require("lazyvcs").setup()` to your `init.lua`.
 
-Start Neovim from inside a Git or SVN working copy, open a file, then try:
+## Start here
 
-```vim
-:LazyVCS diff open
-:LazyVCS blame toggle
-:LazyVCS
-```
+Open a file inside a Git or SVN working copy:
 
-The live diff puts the VCS base on the left and the editable file on the right.
-Normal undo works after a hunk revert.
+| Command                 | What it does                                       |
+| ----------------------- | -------------------------------------------------- |
+| `:LazyVCS`              | Browse repositories, changes, and actions          |
+| `:LazyVCS diff open`    | Edit beside the Git index or SVN BASE              |
+| `:LazyVCS compare`      | Review total saved changes against a chosen base   |
+| `:LazyVCS hunk next`    | Jump to the next hunk; `hunk prev` moves back      |
+| `:LazyVCS hunk revert`  | Revert the current hunk; normal undo still works   |
+| `:LazyVCS blame toggle` | Toggle inline blame; `blame split` shows all lines |
 
-## Main commands
+Press `<Tab>` after `:LazyVCS ` for command completion. In the sidebar, `s` or
+`.` opens repository actions, `c` commits, `b` switches branches or SVN targets,
+`R` refreshes, `?` shows help, and `q` closes it.
 
-| Command                            | Purpose                              |
-| ---------------------------------- | ------------------------------------ |
-| `:LazyVCS`                         | Toggle the source-control sidebar    |
-| `:LazyVCS sidebar open [path]`     | Open the sidebar at a workspace root |
-| `:LazyVCS diff open`               | Open the current file's live diff    |
-| `:LazyVCS diff close`              | Close the live diff                  |
-| `:LazyVCS hunk next` / `hunk prev` | Move between hunks                   |
-| `:LazyVCS hunk revert`             | Revert the hunk under the cursor     |
-| `:LazyVCS blame toggle`            | Toggle inline Git or SVN blame       |
-| `:LazyVCS blame split`             | Toggle a full-file blame split       |
-| `:LazyVCS files`                   | Pick from changed files              |
-| `:LazyVCS health`                  | Run the health check                 |
+## Compare a branch
 
-Press `<Tab>` after `:LazyVCS ` to complete commands. Inside the sidebar, press
-`s` or `.` for repository actions, `c` to commit, `b` to switch, `R` to refresh,
-and `q` to close. See `:help lazyvcs-mappings` for the full list.
+Run `:LazyVCS compare` and choose a Git branch/commit or SVN `URL@revision`. The
+choice is remembered for the current worktree and branch.
+
+Git compares the common ancestor with your saved working tree, including
+committed, staged, unstaged, and nonignored untracked changes. SVN compares the
+selected repository revision with the working copy. Save buffers before
+refreshing to include their latest edits.
+
+The comparison tab has a file list and two read-only panes. Press `Enter` to
+preview, `e` to edit the real file, `R` to refresh, `b` to change the base, or
+`q` to close. Binary and oversized files remain listed without a text preview.
 
 ## Configure
 
-Defaults are conservative. Replace `opts = {}` in the install spec with this
-example to refresh remotes when the sidebar opens and keep blame off until
-requested without persisting the toggle:
+Keep inline blame off between sessions:
 
 ```lua
-opts = {
-  blame = { mode = "inline", persist = false },
-  source_control = {
-    remote_refresh = "on_open",
-    scan_depth = 3,
-    show_clean = false,
-  },
-}
+opts = { blame = { persist = false } }
 ```
 
-Use `:help lazyvcs-configuration` for every option. Unknown or removed options
-produce one startup warning so stale configuration does not fail silently.
+Defaults avoid remote refreshes unless requested. Git signs are delegated to
+`gitsigns.nvim` when installed. Optional pickers and commit-message providers
+are detected automatically. See `:help lazyvcs-configuration` for all options.
 
-Before any worktree-changing repository action, LazyVCS checks modified buffers
-that point into the repository, including symlink aliases. Save or discard those
-changes before continuing. Push-only actions and a new branch at the current
-`HEAD` remain available because they do not rewrite files.
+## Help and contribute
 
-## Where things live
-
-| Path                 | Contents                             |
-| -------------------- | ------------------------------------ |
-| `lua/lazyvcs/`       | Plugin code and VCS backends         |
-| `plugin/lazyvcs.lua` | Neovim command entry point           |
-| `doc/lazyvcs.txt`    | Complete user help                   |
-| `tests/`             | Unit, integration, UI, and E2E tests |
-| `CONTRIBUTING.md`    | Development workflow and conventions |
-| `CHANGELOG.md`       | Release notes                        |
-| `SECURITY.md`        | Security reporting policy            |
-
-## Develop
-
-Run the main local checks from the repository root:
-
-```sh
-npm ci && npm run format:md:check && npm run lint:md && npm run lint:links
-stylua --check lua tests && nvim --headless -u NONE -l tests/run.lua
-tests/minitest.sh
-```
-
-The full cross-platform gate and tool versions are documented in
-[`CONTRIBUTING.md`](CONTRIBUTING.md). CI also tests the supported Neovim
-versions and the AstroNvim integration.
-
-## More help
-
-- Run `:help lazyvcs` for features, mappings, and configuration.
-- Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before changing the plugin.
-- Check [`CHANGELOG.md`](CHANGELOG.md) before upgrading.
-- Report security issues through [`SECURITY.md`](SECURITY.md).
+- `:help lazyvcs` covers commands, mappings, and configuration.
+- [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, checks, architecture, and
+  releases.
+- [CHANGELOG.md](CHANGELOG.md) lists changes.
+- [SECURITY.md](SECURITY.md) explains private security reporting.

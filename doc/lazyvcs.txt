@@ -56,6 +56,10 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
                       Control the live diff view for the current file.
                       Defaults to `toggle`.
 
+:LazyVCS compare {open [base], base, refresh, close}
+                      Review total saved changes. Defaults to `open`.
+                      See |lazyvcs-comparison|.
+
 :LazyVCS hunk {next, prev, revert}
                       Move between hunks or revert the hunk under the cursor.
                       Defaults to `next`.
@@ -85,6 +89,49 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
 All subcommands work in both Git and SVN working copies; the backend is
 detected from the current file. See |lazyvcs-notes| for the base each backend
 compares against.
+
+==============================================================================
+TOTAL COMPARISON                                           *lazyvcs-comparison*
+
+:LazyVCS compare prompts for a Git branch/commit or an SVN URL@revision.
+Git uses the common ancestor of HEAD and the chosen base. Its net comparison
+includes committed, staged, and saved working-tree changes. SVN compares the
+chosen repository revision to the saved working copy. Neither includes unsaved
+buffers. Nonignored untracked files are included by default.
+
+A base choice is remembered per worktree and branch, or per SVN working-copy URL.
+Detached Git choices last only for the comparison session. Each refresh pins
+Git's merge base or SVN's numeric revision. No Git fetch happens automatically.
+Unborn HEAD, missing history, unrelated histories, and multiple merge bases
+produce an explanation instead of selecting an arbitrary base.
+
+The review tab owns its sidebar and read-only preview buffers. Narrow windows
+stack the preview panes vertically:
+    Enter       Preview the selected saved file.
+    e           Open the real file in the original editing window.
+    R           Refresh changes and resolve the base again.
+    b           Choose another base.
+    p           Show metadata or SVN property changes.
+    ?           Show help.
+    q           Close the review and return to the original window.
+
+Git line totals cover paths with available numeric statistics. Binary,
+untracked, recreated, and SVN paths may have no line counts; the header reports
+that number separately. Preview content is loaded on demand, capped at 1 MiB.
+Binary and oversized paths remain listed. SVN property changes have a property
+patch preview for directory/property-only entries.
+
+Lua API: >lua
+    require("lazyvcs").compare({
+      path = "/path/to/worktree", -- optional; defaults to current file/cwd
+      base = "main",            -- optional; prompts or uses remembered base
+      include_untracked = true,
+    })
+    require("lazyvcs").compare_refresh()
+    require("lazyvcs").compare_close()
+<
+Blame and signs skip buffers whose saved or in-memory size exceeds
+`signs.max_file_bytes`. Ignored/untracked files have no automatic blame warning.
 
 ==============================================================================
 MAPPINGS                                                     *lazyvcs-mappings*
@@ -337,7 +384,8 @@ Git/SVN blame options:
     blame.loading_text Muted text shown while slow blame is still loading.
     blame.uncommitted_text
                        Muted text for local/uncommitted blame rows.
-    blame.format       Inline format with {author}, {date}, and {revision}.
+    blame.format       Inline format with {author}, {date}, {revision}, and
+                       {revision_label}. The label adds 'r' only for SVN.
     blame.max_width    Maximum inline blame text width.
     blame.split_min_width
                        Minimum full-file blame split width.
@@ -380,8 +428,8 @@ Source-control options:
 
 Background scheduling options, under source_control.background:
 
-    git_workers        Concurrent Git subprocesses. Default 4.
-    svn_workers        Concurrent SVN subprocesses. Default 1.
+    git_workers        Concurrent repository Git subprocesses. Default 4.
+    svn_workers        Concurrent repository SVN subprocesses. Default 1.
     status_timeout_ms  Timeout for status and hydration commands.
     remote_timeout_ms  Timeout for fetch and remote-status commands.
     switch_timeout_ms  Timeout for branch and ref switching.
@@ -389,6 +437,9 @@ Background scheduling options, under source_control.background:
                        Timeout for stage, commit, push, and other
                        mutations. Must be greater than zero.
     history_limit      Entries retained for :LazyVCS profile.
+
+Editor requests use two additional Git workers and one additional SVN worker.
+Sidebar cancellation does not cancel editor requests.
 
 Every scheduled command is cancellable and bounded. A mutation that hangs
 forever cannot be distinguished from one still in progress, so

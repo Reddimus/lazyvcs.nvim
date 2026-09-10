@@ -691,11 +691,29 @@ local function setup_buffer(state)
 		M.dispatch("open")
 	end, "Open lazyvcs node")
 	bind(bufnr, "l", function()
+		local node = current_node(state)
+		if node and node_can_expand(node) and state.lazyvcs_expanded[node.id] then
+			return
+		end
 		M.dispatch("open")
 	end, "Open lazyvcs node")
 	bind(bufnr, "h", function()
-		toggle_node(state)
+		local node = current_node(state)
+		if node and node_can_expand(node) and state.lazyvcs_expanded[node.id] then
+			toggle_node(state)
+		end
 	end, "Close lazyvcs node")
+	bind(bufnr, "?", function()
+		require("lazyvcs.util").show_text("Source control help", {
+			"Enter/l: open or expand   h: collapse   q: close",
+			"Space/Tab: repository visibility   H: show clean repositories",
+			"R: refresh   X: cancel repository operation",
+			"s/.: repository actions   b: switch branch or target",
+			"c: commit   e: edit commit message or auto-fit width",
+			"ga: stage   gu: unstage   gr: revert   gm: generate commit message",
+			"v: tree/list   S: change sort order",
+		})
+	end, "Show source control help")
 	bind(bufnr, "<space>", function()
 		M.dispatch("toggle_repo_visibility")
 	end, "Toggle repository visibility")

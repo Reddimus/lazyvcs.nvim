@@ -480,7 +480,7 @@ function M.collect_async(repo, run_command, on_done, opts)
 		return task
 	end
 
-	run({ "svn", "info", "--xml", repo.root }, { kind = "switch" }, function(info_result, info_err)
+	run({ "svn", "info", "--xml", util.svn_target(repo.root) }, { kind = "switch" }, function(info_result, info_err)
 		if not info_result then
 			return finish(nil, info_err)
 		end

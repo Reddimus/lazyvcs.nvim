@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 UBUNTU_IMAGE="${UBUNTU_IMAGE:-ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90}"
-NVIM_VERSION="${NVIM_VERSION:-v0.12.4}"
-NVIM_SHA256="${NVIM_SHA256-012bf3fcac5ade43914df3f174668bf64d05e049a4f032a388c027b1ebd78628}"
+NVIM_VERSION="${NVIM_VERSION:-v0.12.5}"
+NVIM_SHA256="${NVIM_SHA256-bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875}"
 
 if ! command -v docker >/dev/null 2>&1; then
 	printf 'docker is required for the native E2E test\n' >&2

@@ -51,6 +51,14 @@ if not vim.env.LAZYVCS_TEST_GROUP or vim.env.LAZYVCS_TEST_GROUP == "" then
 end
 
 vim.opt.runtimepath:prepend(repo_root)
+local test_state_dir = vim.fn.tempname()
+vim.env.XDG_STATE_HOME = test_state_dir
+vim.api.nvim_create_autocmd("VimLeavePre", {
+	once = true,
+	callback = function()
+		vim.fn.delete(test_state_dir, "rf")
+	end,
+})
 package.path = table.concat({
 	repo_root .. "/lua/?.lua",
 	repo_root .. "/lua/?/init.lua",

@@ -121,7 +121,7 @@ local function supported_buffer(bufnr)
 		return nil
 	end
 	local path = util.buf_path(bufnr)
-	if not path or util.file_size(path) > opts().max_file_bytes then
+	if not path or math.max(util.file_size(path), util.buffer_size(bufnr)) > opts().max_file_bytes then
 		return nil
 	end
 
@@ -159,6 +159,12 @@ local function render(bufnr)
 	if not state or not util.buf_is_valid(bufnr) then
 		return
 	end
+	local tick = vim.api.nvim_buf_get_changedtick(bufnr)
+	if state.rendered_tick == tick and state.rendered_base == state.base_lines then
+		return
+	end
+	state.rendered_tick = tick
+	state.rendered_base = state.base_lines
 
 	state.hunks = diff.compute_hunks(state.base_lines, util.get_buf_lines(bufnr))
 	vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
@@ -214,6 +220,14 @@ function M.refresh(bufnr, reload_base, on_ready)
 	end
 
 	local state = ensure_state(bufnr, path)
+	local cached_backend = backends.resolve_cached(path)
+	if cached_backend and defers_to_gitsigns(cached_backend.name) then
+		clear(bufnr)
+		if on_ready then
+			on_ready(nil, "Git signs are delegated to gitsigns.nvim")
+		end
+		return
+	end
 	if not reload_base and state.loaded then
 		render(bufnr)
 		if on_ready then
@@ -228,8 +242,8 @@ function M.refresh(bufnr, reload_base, on_ready)
 	state.generation = state.generation + 1
 	local generation = state.generation
 	state.loading = true
-	local job
-	job = backends.load_base_async(path, function(result, err)
+	local job = require("lazyvcs.backends.task").new()
+	local function loaded(result, err)
 		local live = buffers[bufnr]
 		if not live or live.generation ~= generation or not util.buf_is_valid(bufnr) then
 			return
@@ -238,19 +252,16 @@ function M.refresh(bufnr, reload_base, on_ready)
 		live.loading = false
 		if not result then
 			clear(bufnr)
-			if err and err:match("tracked") == nil then
+			if
+				err
+				and err:match("tracked") == nil
+				and not err:match("No Git or SVN working copy found")
+				and not err:match("^Cancelled")
+			then
 				util.notify(err, vim.log.levels.DEBUG)
 			end
 			if on_ready then
 				on_ready(nil, err)
-			end
-			return
-		end
-		local backend = backends.resolve_cached(path)
-		if backend and defers_to_gitsigns(backend.name) then
-			clear(bufnr)
-			if on_ready then
-				on_ready(nil, "Git signs are delegated to gitsigns.nvim")
 			end
 			return
 		end
@@ -263,7 +274,23 @@ function M.refresh(bufnr, reload_base, on_ready)
 		if on_ready then
 			on_ready(live)
 		end
-	end)
+	end
+	job:add(backends.resolve_async(path, function(backend, _, err)
+		if not job:is_active() then
+			return
+		end
+		if not backend then
+			return loaded(nil, err)
+		end
+		if defers_to_gitsigns(backend.name) then
+			clear(bufnr)
+			if on_ready then
+				on_ready(nil, "Git signs are delegated to gitsigns.nvim")
+			end
+			return
+		end
+		job:add(backends.load_base_async(path, loaded))
+	end))
 	state.job = job
 	return job
 end

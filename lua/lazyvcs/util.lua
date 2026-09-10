@@ -1,5 +1,28 @@
 local M = {}
 
+function M.svn_target(path, revision)
+	return path .. "@" .. (revision and tostring(revision) or "")
+end
+
+local function command_options(args, opts)
+	opts = vim.tbl_extend("force", {}, opts or {})
+	if args[1] == "git" then
+		opts.env = vim.tbl_extend("force", opts.env or {}, { GIT_LITERAL_PATHSPECS = "1", LC_ALL = "C" })
+	end
+	return opts
+end
+
+function M.show_text(title, lines)
+	vim.cmd("botright new")
+	local buf = vim.api.nvim_get_current_buf()
+	vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
+	vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+	vim.bo[buf].modifiable, vim.bo[buf].readonly = false, true
+	vim.wo.winbar = title:gsub("%%", "%%%%")
+	vim.keymap.set("n", "q", "<Cmd>close<CR>", { buffer = buf, silent = true })
+	return buf
+end
+
 function M.notify(msg, level)
 	vim.notify(msg, level or vim.log.levels.INFO, { title = "lazyvcs.nvim" })
 end
@@ -51,7 +74,7 @@ function M.spawn_error(args, err)
 end
 
 function M.system_result(args, opts)
-	opts = vim.tbl_extend("keep", opts or {}, { text = true })
+	opts = vim.tbl_extend("keep", command_options(args, opts), { text = true })
 	local timeout_ms = opts.timeout or M.SYNC_TIMEOUT_MS
 	opts.timeout = nil
 
@@ -91,7 +114,7 @@ function M.system(args, opts)
 end
 
 function M.system_start(args, opts, on_exit)
-	opts = vim.tbl_extend("force", {}, opts or {})
+	opts = command_options(args, opts)
 	local timeout_ms = opts.timeout_ms or opts.timeout
 	local output_limit = math.max(256, math.floor(opts.output_limit_bytes or opts.output_limit or 4 * 1024 * 1024))
 	local kill_grace_ms = math.max(0, math.floor(opts.kill_grace_ms or 1000))
@@ -363,6 +386,9 @@ function M.system_lines_start(args, opts, on_exit)
 		if err then
 			return on_exit(nil, err, raw)
 		end
+		if result.stdout_truncated or result.stderr_truncated then
+			return on_exit(nil, "Command output was truncated; refusing incomplete contents", raw)
+		end
 		on_exit(M.split_lines(result.stdout), nil, raw)
 	end)
 end
@@ -511,6 +537,10 @@ function M.buf_path(bufnr)
 		return nil
 	end
 	return vim.fs.normalize(name)
+end
+
+function M.buffer_size(bufnr)
+	return vim.api.nvim_buf_get_offset(bufnr, vim.api.nvim_buf_line_count(bufnr))
 end
 
 function M.file_size(path)

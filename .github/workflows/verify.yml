@@ -23,8 +23,8 @@ concurrency:
 
 env:
   MINI_TEST_COMMIT: 2df201d9b217bc0ad54e5d077fc4c228e6e4ef96
-  NVIM_STABLE: v0.12.4
-  NVIM_STABLE_LINUX_SHA256: 012bf3fcac5ade43914df3f174668bf64d05e049a4f032a388c027b1ebd78628
+  NVIM_STABLE: v0.12.5
+  NVIM_STABLE_LINUX_SHA256: bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875
 
 jobs:
   static:
@@ -142,8 +142,8 @@ jobs:
             sha256: fe0a5bc79e64c5e4d9f844cd96157ebd3919ef1343b329e9ebc3f455924cc7d6
           - version: v0.11.7
             sha256: 38a7c6317f94503841096c00e8fde05ef04b9472fc9d7d62b6e033cecd6f7991
-          - version: v0.12.4
-            sha256: 012bf3fcac5ade43914df3f174668bf64d05e049a4f032a388c027b1ebd78628
+          - version: v0.12.5
+            sha256: bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875
     steps:
       - name: Checkout exact revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -191,8 +191,8 @@ jobs:
         include:
           - version: v0.11.7
             sha256: 7b10e6e08b14bf256422b72cfe706ef0452fd9c0a40e138426e1af09803d697f
-          - version: v0.12.4
-            sha256: 9fc3572829ffd13debb6e32555da2c8cc02555568260a9fc4cf1f65bbcca319c
+          - version: v0.12.5
+            sha256: de8625ba8cf65ebf40eb80a388ba1ec8e9c15b30218821e2c639119b05920de1
     steps:
       - name: Checkout exact revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -262,7 +262,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   macos:
-    name: macOS / Neovim 0.12.4
+    name: macOS / Neovim 0.12.5
     runs-on: macos-14
     timeout-minutes: 35
     steps:
@@ -278,11 +278,11 @@ jobs:
       - name: Install Neovim
         run: |
           case "$(uname -m)" in
-            arm64) sha256="51ab83afa66d663627c2ab1be43209b0f4e81360d4598b53efaa4d8195f24c89" ;;
-            x86_64) sha256="03fe16f8dd9f1e9eaf52d5e294913a39917b9e2faea30d7fb0fb385fbd36fe59" ;;
+            arm64) sha256="65fb000099e47ca1b762584c484cc833f40e30851a0ec450d4174e16317c1f9b" ;;
+            x86_64) sha256="81f4518622cb059b450ee2e498c6a1082a222f6bd89589de5bbcf0c6a68aa3fd" ;;
             *) echo "unsupported macOS architecture" >&2; exit 2 ;;
           esac
-          tests/ci/install-neovim.sh v0.12.4 "${sha256}" "${RUNNER_TEMP}/nvim"
+          tests/ci/install-neovim.sh v0.12.5 "${sha256}" "${RUNNER_TEMP}/nvim"
 
       - name: Configure Git identity
         run: |

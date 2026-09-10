@@ -13,14 +13,20 @@ local MAX_GENERATION_KEYS = 4096
 local queues = {
 	git = {},
 	svn = {},
+	git_buffer = {},
+	svn_buffer = {},
 }
 local active = {
 	git = 0,
 	svn = 0,
+	git_buffer = 0,
+	svn_buffer = 0,
 }
 local pumping = {
 	git = false,
 	svn = false,
+	git_buffer = false,
+	svn_buffer = false,
 }
 -- Depth counter rather than a boolean: `M.cancel` can re-enter through a
 -- cancelled job's own `on_done` callback.
@@ -35,11 +41,45 @@ local next_id = 0
 local next_seq = 0
 local pump
 
+local function before(a, b)
+	return a.priority > b.priority or (a.priority == b.priority and a.seq < b.seq)
+end
+
+local function sift_down(queue, index)
+	while index * 2 <= #queue do
+		local child = index * 2
+		if child < #queue and before(queue[child + 1], queue[child]) then
+			child = child + 1
+		end
+		if not before(queue[child], queue[index]) then
+			break
+		end
+		queue[index], queue[child] = queue[child], queue[index]
+		index = child
+	end
+end
+
+local function pop_job(queue)
+	local first = queue[1]
+	local last = table.remove(queue)
+	if #queue > 0 then
+		queue[1] = last
+		sift_down(queue, 1)
+	end
+	return first
+end
+
 local function background_config()
 	return config.get().source_control.background or {}
 end
 
 local function worker_limit(vcs)
+	if vcs == "git_buffer" then
+		return 2
+	end
+	if vcs == "svn_buffer" then
+		return 1
+	end
 	local bg = background_config()
 	if vcs == "svn" then
 		return math.max(1, bg.svn_workers or 1)
@@ -123,7 +163,7 @@ local function release_worker(job)
 	end
 	job.worker_released = true
 	running[job.id] = nil
-	active[job.vcs] = math.max(0, active[job.vcs] - 1)
+	active[job.queue] = math.max(0, active[job.queue] - 1)
 end
 
 local function finish(job, status, result, err, raw)
@@ -138,7 +178,7 @@ local function finish(job, status, result, err, raw)
 
 	record(job, status, err)
 	invoke_done(job, result, err, raw or result)
-	pump(job.vcs)
+	pump(job.queue)
 	return true
 end
 
@@ -146,7 +186,7 @@ local function on_process_exit(job, result, err, raw)
 	job.process_exited = true
 	if job.finalized then
 		release_worker(job)
-		pump(job.vcs)
+		pump(job.queue)
 		return
 	end
 
@@ -201,7 +241,7 @@ local function start_job(job)
 	job.started = true
 	job.started_at = vim.uv.hrtime()
 	running[job.id] = job
-	active[job.vcs] = active[job.vcs] + 1
+	active[job.queue] = active[job.queue] + 1
 
 	local starter = job.start or util.system_start
 	local ok, handle = pcall(starter, job.args, {
@@ -244,7 +284,7 @@ pump = function(vcs)
 	end
 	pumping[vcs] = true
 	while active[vcs] < worker_limit(vcs) and #queues[vcs] > 0 do
-		local job = table.remove(queues[vcs], 1)
+		local job = pop_job(queues[vcs])
 		if not job.finalized then
 			start_job(job)
 		end
@@ -292,13 +332,16 @@ local function set_latest_generation(owner, scope, generation)
 end
 
 local function insert_job(queue, job)
-	for index, queued in ipairs(queue) do
-		if job.priority > queued.priority then
-			table.insert(queue, index, job)
-			return
-		end
-	end
 	queue[#queue + 1] = job
+	local index = #queue
+	while index > 1 do
+		local parent = math.floor(index / 2)
+		if not before(queue[index], queue[parent]) then
+			break
+		end
+		queue[index], queue[parent] = queue[parent], queue[index]
+		index = parent
+	end
 end
 
 -- Scheduler owner keys are derived from this, so it must agree with the
@@ -332,6 +375,7 @@ function M.command(repo, kind, args, opts, on_done)
 	next_id = next_id + 1
 	next_seq = next_seq + 1
 	local vcs = repo.vcs == "svn" and "svn" or "git"
+	local queue = kind == "buffer" and (vcs .. "_buffer") or vcs
 	local root = normalize_root(repo.root)
 	local owner = opts.owner or root
 	local scope = opts.scope or kind or "command"
@@ -353,6 +397,7 @@ function M.command(repo, kind, args, opts, on_done)
 		owner = owner,
 		owner_id = opts.owner_id,
 		vcs = vcs,
+		queue = queue,
 		kind = kind or "command",
 		args = vim.deepcopy(args),
 		cwd = opts.cwd or root,
@@ -391,8 +436,14 @@ function M.command(repo, kind, args, opts, on_done)
 		end
 	end
 
-	insert_job(queues[vcs], job)
-	pump(vcs)
+	if #queues[queue] >= 4096 then
+		vim.schedule(function()
+			finish(job, "error", nil, "VCS job queue is full; retry after pending work finishes")
+		end)
+		return job.id
+	end
+	insert_job(queues[queue], job)
+	pump(queue)
 	return job.id
 end
 
@@ -415,6 +466,9 @@ function M.cancel(filter, reason)
 				end
 			end
 			queues[vcs] = kept
+			for index = math.floor(#kept / 2), 1, -1 do
+				sift_down(kept, index)
+			end
 		end
 		for _, job in pairs(running) do
 			local ok, matches = pcall(filter, job)

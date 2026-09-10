@@ -1,6 +1,6 @@
 local run_file = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p")
 local repo_root = vim.fn.fnamemodify(run_file, ":h:h")
-local mini_path = vim.env.MINI_TEST_PATH or (repo_root .. "/deps/mini.nvim")
+local mini_path = vim.env.MINI_TEST_PATH or (repo_root .. "/deps/mini.nvim-v0.18.0")
 
 vim.opt.runtimepath:prepend(mini_path)
 package.path = table.concat({

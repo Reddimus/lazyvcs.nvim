@@ -301,8 +301,9 @@ function M.discover_async(root, max_depth, on_done, opts)
 		end, { timeout_ms = opts.timeout_ms }))
 	end
 
-	local function step()
-		if task.cancelled or task.done then
+	local step
+	step = function()
+		if not task:is_active() then
 			return
 		end
 		local consumed = 0
@@ -315,36 +316,39 @@ function M.discover_async(root, max_depth, on_done, opts)
 					table.remove(stack)
 				else
 					seen[frame.root] = true
-					local kind = repo_kind(frame.root)
-					if kind then
-						repos[#repos + 1] = {
-							root = canonical_root(frame.root),
-							name = basename(frame.root),
-							vcs = kind,
-							order = #repos + 1,
-						}
-					end
-					if frame.depth >= max_depth then
-						table.remove(stack)
-					else
-						frame.scanner = uv.fs_scandir(frame.root)
-						if not frame.scanner then
-							table.remove(stack)
-						end
-					end
+					frame.children = {}
+					uv.fs_scandir(frame.root, function(_, scanner)
+						vim.schedule(function()
+							if not task:is_active() then
+								return
+							end
+							frame.scanner = scanner
+							if not scanner then
+								table.remove(stack)
+							end
+							step()
+						end)
+					end)
+					return
 				end
-				consumed = consumed + 1
 			else
 				local name, entry_type = uv.fs_scandir_next(frame.scanner)
 				consumed = consumed + 1
 				if not name then
+					if frame.kind then
+						repos[#repos + 1] =
+							{ root = frame.root, name = basename(frame.root), vcs = frame.kind, order = #repos + 1 }
+					end
 					table.remove(stack)
-				elseif entry_type == "directory" and name ~= ".git" and name ~= ".svn" then
-					stack[#stack + 1] = {
-						root = join(frame.root, name),
-						depth = frame.depth + 1,
-						entered = false,
-					}
+					for index = #frame.children, 1, -1 do
+						stack[#stack + 1] = { root = frame.children[index], depth = frame.depth + 1, entered = false }
+					end
+				elseif name == ".git" then
+					frame.kind = "git"
+				elseif name == ".svn" and entry_type == "directory" then
+					frame.kind = frame.kind or "svn"
+				elseif entry_type == "directory" and frame.depth < max_depth then
+					frame.children[#frame.children + 1] = join(frame.root, name)
 				end
 			end
 		end
@@ -1006,7 +1010,10 @@ function M.load_repo_summary_async(repo, opts, run_command, on_done)
 				run_command(
 					{ "git", "remote" },
 					{ kind = "remote", timeout_ms = opts.status_timeout_ms },
-					function(remotes)
+					function(remotes, remote_err)
+						if not remotes then
+							return on_done(nil, remote_err)
+						end
 						local remotes_truncated_err = truncated_output_error(remotes, "Git remote list")
 						if remotes_truncated_err then
 							return on_done(nil, remotes_truncated_err)
@@ -1018,29 +1025,34 @@ function M.load_repo_summary_async(repo, opts, run_command, on_done)
 							{ "git", "fetch", "--all", "--prune", "--quiet" },
 							{ kind = "remote", timeout_ms = opts.remote_timeout_ms },
 							function(_, fetch_err)
-								run_command({
-									"git",
-									"status",
-									"--branch",
-									"--porcelain=v1",
-									"--untracked-files=all",
-									"--ignored=no",
-								}, { kind = "summary", timeout_ms = opts.status_timeout_ms }, function(
-									refreshed
-								)
-									local refreshed_truncated_err = truncated_output_error(refreshed, "Git status")
-									if refreshed_truncated_err then
-										return on_done(nil, refreshed_truncated_err)
-									end
-									on_done(
-										build_git_summary(
-											repo,
-											opts,
-											refreshed and refreshed.stdout or status.stdout,
-											fetch_err
+								run_command(
+									{
+										"git",
+										"status",
+										"--branch",
+										"--porcelain=v1",
+										"--untracked-files=all",
+										"--ignored=no",
+									},
+									{ kind = "summary", timeout_ms = opts.status_timeout_ms },
+									function(refreshed, refresh_err)
+										if not refreshed then
+											return on_done(nil, refresh_err)
+										end
+										local refreshed_truncated_err = truncated_output_error(refreshed, "Git status")
+										if refreshed_truncated_err then
+											return on_done(nil, refreshed_truncated_err)
+										end
+										on_done(
+											build_git_summary(
+												repo,
+												opts,
+												refreshed and refreshed.stdout or status.stdout,
+												fetch_err
+											)
 										)
-									)
-								end)
+									end
+								)
 							end
 						)
 					end
@@ -1054,7 +1066,7 @@ function M.load_repo_summary_async(repo, opts, run_command, on_done)
 	if opts.remote_refresh then
 		args[#args + 1] = "-u"
 	end
-	args[#args + 1] = repo.root
+	args[#args + 1] = util.svn_target(repo.root)
 	run_command(args, {
 		kind = opts.remote_refresh and "remote" or "summary",
 		timeout_ms = opts.remote_refresh and opts.remote_timeout_ms or opts.status_timeout_ms,
@@ -1067,9 +1079,12 @@ function M.load_repo_summary_async(repo, opts, run_command, on_done)
 			return on_done(nil, truncated_err)
 		end
 		run_command(
-			{ "svn", "info", "--xml", repo.root },
+			{ "svn", "info", "--xml", util.svn_target(repo.root) },
 			{ kind = "summary", timeout_ms = opts.status_timeout_ms },
-			function(info)
+			function(info, info_err)
+				if not info then
+					return on_done(nil, info_err)
+				end
 				local info_truncated_err = truncated_output_error(info, "SVN info")
 				if info_truncated_err then
 					return on_done(nil, info_truncated_err)
@@ -1117,7 +1132,7 @@ function M.load_repo_details_async(repo, opts, run_command, on_done)
 	if opts.remote_refresh then
 		args[#args + 1] = "-u"
 	end
-	args[#args + 1] = repo.root
+	args[#args + 1] = util.svn_target(repo.root)
 	run_command(args, {
 		kind = opts.remote_refresh and "remote" or "details",
 		timeout_ms = opts.remote_refresh and opts.remote_timeout_ms or opts.status_timeout_ms,
@@ -1130,9 +1145,12 @@ function M.load_repo_details_async(repo, opts, run_command, on_done)
 			return on_done(nil, truncated_err)
 		end
 		run_command(
-			{ "svn", "info", "--xml", repo.root },
+			{ "svn", "info", "--xml", util.svn_target(repo.root) },
 			{ kind = "details", timeout_ms = opts.status_timeout_ms },
-			function(info)
+			function(info, info_err)
+				if not info then
+					return on_done(nil, info_err)
+				end
 				local info_truncated_err = truncated_output_error(info, "SVN info")
 				if info_truncated_err then
 					return on_done(nil, info_truncated_err)
