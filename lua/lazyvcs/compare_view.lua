@@ -86,6 +86,9 @@ function M.render(s)
 	local root = s.root and vim.fs.basename(s.root) or "repository"
 	local lines =
 		{ "Compare " .. M.display(root), "Base " .. M.display(s.base or "Select a base"), M.display(s.message or "") }
+	if s.snapshot then
+		lines[2] = lines[2] .. " @ " .. M.display(s.snapshot.revision):sub(1, 12)
+	end
 	if s.uncounted then
 		lines[#lines + 1] = s.uncounted .. " without counts"
 	end
@@ -111,6 +114,11 @@ function M.render(s)
 	end
 	for row = 4, offset do
 		mark(row, 0, #lines[row], "Path")
+	end
+	for row = offset - 2, offset - 1 do
+		for a, key in lines[row]:gmatch("()(%S+)%s+%S+") do
+			mark(row, a - 1, a - 1 + #key, "Hint")
+		end
 	end
 	for i, marks in ipairs(cache.marks) do
 		for _, span in ipairs(marks) do

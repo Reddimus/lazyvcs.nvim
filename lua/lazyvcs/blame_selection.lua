@@ -95,7 +95,7 @@ function M.open(first, last)
 		row = 1,
 		col = 1,
 		width = math.max(1, math.min(120, vim.o.columns - 4)),
-		height = math.max(1, math.min(last - first + 3, vim.o.lines - 5)),
+		height = math.max(1, math.min(last - first + 4, vim.o.lines - 5)),
 	})
 	vim.wo[request.win].wrap, vim.wo[request.win].cursorline = false, true
 	vim.wo[request.win].winbar = "Blame " .. display(path):gsub("%%", "%%%%") .. " | " .. first .. "-" .. last
@@ -137,7 +137,10 @@ function M.open(first, last)
 			write(request, { blame_err or "No blame information is available for this path." })
 			return
 		end
-		local out = { "Selected lines at request time.  q close", "" }
+		local label = target.snapshot
+				and (target.side == "base" and "Base @ " .. target.snapshot.revision or "Saved worktree")
+			or "Buffer at request time"
+		local out = { label .. "  |  q close", "" }
 		request.entries = {}
 		for number = first, last do
 			local entry = entries[number]

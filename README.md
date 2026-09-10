@@ -46,10 +46,10 @@ Open a file inside a Git or SVN working copy:
 | `:LazyVCS hunk revert`  | Revert the current hunk; normal undo still works   |
 | `:LazyVCS blame toggle` | Toggle inline blame; `blame split` shows all lines |
 
-Press `<Tab>` after `:LazyVCS ` for command completion. In the sidebar, `s` or
-`C` compares a repository against a base. `.` opens repository actions, `c`
-commits, `b` switches branches or SVN targets, `R` refreshes, `?` shows help,
-and `q` closes it.
+Press `<Tab>` after `:LazyVCS ` for command completion. In the sidebar, `C`
+compares a repository against a base. `.` opens repository actions, `c` commits,
+`b` switches branches or SVN targets, `R` refreshes, `?` shows help, and `q`
+closes it.
 
 ## Compare a branch
 

@@ -58,7 +58,7 @@ T["visual blame handles reversed line and block selections"] = function()
 		child.type_keys("<Space>vb")
 		child.lua([[
 assert(vim.wait(15000,function()
- return table.concat(vim.api.nvim_buf_get_lines(0,0,-1,false),'\n'):find('Selected lines at request time',1,true)
+ return table.concat(vim.api.nvim_buf_get_lines(0,0,-1,false),'\n'):find('Buffer at request time',1,true)
 end,10), 'selection blame did not load')
 ]])
 		local text = child.lua_get([[table.concat(vim.api.nvim_buf_get_lines(0,0,-1,false),"\n")]])

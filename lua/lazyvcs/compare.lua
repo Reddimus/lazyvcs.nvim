@@ -289,8 +289,12 @@ function M.refresh(s, context_checked)
 				if s.explicit_base then
 					other.base, other.explicit_base = s.base, true
 				end
+				if s.explicit_untracked ~= nil then
+					other.include_untracked = s.explicit_untracked
+				end
 				M.close(s, false)
 				vim.api.nvim_set_current_tabpage(other.tab)
+				vim.api.nvim_set_current_win(other.sidewin)
 				M.refresh(other)
 				return
 			end
@@ -584,6 +588,7 @@ local function open_session(opts, origin)
 		base = opts.base,
 		explicit_base = opts.base ~= nil,
 		include_untracked = opts.include_untracked ~= false,
+		explicit_untracked = opts.include_untracked,
 		items = {},
 		rows = {},
 		row_by_path = {},
