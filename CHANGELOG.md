@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-09-10
+
+### Fixed
+
+- Updated the Markdown tooling's TOML parser to fix GHSA-7w5x-hrqm-74c2.
+- Dependency audits now include development tools.
+- The confirmation UI test waits for repository discovery before checking cursor
+  restoration, avoiding a timing race on slower runners.
+
 ## [0.7.0] - 2026-09-10
 
 ### Added

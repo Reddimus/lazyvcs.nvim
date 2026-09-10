@@ -206,6 +206,7 @@ end
 T["native sidebar"]["confirmation popup supports numeric keys and restores focus"] = function()
 	local workspace = make_workspace()
 	child.cmd("LazyVCS sidebar open " .. vim.fn.fnameescape(workspace))
+	wait_for_discovery()
 	local before = child.lua_get([[(function()
 local state = require("lazyvcs.source_control.native")._state()
 vim.api.nvim_set_current_win(state.winid)

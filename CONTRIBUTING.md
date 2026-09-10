@@ -21,7 +21,7 @@ npm ci
 npm run format:md:check                       # Markdown formatting
 npm run lint:md                               # markdownlint-cli2
 npm run lint:links                            # local Markdown link targets
-npm run audit                                 # npm audit --audit-level=high
+npm run audit                                 # includes development dependencies
 stylua --check lua tests                      # Lua formatting
 lua-language-server --check=. --check_format=pretty --checklevel=Warning
 actionlint                                    # workflow lint
