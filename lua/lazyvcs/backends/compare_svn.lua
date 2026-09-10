@@ -78,7 +78,7 @@ function M.list(snapshot, include_untracked, callback)
 			elseif path:sub(1, #snapshot.root + 1) == snapshot.root .. "/" then
 				relpath = path:sub(#snapshot.root + 2)
 			end
-			if not relpath or relpath:match("^%.%./") or relpath:find("/../", 1, true) then
+			if not common.relative(relpath) then
 				return task:finish(nil, "SVN returned a path outside the comparison")
 			end
 			local code = ({ added = "A", deleted = "D", modified = "M", normal = "M", none = "M" })[attrs.item] or "M"
@@ -86,6 +86,7 @@ function M.list(snapshot, include_untracked, callback)
 				relpath = relpath,
 				status = code,
 				property_only = attrs.kind == "dir" or attrs.item == "none",
+				kind = attrs.kind,
 				properties = attrs.props == "modified",
 			}
 			seen[relpath] = true
@@ -109,7 +110,7 @@ function M.list(snapshot, include_untracked, callback)
 					pending[#pending + 1] = entry.path
 				end
 			end
-			local cursor = 0
+			local cursor, scanned = 0, 0
 			local ignored
 			local function visit()
 				cursor = cursor + 1
@@ -123,24 +124,35 @@ function M.list(snapshot, include_untracked, callback)
 							return
 						end
 						if stat_err then
+							if tostring(stat_err):match("ENOENT") then
+								visit()
+								return
+							end
 							task:finish(nil, stat_err)
 							return
 						end
 						if stat.type == "directory" then
-							return vim.uv.fs_scandir(path, function(scan_err, handle)
-								vim.schedule(function()
+							vim.uv.fs_scandir(path, function(scan_err, handle)
+								local consume
+								consume = function()
 									if not task:is_active() then
 										return
 									end
 									if not handle then
+										if tostring(scan_err):match("ENOENT") then
+											visit()
+											return
+										end
 										task:finish(nil, scan_err)
 										return
 									end
-									while true do
+									for _ = 1, 128 do
 										local name = vim.uv.fs_scandir_next(handle)
 										if not name then
-											break
+											visit()
+											return
 										end
+										scanned = scanned + 1
 										if
 											name ~= ".svn"
 											and name ~= ".git"
@@ -148,14 +160,19 @@ function M.list(snapshot, include_untracked, callback)
 										then
 											pending[#pending + 1] = path .. "/" .. name
 										end
-										if #pending > 10000 then
-											task:finish(nil, "Untracked file discovery exceeded 10000 paths")
+										if #pending > 10000 or scanned > 100000 then
+											task:finish(
+												nil,
+												"Untracked discovery exceeded its path limit; exclude untracked files or narrow the working copy"
+											)
 											return
 										end
 									end
-									visit()
-								end)
+									vim.schedule(consume)
+								end
+								vim.schedule(consume)
 							end)
+							return
 						end
 						local relpath = path:sub(#snapshot.root + 2)
 						if not seen[relpath] then
@@ -190,33 +207,41 @@ function M.preview(snapshot, item, callback)
 		if not item.properties then
 			return task:finish(result)
 		end
-		command(
-			task,
-			snapshot,
-			{ "diff", "--properties-only", "--old", url .. "@" .. snapshot.revision, "--new", path .. "@" },
-			function(raw, err)
-				if not raw then
-					return task:finish(nil, err)
-				end
-				result.properties = require("lazyvcs.util").split_lines(raw)
-				task:finish(result)
+		command(task, snapshot, {
+			"diff",
+			"--properties-only",
+			"--depth",
+			item.kind == "dir" and "empty" or "files",
+			"--old",
+			url .. "@" .. snapshot.revision,
+			"--new",
+			path .. "@",
+		}, function(raw, err)
+			if not raw then
+				return task:finish(nil, err)
 			end
-		)
+			result.properties = require("lazyvcs.util").split_lines(raw)
+			task:finish(result)
+		end)
 	end
 	if item.property_only then
-		command(
-			task,
-			snapshot,
-			{ "diff", "--properties-only", "--old", url .. "@" .. snapshot.revision, "--new", path .. "@" },
-			function(raw, err)
-				if not raw then
-					return task:finish(nil, err)
-				end
-				result.left, result.right = {}, require("lazyvcs.util").split_lines(raw)
-				result.right_label = "PROPERTY PATCH"
-				task:finish(result)
+		command(task, snapshot, {
+			"diff",
+			"--properties-only",
+			"--depth",
+			item.kind == "dir" and "empty" or "files",
+			"--old",
+			url .. "@" .. snapshot.revision,
+			"--new",
+			path .. "@",
+		}, function(raw, err)
+			if not raw then
+				return task:finish(nil, err)
 			end
-		)
+			result.left, result.right = {}, require("lazyvcs.util").split_lines(raw)
+			result.right_label = "PROPERTY PATCH"
+			task:finish(result)
+		end)
 		return task
 	end
 	local function right()

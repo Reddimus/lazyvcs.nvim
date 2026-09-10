@@ -46,6 +46,9 @@ local function resize(s)
 			vim.cmd("diffthis")
 			vim.wo.winbar = s.right_label or "SAVED WORKTREE"
 		end)
+		vim.api.nvim_win_call(s.leftwin, function()
+			vim.cmd("diffthis")
+		end)
 		s.stacked = stacked
 		if right_focused then
 			vim.api.nvim_set_current_win(s.rightwin)
@@ -76,14 +79,20 @@ local function message(s, text)
 		"Comparison",
 		display(s.base or "Select a base"),
 		display(text),
-		"R refresh  b base",
-		"Enter view  e edit  ? help",
+		s.uncounted and (s.uncounted .. " without counts") or "R refresh  b base",
+		"Enter view  e edit",
 	}
 	for _, item in ipairs(s.items or {}) do
 		lines[#lines + 1] =
 			string.format("%s %s%s", item.status, display(item.relpath), item.properties and " [properties]" or "")
 	end
 	write(s.sidebar, lines)
+end
+
+local function failure(s, err)
+	message(s, "Comparison unavailable")
+	write(s.left, vim.list_extend({ "Comparison unavailable", "" }, util.split_lines(tostring(err))))
+	write(s.right, { "b: choose another base", "R: retry", "q: close" })
 end
 
 local function selected(s)
@@ -127,6 +136,9 @@ local function preview(s)
 		write(s.left, result.left)
 		write(s.right, result.right)
 		s.preview_result = result
+		if result.details or result.properties then
+			result.right_label = result.right_label .. " [p: metadata]"
+		end
 		s.right_label = display(result.right_label):gsub("%%", "%%%%")
 		for _, pair in ipairs({ { s.leftwin, result.left_label }, { s.rightwin, result.right_label } }) do
 			if vim.api.nvim_win_is_valid(pair[1]) then
@@ -172,9 +184,9 @@ function M.refresh(s, context_checked)
 			end
 			s.job = nil
 			if not context then
-				return message(s, tostring(err))
+				return failure(s, err)
 			end
-			if s.context.branch ~= context.branch and not s.explicit_base then
+			if (not s.context or s.context.branch ~= context.branch) and not s.explicit_base then
 				s.base = context.branch and json.read(state_path())[s.root .. "\n" .. context.branch] or nil
 			end
 			s.context = context
@@ -191,7 +203,7 @@ function M.refresh(s, context_checked)
 	s.generation = (s.generation or 0) + 1
 	s.preview_generation = (s.preview_generation or 0) + 1
 	local generation = s.generation
-	s.items, s.snapshot = {}, nil
+	s.items, s.snapshot, s.uncounted = {}, nil, nil
 	message(s, "Loading saved changes...")
 	write(s.left, {})
 	write(s.right, {})
@@ -201,7 +213,7 @@ function M.refresh(s, context_checked)
 		end
 		if not snapshot then
 			s.job = nil
-			return message(s, tostring(err))
+			return failure(s, err)
 		end
 		s.job = s.provider.list(snapshot, s.include_untracked, function(items, list_err)
 			if not alive(s) or generation ~= s.generation then
@@ -209,7 +221,7 @@ function M.refresh(s, context_checked)
 			end
 			s.job = nil
 			if not items then
-				return message(s, tostring(list_err))
+				return failure(s, list_err)
 			end
 			s.snapshot, s.items = snapshot, items
 			if s.context.branch and s.context.branch ~= "" then
@@ -228,17 +240,8 @@ function M.refresh(s, context_checked)
 					unknown = unknown + 1
 				end
 			end
-			message(
-				s,
-				#items == 0 and "No saved changes"
-					or string.format(
-						"%d paths  +%d -%d%s",
-						#items,
-						added,
-						deleted,
-						unknown > 0 and string.format("; %d without line counts", unknown) or ""
-					)
-			)
+			s.uncounted = unknown > 0 and unknown or nil
+			message(s, #items == 0 and "No saved changes" or string.format("%d paths +%d -%d", #items, added, deleted))
 			if #items > 0 then
 				vim.api.nvim_win_set_cursor(s.sidewin, { 6, 0 })
 				preview(s)
@@ -294,6 +297,7 @@ local function edit(s)
 	end
 	vim.api.nvim_set_current_win(s.origin_win)
 	local buf = vim.fn.bufadd(path)
+	vim.bo[buf].buflisted = true
 	vim.fn.bufload(buf)
 	vim.api.nvim_win_set_buf(s.origin_win, buf)
 end
@@ -304,7 +308,7 @@ local function help(s)
 		"",
 		"Enter / double-click: preview selected saved file",
 		"e: edit the real file in the original editing window",
-		"p: show SVN property changes for the selected file; Enter returns to text",
+		"p: show metadata or properties; Enter returns to text",
 		"R: refresh and pin the base again",
 		"b: choose a base",
 		"q: close comparison",
@@ -330,10 +334,12 @@ function M.open(opts)
 		M.refresh(existing)
 		return existing
 	end
-	local path = opts.path or util.buf_path(vim.api.nvim_get_current_buf()) or vim.fn.getcwd()
+	local current_buf = vim.api.nvim_get_current_buf()
+	local path = opts.path or (util.is_real_file_buffer(current_buf) and util.buf_path(current_buf)) or vim.fn.getcwd()
 	local s = {
 		origin_win = vim.api.nvim_get_current_win(),
 		base = opts.base,
+		explicit_base = opts.base ~= nil,
 		include_untracked = opts.include_untracked ~= false,
 		items = {},
 	}
@@ -367,7 +373,7 @@ function M.open(opts)
 	vim.wo[s.sidewin].number, vim.wo[s.sidewin].relativenumber = false, false
 	vim.wo[s.sidewin].wrap, vim.wo[s.sidewin].cursorline = false, true
 	vim.wo[s.sidewin].signcolumn = "no"
-	vim.wo[s.sidewin].statusline = " Comparison  %l/%L"
+	vim.wo[s.sidewin].statusline = " ? help  q close"
 	sessions[s.tab] = s
 	resize(s)
 	for _, buf in ipairs({ s.sidebar, s.left, s.right }) do
@@ -390,10 +396,10 @@ function M.open(opts)
 				edit(s)
 			end,
 			p = function()
-				if s.preview_result and s.preview_result.properties then
+				if s.preview_result and (s.preview_result.properties or s.preview_result.details) then
 					write(s.left, {})
-					write(s.right, s.preview_result.properties)
-					vim.wo[s.rightwin].winbar = "PROPERTY PATCH"
+					write(s.right, s.preview_result.properties or s.preview_result.details)
+					vim.wo[s.rightwin].winbar = "METADATA / PROPERTIES"
 				end
 			end,
 		}) do
@@ -454,7 +460,7 @@ function M.open(opts)
 		end
 		if not backend then
 			s.job = nil
-			return message(s, tostring(err))
+			return failure(s, err)
 		end
 		s.root, s.vcs, s.provider = root, backend.name, common.provider(backend.name)
 		s.job = s.provider.context(s, function(context, context_err)
@@ -463,7 +469,7 @@ function M.open(opts)
 			end
 			s.job = nil
 			if not context then
-				return message(s, tostring(context_err))
+				return failure(s, context_err)
 			end
 			s.context = context
 			if not s.base and context.branch and context.branch ~= "" then

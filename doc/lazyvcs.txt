@@ -105,11 +105,13 @@ Git's merge base or SVN's numeric revision. No Git fetch happens automatically.
 Unborn HEAD, missing history, unrelated histories, and multiple merge bases
 produce an explanation instead of selecting an arbitrary base.
 
-The review tab owns its sidebar and read-only preview buffers:
+The review tab owns its sidebar and read-only preview buffers. Narrow windows
+stack the preview panes vertically:
     Enter       Preview the selected saved file.
     e           Open the real file in the original editing window.
     R           Refresh changes and resolve the base again.
     b           Choose another base.
+    p           Show metadata or SVN property changes.
     ?           Show help.
     q           Close the review and return to the original window.
 

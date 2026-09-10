@@ -168,7 +168,11 @@ function M.resolve_async(path, on_done, opts)
 		end
 		shared.owner:finish()
 		for listener in pairs(shared.listeners) do
-			listener:finish(best and best.backend, best and best.root, failure)
+			local ok, callback_err =
+				pcall(listener.finish, listener, best and best.backend, best and best.root, failure)
+			if not ok then
+				util.notify("Repository resolution callback failed: " .. tostring(callback_err), vim.log.levels.ERROR)
+			end
 		end
 		shared.listeners = {}
 	end

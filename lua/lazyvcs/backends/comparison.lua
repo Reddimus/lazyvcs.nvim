@@ -3,6 +3,20 @@ local jobs = require("lazyvcs.source_control.jobs")
 local util = require("lazyvcs.util")
 local M = { max_file_bytes = 1024 * 1024 }
 
+function M.relative(path)
+	if type(path) ~= "string" or path == "" or path:find("\0", 1, true) then
+		return false
+	end
+	local windows = vim.fn.has("win32") == 1
+	local value = windows and path:gsub("\\", "/") or path
+	return not value:match("^/")
+		and not (windows and value:match("^%a:"))
+		and value ~= ".."
+		and not value:match("^%.%./")
+		and not value:find("/../", 1, true)
+		and not value:match("/%.%.$")
+end
+
 function M.task(callback)
 	return Task.new(callback, {
 		cancel_id = function(id)

@@ -17,7 +17,7 @@ function M.context(repo, callback)
 		command(
 			task,
 			repo,
-			{ "for-each-ref", "--format=%(refname:short)\t%(symref)", "refs/heads", "refs/remotes" },
+			{ "for-each-ref", "--format=%(refname)\t%(symref)", "refs/heads", "refs/remotes" },
 			function(refs, refs_err)
 				if not refs then
 					return task:finish(nil, refs_err)
@@ -26,9 +26,10 @@ function M.context(repo, callback)
 				for line in refs:gmatch("[^\n]+") do
 					local name, target = line:match("^(.-)\t(.*)$")
 					if name and target == "" then
-						context.candidates[#context.candidates + 1] = name
+						context.candidates[#context.candidates + 1] = name:gsub("^refs/heads/", "")
+							:gsub("^refs/remotes/", "")
 					end
-					if name == "origin/HEAD" then
+					if name == "refs/remotes/origin/HEAD" then
 						context.suggestion = target:gsub("^refs/remotes/", "")
 					end
 				end
@@ -92,7 +93,7 @@ function M.list(snapshot, include_untracked, callback)
 			return task:finish(nil, err)
 		end
 		local fields = vim.split(raw, "\0", { plain = true, trimempty = true })
-		local items, by_path, i = {}, {}, 1
+		local items, by_path, rename_sources, i = {}, {}, {}, 1
 		while i <= #fields do
 			local code, path = fields[i], fields[i + 1]
 			if not path then
@@ -102,6 +103,9 @@ function M.list(snapshot, include_untracked, callback)
 			i = i + 2
 			if item.status == "R" or item.status == "C" then
 				item.old_path, item.relpath, i = path, fields[i], i + 1
+				if item.status == "R" then
+					rename_sources[path] = item
+				end
 			end
 			if not item.relpath then
 				return task:finish(nil, "Invalid Git rename output")
@@ -109,6 +113,13 @@ function M.list(snapshot, include_untracked, callback)
 			items[#items + 1], by_path[item.relpath] = item, item
 		end
 		local function finish()
+			by_path = {}
+			for _, item in ipairs(items) do
+				if not common.relative(item.relpath) or (item.old_path and not common.relative(item.old_path)) then
+					return task:finish(nil, "Git returned a path outside the comparison")
+				end
+				by_path[item.relpath] = item
+			end
 			table.sort(items, function(a, b)
 				return a.relpath < b.relpath
 			end)
@@ -153,7 +164,29 @@ function M.list(snapshot, include_untracked, callback)
 						item.added, item.deleted = value.added, value.deleted
 					end
 				end
-				task:finish(items)
+				command(
+					task,
+					snapshot,
+					{ "diff", "--no-ext-diff", "--name-only", "--diff-filter=U", "-z", "--" },
+					function(conflicts, conflict_err)
+						if not conflicts then
+							return task:finish(nil, conflict_err)
+						end
+						for path in conflicts:gmatch("([^%z]+)%z") do
+							local item = by_path[path]
+							if not item then
+								item = { relpath = path }
+								items[#items + 1] = item
+								by_path[path] = item
+							end
+							item.original_status, item.status = item.status, "U"
+						end
+						table.sort(items, function(a, b)
+							return a.relpath < b.relpath
+						end)
+						task:finish(items)
+					end
+				)
 			end)
 		end
 		if not include_untracked then
@@ -166,6 +199,12 @@ function M.list(snapshot, include_untracked, callback)
 			local collisions = {}
 			for path in others:gmatch("([^%z]+)%z") do
 				local existing = by_path[path]
+				if not existing and rename_sources[path] then
+					local renamed = rename_sources[path]
+					renamed.status, renamed.old_path, renamed.recreated = "A", nil, true
+					existing = { status = "M", relpath = path, recreated = true }
+					items[#items + 1], by_path[path] = existing, existing
+				end
 				if existing then
 					existing.status = "M"
 					existing.recreated = true
@@ -228,10 +267,44 @@ function M.preview(snapshot, item, callback)
 	local task = common.task(callback)
 	local result =
 		{ left_label = snapshot.base .. " @ " .. snapshot.revision:sub(1, 12), right_label = "SAVED WORKTREE" }
+	local function finish()
+		local args = { "diff", "--no-ext-diff", "--no-textconv", "--summary", snapshot.revision, "--", item.relpath }
+		if item.old_path then
+			args[#args + 1] = item.old_path
+		end
+		command(task, snapshot, args, function(raw, err)
+			if not raw then
+				return task:finish(nil, err)
+			end
+			if raw ~= "" then
+				result.details = util.split_lines(raw)
+			end
+			task:finish(result)
+		end)
+	end
+	local stat = vim.uv.fs_lstat(snapshot.root .. "/" .. item.relpath)
+	if stat and stat.type == "directory" then
+		command(
+			task,
+			snapshot,
+			{ "diff", "--no-ext-diff", "--no-textconv", "--submodule=log", snapshot.revision, "--", item.relpath },
+			function(raw, err)
+				if not raw then
+					return task:finish(nil, err)
+				end
+				result.left = {}
+				result.right = raw ~= "" and util.split_lines(raw)
+					or { "Nested repository; open its sidebar to inspect internal changes" }
+				result.right_label = "SUBMODULE / DIRECTORY"
+				task:finish(result)
+			end
+		)
+		return task
+	end
 	local function right()
 		if item.status == "D" then
 			result.right = {}
-			return task:finish(result)
+			return finish()
 		end
 		common.read_file(task, snapshot.root .. "/" .. item.relpath, function(data, err)
 			if not data then
@@ -242,10 +315,10 @@ function M.preview(snapshot, item, callback)
 				return task:finish(nil, line_err)
 			end
 			result.right = lines
-			task:finish(result)
+			finish()
 		end)
 	end
-	if item.status == "A" or item.untracked then
+	if item.status == "A" or item.original_status == "A" or item.untracked then
 		result.left = {}
 		right()
 	else

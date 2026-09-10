@@ -1,27 +1,7 @@
 local util = require("lazyvcs.util")
 
--- Keep corresponding diff lines on the same screen row when the panes soft-wrap.
---
--- Neovim's diff mode aligns the two buffers in *buffer lines*: it inserts filler
--- rows so a change starts opposite its counterpart, and 'scrollbind' keeps the
--- toplines in step. With 'wrap' off that is enough, because one buffer line is
--- exactly one screen row on both sides.
---
--- With 'wrap' on -- which is what `followwrap` in 'diffopt' preserves -- it is
--- not. A line that occupies four screen rows on the left and one on the right
--- pushes everything below it out of alignment, and because nothing ever
--- reconciles the difference the error accumulates down the file. The panes agree
--- on the line and still render pages apart.
---
--- The fix is to pad the shorter side. Corresponding text is grouped into units
--- (one unchanged line pairs with one unchanged line; a changed block pairs with
--- its counterpart as a whole), each unit is measured in screen rows on both
--- sides, and the shorter side gets `virt_lines` rows appended so both units
--- occupy the same height. The unit after it therefore starts on the same row on
--- both sides.
---
--- `virt_lines` are extmarks: they add no text, so undo, marks, and the file on
--- disk are untouched, and the namespace is cleared when the session closes.
+-- Native diff filler aligns buffer lines. Optional virtual-line padding also
+-- aligns their wrapped screen heights without changing either buffer's text.
 
 local M = {}
 
@@ -60,19 +40,9 @@ end
 ---@field base lazyvcs.align.Range|nil
 ---@field current lazyvcs.align.Range|nil
 
----Pair the two buffers into units of corresponding text.
----
----`hunks` come from `diff.compute_hunks`, i.e. Neovim's `indices` form: a count
----of 0 means the range is empty and `start` is the line the change sits *after*.
----Between hunks the two buffers hold identical text, so those lines pair one to
----one; a hunk itself pairs as a single block, because its two sides have no
----line-level correspondence at all.
----`base_stop` and `current_stop` bound the walk to the lines that can matter.
----Pairing a whole file allocates one unit and two ranges per unchanged line --
----measured at 4.2 ms and 1.4 MB of garbage for 5,000 lines, 13.6 ms and 4.7 MB
----for 20,000 -- and everything outside the viewport is then discarded. Holding
----the wheel down runs this once per event-loop turn, so the bound is what keeps
----scrolling a large wrapped diff cheap.
+---Pair unchanged lines and changed blocks intersecting either viewport.
+---Empty hunk sides anchor after their start line. Two binary searches and
+---bounded walks avoid visiting hunks between distant viewports.
 ---@param hunks table[]
 ---@param base_count integer
 ---@param current_count integer
@@ -80,87 +50,86 @@ end
 ---@param current_stop integer|nil last current line worth pairing
 ---@return lazyvcs.align.Unit[]
 function M.pair_units(hunks, base_count, current_count, base_stop, current_stop, base_first, current_first)
-	local units = {}
-	local b, c = 1, 1
-	base_stop = base_stop or base_count
-	current_stop = current_stop or current_count
-	base_first = base_first or 1
-	current_first = current_first or 1
 	hunks = hunks or {}
-	local low, high = 1, #hunks + 1
-	while low < high do
-		local middle = math.floor((low + high) / 2)
-		local hunk = hunks[middle]
-		local base_end = hunk.base_start + math.max(hunk.base_count - 1, 0)
-		local current_end = hunk.current_start + math.max(hunk.current_count - 1, 0)
-		if base_end < base_first and current_end < current_first then
-			low = middle + 1
-		else
-			high = middle
-		end
-	end
-	if low > 1 then
-		local previous = hunks[low - 1]
-		b = previous.base_start + math.max(previous.base_count, 1)
-		c = previous.current_start + math.max(previous.current_count, 1)
-	end
-
-	local function past_the_end()
-		return b > base_stop and c > current_stop
-	end
-
-	local function pair_unchanged(b_last, c_last)
-		local length = math.min(b_last - b + 1, c_last - c + 1)
-		local ranges = {
-			{ math.max(0, base_first - b), math.min(length - 1, base_stop - b) },
-			{ math.max(0, current_first - c), math.min(length - 1, current_stop - c) },
-		}
-		if ranges[2][1] < ranges[1][1] then
-			ranges[1], ranges[2] = ranges[2], ranges[1]
-		end
-		local emitted = -1
-		for _, range in ipairs(ranges) do
-			for offset = math.max(range[1], emitted + 1), range[2] do
-				units[#units + 1] = {
-					base = { b + offset, b + offset },
-					current = { c + offset, c + offset },
-				}
-				emitted = offset
+	local function walk(side, first, stop)
+		local units = {}
+		local start_key, count_key = side .. "_start", side .. "_count"
+		local low, high = 1, #hunks + 1
+		while low < high do
+			local middle = math.floor((low + high) / 2)
+			local hunk = hunks[middle]
+			if hunk[start_key] + math.max(hunk[count_key] - 1, 0) < first then
+				low = middle + 1
+			else
+				high = middle
 			end
 		end
-		b = b + length
-		c = c + length
+		local b, c = 1, 1
+		if low > 1 then
+			local previous = hunks[low - 1]
+			b = previous.base_start + math.max(previous.base_count, 1)
+			c = previous.current_start + math.max(previous.current_count, 1)
+		end
+		local function position()
+			return side == "base" and b or c
+		end
+		local function unchanged(b_last, c_last)
+			local length = math.max(0, math.min(b_last - b + 1, c_last - c + 1))
+			local anchor = position()
+			for offset = math.max(0, first - anchor), math.min(length - 1, stop - anchor) do
+				units[#units + 1] = {
+					position = b + c + 2 * offset,
+					unit = { base = { b + offset, b + offset }, current = { c + offset, c + offset } },
+				}
+			end
+			b, c = b + length, c + length
+		end
+		for index = low, #hunks do
+			if position() > stop then
+				break
+			end
+			local hunk = hunks[index]
+			unchanged(
+				hunk.base_start - (hunk.base_count > 0 and 1 or 0),
+				hunk.current_start - (hunk.current_count > 0 and 1 or 0)
+			)
+			local count, start = hunk[count_key], hunk[start_key]
+			if count > 0 and start <= stop and start + count - 1 >= first then
+				units[#units + 1] = {
+					position = b + c,
+					unit = {
+						base = hunk.base_count > 0 and { hunk.base_start, hunk.base_start + hunk.base_count - 1 }
+							or nil,
+						current = hunk.current_count > 0
+								and { hunk.current_start, hunk.current_start + hunk.current_count - 1 }
+							or nil,
+					},
+				}
+			end
+			b = hunk.base_start + math.max(hunk.base_count, 1)
+			c = hunk.current_start + math.max(hunk.current_count, 1)
+		end
+		unchanged(base_count, current_count)
+		return units
 	end
 
-	for index = low, #hunks do
-		local hunk = hunks[index]
-		if past_the_end() then
-			break
+	-- Walk each viewport separately so distant panes never scan the intervening hunks.
+	local left = walk("base", base_first or 1, base_stop or base_count)
+	local right = walk("current", current_first or 1, current_stop or current_count)
+	local units, i, j = {}, 1, 1
+	while i <= #left or j <= #right do
+		local l, r = left[i], right[j]
+		if l and (not r or l.position <= r.position) then
+			units[#units + 1] = l.unit
+			i = i + 1
+			if r and l.position == r.position then
+				j = j + 1
+			end
+		else
+			units[#units + 1] = r.unit
+			j = j + 1
 		end
-		-- Where the identical run before this hunk ends. With an empty side the
-		-- anchor line itself is still unchanged text, so it belongs to the run.
-		local b_stop = hunk.base_count > 0 and (hunk.base_start - 1) or hunk.base_start
-		local c_stop = hunk.current_count > 0 and (hunk.current_start - 1) or hunk.current_start
-		if b_stop >= b and c_stop >= c then
-			pair_unchanged(b_stop, c_stop)
-		end
-
-		local base_range = hunk.base_count > 0 and { hunk.base_start, hunk.base_start + hunk.base_count - 1 } or nil
-		local current_range = hunk.current_count > 0
-				and { hunk.current_start, hunk.current_start + hunk.current_count - 1 }
-			or nil
-		if base_range or current_range then
-			units[#units + 1] = { base = base_range, current = current_range }
-		end
-
-		b = base_range and (base_range[2] + 1) or b
-		c = current_range and (current_range[2] + 1) or c
 	end
-
-	if b <= base_count and c <= current_count then
-		pair_unchanged(base_count, current_count)
-	end
-
 	return units
 end
 

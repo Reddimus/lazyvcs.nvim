@@ -150,14 +150,27 @@ function M.load(task, repo, callback)
 				next_source()
 			end)
 		else
-			common.read_file(task, source.path, function(raw, err)
-				if not raw and not tostring(err):match("ENOENT") then
-					return callback(nil, err)
-				end
-				if raw then
-					parse(raw, sections)
-				end
-				next_source()
+			vim.uv.fs_realpath(source.path, function(path_err, resolved)
+				vim.schedule(function()
+					if not task:is_active() then
+						return
+					end
+					if not resolved then
+						if tostring(path_err):match("ENOENT") then
+							next_source()
+						else
+							callback(nil, path_err)
+						end
+						return
+					end
+					common.read_file(task, resolved, function(raw, err)
+						if not raw then
+							return callback(nil, err)
+						end
+						parse(raw, sections)
+						next_source()
+					end)
+				end)
 			end)
 		end
 	end
