@@ -38,6 +38,18 @@ function M.refresh()
 	return require("lazyvcs.actions").refresh_current()
 end
 
+function M.compare(opts)
+	return require("lazyvcs.compare").open(opts)
+end
+
+function M.compare_refresh()
+	return require("lazyvcs.compare").refresh()
+end
+
+function M.compare_close()
+	return require("lazyvcs.compare").close()
+end
+
 -- Hunks ----------------------------------------------------------------------
 
 function M.revert_hunk()

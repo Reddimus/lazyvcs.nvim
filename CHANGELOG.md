@@ -6,11 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.3] - 2026-09-03
+## [0.7.0] - 2026-09-09
 
-Safety release for repository mutations and background work.
+### Added
+
+- Read-only total comparisons against a chosen Git base or SVN URL/revision,
+  with remembered bases, saved untracked files, and explicit editing.
+- Sidebar help and a scrollable job profile.
 
 ### Fixed
+
+- Automatic blame skips ignored and untracked files without notifications.
+- SVN blame maps saved and unsaved edits to the correct lines and handles `@`
+  filenames. Git blame accepts SHA-256 commit IDs.
+- Cancelled blame resolution can restart. Typed diff refresh preserves its
+  sources.
+- Incomplete command output is rejected before diffing or reverting.
+- Missing comparison content no longer hides unrelated command failures.
+- Repository probes share in-flight work and use a bounded cache. Wrapped diff
+  alignment limits unchanged-line allocations to the viewport.
+- Signs defer to gitsigns before loading content and reuse unchanged renders.
+- Blame and signs check both disk and buffer sizes.
+
+### Maintenance
+
+- Updated stable CI to Neovim 0.12.5 with verified release checksums.
+- Shortened setup documentation and corrected signed-release instructions.
+
+### Previously unreleased safety fixes
 
 - Destructive actions confirm consistently and refuse to act when the buffer,
   cursor, or selected hunk changed while the confirmation was open.
@@ -485,3 +508,6 @@ First tagged release.
 [0.4.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.4.1...v0.4.2
 [0.5.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.4.2...v0.5.0
 [0.6.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.5.0...v0.6.0
+[0.6.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.6.0...v0.6.1
+[0.6.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.6.1...v0.6.2
+[0.7.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.6.2...v0.7.0

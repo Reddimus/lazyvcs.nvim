@@ -52,7 +52,7 @@ local function supported_blame_buffer(bufnr)
 		return nil
 	end
 	local path = util.buf_path(bufnr)
-	if not path or util.file_size(path) > config.get().signs.max_file_bytes then
+	if not path or math.max(util.file_size(path), util.buffer_size(bufnr)) > config.get().signs.max_file_bytes then
 		return nil
 	end
 	local backend = backend_for_path(path)
@@ -173,9 +173,14 @@ local function format_inline_blame(entry)
 		return util.truncate_display(blame_opts.uncommitted_text, blame_opts.max_width)
 	end
 	-- Parenthesised: `gsub` returns (string, count) and this is a return value.
-	local text = (blame_opts.format:gsub("{(%w+)}", function(key)
-		return tostring(entry[key] or "")
-	end))
+	local text = (
+		blame_opts.format:gsub("{(%w+)}", function(key)
+			if key == "revision_label" then
+				return (entry.backend == "svn" and "r" or "") .. tostring(entry.revision or "")
+			end
+			return tostring(entry[key] or "")
+		end)
+	)
 	-- `max_width` is a column budget, so measure cells rather than bytes: a CJK
 	-- author name or an emoji in a commit subject otherwise produced virtual
 	-- text about twice the configured width.
@@ -256,7 +261,7 @@ local function load_inline(bufnr, path, backend)
 			live.entries = nil
 			live.error = err or true
 			pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns_id, 0, -1)
-			if err then
+			if err and not err:match("^Cancelled") then
 				util.notify(err, vim.log.levels.DEBUG)
 			end
 			return
@@ -264,7 +269,7 @@ local function load_inline(bufnr, path, backend)
 		live.error = nil
 		live.entries = backend.parse_blame_entries(lines)
 		render_inline(bufnr)
-	end, { contents = util.join_lines(util.get_buf_lines(bufnr)) })
+	end, { contents = util.join_lines(util.get_buf_lines(bufnr)), root = select(2, backends.resolve_cached(path)) })
 end
 
 local invalidate_inline
@@ -378,6 +383,7 @@ function invalidate_inline(bufnr)
 	view.loading = false
 	view.loading_visible = false
 	view.generation = (view.generation or 0) + 1
+	view.resolving = false
 	pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns_id, 0, -1)
 	update_inline(bufnr)
 end

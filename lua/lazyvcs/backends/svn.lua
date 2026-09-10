@@ -1,4 +1,5 @@
 local util = require("lazyvcs.util")
+local process = require("lazyvcs.backends.process")
 local Task = require("lazyvcs.backends.task")
 local svn_xml = require("lazyvcs.backends.xml")
 
@@ -7,6 +8,8 @@ local M = {
 }
 
 local ASYNC_TIMEOUT_MS = 30000
+
+local literal_target = util.svn_target
 
 -- Cache the `svn` executable lookup so a machine without Subversion (the common
 -- case — lazyvcs is Git-first) does not spawn a process that throws ENOENT on
@@ -32,7 +35,7 @@ local function get_root(path)
 		return nil, "svn executable not found"
 	end
 	local cwd = util.dir_of(path)
-	local result, err = util.system({ "svn", "info", "--show-item", "wc-root", cwd }, { cwd = cwd })
+	local result, err = util.system({ "svn", "info", "--show-item", "wc-root", literal_target(cwd) }, { cwd = cwd })
 	if not result then
 		return nil, err
 	end
@@ -47,12 +50,15 @@ local function is_versioned(path)
 	if not svn_available() then
 		return false
 	end
-	local _, err = util.system({ "svn", "info", path }, { cwd = util.dir_of(path) })
+	local _, err = util.system({ "svn", "info", literal_target(path) }, { cwd = util.dir_of(path) })
 	return err == nil
 end
 
 local function status_code(path)
-	local lines, err = util.system_lines({ "svn", "status", "--depth", "empty", path }, { cwd = util.dir_of(path) })
+	local lines, err = util.system_lines(
+		{ "svn", "status", "--depth", "empty", literal_target(path) },
+		{ cwd = util.dir_of(path) }
+	)
 	if not lines then
 		return nil, err
 	end
@@ -79,14 +85,35 @@ local function is_unversioned_error(err, raw)
 		or err:match("W155010") ~= nil
 end
 
-local function uncommitted_blame_lines(path)
-	local ok, lines = pcall(vim.fn.readfile, path)
+local function uncommitted_blame_lines(path, contents)
+	local ok, lines = true, contents and util.split_lines(contents)
+	if not lines then
+		ok, lines = pcall(vim.fn.readfile, path)
+	end
 	if not ok then
 		return nil, tostring(lines)
 	end
 	local out = {}
 	for _, line in ipairs(lines) do
 		out[#out + 1] = "     - - - " .. line
+	end
+	return out
+end
+
+local function map_blame(lines, base, current)
+	local out, b, c = {}, 1, 1
+	for _, hunk in ipairs(require("lazyvcs.diff").compute_hunks(base, current)) do
+		local first = hunk.current_count == 0 and hunk.current_start + 1 or hunk.current_start
+		while c < first do
+			out[c], b, c = lines[b], b + 1, c + 1
+		end
+		for _ = 1, hunk.current_count do
+			out[c], c = "     - - -", c + 1
+		end
+		b = hunk.base_start + hunk.base_count + (hunk.base_count == 0 and 1 or 0)
+	end
+	while c <= #current do
+		out[c], b, c = lines[b] or "     - - -", b + 1, c + 1
 	end
 	return out
 end
@@ -100,7 +127,7 @@ local function load_base_lines(path, root)
 		return {}, "EMPTY"
 	end
 
-	local lines, load_err = util.system_lines({ "svn", "cat", "-r", "BASE", path }, { cwd = root })
+	local lines, load_err = util.system_lines({ "svn", "cat", "-r", "BASE", literal_target(path) }, { cwd = root })
 	if not lines then
 		if is_added_base_error(load_err) then
 			return {}, "EMPTY"
@@ -140,8 +167,9 @@ function M.probe_async(path, on_done, opts)
 		return task
 	end
 	local cwd = util.dir_of(path)
-	task:add(util.system_start({ "svn", "info", "--show-item", "wc-root", cwd }, {
+	task:add(process.root({ "svn", "info", "--show-item", "wc-root", literal_target(cwd) }, {
 		cwd = cwd,
+		root = opts.root,
 		timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 	}, function(result, err)
 		if not result then
@@ -210,7 +238,7 @@ function M.is_versioned_async(path, on_done, opts)
 		if not info then
 			return task:finish(false, err)
 		end
-		task:add(util.system_start({ "svn", "info", path }, {
+		task:add(process.start({ "svn", "info", literal_target(path) }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 		}, function(result, tracked_err, raw)
@@ -274,8 +302,9 @@ local function load_payload_async(path, on_done, opts, base_only)
 		return value
 	end
 
-	task:add(util.system_start({ "svn", "info", "--show-item", "wc-root", cwd }, {
+	task:add(process.root({ "svn", "info", "--show-item", "wc-root", literal_target(cwd) }, {
 		cwd = cwd,
+		root = opts.root,
 		timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 	}, function(result, err)
 		if not task:is_active() then
@@ -285,7 +314,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 			return task:finish(nil, err)
 		end
 		local root = util.canonical_path(util.trim(result.stdout))
-		task:add(util.system_start({ "svn", "info", path }, {
+		task:add(process.start({ "svn", "info", literal_target(path) }, {
 			cwd = cwd,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 		}, function(_, tracked_err, tracked_raw)
@@ -299,8 +328,8 @@ local function load_payload_async(path, on_done, opts, base_only)
 				return task:finish(nil, tracked_err)
 			end
 			task:add(
-				util.system_lines_start(
-					{ "svn", "status", "--depth", "empty", path },
+				process.lines(
+					{ "svn", "status", "--depth", "empty", literal_target(path) },
 					{ cwd = cwd, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
 					function(status_lines, status_err)
 						if not task:is_active() then
@@ -323,8 +352,8 @@ local function load_payload_async(path, on_done, opts, base_only)
 						end
 
 						task:add(
-							util.system_lines_start(
-								{ "svn", "cat", "-r", "BASE", path },
+							process.lines(
+								{ "svn", "cat", "-r", "BASE", literal_target(path) },
 								{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
 								function(lines, cat_err)
 									if not lines then
@@ -357,7 +386,7 @@ function M.revert_file(path)
 	if not svn_available() then
 		return nil, "svn executable not found"
 	end
-	return util.system({ "svn", "revert", path }, { cwd = util.dir_of(path) })
+	return util.system({ "svn", "revert", literal_target(path) }, { cwd = util.dir_of(path) })
 end
 
 function M.revert_file_async(path, on_done, opts)
@@ -370,7 +399,7 @@ function M.revert_file_async(path, on_done, opts)
 		if not info then
 			return task:finish(nil, err or "Not an SVN working copy")
 		end
-		task:add(util.system_start({ "svn", "info", path }, {
+		task:add(process.start({ "svn", "info", literal_target(path) }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 		}, function(_, tracked_err, raw)
@@ -384,7 +413,7 @@ function M.revert_file_async(path, on_done, opts)
 				return task:finish(nil, tracked_err)
 			end
 			local start = opts.start or util.system_start
-			task:add(start({ "svn", "revert", path }, {
+			task:add(start({ "svn", "revert", literal_target(path) }, {
 				cwd = info.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 			}, function(result, revert_err)
@@ -439,7 +468,7 @@ function M.changed_files_async(path, on_done, opts)
 		if not info then
 			return task:finish(nil, err or "Not an SVN working copy")
 		end
-		task:add(util.system_lines_start({ "svn", "status" }, {
+		task:add(process.lines({ "svn", "status" }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 		}, function(lines, status_err)
@@ -627,11 +656,11 @@ function M.load_diff_target_async(target, on_done, opts)
 						end
 						vim.list_extend(args, { "-r", tostring(base_revision) .. ":HEAD" })
 					end
-					vim.list_extend(args, { "--", command_path })
+					vim.list_extend(args, { "--", literal_target(command_path) })
 				else
-					args = { "svn", "cat", "-r", source.revision, command_path }
+					args = { "svn", "cat", "-r", source.revision, literal_target(command_path) }
 				end
-				task:add(util.system_lines_start(args, {
+				task:add(process.lines(args, {
 					cwd = comparison.root,
 					timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 				}, function(lines, err)
@@ -640,7 +669,11 @@ function M.load_diff_target_async(target, on_done, opts)
 						return
 					end
 					if not lines then
-						if source.allow_missing then
+						if
+							source.allow_missing
+							and type(err) == "string"
+							and (err:match("E160013") or err:match("W160013") or is_added_base_error(err))
+						then
 							side.lines = {}
 							return complete()
 						end
@@ -659,7 +692,7 @@ function M.load_diff_target_async(target, on_done, opts)
 		load_sides(nil)
 		return task
 	end
-	task:add(util.system_start({ "svn", "info", "--xml", comparison.root }, {
+	task:add(process.start({ "svn", "info", "--xml", literal_target(comparison.root) }, {
 		cwd = comparison.root,
 		timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 	}, function(result, err)
@@ -687,7 +720,7 @@ function M.blame_lines(path)
 	if status_code(path) == "A" then
 		return uncommitted_blame_lines(path)
 	end
-	local lines, blame_err = util.system_lines({ "svn", "blame", "-v", path }, { cwd = root })
+	local lines, blame_err = util.system_lines({ "svn", "blame", "-v", literal_target(path) }, { cwd = root })
 	if not lines and is_added_base_error(blame_err) then
 		return uncommitted_blame_lines(path)
 	end
@@ -707,9 +740,9 @@ function M.blame_lines_async(path, on_done, opts)
 	local cwd = util.dir_of(path)
 	local task = Task.new(on_done)
 	task:add(
-		util.system_start(
-			{ "svn", "info", "--show-item", "wc-root", cwd },
-			{ cwd = cwd, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
+		process.root(
+			{ "svn", "info", "--show-item", "wc-root", literal_target(cwd) },
+			{ cwd = cwd, root = opts.root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
 			function(result, err)
 				if not task:is_active() then
 					return
@@ -719,8 +752,8 @@ function M.blame_lines_async(path, on_done, opts)
 				end
 				local root = util.canonical_path(util.trim(result.stdout))
 				task:add(
-					util.system_lines_start(
-						{ "svn", "status", "--depth", "empty", path },
+					process.lines(
+						{ "svn", "status", "--no-ignore", "--depth", "empty", path .. "@" },
 						{ cwd = cwd, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
 						function(status_lines, status_err)
 							if not task:is_active() then
@@ -731,15 +764,19 @@ function M.blame_lines_async(path, on_done, opts)
 							end
 
 							for _, line in ipairs(status_lines) do
+								local code = line:sub(1, 1)
+								if code == "I" or code == "?" or code == "!" or code == "D" then
+									return task:finish(nil, nil, root)
+								end
 								if line ~= "" and line:sub(1, 1) == "A" then
-									local blame, read_err = uncommitted_blame_lines(path)
+									local blame, read_err = uncommitted_blame_lines(path, opts.contents)
 									return task:finish(blame, read_err, root)
 								end
 							end
 
 							task:add(
-								util.system_lines_start(
-									{ "svn", "blame", "-v", path },
+								process.lines(
+									{ "svn", "blame", "-v", literal_target(path) },
 									{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
 									function(lines, blame_err)
 										if not lines then
@@ -749,7 +786,22 @@ function M.blame_lines_async(path, on_done, opts)
 											end
 											return task:finish(nil, blame_err)
 										end
-										task:finish(lines, nil, root)
+										task:add(process.lines({ "svn", "cat", "-r", "BASE", literal_target(path) }, {
+											cwd = root,
+											timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+										}, function(base, base_err)
+											if not base then
+												return task:finish(nil, base_err)
+											end
+											local ok, current = true, opts.contents and util.split_lines(opts.contents)
+											if not current then
+												ok, current = pcall(vim.fn.readfile, path)
+											end
+											if not ok then
+												return task:finish(nil, tostring(current))
+											end
+											task:finish(map_blame(lines, base, current), nil, root)
+										end))
 									end
 								)
 							)
@@ -831,7 +883,10 @@ function M.revision_log(path, revision)
 	if not root then
 		return nil, err or "Not an SVN working copy"
 	end
-	local lines, log_err = util.system_lines({ "svn", "log", "-r", tostring(revision), path }, { cwd = root })
+	local lines, log_err = util.system_lines(
+		{ "svn", "log", "-r", tostring(revision), literal_target(path) },
+		{ cwd = root }
+	)
 	if not lines then
 		return nil, log_err
 	end
@@ -848,7 +903,7 @@ function M.revision_log_async(path, revision, on_done, opts)
 		if not info then
 			return task:finish(nil, err or "Not an SVN working copy")
 		end
-		task:add(util.system_lines_start({ "svn", "log", "-r", tostring(revision), path }, {
+		task:add(process.lines({ "svn", "log", "-r", tostring(revision), literal_target(path) }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 		}, function(lines, log_err)

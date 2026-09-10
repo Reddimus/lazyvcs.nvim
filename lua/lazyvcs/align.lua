@@ -79,11 +79,31 @@ end
 ---@param base_stop integer|nil last base line worth pairing
 ---@param current_stop integer|nil last current line worth pairing
 ---@return lazyvcs.align.Unit[]
-function M.pair_units(hunks, base_count, current_count, base_stop, current_stop)
+function M.pair_units(hunks, base_count, current_count, base_stop, current_stop, base_first, current_first)
 	local units = {}
 	local b, c = 1, 1
 	base_stop = base_stop or base_count
 	current_stop = current_stop or current_count
+	base_first = base_first or 1
+	current_first = current_first or 1
+	hunks = hunks or {}
+	local low, high = 1, #hunks + 1
+	while low < high do
+		local middle = math.floor((low + high) / 2)
+		local hunk = hunks[middle]
+		local base_end = hunk.base_start + math.max(hunk.base_count - 1, 0)
+		local current_end = hunk.current_start + math.max(hunk.current_count - 1, 0)
+		if base_end < base_first and current_end < current_first then
+			low = middle + 1
+		else
+			high = middle
+		end
+	end
+	if low > 1 then
+		local previous = hunks[low - 1]
+		b = previous.base_start + math.max(previous.base_count, 1)
+		c = previous.current_start + math.max(previous.current_count, 1)
+	end
 
 	local function past_the_end()
 		return b > base_stop and c > current_stop
@@ -91,22 +111,29 @@ function M.pair_units(hunks, base_count, current_count, base_stop, current_stop)
 
 	local function pair_unchanged(b_last, c_last)
 		local length = math.min(b_last - b + 1, c_last - c + 1)
-		for offset = 0, length - 1 do
-			-- Skip the units that are certainly off screen, but keep advancing the
-			-- cursors: the pairing is positional, so stopping early would
-			-- mis-align everything after it.
-			if b + offset <= base_stop or c + offset <= current_stop then
+		local ranges = {
+			{ math.max(0, base_first - b), math.min(length - 1, base_stop - b) },
+			{ math.max(0, current_first - c), math.min(length - 1, current_stop - c) },
+		}
+		if ranges[2][1] < ranges[1][1] then
+			ranges[1], ranges[2] = ranges[2], ranges[1]
+		end
+		local emitted = -1
+		for _, range in ipairs(ranges) do
+			for offset = math.max(range[1], emitted + 1), range[2] do
 				units[#units + 1] = {
 					base = { b + offset, b + offset },
 					current = { c + offset, c + offset },
 				}
+				emitted = offset
 			end
 		end
 		b = b + length
 		c = c + length
 	end
 
-	for _, hunk in ipairs(hunks or {}) do
+	for index = low, #hunks do
+		local hunk = hunks[index]
 		if past_the_end() then
 			break
 		end
@@ -211,7 +238,9 @@ function M.apply(session)
 		vim.api.nvim_buf_line_count(base_buf),
 		vim.api.nvim_buf_line_count(edit_buf),
 		base_last,
-		edit_last
+		edit_last,
+		base_first,
+		edit_first
 	)
 
 	-- Build the whole plan before touching the buffers. Measuring is read-only,
@@ -223,10 +252,17 @@ function M.apply(session)
 			-- filler already reserves the opposite space, so padding it too would
 			-- double-count the gap.
 			local base_range, current_range = unit.base, unit.current
-			if base_range and current_range then
+			if
+				base_range
+				and current_range
+				and base_range[2] - base_range[1] < 1000
+				and current_range[2] - current_range[1] < 1000
+			then
 				local base_height = range_rows(base_win, base_range[1], base_range[2])
 				local edit_height = range_rows(edit_win, current_range[1], current_range[2])
-				if base_height < edit_height then
+				if math.abs(base_height - edit_height) > 1000 then
+					-- Keep native diff filler for unusually large wrapped blocks.
+				elseif base_height < edit_height then
 					plan[base_buf][base_range[2]] = edit_height - base_height
 				elseif edit_height < base_height then
 					plan[edit_buf][current_range[2]] = base_height - edit_height

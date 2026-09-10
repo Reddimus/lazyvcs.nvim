@@ -93,7 +93,32 @@ completion. New functionality is added as a subcommand in the `spec` table in
 1. Move the `Unreleased` CHANGELOG entries under a new `## [x.y.z] - DATE`
    heading.
 2. Commit, and confirm CI is green on `main`.
-3. `git tag -a vx.y.z -m "vx.y.z" && git push origin vx.y.z`.
+3. `git -c gpg.format=ssh tag -s vx.y.z -m "vx.y.z" && git push origin vx.y.z`.
+
+Use a signing key trusted by `.github/allowed_signers`. Verify the tag with
+`git -c gpg.ssh.allowedSignersFile=.github/allowed_signers verify-tag vx.y.z`.
 
 `.github/workflows/release.yml` extracts that CHANGELOG section and publishes
 the GitHub release.
+
+## Architecture
+
+- `backends/` owns Git/SVN commands, eligibility, and immutable comparison data.
+- `source_control/jobs.lua` bounds and profiles repository/comparison commands.
+- `compare.lua` owns a review tab, remembered bases, and read-only previews.
+- `actions.lua`, `layout.lua`, and `state.lua` own editable per-file diff
+  sessions.
+- `signs.lua` and `blame.lua` own buffer state and cancel stale generations.
+- New regression cases belong in sibling `tests/spec_*.lua` modules. The main
+  spec is near LuaJIT's local-variable limit.
+
+Comparison discovery parses bounded command output in O(output bytes), sorts
+paths in O(files log files), and loads only the selected preview. Preview reads
+are bounded to 1 MiB. Untracked SVN directory traversal does not follow
+symlinks. Git rename detection has a limit of 1000 candidates. Repository
+resolution uses at most 512 cached directories and shares concurrent probes for
+one directory.
+
+Use disposable repositories for mutation tests. For live terminal validation,
+exercise keyboard and mouse actions in both vanilla Neovim and AstroNvim; verify
+actual buffer contents and repository state as well as the rendered screen.

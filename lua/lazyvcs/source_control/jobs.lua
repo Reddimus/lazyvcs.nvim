@@ -35,6 +35,34 @@ local next_id = 0
 local next_seq = 0
 local pump
 
+local function before(a, b)
+	return a.priority > b.priority or (a.priority == b.priority and a.seq < b.seq)
+end
+
+local function sift_down(queue, index)
+	while index * 2 <= #queue do
+		local child = index * 2
+		if child < #queue and before(queue[child + 1], queue[child]) then
+			child = child + 1
+		end
+		if not before(queue[child], queue[index]) then
+			break
+		end
+		queue[index], queue[child] = queue[child], queue[index]
+		index = child
+	end
+end
+
+local function pop_job(queue)
+	local first = queue[1]
+	local last = table.remove(queue)
+	if #queue > 0 then
+		queue[1] = last
+		sift_down(queue, 1)
+	end
+	return first
+end
+
 local function background_config()
 	return config.get().source_control.background or {}
 end
@@ -244,7 +272,7 @@ pump = function(vcs)
 	end
 	pumping[vcs] = true
 	while active[vcs] < worker_limit(vcs) and #queues[vcs] > 0 do
-		local job = table.remove(queues[vcs], 1)
+		local job = pop_job(queues[vcs])
 		if not job.finalized then
 			start_job(job)
 		end
@@ -292,13 +320,16 @@ local function set_latest_generation(owner, scope, generation)
 end
 
 local function insert_job(queue, job)
-	for index, queued in ipairs(queue) do
-		if job.priority > queued.priority then
-			table.insert(queue, index, job)
-			return
-		end
-	end
 	queue[#queue + 1] = job
+	local index = #queue
+	while index > 1 do
+		local parent = math.floor(index / 2)
+		if not before(queue[index], queue[parent]) then
+			break
+		end
+		queue[index], queue[parent] = queue[parent], queue[index]
+		index = parent
+	end
 end
 
 -- Scheduler owner keys are derived from this, so it must agree with the
@@ -391,6 +422,12 @@ function M.command(repo, kind, args, opts, on_done)
 		end
 	end
 
+	if #queues[vcs] >= 4096 then
+		vim.schedule(function()
+			finish(job, "error", nil, "VCS job queue is full; retry after pending work finishes")
+		end)
+		return job.id
+	end
 	insert_job(queues[vcs], job)
 	pump(vcs)
 	return job.id
@@ -415,6 +452,9 @@ function M.cancel(filter, reason)
 				end
 			end
 			queues[vcs] = kept
+			for index = math.floor(#kept / 2), 1, -1 do
+				sift_down(kept, index)
+			end
 		end
 		for _, job in pairs(running) do
 			local ok, matches = pcall(filter, job)

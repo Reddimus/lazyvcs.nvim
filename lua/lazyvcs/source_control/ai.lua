@@ -153,11 +153,17 @@ local function collect_context_commands(request, commands, callback)
 		local handle = util.system_start(
 			command.args,
 			{ cwd = command.cwd, timeout = command.timeout },
-			function(result)
+			function(result, err)
 				if not request.active then
 					return
 				end
 				request.handle = nil
+				if not result then
+					return request:finish(nil, err or "Could not collect commit context")
+				end
+				if result.stdout_truncated or result.stderr_truncated then
+					return request:finish(nil, "Commit context exceeded the output limit")
+				end
 				local stdout = result and util.trim(result.stdout) or ""
 				if stdout ~= "" then
 					output[#output + 1] = stdout
