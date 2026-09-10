@@ -706,6 +706,9 @@ function M.blame_lines_async(path, on_done, opts)
 						return task:finish(nil, tracked_err)
 					end
 					local blame_args = { "git", "blame", "--line-porcelain" }
+					if opts.line_start and opts.line_end then
+						vim.list_extend(blame_args, { "-L", opts.line_start .. "," .. opts.line_end })
+					end
 					local blame_opts = {
 						cwd = root,
 						timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,

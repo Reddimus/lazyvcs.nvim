@@ -74,6 +74,10 @@ function M.blame_split()
 	return require("lazyvcs.blame").blame_split()
 end
 
+function M.blame_selection(first, last)
+	return require("lazyvcs.blame_selection").open(first, last)
+end
+
 function M.blame_clear()
 	return require("lazyvcs.blame").blame_clear()
 end

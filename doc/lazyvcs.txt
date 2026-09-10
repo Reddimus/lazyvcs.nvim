@@ -105,15 +105,30 @@ Git's merge base or SVN's numeric revision. No Git fetch happens automatically.
 Unborn HEAD, missing history, unrelated histories, and multiple merge bases
 produce an explanation instead of selecting an arbitrary base.
 
+Press C in source control or choose "Compare against base..." from repository
+actions. The selected row determines the repository; ambiguous selections use a
+picker. The sidebar mapping returns from Compare to source control. Reopening
+reuses the comparison tab, refreshes it, and preserves the selected path.
+
 The review tab owns its sidebar and read-only preview buffers. Narrow windows
 stack the preview panes vertically:
     Enter       Preview the selected saved file.
-    e           Open the real file in the original editing window.
+    e           Fit the file list width; press again to restore.
+    o           Open the real file in the original editing window.
     R           Refresh changes and resolve the base again.
     b           Choose another base.
     p           Show metadata or SVN property changes.
-    ?           Show help.
+    ?           Show floating help; q or Escape dismisses it.
     q           Close the review and return to the original window.
+
+File rows show the filename before the directory. The > marker identifies the
+previewed file independently of the cursor. Auto-fit measures file rows, caps
+width growth at half the terminal, and reserves 45 columns for each horizontal
+preview. Terminal resizing can stack previews. Manual width survives tab changes.
+
+LazyVcsCompareTitle, Base, Path, Hint, Add, Change, Delete, Conflict, Current, and
+Property are highlight groups with the LazyVcsCompare prefix. They default to
+standard theme groups and can be overridden with nvim_set_hl().
 
 Git line totals cover paths with available numeric statistics. Binary,
 untracked, recreated, and SVN paths may have no line counts; the header reports
@@ -129,6 +144,7 @@ Lua API: >lua
     })
     require("lazyvcs").compare_refresh()
     require("lazyvcs").compare_close()
+    require("lazyvcs").blame_selection(3, 12) -- inclusive line numbers
 <
 Blame and signs skip buffers whose saved or in-memory size exceeds
 `signs.max_file_bytes`. Ignored/untracked files have no automatic blame warning.
@@ -164,6 +180,7 @@ buffer-local and fixed; `config.keymaps` does not reach them.
     <CR>, l      focus repo, toggle Changes repo rows, run action, or open file
                  diff
     h            collapse node
+    C            compare the selected repository against a base
     <Space>      toggle repo visibility; expand/collapse sections
     <Tab>        toggle repo visibility; expand/collapse sections
     R            refresh
@@ -241,6 +258,26 @@ Behavior:
 Pressing `e` outside a commit-message row toggles sidebar auto-fit. The width is
 capped by `source_control.auto_expand_max_width_ratio`, then restored when `e`
 is pressed again.
+
+==============================================================================
+SELECTED-LINE BLAME                                   *lazyvcs-blame-selection*
+
+Select text and run :LazyVCS blame or :LazyVCS blame selection. Vim supplies the
+range, for example :3,12LazyVCS blame. Without a range, "blame selection" uses the
+cursor line. Characterwise and blockwise selections include every touched line.
+The report shows original line numbers, revision, author, date, and source text.
+Press q or Escape to close it. Results describe the selection at request time.
+
+The Lua API blame_selection(first, last) accepts inclusive line numbers. With no
+arguments it uses the active visual selection or cursor line. An optional map: >lua
+    vim.keymap.set("x", "<leader>vb", "<Plug>(LazyVCSBlameSelection)")
+<
+Editor blame includes unsaved contents. Compare base panes use the pinned
+revision and original rename path. Git saved panes use the captured HEAD and
+saved preview contents; SVN saved panes map working-copy BASE to those contents.
+Metadata and directory previews have no line attribution. Git requests only the
+selected range; SVN loads file blame once. Files are limited to 1 MiB and command
+output is bounded. Changed or closed source buffers invalidate pending results.
 
 ==============================================================================
 CONFIGURATION                                           *lazyvcs-configuration*

@@ -47,8 +47,9 @@ Open a file inside a Git or SVN working copy:
 | `:LazyVCS blame toggle` | Toggle inline blame; `blame split` shows all lines |
 
 Press `<Tab>` after `:LazyVCS ` for command completion. In the sidebar, `s` or
-`.` opens repository actions, `c` commits, `b` switches branches or SVN targets,
-`R` refreshes, `?` shows help, and `q` closes it.
+`C` compares a repository against a base. `.` opens repository actions, `c`
+commits, `b` switches branches or SVN targets, `R` refreshes, `?` shows help,
+and `q` closes it.
 
 ## Compare a branch
 
@@ -61,8 +62,22 @@ selected repository revision with the working copy. Save buffers before
 refreshing to include their latest edits.
 
 The comparison tab has a file list and two read-only panes. Press `Enter` to
-preview, `e` to edit the real file, `R` to refresh, `b` to change the base, or
-`q` to close. Binary and oversized files remain listed without a text preview.
+preview, `e` to widen the list, `o` to edit, `R` to refresh, or `b` to change
+the base. `q` closes the comparison; your sidebar mapping returns to source
+control. `C` reopens the comparison, refreshes it, and preserves your place.
+Binary and oversized files remain listed without a text preview.
+
+## Blame selected lines
+
+Select lines, then run `:LazyVCS blame`. Vim supplies the selected range. This
+also works in Compare's text panes. `q` closes the report. Unsaved edits are
+marked uncommitted in editor buffers.
+
+Optional visual mapping:
+
+```lua
+vim.keymap.set("x", "<leader>vb", "<Plug>(LazyVCSBlameSelection)")
+```
 
 ## Configure
 

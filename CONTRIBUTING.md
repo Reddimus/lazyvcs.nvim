@@ -105,7 +105,12 @@ the GitHub release.
 
 - `backends/` owns Git/SVN commands, eligibility, and immutable comparison data.
 - `source_control/jobs.lua` bounds and profiles repository/comparison commands.
-- `compare.lua` owns a review tab, remembered bases, and read-only previews.
+- `compare.lua` owns review tabs, source-control navigation, and read-only
+  previews.
+- `compare_view.lua` builds file rows, highlights, and cached width
+  measurements.
+- `blame_selection.lua` presents selected-line reports through a cancellable
+  backend loader.
 - `actions.lua`, `layout.lua`, and `state.lua` own editable per-file diff
   sessions.
 - `signs.lua` and `blame.lua` own buffer state and cancel stale generations.
@@ -126,3 +131,8 @@ consume their capacity. Sidebar cancellation leaves editor requests running.
 Use disposable repositories for mutation tests. For live terminal validation,
 exercise keyboard and mouse actions in both vanilla Neovim and AstroNvim; verify
 actual buffer contents and repository state as well as the rendered screen.
+
+Comparison rows take O(displayed bytes) time and space per snapshot. Width
+changes use cached measurements; cursor movement does not load previews.
+Selection blame sends one bounded request chain, never a command per line. Git
+uses line ranges; SVN maps file blame through the captured buffer contents.
