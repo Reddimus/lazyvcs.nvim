@@ -91,6 +91,9 @@ Defaults avoid remote refreshes unless requested. Git signs are delegated to
 `gitsigns.nvim` when installed. Optional pickers and commit-message providers
 are detected automatically. See `:help lazyvcs-configuration` for all options.
 
+Diff panes use normal syntax colors, including code an LSP marks inactive. Set
+`diff_highlighting = "editor"` to keep LSP semantic colors in comparisons.
+
 ## Help and contribute
 
 - `:help lazyvcs` covers commands, mappings, and configuration.

@@ -1,19 +1,8 @@
 local M = {}
 local temp_roots = {}
 
--- Isolate every git invocation in this Neovim process -- the fixtures' own, and
--- the ones the plugin makes through `vim.system` -- from the developer's git
--- configuration. Setting these in `vim.env` means child processes inherit them.
---
--- A contributor with `commit.gpgsign` / `tag.gpgsign` set globally (normal for
--- anyone who signs releases) turned the fixtures' `git tag v1.0.0` into a
--- signed annotated tag and got `fatal: no tag message?` from three switch
--- specs, and would hit the same on any plugin-driven `git commit`. CI has no
--- global config, so this class of failure is invisible there and looks like a
--- local-machine problem instead of the environment leak it is.
---
--- `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` are git 2.32+. `/dev/null` is not
--- portable to Windows, so point both at an empty file.
+-- Isolate fixture and plugin Git subprocesses from developer signing settings. Git 2.32+
+-- accepts config-file overrides; use an empty file for Windows portability.
 local function isolate_git_config()
 	local empty = vim.fs.normalize(vim.fn.tempname())
 	local handle = io.open(empty, "w")
@@ -31,12 +20,8 @@ local function join(...)
 	return vim.fs.normalize(table.concat({ ... }, "/"))
 end
 
--- vim.fs.normalize(vim.fn.tempname()) returns a backslash path on Windows. The plugin normalizes
--- every path it reports through vim.fs.normalize, so fixtures must do the same or
--- comparisons fail with mixed separators (C:\a\b/c vs C:/a/b/c).
--- macOS puts temporary files under /var, which is a symlink to /private/var, so
--- Neovim reports buffer names in the resolved form while the fixture path stays
--- unresolved. Resolve once at creation so every later comparison matches.
+-- Normalize separators and resolve temporary-directory symlinks once so buffer and
+-- fixture paths match on Windows and macOS.
 local function tempdir()
 	local dir = vim.fs.normalize(vim.fn.tempname())
 	vim.fn.mkdir(dir, "p")
@@ -117,13 +102,8 @@ function M.exec(args, cwd)
 	return result.stdout or ""
 end
 
----Build a `file://` URL for a local repository path.
----
----POSIX paths already start with `/`, so `file://` yields the required three
----slashes. Windows paths start with a drive letter instead, and `file://C:/...`
----makes `svn` parse `C:` as the URL authority, so every fixture checkout fails.
----Those failures are invisible on CI's Windows runner because it has no `svn`
----and the specs skip, so this must stay correct by construction.
+-- Build file URLs with three slashes before Windows drive letters; otherwise SVN treats
+-- the drive as a URL authority.
 function M.file_url(path)
 	local normalized = vim.fs.normalize(path)
 	if normalized:sub(1, 1) == "/" then

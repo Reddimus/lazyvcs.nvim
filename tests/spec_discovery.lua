@@ -1,15 +1,4 @@
--- Regression specs for asynchronous repository discovery and the string
--- helpers it leans on.
---
--- These live outside `tests/spec.lua` because LuaJIT caps a function at 200
--- local variables, and `spec.lua` declares every case as a top-level
--- `local function` -- it reached that ceiling exactly. New cases belong in a
--- module like this one: export a factory that takes the shared harness and
--- returns `{ name, fn }` pairs, and `spec.lua` appends them to `cases`. Names
--- still drive group selection through `group_for`, so keep the
--- `test_source_control_*` prefix for anything that must run in the
--- `source_control` group.
---
+-- Async discovery regressions. Factories return { name, fn } cases; prefixes select test groups.
 ---@class LazyVcsSpecContext
 ---@field helpers table
 ---@field wait_for fun(predicate: function, msg: string?, timeout: number?)
@@ -24,14 +13,7 @@ return function(ctx)
 	local wait_for_discovery = ctx.wait_for_discovery
 	local ASYNC_TIMEOUT_MS = ctx.async_timeout_ms
 
-	-- The defect this pins: `native.M.open` used to render BEFORE starting
-	-- discovery, so `model.collect`'s `state.lazyvcs_repo_specs or
-	-- M.discover(...)` fallback ran the synchronous discoverer on the UI thread
-	-- -- a recursive scandir walk plus blocking `git rev-parse` and `svn info`,
-	-- 30s cap each -- and then `start_discovery`'s `lazyvcs_repo_specs ~= nil`
-	-- guard made the whole async path unreachable. Stubbing `model.discover` to
-	-- raise is what makes a regression fail loudly instead of merely getting
-	-- slow again.
+	-- Fail if opening falls back to synchronous discovery on the UI thread.
 	local function test_source_control_native_open_never_discovers_synchronously()
 		require("lazyvcs").setup({
 			source_control = { ui = "native", scan_depth = 1, remote_refresh = "manual" },
@@ -62,12 +44,8 @@ return function(ctx)
 				"first frame should show a discovering state:\n" .. first_frame
 			)
 
-			-- The pending-discovery paint must go through `M.render`, not
-			-- `M.navigate`. `navigate` nils `lazyvcs_remote_refresh` and starts
-			-- hydration, so navigating against an empty spec list silently drops
-			-- the on-open remote refresh. `false` is a legitimate value here, so
-			-- this checks for `nil` specifically -- and it is exactly what a
-			-- `start_discovery` that forgets to return `true` regresses.
+			-- Render while discovery is pending. Navigation would consume remote-refresh intent
+			-- before repositories arrive.
 			assert(
 				state.lazyvcs_remote_refresh ~= nil,
 				"remote-refresh intent must survive the pending-discovery render"
@@ -116,12 +94,8 @@ return function(ctx)
 		end, "refresh should rediscover a repository created after open", ASYNC_TIMEOUT_MS)
 	end
 
-	-- The loading render collects an EMPTY repository list, and
-	-- `normalize_visibility_state` drops every override whose repository is not
-	-- in that list and clears the focused repository on the same test. So the
-	-- pending-discovery frame erased the layout `persist.apply_state` had just
-	-- restored, and closing the sidebar afterwards wrote the erased layout back
-	-- to disk -- losing it for good.
+	-- The loading list is empty; normalizing visibility against it would erase the restored
+	-- layout.
 	local function test_source_control_loading_render_preserves_repo_visibility()
 		require("lazyvcs").setup({
 			source_control = { ui = "native", scan_depth = 1, remote_refresh = "manual" },
@@ -177,10 +151,8 @@ return function(ctx)
 	local function test_util_truncation_is_utf8_and_cell_safe()
 		local util = require("lazyvcs.util")
 
-		-- Validate the bytes directly. `strcharpart(s, 0, strchars(s)) == s`
-		-- does NOT detect a split sequence: Neovim treats a stray continuation
-		-- byte as its own codepoint, so the old byte-slicing implementation
-		-- satisfied that check too.
+		-- Inspect UTF-8 bytes directly. Neovim treats stray continuation bytes as codepoints,
+		-- so strcharpart cannot detect a split sequence.
 		local function is_valid_utf8(s)
 			local index = 1
 			while index <= #s do

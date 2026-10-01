@@ -32,16 +32,12 @@ nvim --headless -u NONE -l tests/native_smoke.lua   # startup smoke
 nvim --headless -u NONE -l tests/run.lua            # spec suite
 tests/minitest.sh                                   # sidebar UI tests
 nvim --headless -u NONE -c 'helptags doc' -c 'quitall'
-# `-u NONE` alone cannot find the plugin, so the health provider never loads and
-# the check silently reports nothing. Put the checkout on the runtimepath and
-# source the plugin file first -- this is what `.github/workflows/verify.yml`
-# runs.
+# Load the plugin before checking health; -u NONE does not add this checkout.
 nvim --headless -u NONE -c 'set rtp+=.' -c 'runtime plugin/lazyvcs.lua' \
   -c 'checkhealth lazyvcs' -c 'quitall'
 ```
 
-`lua-language-server` needs `VIMRUNTIME` exported — `.luarc.json` resolves the
-Neovim runtime through `${env:VIMRUNTIME}/lua`.
+Export `VIMRUNTIME` for LuaLS. `.luarc.json` uses `$VIMRUNTIME/lua`.
 
 On Windows, `tests/minitest.sh` is not usable directly; clone mini.nvim at the
 commit pinned in that script, set `MINI_TEST_PATH`, and run
@@ -66,11 +62,9 @@ A green run on an svn-less machine therefore covers less than CI does.
 - **Line endings are LF everywhere**, enforced by `.gitattributes`. On Windows,
   clone with `core.autocrlf=false` or let `.gitattributes` normalize the
   checkout.
-- **Never block the UI thread.** Anything on a navigation, autocmd, or keystroke
-  path must use the async backend functions (`load_base_async`,
-  `blame_lines_async`). Synchronous VCS calls are acceptable only in
-  `health.lua` and tests. A blocking call starves `vim.schedule` callbacks,
-  which looks exactly like a deadlock from the outside.
+- **Never block the UI thread.** Navigation, autocmds, and keystrokes use async
+  backends (`load_base_async`, `blame_lines_async`). Synchronous VCS calls
+  belong only in `health.lua` and tests.
 - **Never let an error escape a `vim.schedule` or autocmd callback.** Headless
   Neovim only logs it, but interactive Neovim renders the traceback and blocks
   on the hit-enter prompt. Report failures with a single-line `util.notify`.
@@ -113,6 +107,9 @@ the GitHub release.
   backend loader.
 - `actions.lua`, `layout.lua`, and `state.lua` own editable per-file diff
   sessions.
+- `highlighting.lua` scopes syntax-only presentation to diff windows and
+  restores their previous namespaces. Its namespace pool grows with concurrent
+  windows.
 - `signs.lua` and `blame.lua` own buffer state and cancel stale generations.
 - New regression cases belong in sibling `tests/spec_*.lua` modules. The main
   spec is near LuaJIT's local-variable limit.

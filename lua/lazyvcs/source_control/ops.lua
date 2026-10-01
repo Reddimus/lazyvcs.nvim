@@ -647,11 +647,8 @@ local function ensure_repo_details(state, repo)
 		jobs.command(repo, opts.kind, args, {
 			timeout_ms = opts.timeout_ms,
 			generation = generation,
-			-- Per repository. The scheduler keys its staleness watermark on
-			-- (owner, scope), but the generation counter is per repo -- so a
-			-- shared "details" scope let a repo whose generation had advanced
-			-- raise the watermark above a sibling's, and the sibling's details
-			-- were cancelled as stale and never loaded.
+			-- Use a per-repository scope; one repository generation must not mark another
+			-- repository stale.
 			scope = "details:" .. repo.root,
 			owner = state,
 			priority = 10,
@@ -1423,10 +1420,8 @@ function M.switch_repo(state, node)
 	local switch_generation = (state.lazyvcs_switch_generations[switch_scope] or 0) + 1
 	state.lazyvcs_switch_generations[switch_scope] = switch_generation
 	return repo_switch.open_async(repo, {
-		-- Cancelling the enumeration does not stop the SVN chain -- its
-		-- callbacks read a cancelled `nil` result as "target absent" and run to
-		-- completion -- so the picker needs its own liveness test rather than
-		-- relying on the job being killed.
+		-- Check picker liveness separately; cancelled SVN callbacks can continue the
+		-- enumeration chain.
 		is_stale = function()
 			return state.lazyvcs_tearing_down == true or not window_exists(state)
 		end,
@@ -1470,19 +1465,8 @@ function M.switch_repo(state, node)
 		end,
 		after_mutation = function() end,
 	}, function(args, opts, on_done)
-		-- `owner = state` so closing the sidebar actually cancels this.
-		-- Omitting it defaulted the owner to the repository-root string, which
-		-- `cancel_state_jobs` (filtering on `owner == state`) never matched, so
-		-- switch-target enumeration outlived the sidebar and could still pop a
-		-- picker after it was gone.
-		--
-		-- A per-repository scope with its own generation, rather than reusing
-		-- `lazyvcs_hydration_generation` under a shared `"switch"` scope: that
-		-- watermark is stored per (owner, scope) and persisted across sidebar
-		-- lifetimes for scalar owners, so a heavily-refreshed sidebar left a
-		-- high watermark that immediately rejected a fresh sidebar's switch job
-		-- as stale. With `owner = state` the generation lives in the weak-keyed
-		-- object table instead and dies with the sidebar.
+		-- Own enumeration with the sidebar state so teardown cancels it. Use a per-repository
+		-- scope and generation to avoid stale watermarks from earlier sidebar lifetimes.
 		jobs.command(repo, opts.kind or "switch", args, {
 			timeout_ms = bg.switch_timeout_ms,
 			owner = state,

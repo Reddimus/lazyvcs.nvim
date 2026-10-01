@@ -27,13 +27,7 @@ function M.notify(msg, level)
 	vim.notify(msg, level or vim.log.levels.INFO, { title = "lazyvcs.nvim" })
 end
 
--- The outer parentheses are load-bearing: `gsub` returns (string, count), so
--- without them `trim` returns two values. Both backends' `get_root` end with
--- `return util.trim(result.stdout)`, so `local root, err = get_root(path)` was
--- binding the substitution count to `err` -- normally 1, since the command
--- output ends in a newline -- and any `load_err or err` fallback would surface
--- that number to the user as an error message. See `layout.sanitize_root` for
--- the same shape written correctly.
+-- Parentheses keep gsub's substitution count out of the return values.
 function M.trim(text)
 	return ((text or ""):gsub("^%s+", ""):gsub("%s+$", ""))
 end
@@ -408,29 +402,8 @@ function M.dir_of(path)
 	return vim.fs.dirname(path)
 end
 
---- Path of `path` relative to `root`.
----
---- Never returns nil: callers concatenate the result into buffer names and VCS
---- arguments. `vim.fs.relpath` returns nil whenever the two paths share no
---- textual prefix, which happens on Windows when one side is an 8.3 short name
---- (`C:/Users/RUNNER~1/...`) and the other is the long form
---- (`C:/Users/runneradmin/...`) — the same directory, spelled differently.
----Canonical identity for a repository or workspace root.
----
----`vim.fs.normalize` alone only fixes separators and `~`; it does not resolve
----symlinks. That is enough for display but not for identity, and roots ARE
----identities here: `state.path`, `repo.root`, the job scheduler's owner keys and
----the session registry all compare them with `==`.
----
----The mismatch is routine on macOS, where `/tmp` and `/var` are symlinks into
----`/private`. `git rev-parse --show-toplevel` and `svn info` both report the
----resolved path, while a sidebar opened from `vim.fn.getcwd()` in `/tmp/work`
----keeps the unresolved spelling — so the same repository ends up with two
----identities and its cache entries, jobs and sessions stop matching. The test
----fixtures already resolve at creation time for exactly this reason.
----
----Falls back to the normalized input when the path does not exist yet, so a
----not-yet-created directory still gets a stable (if unresolved) identity.
+-- Canonicalize root identities by resolving symlinks. Missing paths retain their
+-- normalized spelling.
 ---@param path string|nil
 ---@return string
 function M.canonical_path(path)

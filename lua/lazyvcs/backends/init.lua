@@ -1,7 +1,4 @@
--- Backend dispatch.
---
--- Callers must go through this module rather than requiring `backends.git` or
--- `backends.svn` directly, so every feature works identically in both VCSes.
+-- Dispatch Git/SVN operations here so callers support both backends.
 local util = require("lazyvcs.util")
 local Task = require("lazyvcs.backends.task")
 
@@ -56,10 +53,8 @@ function M.resolve(path)
 		if hit.backend then
 			return hit.backend, hit.root
 		end
-		-- Negative results expire: a directory can become a working copy mid-session
-		-- (`git init`, a clone, a checkout). Caching those forever left signs, diff
-		-- and blame dead there until :cd or a restart, while re-probing every time
-		-- would spawn git+svn on each BufEnter in non-repo directories.
+		-- Expire negative results so git init and new checkouts work without restart. Avoid
+		-- probing every non-repository BufEnter.
 		if vim.uv.now() - hit.at < NEGATIVE_TTL_MS then
 			return nil, nil, hit.err
 		end

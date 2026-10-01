@@ -831,12 +831,8 @@ end
 function M.open_async(repo, opts, run_command)
 	opts = async_defaults(opts)
 	return M.collect_async(repo, run_command, function(context, err)
-		-- Cancelling the enumeration finalizes its jobs and invokes their
-		-- callbacks synchronously, and the SVN chain reads a cancelled `nil`
-		-- result as "target absent" rather than "stop" -- so it runs to
-		-- completion and arrives here with a usable context. During teardown the
-		-- sidebar window is still valid, so without this the picker could open
-		-- (and an error could be announced) for a sidebar that is going away.
+		-- Cancellation invokes callbacks synchronously and the SVN chain can continue. Recheck
+		-- liveness before showing a picker or error during teardown.
 		if opts.is_stale and opts.is_stale() then
 			return
 		end

@@ -2,24 +2,16 @@ local M = {}
 
 local defaults = {
 	debounce_ms = 120,
+	diff_highlighting = "syntax",
 	base_window = {
 		width = 0.5,
 		-- Keep the two panes' cursors on corresponding lines. `:diffthis` already
 		-- sets 'cursorbind'; lazyvcs re-asserts it so a later ftplugin or
 		-- colorscheme cannot silently unbind the pair.
 		cursor_sync = true,
-		-- Keep corresponding lines on the same screen row when the panes wrap.
-		-- 'scrollbind' binds buffer lines, so with 'wrap' on (which needs
-		-- `followwrap` in 'diffopt') a line occupying four rows on one side and
-		-- one on the other pushes everything below it out of alignment, and the
-		-- error accumulates down the file.
-		--
-		-- "auto" pads the shorter side with virtual rows, which makes the panes
-		-- line up exactly while they are still. It is off by default because the
-		-- padding is invisible to Neovim's own scroll binding: the two disagree
-		-- about position *while scrolling*, and the panes can land on different
-		-- lines until the view settles. "off" keeps native behaviour and enables
-		-- 'smoothscroll' instead, so scrolling moves by screen rows.
+		-- "auto" pads wrapped lines with virtual rows. It aligns stationary panes, but native
+		-- scrollbind cannot see that padding. "off" keeps native binding and enables
+		-- smoothscroll.
 		align_wrapped = "off",
 	},
 	use_gitsigns = true,
@@ -152,6 +144,9 @@ local function normalize_width(width)
 end
 
 local function normalize(opts)
+	if opts.diff_highlighting ~= "syntax" and opts.diff_highlighting ~= "editor" then
+		error('lazyvcs diff_highlighting must be "syntax" or "editor"')
+	end
 	vim.validate("use_gitsigns", opts.use_gitsigns, "boolean")
 	vim.validate("set_winbar", opts.set_winbar, "boolean")
 	vim.validate("session_keymaps", opts.session_keymaps, "boolean")

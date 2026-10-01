@@ -1,10 +1,5 @@
--- Small persisted key/value store for lazyvcs UI preferences that should survive
--- across Neovim sessions (e.g. whether inline blame is enabled). State lives in a
--- single JSON file under stdpath("state"); writes are atomic (temp file + rename)
--- so an interrupted write can never leave a corrupt file behind.
---
--- This is intentionally separate from source_control/persist.lua, which stores
--- per-workspace sidebar layout keyed by repository root.
+-- Persist UI preferences atomically under stdpath("state"). Per-workspace sidebar layouts
+-- live separately in source_control/persist.lua.
 
 local json_file = require("lazyvcs.json_file")
 

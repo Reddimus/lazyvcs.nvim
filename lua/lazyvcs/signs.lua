@@ -517,10 +517,7 @@ function M.setup()
 		clear(bufnr)
 	end
 
-	-- Highlight groups must be re-registered even when signs are disabled, since
-	-- blame uses them too. `:colorscheme` wipes `default = true` links, so without
-	-- this every lazyvcs highlight silently falls back to Normal after a theme
-	-- switch.
+	-- Register highlights even with signs disabled; blame also needs them after ColorScheme.
 	local hl_group = vim.api.nvim_create_augroup("lazyvcs_highlights", { clear = true })
 	vim.api.nvim_create_autocmd("ColorScheme", {
 		group = hl_group,
@@ -541,10 +538,8 @@ function M.setup()
 	vim.api.nvim_create_autocmd("BufEnter", {
 		group = augroup,
 		callback = function(args)
-			-- Without `reload_base = true` this reuses the cached base. Passing it
-			-- here bypassed the `state.loaded` short-circuit and spawned (then
-			-- killed) a `git show :file` / `svn cat` on every single window or
-			-- buffer switch -- `<C-w>w`, `:bnext`, the tabline picker.
+			-- Reuse the cached base on window changes; reload_base would spawn and cancel a VCS
+			-- read on every switch.
 			M.refresh(args.buf, false)
 		end,
 	})

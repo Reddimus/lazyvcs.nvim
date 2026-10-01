@@ -11,15 +11,8 @@ local ASYNC_TIMEOUT_MS = 30000
 
 local literal_target = util.svn_target
 
--- Cache the `svn` executable lookup so a machine without Subversion (the common
--- case — lazyvcs is Git-first) does not spawn a process that throws ENOENT on
--- every session open. backends/init.lua probes every backend for each path, so
--- an unguarded svn call here breaks Git workflows too.
---
--- Keyed on PATH, not cached once for the session -- see the matching note in
--- backends/git.lua. Subversion is the more likely of the two to arrive from a
--- Homebrew prefix that a GUI-launched Neovim cannot see, since macOS has not
--- shipped `svn` since Xcode 10.
+-- Cache executable availability by PATH. Missing SVN must not break Git; recheck when a
+-- GUI session adds Homebrew to PATH.
 local svn_cached_path, svn_present = nil, false
 local function svn_available()
 	local path = vim.env.PATH or ""
@@ -39,10 +32,7 @@ local function get_root(path)
 	if not result then
 		return nil, err
 	end
-	-- Canonicalize: the sidebar canonicalizes its roots, and identity is
-	-- compared with `==`. Git already resolves symlinks here, but a Windows
-	-- 8.3 short path or a case difference would still not match, and the
-	-- non-existent-path fallback keeps this total.
+	-- Canonicalize roots to match sidebar identities, including Windows short paths.
 	return util.canonical_path(util.trim(result.stdout))
 end
 

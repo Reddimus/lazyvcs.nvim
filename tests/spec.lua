@@ -15,18 +15,11 @@ local function wait_for(predicate, msg, timeout)
 	assert(ok, msg or "timed out")
 end
 
--- Budget for waits that depend on real VCS subprocesses: opening a diff resolves
--- the backend and reads the base, and a buffer transfer does the same again
--- while the signs autocmd runs its own commands against the same working copy.
--- Two contended spawns regularly exceed a 2s budget on Windows, which shows up
--- as a flaky suite rather than a real failure. Waits that assert something must
--- NOT happen keep the short default.
+-- Allow time for contended VCS spawns on Windows. Negative assertions retain the short
+-- default timeout.
 local ASYNC_TIMEOUT_MS = 15000
 
--- Repository discovery is asynchronous, so `source_control_open` returns before
--- `lazyvcs_repo_specs` is populated. Any test that reads the specs, the repo
--- cache, or rendered repository rows must wait for the discovery callback
--- first. Returns the state so call sites stay a single line.
+-- Await asynchronous discovery before reading repository specs, caches, or rows.
 local function wait_for_discovery(state, msg)
 	wait_for(function()
 		return state.lazyvcs_discovering ~= true and state.lazyvcs_repo_specs ~= nil
@@ -82,11 +75,8 @@ local function collect_switch_targets(switch, repo)
 	return context, err
 end
 
--- `actions.open` resolves the backend off the UI thread, so it returns a
--- cancellable task rather than a session; `on_open` delivers the session once
--- the backend replies. A buffer that already has a live session is returned
--- synchronously instead. Tests await the session the same way a user sees it
--- appear, rather than forcing the open path to block.
+-- Await the session delivered by asynchronous open. An existing session may return
+-- synchronously.
 local function open_diff(opts)
 	local actions = require("lazyvcs.actions")
 	local opened
@@ -98,11 +88,7 @@ local function open_diff(opts)
 	if type(immediate) == "table" and immediate.editable_bufnr then
 		return immediate
 	end
-	-- Opening spawns a real backend resolve plus a base read, and the signs
-	-- autocmd runs its own commands against the same working copy at the same
-	-- time. Two contended process spawns routinely exceed wait_for's 2s default
-	-- on Windows, so give the await room rather than letting load make the suite
-	-- flaky.
+	-- Allow contended backend and signs subprocesses time to finish on Windows.
 	wait_for(function()
 		return opened ~= nil
 	end, "live diff session should open", ASYNC_TIMEOUT_MS)
@@ -2120,10 +2106,7 @@ local function test_source_control_duplicate_repo_names_use_root_identity()
 		},
 	})
 
-	-- `helpers.tempdir`, not a bare `tempname`: it resolves the path once at
-	-- creation. macOS puts temporary files under /var, a symlink to
-	-- /private/var, and repository roots are canonicalized identities, so an
-	-- unresolved fixture path no longer matches what discovery reports.
+	-- Resolve fixture paths once so macOS symlinks match canonical repository identities.
 	local workspace = helpers.tempdir()
 	local repo_a = workspace .. "/team-a/service"
 	local repo_b = workspace .. "/team-b/service"
@@ -3974,10 +3957,7 @@ function align_specs.pairs_units()
 	eq(deletion.base[1], 3)
 end
 
--- Build a session whose two sides wrap to very different heights: the base has
--- one long line where the working copy has a short one, and vice versa. Without
--- alignment every line below the first mismatch renders on a different screen
--- row on each side, and the offset never recovers.
+-- Pair long and short lines on opposite sides to expose accumulated wrapping offsets.
 function align_specs.open_wrapped_mismatch_session()
 	local root = vim.fs.normalize(vim.fn.tempname())
 	vim.fn.mkdir(root, "p")
@@ -4287,11 +4267,8 @@ local function test_svn_signs_ignore_untracked_files()
 	local signs = require("lazyvcs.signs")
 	local state, err = refresh_signs(signs, 0)
 	eq(state, nil)
-	-- supported_buffer no longer runs a synchronous is_versioned() probe (it ran on
-	-- every BufEnter and blocked the UI thread), so trackedness is now decided by
-	-- the backend load. An untracked file therefore reports the backend's error
-	-- rather than being filtered out beforehand. What matters is unchanged: no
-	-- state is cached and no signs are placed.
+	-- Untracked eligibility is decided during backend loading. Assert that no state or signs
+	-- survive.
 	if err ~= nil then
 		assert(
 			err:match("not found") or err:match("not tracked") or err:match("E200009"),
@@ -4325,10 +4302,8 @@ end
 local function test_git_status_decodes_quoted_paths()
 	local git = require("lazyvcs.backends.git")
 
-	-- git C-quotes non-ASCII paths: a file named "cafe" with an acute accent is
-	-- reported with LITERAL backslash-escaped octal bytes inside quotes. Stripping
-	-- the quotes left those backslashes, and vim.fs.normalize then turned them
-	-- into path separators, so the file could never be opened.
+	-- Git C-quotes non-ASCII paths with octal escapes; decode them before path
+	-- normalization.
 	local bs = string.char(92)
 	local quoted = '?? "caf' .. bs .. "303" .. bs .. '251.txt"'
 	local items = git.parse_status_lines({ quoted }, "/repo")
@@ -4353,10 +4328,7 @@ local function test_relpath_never_returns_nil()
 	eq(util.relpath("/repo", "/repo/a.txt"), "a.txt")
 	eq(util.relpath("/repo", "/repo/sub/a.txt"), "sub/a.txt")
 
-	-- vim.fs.relpath returns nil when the paths share no prefix, which happens on
-	-- Windows when one side is an 8.3 short name (C:/Users/RUNNER~1/...) and the
-	-- other is the long form. Callers concatenate this into buffer names and VCS
-	-- arguments, so it must always be a string.
+	-- Return a string even when Windows short and long paths share no textual prefix.
 	local unrelated = util.relpath("/somewhere/else", "/repo/a.txt")
 	eq(type(unrelated), "string")
 	assert(unrelated ~= "", "relpath must not return an empty string")
@@ -5239,10 +5211,8 @@ local function test_source_control_git_file_actions_commit_and_sync()
 
 	ops.revert_file(state, file_node)
 	wait_for(function()
-		-- `git checkout --` replaces the file, so there is a window in which it
-		-- does not exist. `readfile` *throws* on a missing file, and an error out
-		-- of a wait_for predicate fails the test outright instead of retrying --
-		-- which made this spuriously fail roughly one run in three.
+		-- Git checkout briefly removes the file. Retry missing-file reads instead of throwing
+		-- from the wait predicate.
 		if vim.fn.filereadable(fixture.file) ~= 1 then
 			return false
 		end
@@ -7072,11 +7042,7 @@ local cases = {
 	{ "test_transfer_to_unsupported_buffer_closes_session", test_transfer_to_unsupported_buffer_closes_session },
 }
 
--- Cases declared in sibling modules. LuaJIT caps a function at 200 locals and
--- this chunk declares every case above as a top-level `local function`, so it
--- sits at that ceiling: adding one more here fails to load the whole file with
--- "main function has more than 200 local variables". New cases go in a module
--- that returns a factory taking this harness; see `tests/spec_discovery.lua`.
+-- Put new cases in sibling spec modules; this chunk is at LuaJIT's 200-local limit.
 vim.list_extend(
 	cases,
 	require("spec_discovery")({
@@ -7098,6 +7064,7 @@ vim.list_extend(
 
 vim.list_extend(cases, require("spec_audit")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_compare")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_highlighting")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,
