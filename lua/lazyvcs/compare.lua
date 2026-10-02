@@ -3,6 +3,7 @@ local common = require("lazyvcs.backends.comparison")
 local util = require("lazyvcs.util")
 local json = require("lazyvcs.json_file")
 local view = require("lazyvcs.compare_view")
+local highlighting = require("lazyvcs.highlighting")
 local M = {}
 local sessions = {}
 local write, display = view.write, view.display
@@ -43,6 +44,11 @@ local function restore(win, saved)
 	end
 end
 local function preview_options(s, win)
+	if s.mode == "text" then
+		highlighting.apply(win, require("lazyvcs.config").get().diff_highlighting)
+	else
+		highlighting.release(win)
+	end
 	vim.api.nvim_win_call(win, function()
 		vim.w.lazyvcs_compare = true
 		vim.wo.winfixbuf = true
@@ -452,6 +458,8 @@ function M.close(s, return_focus)
 		return
 	end
 	s.closed = true
+	highlighting.release(s.leftwin)
+	highlighting.release(s.rightwin)
 	cancel(s, "job")
 	cancel(s, "preview_job")
 	sessions[s.tab] = nil

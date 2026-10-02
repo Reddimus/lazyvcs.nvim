@@ -35,10 +35,7 @@ local function apply_win_options(winid, opts)
 	end
 end
 
--- Resolve through the shared dispatcher, which caches the probe per directory.
--- This used to re-implement probing locally, so it spawned `git rev-parse` (and
--- `svn info`) on every CursorMoved/CursorMovedI -- two blocking subprocesses per
--- cursor movement while inline blame was on.
+-- Use the shared cached resolver; cursor movement must not spawn repository probes.
 local function backend_for_path(path)
 	local backend = backends.resolve_cached(path)
 	if backend and backend.blame_lines_async then
@@ -121,10 +118,8 @@ local function clear_inline(bufnr)
 	inline_views[bufnr] = nil
 end
 
--- One namespace for every blame split, not one per buffer. Namespaces have no
--- deletion API, so keying the name on `bufnr` leaked a new one for every split
--- ever opened in a session. Extmarks are already buffer-scoped, so a shared
--- namespace is sufficient to isolate and clear them.
+-- Reuse one namespace across blame splits. Extmarks are buffer-local; namespaces cannot
+-- be deleted.
 local split_ns_id = vim.api.nvim_create_namespace("lazyvcs_blame_split")
 
 local function highlight_blame(bufnr, lines)
@@ -522,10 +517,7 @@ function M.blame_split(resolved)
 		local created_buf
 		local created_win
 		local source_options
-		-- Hoisted alongside `created_buf`/`created_win` so the failure cleanup
-		-- below can actually delete it. Declared inside the xpcall body, the
-		-- group survived a mid-construction error and its CursorMoved
-		-- autocommands kept firing against a window that no longer existed.
+		-- Keep the group outside xpcall so failure cleanup can remove its autocommands.
 		local split_augroup
 		local ok, build_err = xpcall(function()
 			local blame_opts = config.get().blame

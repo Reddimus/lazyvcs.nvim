@@ -270,11 +270,8 @@ local function start_job(job)
 end
 
 pump = function(vcs)
-	-- While a cancellation sweep is running, starting queued work would race
-	-- the sweep: `finish` pumps synchronously, so a job enqueued by a cancelled
-	-- job's own callback could start and outlive the very sweep meant to stop
-	-- it. Record the request and let `M.cancel` drain it once the sweep has
-	-- converged.
+	-- Defer pumps during cancellation. Synchronous callbacks can enqueue jobs that would
+	-- otherwise escape the sweep.
 	if cancelling > 0 then
 		deferred_pumps[vcs] = true
 		return
@@ -479,20 +476,13 @@ function M.cancel(filter, reason)
 		return selected
 	end
 
-	-- Cancellation has to converge, not just snapshot. `finish` invokes the
-	-- job's `on_done` synchronously, and those callbacks enqueue work -- a
-	-- cancelled mutation runs `finish_repo_job`, whose cancelled path navigates
-	-- the repository and schedules fresh hydration. A job enqueued that way was
-	-- outside the original snapshot, so "cancel everything for this owner" left
-	-- newly-queued matching jobs alive. Sweep until a pass finds nothing new.
+	-- Sweep until no matching jobs remain; synchronous completion callbacks can enqueue more
+	-- work.
 	cancelling = cancelling + 1
 	local cancelled = 0
 	local ok, err = pcall(function()
-		-- Bounded. Every internal callback chain is finite, so convergence is
-		-- expected within a pass or two -- but a caller whose `on_done`
-		-- unconditionally enqueues a matching job would otherwise spin here
-		-- forever and freeze Neovim, which is far worse than leaving one job
-		-- running. Report rather than hang.
+		-- Bound convergence so a callback that repeatedly enqueues matching jobs cannot freeze
+		-- Neovim.
 		local MAX_PASSES = 32
 		for pass = 1, MAX_PASSES do
 			local selected = collect()
@@ -537,10 +527,8 @@ function M.cancel(filter, reason)
 	-- Only the outermost sweep releases the queues; a nested `M.cancel` reached
 	-- through a callback must not start work its caller is still cancelling.
 	if cancelling == 0 then
-		-- Drain one at a time and clear each entry only once its pump has
-		-- returned. Swapping the whole table out first would strand every
-		-- remaining queue if one `pump` raised, leaving that work parked
-		-- forever with no worker ever scheduled to pick it up.
+		-- Clear each pump after it returns. Replacing the table first would strand remaining
+		-- queues if a pump raises.
 		local vcs = next(deferred_pumps)
 		while vcs do
 			deferred_pumps[vcs] = nil

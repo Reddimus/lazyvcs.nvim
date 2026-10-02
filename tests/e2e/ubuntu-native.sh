@@ -120,12 +120,8 @@ def wait_file(name):
         time.sleep(0.1)
     raise AssertionError(f"missing artifact {path}")
 
-# Sidebar rendering is coalesced and scheduled, so the width does not change
-# during the keypress that triggers it. Sampling immediately after `child.send`
-# reads the pre-render width, so wait inside Neovim for the width itself to
-# settle rather than sleeping for an arbitrary interval. `settle` is a Lua
-# comparison against the previous width; on timeout the current width is still
-# recorded and the assertion below reports the real value.
+# Await the scheduled width change after a keypress. Record the actual width on timeout
+# for a useful assertion.
 def write_width(name, settle="~= nil"):
     ex(
         "lua local function w() "

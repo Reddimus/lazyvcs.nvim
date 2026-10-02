@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-10-01
+
+### Fixed
+
+- Use normal syntax colors in every diff pane, including LSP-inactive code. Set
+  `diff_highlighting = "editor"` to retain semantic colors.
+- Preserve other windows' colors and restore theme namespaces when diffs close.
+- Update security-support versions and shorten documentation and comments.
+
 ## [0.8.0] - 2026-09-10
 
 ### Added
@@ -111,130 +120,47 @@ changes without blocking operations that leave the worktree untouched.
 
 ## [0.6.1] - 2026-08-07
 
-Correctness release. Opening the source-control sidebar no longer blocks Neovim,
-and repository identity, job cancellation and text truncation are all fixed in
-ways that show up most on macOS.
-
 ### Fixed
 
-- **Opening the sidebar froze Neovim while it looked for repositories.**
-  `native.open` rendered before starting discovery, and rendering fell back to
-  the synchronous discoverer: a recursive directory walk plus a blocking
-  `git rev-parse` **and** `svn info`, each with a 30-second cap. Because that
-  fallback also populated the spec list, the asynchronous discovery added in
-  0.5.0 could never start — it was unreachable code. The sidebar now paints
-  immediately, shows `Discovering repositories...` while the scan runs, and
-  fills in as results arrive. An unreachable Subversion server no longer costs a
-  minute of frozen editor.
-- **`R` (refresh) never looked for new repositories.** It cleared caches but
-  kept the existing spec list, so a repository created after the sidebar opened
-  stayed invisible until the sidebar was closed and reopened.
-- **The same repository could end up with two identities.** Roots were compared
-  as text, so `/tmp/work` and `/private/tmp/work` — the same directory on macOS,
-  where `/tmp` and `/var` are symlinks into `/private` — did not match. Git and
-  Subversion both report resolved paths, so a sidebar opened from an unresolved
-  path disagreed with its own backend and its caches, jobs and sessions stopped
-  matching. Roots are now canonicalised through `fs_realpath`.
-- **Cancelling background work could leave some of it running.** `jobs.cancel`
-  took one snapshot of matching jobs, but finishing a job runs its callback
-  synchronously, and those callbacks queue more work — so a job enqueued during
-  the sweep survived it. Cancellation now repeats until a pass finds nothing
-  new, and holds the queues until it has converged.
-- **Closing the sidebar did not cancel branch/target enumeration**, which could
-  still open a picker afterwards. Its jobs are now owned by the sidebar, scoped
-  per repository, and given their own generation — previously they borrowed the
-  hydration counter, whose watermark outlived the sidebar and could reject a new
-  sidebar's first enumeration as stale.
-- **Aborting one buffer transfer cancelled every other window's.** The abort
-  paths asked for the current window's pending transfer but then cleared all of
-  them, stranding unrelated sessions.
-- **Inline blame could be cut mid-character and overflow its width.**
-  `blame.max_width` is a column budget but was measured in bytes, so CJK text or
-  an emoji produced roughly double-width virtual text and could split a UTF-8
-  sequence. Truncation is now cell-aware, and the byte-budget helper never
-  splits a character.
-- **Git and Subversion were assumed missing for the rest of the session** if the
-  first probe failed. A GUI-launched Neovim inherits launchd's `PATH` on macOS,
-  so `/opt/homebrew/bin` is absent and both probes fail; correcting `PATH`
-  afterwards had no effect until restart. The probe now re-runs when `PATH`
-  changes.
-- `util.trim` returned two values (the trimmed string and the substitution
-  count), so both backends' `get_root` handed callers a number where an error
-  was expected.
-- A blame split leaked its autocommand group if construction failed partway, and
-  allocated a new namespace per buffer — namespaces cannot be deleted.
-- Failures to persist state were discarded silently; they now warn once.
+- Sidebar discovery runs asynchronously and shows a loading state. Unreachable
+  SVN servers no longer freeze the editor during discovery.
+- Refresh discovers repositories created or removed since the sidebar opened.
+- Canonical root identities keep symlinked macOS paths in the same cache and
+  session.
+- Cancellation drains jobs queued by completion callbacks. Closing the sidebar
+  also cancels branch enumeration and prevents late pickers.
+- Aborting a buffer transfer leaves other windows' transfers running.
+- Blame width uses terminal cells; byte truncation preserves UTF-8 characters.
+- Executable probes rerun after PATH changes, including Homebrew configuration.
+- `util.trim` returns only the string. Failed blame construction cleans up
+  autocommands, blame splits reuse a namespace, and persistence failures warn
+  once.
 
-### Changed
+### Maintenance
 
-- The sidebar shows `Discovering repositories...` rather than
-  `No repositories selected` while a scan is in flight.
-
-### Documentation
-
-- Removed `:LazyVCS diff cancel` from `doc/lazyvcs.txt`; no such verb exists.
-- Documented the sidebar's `q` and `X` mappings, and that sidebar mappings are
-  fixed rather than configurable through `config.keymaps`.
-- Corrected the `:checkhealth lazyvcs` command in `CONTRIBUTING.md`, which could
-  not find the plugin as written.
-
-### Internal
-
-- The CI whitespace check used `git diff-tree --check --cc`. A combined diff
-  only lists files that differ from _every_ parent, so a pull request's own
-  changes were omitted and the check passed unconditionally. It now diffs an
-  explicit range.
-- Test fixtures no longer inherit the developer's git configuration; a
-  contributor with commit or tag signing enabled globally saw three unrelated
-  specs fail.
-- New specs live in `tests/spec_discovery.lua`: `tests/spec.lua` reached
-  LuaJIT's limit of 200 local variables per function.
+- Corrected help commands and fixed sidebar mapping documentation.
+- CI checks explicit diff ranges, including pull-request merge commits.
+- Test fixtures ignore developer Git configuration. New specs live in sibling
+  modules because the main spec reached LuaJIT's local-variable limit.
 
 ## [0.6.0] - 2026-08-05
 
-Live-diff synchronisation release. The two panes now stay together under every
-scroll gesture, including with soft wrapping on, where they previously drifted
-apart and never recovered.
-
 ### Added
 
-- `base_window.align_wrapped` (`"off"` by default, or `"auto"`) keeps
-  corresponding diff lines on the same screen row when the panes wrap. Neovim's
-  `'scrollbind'` binds buffer lines, not screen rows, so a line that occupies
-  four rows on one side and one on the other pushed everything below it out of
-  alignment — and because nothing reconciled the difference, the error
-  accumulated down the file. Corresponding text is paired into units and the
-  shorter side padded with virtual rows. Measured against a wrapped fixture in a
-  real terminal, 18 of 31 visible lines were misaligned before and 0 after.
-
-  It is **off by default**. The padding is drawn with extmarks, which Neovim's
-  own scroll binding cannot see, so the two disagree about position _while
-  scrolling_ and the panes can land on different lines until the view settles.
-  With `"auto"` the result is exact once the view is still, which is the right
-  trade for reading a diff and the wrong one for scrolling through it. The
-  padding adds no text, so undo, marks, and the file on disk are untouched, and
-  it is skipped while the same file is open in another window.
-
-- `base_window.cursor_sync` (`true` by default) keeps the two cursors on
-  corresponding lines.
+- `base_window.align_wrapped = "auto"` pads wrapped diff lines to align their
+  screen rows. The default is "off" because native scroll binding cannot see
+  virtual padding. Padding changes no text and is skipped when another window
+  shows the same buffer.
+- `base_window.cursor_sync` defaults to true.
 
 ### Fixed
 
-- A scroll event reporting **both** panes now follows the focused pane instead
-  of declining to act, correcting the `topfill` and offset differences that were
-  previously swallowed. It still defers to Neovim when the panes wrap and
-  alignment is on: `:syncbind` sets a _relative_ offset that drifts under
-  `'wrap'`, so intervening there pulled correctly-bound panes apart.
-- `'scrollbind'` and `'cursorbind'` are re-asserted after `:diffthis`. Both are
-  reset to the global value when a window edits another file, and an ftplugin or
-  colorscheme loading afterwards could clear them — silently unbinding the pair
-  with no symptom other than scrolling appearing to stop working.
-- Resizing the window or rebalancing the split re-synchronises the panes. Only
-  the widths were adjusted, which re-wraps every line and left the pair offset.
-- A `WinScrolled` event naming neither pane returns immediately. The autocmd is
-  global and one is registered per live session, so every session previously did
-  work for every unrelated scroll.
-- `'smoothscroll'` is saved and restored with the other tracked window options.
+- Scroll events follow the focused pane when both move, except when wrapped
+  alignment already relies on native binding.
+- Reassert `scrollbind` and `cursorbind` after `diffthis`.
+- Resizing and rebalancing resynchronize panes. Unrelated scroll events are
+  ignored.
+- Restore `smoothscroll` with the other window options on close.
 
 ## [0.5.0] - 2026-07-28
 
@@ -454,16 +380,8 @@ break the editor or block the UI thread. The remainder are tracked in #17-#24.
 
 ### Fixed
 
-- `test_svn_async_blame_cancels_active_child_process` no longer fails the whole
-  suite on machines without the `svn` executable. The v0.1.0 svn guard makes
-  `blame_lines_async` short-circuit when svn is absent, so the test's mocked
-  `system_start` was never reached and the test errored before restoring the
-  global monkey-patch — which then cascaded into a spurious failure of
-  `test_source_control_git_file_actions_commit_and_sync` (the leaked mock
-  stalled its background `git commit`). The SVN test now skips cleanly without
-  svn, and restores `util.system_start` via `pcall` so an assertion failure can
-  never contaminate later tests. `tests/run.lua` is green again on svn-less
-  environments (the documented local workflow).
+- The asynchronous SVN cancellation test skips when SVN is unavailable and
+  restores its mocked process launcher after assertion failures.
 
 ## [0.2.0] - 2026-05-17
 
@@ -500,41 +418,15 @@ First tagged release.
 
 ### Fixed
 
-- **SVN backend no longer breaks Git-only setups.** `backends/init.lua` probes
-  every backend on each session open, and `backends/svn.lua` spawned `svn`
-  unguarded. On any machine without the `svn` executable (the common case —
-  lazyvcs is Git-first) this raised `ENOENT` and broke `:LazyVcsDiffOpen` and
-  the source-control sidebar for Git repositories too. The svn backend now
-  checks for the `svn` executable once and degrades to a clean no-match when it
-  is absent.
-- **`util.system` is now resilient to missing executables.** `vim.system` raises
-  synchronously when a command is not found; `util.system_result` wraps it so
-  callers receive a normal non-zero result (`code = 127`) instead of an uncaught
-  error.
-
-### Changed
-
-- **Resilient test runner.** `tests/spec.lua` now runs every test in isolation
-  via `xpcall` and prints a `PASS` / `SKIP` / `FAIL` line plus a
-  `N passed, N skipped, N failed` summary. Previously the suite executed tests
-  as bare sequential calls, so the first SVN test aborted the entire run when
-  `svnadmin` was missing — masking every later test (this is how the SVN backend
-  bug above went undetected).
-- **SVN tests skip cleanly without Subversion.** The `svnadmin` guard in the
-  test fixtures now raises a structured skip signal instead of a hard `assert`,
-  so SVN tests report `SKIP` rather than failing the suite.
-- `tests/run.lua` propagates a non-zero exit status when any test fails, making
-  the suite usable as a CI gate.
+- Missing SVN no longer breaks Git workflows. Missing subprocess executables
+  return a failure result instead of raising.
+- Tests report individual failures and skips, continue through the suite, and
+  return a failing exit status when needed. SVN fixtures skip without svnadmin.
 
 ### Added
 
-- GitHub Actions: `ci.yml` (stylua + lua-language-server + full headless test
-  suite, including SVN), `release.yml` (tagged releases), and a
-  `workflow_dispatch` `e2e.yml` for the Docker AstroNvim smoke test.
-- Verified Vim help tags generate cleanly from `doc/lazyvcs.txt` (CI gate);
-  `doc/tags` itself stays git-ignored and is built by the plugin manager
-  (`lazy.nvim` runs `:helptags` on install) and the release workflow.
-- `CHANGELOG.md` and a CI status badge in the README.
+- GitHub Actions for CI, tagged releases, and Docker AstroNvim E2E.
+- Help-tag generation checks, a changelog, and the README CI badge.
 
 [0.1.0]: https://github.com/Reddimus/lazyvcs.nvim/releases/tag/v0.1.0
 [0.2.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.1.0...v0.2.0
@@ -550,3 +442,4 @@ First tagged release.
 [0.7.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.6.2...v0.7.0
 [0.8.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.7.0...v0.7.1
+[0.8.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.8.0...v0.8.1

@@ -115,13 +115,8 @@ jobs:
           bash -n tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
 
       - name: Check whitespace
-        # On `pull_request` the checked-out sha is a synthetic merge commit, so
-        # this needs an explicit range. `--cc` was the wrong answer and made the
-        # check vacuous: a combined diff only lists files that differ from EVERY
-        # parent, and a PR's own changes are identical to its head parent, so
-        # they are omitted. Reproduced by adding trailing whitespace on a
-        # branch and merging -- `diff-tree --check --cc` exits 0 while
-        # `diff --check HEAD^1 HEAD` exits 2 and names the line.
+        # PR checkout is a merge commit. Check its first-parent diff; --cc omits changes
+        # identical to the PR head parent.
         run: |
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then

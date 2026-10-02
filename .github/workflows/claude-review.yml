@@ -41,11 +41,8 @@ jobs:
             --allowedTools
             "mcp__github_inline_comment__create_inline_comment,Bash(gh api --method GET:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
 
-      # The action strips the SDK result message's `result` field out of the job
-      # log (anthropics/claude-code-action#880), so a run that dies before its
-      # first model call reports only `is_error: true` with no cause. The
-      # unsanitized messages are written to the execution file; print that one
-      # message's error fields, not the tool output sanitization exists to hide.
+      # The action removes result from its log. Print only execution-file error fields to
+      # diagnose failures without exposing tool output.
       - name: Report the suppressed review error
         if: failure()
         env:

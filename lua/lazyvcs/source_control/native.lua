@@ -152,10 +152,8 @@ local function compose_right_meta(primary, sync, counts, max_width)
 	return fit_right_text(primary, max_width, 8) or ""
 end
 
--- Cancel any in-flight discovery and return the state to "nothing known yet",
--- so the next `start_discovery` actually runs instead of short-circuiting.
--- Bumping the generation is what makes a late callback from the killed scan a
--- no-op rather than a write into a state that has moved on.
+-- Cancel discovery and clear known specs. Advance the generation so late callbacks cannot
+-- write into the reset state.
 local function reset_discovery(state)
 	if state.lazyvcs_discovery_handle and type(state.lazyvcs_discovery_handle.kill) == "function" then
 		pcall(state.lazyvcs_discovery_handle.kill, state.lazyvcs_discovery_handle, 15)
@@ -857,12 +855,8 @@ function M.navigate(state)
 		return
 	end
 	M.render(state)
-	-- Hydration needs repositories, and consuming the remote-refresh intent
-	-- against an empty spec list throws it away. `M.open`/`M.refresh` already
-	-- render rather than navigate while a scan is pending, but they are not the
-	-- only routes here -- sorting, cancelling, and late operation callbacks all
-	-- navigate too. Guard centrally; the discovery callback navigates again once
-	-- the specs land.
+	-- Wait for discovery before hydration or consuming remote-refresh intent. The discovery
+	-- callback resumes navigation.
 	if state.lazyvcs_discovering then
 		return state
 	end
@@ -912,14 +906,8 @@ function M.open(opts)
 	local state = prepare_state(opts.path or opts.root)
 	ensure_window(state, { focus = opts.focus })
 	state.lazyvcs_remote_refresh = should_remote_refresh(state)
-	-- Discovery starts BEFORE the first paint. Rendering first used to populate
-	-- `lazyvcs_repo_specs` synchronously through `model.collect`, which both
-	-- blocked the UI thread and left `start_discovery` with nothing to do.
-	--
-	-- While discovery is pending, render rather than navigate: `M.navigate`
-	-- consumes `lazyvcs_remote_refresh` and kicks off hydration, and doing that
-	-- against an empty spec list would silently drop the on-open remote
-	-- refresh. The discovery callback navigates once the specs land.
+	-- Start discovery before painting. While pending, render without consuming remote-
+	-- refresh intent; navigate once specs arrive.
 	if start_discovery(state) then
 		M.render(state)
 	else
@@ -1003,10 +991,8 @@ function M.refresh(remote_refresh)
 	state.lazyvcs_loading_details = {}
 	state.lazyvcs_remote_refresh = remote_refresh ~= false
 	persist.save_state(state)
-	-- Rediscover, don't just re-hydrate. Refresh previously kept
-	-- `lazyvcs_repo_specs` untouched, so a repository created (or removed)
-	-- after the sidebar opened stayed invisible until the sidebar was closed
-	-- and reopened -- which is the one thing `R` is expected to fix.
+	-- Rediscover on refresh so repositories created or removed while the sidebar was open
+	-- are reflected.
 	reset_discovery(state)
 	if start_discovery(state) then
 		M.render(state)

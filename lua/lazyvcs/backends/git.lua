@@ -8,15 +8,8 @@ local M = {
 
 local ASYNC_TIMEOUT_MS = 30000
 
--- Mirror the svn backend's executable cache: backends/init.lua probes every
--- backend for each path, so an unguarded call here would spawn a failing process
--- on machines without Git.
---
--- Keyed on PATH rather than cached once for the session. A GUI-launched Neovim
--- (Finder, Dock, an IDE) inherits launchd's PATH on macOS, so `/opt/homebrew/bin`
--- is missing and the first probe answers "no git". Caching that answer forever
--- meant a config or user that corrected `vim.env.PATH` afterwards still saw the
--- backend as unavailable until Neovim restarted.
+-- Cache executable availability by PATH. Recheck after PATH changes, including Homebrew
+-- fixes in GUI-launched Neovim.
 local git_cached_path, git_present = nil, false
 local function git_available()
 	local path = vim.env.PATH or ""
@@ -36,10 +29,7 @@ local function get_root(path)
 	if not result then
 		return nil, err
 	end
-	-- Canonicalize: the sidebar canonicalizes its roots, and identity is
-	-- compared with `==`. Git already resolves symlinks here, but a Windows
-	-- 8.3 short path or a case difference would still not match, and the
-	-- non-existent-path fallback keeps this total.
+	-- Canonicalize roots to match sidebar identities, including Windows short paths.
 	return util.canonical_path(util.trim(result.stdout))
 end
 
@@ -491,10 +481,8 @@ function M.load_diff_target_async(target, on_done, opts)
 	return task
 end
 
--- `git status --porcelain` C-quotes any path with non-ASCII or special bytes:
--- `caf<e9>.txt` is reported as `"caf\303\251.txt"`. Stripping only the quotes
--- leaves literal backslash escapes, and vim.fs.normalize then turns those
--- backslashes into path separators, so the file could never be opened.
+-- Decode Git C-quoted paths before normalization; literal octal escapes would otherwise
+-- become path separators.
 local function unquote_path(path)
 	if not path:match('^".*"$') then
 		return path

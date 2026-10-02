@@ -1,6 +1,7 @@
 local util = require("lazyvcs.util")
 local aerial = require("lazyvcs.integrations.aerial")
 local editor = require("lazyvcs.integrations.editor")
+local highlighting = require("lazyvcs.highlighting")
 
 local M = {}
 
@@ -188,11 +189,8 @@ function M.open(session)
 
 	vim.cmd.wincmd("p")
 
-	-- Captured before we change anything: if the base window cannot be closed
-	-- later (`:only` from the left pane leaves it as the last window), it falls
-	-- back to the user's file still carrying our settings -- most damagingly
-	-- `winfixwidth`, which then silently refuses every resize for the rest of
-	-- the session.
+	-- Save options before changing them. The base may survive as the last window after
+	-- :only.
 	session.base_window_options = capture_window_options(session.base_win)
 
 	vim.wo[session.base_win].number = vim.wo[editable_win].number
@@ -208,12 +206,11 @@ function M.open(session)
 
 	apply_diff(editable_win)
 	apply_diff(session.base_win)
+	highlighting.apply(editable_win, session.opts.diff_highlighting)
+	highlighting.apply(session.base_win, session.opts.diff_highlighting)
 
-	-- `:diffthis` already sets 'scrollbind' and 'cursorbind' and adds "hor" to
-	-- 'scrollopt' (:h diff.txt). Re-assert the two window-local ones anyway:
-	-- they are reset to the global value when a window edits another file, and
-	-- an ftplugin or colorscheme loaded after us can clear them, which silently
-	-- unbinds the pair with no other symptom than "scrolling stopped working".
+	-- Reassert window-local binding after diffthis; buffer changes and ftplugins can reset
+	-- it.
 	local cursor_sync = session.opts.base_window.cursor_sync
 	for _, win in ipairs({ editable_win, session.base_win }) do
 		vim.wo[win].scrollbind = true
@@ -251,12 +248,8 @@ function M.rebalance(session)
 		return false
 	end
 
-	-- Before the early return below, not after. Any width change re-wraps every
-	-- line and invalidates the row measurements, but a proportional resize
-	-- leaves the split still balanced -- so the early return fired and the
-	-- padding kept the old width's values. Nothing else covers it either: a pure
-	-- width change produces no topline/topfill/leftcol/skipcol delta, so the
-	-- WinScrolled path treats it as "not a scroll" and skips alignment too.
+	-- Resize invalidates wrapped measurements even if the split ratio is unchanged. Schedule
+	-- before the early return; WinScrolled may see no positional change.
 	require("lazyvcs.align").schedule(session)
 
 	local total_width = editable_width + base_width
@@ -305,10 +298,8 @@ function M.sync_scroll(session, source_win)
 		vim.cmd("silent! syncbind")
 	end)
 
-	-- Clear on the next tick, not here: WinScrolled is dispatched from the main
-	-- loop rather than synchronously (:h WinScrolled), so the echo event caused
-	-- by the sync above arrives after this function has already returned. Held
-	-- across one tick, the flag actually suppresses it.
+	-- Keep the flag through the next tick to suppress the deferred WinScrolled echo from
+	-- this sync.
 	vim.schedule(function()
 		session.syncing_scroll = false
 	end)
@@ -327,6 +318,8 @@ end
 
 function M.close(session, opts)
 	opts = opts or {}
+	highlighting.release(session.editable_win)
+	highlighting.release(session.base_win)
 
 	require("lazyvcs.align").clear(session)
 

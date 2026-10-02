@@ -189,11 +189,8 @@ function M.apply(session)
 		return false
 	end
 
-	-- Extmarks are buffer-scoped, not window-scoped, so padding the editable
-	-- buffer shows up in every other window displaying that file -- blank rows
-	-- injected into the user's ordinary view of their own file, in another split
-	-- or tab, for as long as the session lives. Alignment is cosmetic; showing
-	-- the file twice is not, so the file wins.
+	-- Padding extmarks appear in every window showing the buffer. Skip alignment when
+	-- another window shows this file.
 	if #vim.fn.win_findbuf(edit_buf) > 1 then
 		M.clear(session)
 		return false
@@ -288,10 +285,8 @@ function M.schedule(session)
 			return
 		end
 		if changed then
-			-- Padding changes each pane's height, so the positions `:syncbind`
-			-- computed a moment ago are now stale. Re-sync against the new
-			-- geometry; `apply` is idempotent, so the pass this triggers reports
-			-- no change and the sequence terminates.
+			-- Padding changes screen heights. Sync against the new geometry; the idempotent next
+			-- pass ends the sequence.
 			local layout = require("lazyvcs.layout")
 			local focused = vim.api.nvim_get_current_win()
 			local source = (focused == session.base_win) and session.base_win or session.editable_win

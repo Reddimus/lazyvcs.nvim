@@ -6,12 +6,14 @@ CONTENTS                                                   *lazyvcs-contents*
 1. Introduction ................................................ |lazyvcs-intro|
 2. Requirements .......................................... |lazyvcs-requirements|
 3. Commands .................................................. |lazyvcs-commands|
-4. Mappings .................................................. |lazyvcs-mappings|
-5. Inline Signs ....................................... |lazyvcs-inline-signs|
-6. Source Control ...................................... |lazyvcs-source-control|
-7. Configuration ........................................ |lazyvcs-configuration|
-8. Testing ..................................................... |lazyvcs-testing|
-9. Notes ......................................................... |lazyvcs-notes|
+4. Total comparison ...................................... |lazyvcs-comparison|
+5. Mappings ................................................ |lazyvcs-mappings|
+6. Inline signs ........................................ |lazyvcs-inline-signs|
+7. Source control ................................... |lazyvcs-source-control|
+8. Selected-line blame .............................. |lazyvcs-blame-selection|
+9. Configuration ..................................... |lazyvcs-configuration|
+10. Testing ................................................. |lazyvcs-testing|
+11. Notes ..................................................... |lazyvcs-notes|
 
 ==============================================================================
 INTRODUCTION                                                   *lazyvcs-intro*
@@ -22,10 +24,8 @@ lazyvcs.nvim provides native VCS workflows:
 - an editable live diff view for the current Git/SVN file
 - a standalone source-control sidebar for nested Git/SVN working copies
 
-The live diff shows the read-only VCS base (the old version) on the left and the
-real editable file (your new changes) on the right, matching the git/VS Code/
-vimdiff convention (old -> new reads left -> right). Git compares against the
-index with `git show :path`. SVN compares against working-copy BASE with
+The live diff shows the read-only base on the left and your editable file on
+the right. Git compares against the index with `git show :path`. SVN uses BASE with
 `svn cat -r BASE path`. Git untracked files and SVN added files use an empty
 base.
 
@@ -290,12 +290,6 @@ Minimal lazy.nvim or AstroNvim spec:
     "Reddimus/lazyvcs.nvim",
     main = "lazyvcs",
     event = { "BufReadPost", "BufNewFile" },
-    dependencies = {
-      { "lewis6991/gitsigns.nvim", optional = true },
-      { "folke/snacks.nvim", optional = true },
-      { "ibhagwan/fzf-lua", optional = true },
-      { "CopilotC-Nvim/CopilotChat.nvim", optional = true },
-    },
     cmd = { "LazyVCS" },
     keys = {
       { "<leader>vs", "<cmd>LazyVCS<cr>", desc = "Toggle VCS sidebar" },
@@ -306,24 +300,14 @@ Minimal lazy.nvim or AstroNvim spec:
       { "]v", "<cmd>LazyVCS hunk next<cr>", desc = "Next VCS hunk" },
       { "[v", "<cmd>LazyVCS hunk prev<cr>", desc = "Previous VCS hunk" },
     },
-    opts = {
-      source_control = {
-        enabled = true,
-        ui = "auto",
-        remote_refresh = "on_open",
-        remote_refresh_interval_ms = 60000,
-      },
-    },
+    opts = {},
   }
 <
 
-This vanilla install has no hard plugin dependencies. The optional dependency
-specs above do not install anything by themselves. If gitsigns.nvim,
-snacks.nvim, fzf-lua, or CopilotChat.nvim are already installed elsewhere,
-lazyvcs detects them at runtime and uses enhanced paths automatically. Supported
-AI CLIs are also detected for ai.commit_message.provider = "auto".
+This install has no required plugin dependencies. LazyVCS detects installed
+integrations and AI CLIs at runtime.
 
-For AstroNvim, put the same spec in `lua/plugins/lazyvcs.lua`. Keep the `event`
+For AstroNvim, wrap the spec in `return { ... }` in `lua/plugins/lazyvcs.lua`. Keep `event`
 entry so SVN signs attach when files open, even before a LazyVCS command is run.
 
 Optional integrations are detected at runtime:
@@ -373,6 +357,8 @@ CLI. LazyVCS asks once per session before sending diffs to an AI provider.
 Main options:
 
     debounce_ms        Delay before live diff refresh.
+    diff_highlighting  "syntax" (default) hides LSP semantic overlays in all
+                       diff panes. "editor" keeps the editor's colors.
     use_gitsigns       Prefer `gitsigns.reset_hunk()` for Git hunks.
     set_winbar         Set simple winbar labels during live diff.
     session_keymaps    Add buffer-local live diff mappings.
@@ -400,6 +386,13 @@ rejected, and binding two of them to the same key is a configuration error.
 
 Unknown or removed configuration keys are reported once at startup with
 |vim.notify_once()| rather than being ignored silently.
+
+Diff highlighting is window-local. Other views of the same buffer keep their
+colors, and closing the comparison restores the previous highlight namespace.
+Syntax comments, diff backgrounds, diagnostics, signs, and blame remain visible.
+LSP clients stay attached. This also prevents inactive-code dimming when a
+language server cannot resolve build flags. It does not fix missing build flags.
+LazyVCS uses available syntax highlighting without installing parsers.
 
 SVN signs options:
 
@@ -554,28 +547,16 @@ NOTES                                                           *lazyvcs-notes*
 <
   LazyVCS does not change 'diffopt'.
 
-  'scrollbind' binds buffer lines, not screen rows. With wrapping on, a line
-  occupying four screen rows on one side and one on the other pushes
-  everything below it out of alignment, and the error accumulates down the
-  file: the panes agree on the line and still render pages apart.
+  'scrollbind' binds buffer lines. Different wrapped heights can leave matching
+  lines on different screen rows. `base_window.align_wrapped = "auto"` pads
+  the shorter side with virtual rows. It aligns stationary panes, but is off
+  by default because native scroll binding cannot see the padding and may
+  drift while scrolling.
 
-  `base_window.align_wrapped = "auto"` additionally pairs corresponding text
-  into units -- one unchanged line with one unchanged line, a changed block
-  with its counterpart as a whole -- and pads the shorter side with virtual
-  rows, so corresponding lines start on the same screen row. This is exact
-  while the panes are still. It is off by default because the padding uses
-  extmarks, which Neovim's own scroll binding cannot see: the two disagree
-  about position while scrolling, and the panes can land on different lines
-  until the view settles.
-
-  The padding adds no text, so undo, marks, and the file on disk are
-  untouched, and it is cleared when the session closes. It is skipped while
-  the same file is open in another window, because extmarks are buffer-scoped
-  and the blank rows would appear there too.
+  Padding changes no text and clears on close. It is skipped when another
+  window shows the same file, because buffer-local extmarks would appear there.
 
 - Inline blame is one global toggle; with `blame.persist` it is saved to
   `stdpath('state')/lazyvcs/state.json` and restored on the next launch.
-- Forge Terminal MCP can help with local agent-driven TUI debugging, but it is
-  not required for tests or CI.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

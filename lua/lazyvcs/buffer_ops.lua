@@ -1,8 +1,4 @@
--- Buffer-scoped VCS operations: changed-file picker, diff preview, revert, refresh.
---
--- Replaces the old `svn_ui` module, which hardcoded Subversion and so silently
--- did nothing in a Git repository. Everything here dispatches through
--- `lazyvcs.backends`, so the same commands work in both VCSes.
+-- Buffer operations dispatch through lazyvcs.backends for both Git and SVN.
 local backends = require("lazyvcs.backends")
 local buffer_guard = require("lazyvcs.source_control.buffer_guard")
 local picker = require("lazyvcs.picker")

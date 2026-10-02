@@ -1,7 +1,5 @@
--- Small, dependency-free XML helpers for the machine-readable output emitted by
--- Subversion. This is deliberately not a general XML parser: it handles the
--- fixed `svn info/status/list --xml` schemas while correctly decoding entities
--- in both text and attributes.
+-- Parse the fixed svn info/status/list XML schemas and decode text and attribute
+-- entities.
 local M = {}
 
 local entities = {

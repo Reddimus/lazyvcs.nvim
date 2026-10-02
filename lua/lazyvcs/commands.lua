@@ -1,7 +1,4 @@
--- Single `:LazyVCS` entry point.
---
--- Every handler `require`s its module lazily so that registering the command at
--- startup (plugin/lazyvcs.lua) does not pull in actions/blame/signs/backends.
+-- Register one command without loading feature modules until their handlers run.
 local M = {}
 
 local function actions()

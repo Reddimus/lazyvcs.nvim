@@ -33,10 +33,7 @@ return root
 end)()]])
 end
 
--- Block in the child until discovery has settled. `sidebar_state()` does this
--- itself, but cases that reach into `lazyvcs_line_nodes` or
--- `lazyvcs_repo_specs` through their own `child.lua` call need it too --
--- otherwise they read the loading frame, where those tables are empty.
+-- Await discovery before inspecting sidebar node tables.
 local function wait_for_discovery()
 	child.lua([[
 local state = require("lazyvcs.source_control.native")._state()
@@ -51,14 +48,8 @@ end
 ]])
 end
 
--- Waits for repository discovery before capturing.
---
--- Discovery is asynchronous, so the sidebar's first paint shows
--- "Discovering repositories..." and the repository rows arrive later. These
--- cases used to read the buffer straight after `child.cmd(...)` and passed only
--- because a two-repository fixture usually finishes inside the RPC round trip
--- -- a race that would surface as a flake on a loaded runner, not a clean
--- failure here.
+-- Await discovery before capturing the sidebar; the first frame contains no repository
+-- rows.
 local function sidebar_state()
 	return child.lua_get([[(function()
 local state = require("lazyvcs.source_control.native")._state()

@@ -38,14 +38,8 @@ local function notify_open_error(err, opts)
 	end
 end
 
--- Build a diff session off the UI thread. Used by `M.open` and by buffer
--- transfers.
---
--- The synchronous path spawns `svn info` + `svn cat` (or `git show`) on the UI
--- thread. Buffer navigation also triggers the signs autocmd, which runs its own
--- VCS commands against the same working copy; when those contend on the SVN
--- working-copy lock the synchronous call blocks until it times out, freezing
--- Neovim for tens of seconds. Everything on the navigation path is async.
+-- Build sessions asynchronously; Git/SVN processes and working-copy locks must not block
+-- navigation.
 local function build_session_async(bufnr, on_done)
 	if not util.is_real_file_buffer(bufnr) then
 		return on_done(nil, "lazyvcs only opens on normal file buffers")
@@ -75,10 +69,8 @@ local function build_session_async(bufnr, on_done)
 	end)
 end
 
--- Returns the session on success, or `nil, err` on failure. This must never raise:
--- callers run inside autocmd and `vim.schedule` callbacks, where an uncaught error
--- prints a multi-line traceback and blocks interactive Neovim on the hit-enter
--- prompt (headless only logs it, which is why this hid behind passing spec tests).
+-- Return a session or nil, err. Catch failures so autocmds cannot trigger a hit-enter
+-- prompt.
 local function open_session(session)
 	session_sequence = session_sequence + 1
 	session.id = session_sequence
@@ -226,11 +218,8 @@ local function handle_pending_transfer(target_bufnr)
 		return
 	end
 
-	-- Every abort below must name `pending.editable_win`. `peek_pending_transfer()`
-	-- looks up the CURRENT window, but `clear_pending_transfer()` reads a nil
-	-- argument as "clear every window" -- an asymmetry that made each of these
-	-- branches cancel and strand in-flight transfers belonging to unrelated
-	-- sessions in other windows.
+	-- Scope every abort to pending.editable_win. A nil clear_pending_transfer argument
+	-- cancels all windows.
 	if pending.tabpage ~= vim.api.nvim_get_current_tabpage() then
 		state.clear_pending_transfer(pending.editable_win)
 		settle_aborted_transfer(pending)
@@ -340,10 +329,8 @@ local function handle_pending_transfer(target_bufnr)
 				})
 
 				if not replacement then
-					-- No backend for this buffer is a normal outcome of navigating to a
-					-- plain file, so close quietly. A real backend failure (git mid-rebase,
-					-- an index.lock, a timed-out `svn cat`) must not be silent, or the user
-					-- cannot tell the plugin failed from the file being unsupported.
+					-- Close unsupported buffers quietly. Report backend failures so they are
+					-- distinguishable from unsupported files.
 					local unsupported = not build_err
 						or build_err:match("No Git or SVN working copy")
 						or build_err:match("not tracked")
@@ -380,10 +367,7 @@ local function ensure_global_autocmds()
 			-- hit-enter prompt; report them instead so navigation always continues.
 			local ok, err = pcall(handle_pending_transfer, args.buf)
 			if not ok then
-				-- Scope the reset to the window whose transfer just failed.
-				-- `handle_pending_transfer` only ever acts on the current
-				-- window's pending, so a bare call here would punish every
-				-- other session for this one's error.
+				-- Reset only the failed transfer window; other sessions may still be loading.
 				state.clear_pending_transfer(vim.api.nvim_get_current_win())
 				util.notify("lazyvcs: buffer transfer failed: " .. one_line(err), vim.log.levels.ERROR)
 			end
@@ -499,16 +483,8 @@ schedule_rebalance = function(session)
 	end, 20)
 end
 
--- Coalesce to the end of the gesture. Syncing on every event looks like the
--- more responsive choice, and it was tried: measured over a wheel scroll on the
--- unfocused pane it left the panes on *different* toplines (15 and 14), where
--- coalescing lands both on the same one. `:syncbind` sets a relative offset
--- from the source window, so running it against a position the user is still
--- moving away from feeds a half-finished gesture back into the next one.
---
--- The wait is bounded by the gesture, not by the timer: the tick check means
--- only the newest pending sync survives, and it fires 20 ms after the last
--- event rather than after a fixed delay from the first.
+-- Coalesce scroll gestures, then sync 20 ms after the last event. Earlier syncs feed a
+-- moving relative offset back into scrollbind and misalign the panes.
 schedule_scroll_sync = function(session, source_win)
 	if not session or session.closing then
 		return
@@ -535,11 +511,8 @@ local function has_scroll_delta(entry)
 		)
 end
 
--- Pick the pane whose position the other should follow.
---
--- `v:event` for WinScrolled is keyed by window-ID strings plus an "all" entry
--- (:h WinScrolled); the `windows` indirection is only there for callers that
--- pass a pre-shaped table.
+-- Choose the authoritative pane from WinScrolled window-ID entries. The optional windows
+-- field supports pre-shaped callers.
 scroll_event_source = function(session, event)
 	if not session then
 		return nil
@@ -561,14 +534,8 @@ scroll_event_source = function(session, event)
 
 	-- Both moved, which is what 'scrollbind' does when the focused pane scrolls.
 	if base_scrolled and editable_scrolled then
-		-- When the panes wrap and alignment is active, leave the result alone.
-		-- `:syncbind` enforces a *relative offset* between the panes, and under
-		-- 'wrap' that offset drifts, because the same number of screen rows
-		-- covers a different number of buffer lines on each side. Running it
-		-- here actively pulls the panes apart: measured over 15 <C-e>, native
-		-- binding left 0 of 21 visible lines misaligned and a syncbind on top of
-		-- it left 21 of 21, worsening as the scroll continued. The padding
-		-- cannot compensate -- it only equalises unit heights below the topline.
+		-- With wrapped alignment, keep native binding. Extra syncbind applies a drifting
+		-- relative offset that padding cannot correct.
 		if require("lazyvcs.align").is_active(session) then
 			return nil
 		end
@@ -674,11 +641,8 @@ attach_session = function(session)
 				return
 			end
 
-			-- Alignment is recomputed for the new viewport whether or not a sync
-			-- is needed. It is scoped to the visible range, so a scroll that
-			-- moved both panes correctly still changes which units need padding;
-			-- skipping it here left the panes carrying the previous viewport's
-			-- padding, which is a misalignment in its own right.
+			-- Refresh visible padding after every relevant scroll, even when native binding needs
+			-- no correction.
 			require("lazyvcs.align").schedule(live)
 
 			local source_win = scroll_event_source(live, event)
@@ -702,10 +666,8 @@ attach_session = function(session)
 		group = session.augroup,
 		buffer = session.base_bufnr,
 		callback = function()
-			-- Neovim is already wiping this buffer. Deleting it again from inside its
-			-- own BufWipeout raises E937, which aborts the user's :q / :only /
-			-- :tabclose -- and the surrounding pcall does not catch an emsg. Mark it
-			-- so layout.close skips the delete.
+			-- Deleting a buffer during its BufWipeout raises E937. Mark it so layout.close skips
+			-- deletion.
 			session.base_wiping = true
 			if state.get(session.base_bufnr) then
 				M.close(session.base_bufnr)
@@ -795,10 +757,7 @@ function M.open(opts)
 		pending_opens[bufnr] = nil
 	end
 
-	-- Opening must never block: `<leader>vo` runs on a keystroke, and the
-	-- synchronous backend load spawns `svn info` + `svn cat` (or `git show`).
-	-- Against a locked working copy those calls block until they time out,
-	-- which freezes Neovim. Build the session off the UI thread instead.
+	-- Resolve and read the base asynchronously; working-copy locks must not freeze the UI.
 	local source_path = util.buf_path(bufnr)
 	local request = {}
 	local task

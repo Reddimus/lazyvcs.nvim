@@ -205,11 +205,8 @@ local ok, err = xpcall(function()
   local state = assert(require("lazyvcs.source_control.native")._state(), "missing native source-control state")
   assert(vim.api.nvim_buf_is_valid(state.bufnr), "native source-control buffer is invalid")
 
-  -- Repository discovery is asynchronous, so the sidebar's first frame reads
-  -- "Discovering repositories..." and the rows arrive afterwards. Reading the
-  -- buffer straight after `source_control_open` asserted against that first
-  -- frame. The Subversion repository in this fixture makes the wait real: it
-  -- spawns `svn info` as well as `git rev-parse`.
+  -- Await repository discovery before reading rows; Git and SVN probes complete
+  -- asynchronously.
   assert(vim.wait(60000, function()
     return state.lazyvcs_discovering ~= true and state.lazyvcs_repo_specs ~= nil
   end, 25), "repository discovery did not finish")
@@ -310,11 +307,8 @@ local function dump(label)
   ))
 end
 
--- The plugin performs buffer transfers inside `vim.schedule` callbacks. Polling
--- with a blocking `vim.wait` from within another scheduled callback can starve
--- exactly that work, so every wait here yields to the event loop via defer_fn
--- and the whole driver is written as a callback chain instead of straight-line
--- code with blocking waits.
+-- Use deferred callback chains to yield to scheduled buffer transfers. Blocking waits
+-- inside scheduled callbacks can starve them.
 local function wait_for(label, timeout_ms, predicate, on_ready)
   local deadline = vim.uv.now() + timeout_ms
   local function poll()
@@ -334,10 +328,8 @@ local function wait_for(label, timeout_ms, predicate, on_ready)
   poll()
 end
 
--- Heartbeat on the libuv loop. If these entries keep their queued= and written=
--- timestamps close together, the main loop is healthy. If they all flush at once
--- with old queued= stamps, vim.schedule was starved -- which, while libuv timers
--- kept firing, means Neovim was sitting on a modal prompt rather than busy.
+-- Compare heartbeat queued/written timestamps to detect scheduled callbacks blocked
+-- behind modal prompts.
 local heartbeat = vim.uv.new_timer()
 timers[#timers + 1] = heartbeat
 local ticks = 0
@@ -392,10 +384,8 @@ local function main()
   end
 
   dump("before open")
-  -- actions.open resolves the backend off the UI thread and returns a
-  -- cancellable task, not a session, so the diff is not live on return.
-  -- Navigating before it completes deliberately abandons the open, so wait for
-  -- the session to exist before driving buffer navigation.
+  -- Await the asynchronous open before navigating; earlier navigation cancels the pending
+  -- session.
   actions.open()
   wait_for("failed to open initial live diff", 15000, function()
     local live = state.current()
@@ -449,16 +439,8 @@ buffer_nav_smoke() {
 
 	export LAZYVCS_E2E_SVN_NAV_WC="${SVN_NAV_WC}"
 	rm -f "${sock}" "${result}" /tmp/lazyvcs-buffer-nav-state.log
-	# The pty must have a real size and Neovim must never open a modal prompt.
-	#
-	# `script` runs without a controlling terminal in CI, so the pty it allocates
-	# has a degenerate size. With a ~0-row message area every message overflows and
-	# Neovim stops at the hit-enter prompt, which blocks vim.schedule callbacks
-	# while libuv timers keep running -- indistinguishable from a deadlock, and
-	# intermittent because it depends on whether anything printed a message.
-	# `stty` fixes the geometry; the --cmd flags remove the remaining modal
-	# prompts (swapfile ATTENTION, hit-enter, more-prompt) so a stray message can
-	# never wedge the run.
+	# Give the PTY real dimensions and disable modal prompts. A zero-row message area can
+	# block scheduled callbacks on hit-enter.
 	timeout 180s script -qefc \
 		"stty rows 60 cols 200; nvim \
 			--cmd 'set noswapfile' \
