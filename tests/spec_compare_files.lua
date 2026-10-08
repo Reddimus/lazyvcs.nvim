@@ -639,21 +639,24 @@ return function(ctx)
 			keys("<CR>")
 			vim.cmd.enew()
 			local buf = vim.api.nvim_get_current_buf()
-			local job = vim.fn.jobstart(
-				{ vim.v.progpath, "--headless", "-u", "NONE", "-c", "sleep 10", "-c", "qa!" },
-				{ term = true }
-			)
-			assert(job > 0)
+			-- Test terminal-buffer routing without a nested process or ConPTY.
+			local channel = vim.api.nvim_open_term(buf, {})
+			vim.api.nvim_chan_send(channel, "terminal output\r\n")
 			ctx.wait_for(function()
 				return vim.api.nvim_get_current_tabpage() == s.origin_tab
 			end, "terminal not routed")
 			assert(vim.api.nvim_get_current_buf() == buf and vim.bo[buf].buftype == "terminal")
 			assert(vim.api.nvim_win_get_buf(s.rightwin) == s.right and vim.bo[s.right].buftype == "nofile")
-			vim.fn.jobstop(job)
+			ctx.wait_for(function()
+				return table
+					.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+					:find("terminal output", 1, true)
+			end, "terminal output was lost")
 			vim.api.nvim_set_current_win(s.rightwin)
 			keys("e")
 			assert(s.auto_width)
 			compare.close(s)
+			vim.api.nvim_buf_delete(buf, { force = true })
 		end,
 	}
 
