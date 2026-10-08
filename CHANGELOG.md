@@ -22,6 +22,8 @@ and this project adheres to
   the diff panes and focus the selected saved line.
 - Keep Compare actions such as `e` available in both panes after filetype
   changes. Explain when the file list already fits or cannot widen further.
+- Preserve panes when opening directory or terminal buffers, and retain review
+  positions after metadata-only visits.
 - Clear pending focus requests when a comparison preview fails.
 - Restore horizontal scrolling and keep reviewed lines visible inside folds.
 

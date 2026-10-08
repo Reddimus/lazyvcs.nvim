@@ -585,5 +585,77 @@ return function(ctx)
 		end,
 	}
 
+	cases[#cases + 1] = {
+		"test_comparison_special_buffer_opening_restores_layout_and_preserves_contents",
+		function()
+			local _, s = fixture("git")
+			keys("<CR>]v")
+			for _, kind in ipairs({ "nofile", "acwrite" }) do
+				vim.api.nvim_set_current_win(s.rightwin)
+				local buf = vim.api.nvim_create_buf(false, true)
+				vim.bo[buf].buftype, vim.bo[buf].bufhidden = kind, "wipe"
+				vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "selected special buffer" })
+				vim.api.nvim_win_set_buf(s.rightwin, buf)
+				ctx.wait_for(function()
+					return vim.api.nvim_get_current_tabpage() == s.origin_tab
+				end, "special buffer not routed")
+				assert(vim.api.nvim_get_current_buf() == buf)
+				assert(vim.api.nvim_buf_get_lines(buf, 0, -1, false)[1] == "selected special buffer")
+				assert(vim.api.nvim_win_get_buf(s.rightwin) == s.right)
+				vim.bo[buf].modified, vim.bo[buf].bufhidden = false, "hide"
+				vim.api.nvim_set_current_win(s.rightwin)
+				keys("e")
+				assert(s.auto_width)
+				keys("e")
+			end
+			compare.close(s)
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_comparison_metadata_only_revisit_keeps_remembered_review",
+		function()
+			local _, s = fixture("git")
+			keys("<CR>]v]v]b<Esc>")
+			vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path["a.txt"], 0 })
+			keys("p")
+			ready(s, "a.txt")
+			assert(s.mode == "metadata")
+			keys("]b[b")
+			at(s, "a.txt", "saved", 50)
+			keys("]b<Esc>")
+			vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path["a.txt"], 0 })
+			keys("p")
+			ready(s, "a.txt")
+			keys("p<CR>")
+			at(s, "a.txt", "saved", 50)
+			compare.close(s)
+		end,
+	}
+
+	cases[#cases + 1] = {
+		"test_comparison_terminal_opening_keeps_review_panes",
+		function()
+			local _, s = fixture("git")
+			keys("<CR>")
+			vim.cmd.enew()
+			local buf = vim.api.nvim_get_current_buf()
+			local job = vim.fn.jobstart(
+				{ vim.v.progpath, "--headless", "-u", "NONE", "-c", "sleep 10", "-c", "qa!" },
+				{ term = true }
+			)
+			assert(job > 0)
+			ctx.wait_for(function()
+				return vim.api.nvim_get_current_tabpage() == s.origin_tab
+			end, "terminal not routed")
+			assert(vim.api.nvim_get_current_buf() == buf and vim.bo[buf].buftype == "terminal")
+			assert(vim.api.nvim_win_get_buf(s.rightwin) == s.right and vim.bo[s.right].buftype == "nofile")
+			vim.fn.jobstop(job)
+			vim.api.nvim_set_current_win(s.rightwin)
+			keys("e")
+			assert(s.auto_width)
+			compare.close(s)
+		end,
+	}
+
 	return cases
 end

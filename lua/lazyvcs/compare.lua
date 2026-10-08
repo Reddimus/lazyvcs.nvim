@@ -269,9 +269,13 @@ local function preview(s, item, mode, saved_views, intent, saved_reviewed)
 		s.navigation_intent = nil
 		show_result(s, s.preview_mode)
 		local remembered = s.file_views and s.file_views[item.relpath]
-		if not saved_views and remembered and remembered.old_path == item.old_path and s.mode == "text" then
-			restore(s.leftwin, remembered.views[1])
-			restore(s.rightwin, remembered.views[2])
+		if not saved_views and remembered and remembered.old_path == item.old_path then
+			if s.mode == "metadata" then
+				s.text_views = vim.deepcopy(remembered.views)
+			else
+				restore(s.leftwin, remembered.views[1])
+				restore(s.rightwin, remembered.views[2])
+			end
 			navigation.restore(s, remembered, stamp)
 		end
 		if saved_views and s.mode == "text" then
