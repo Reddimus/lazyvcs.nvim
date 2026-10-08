@@ -92,7 +92,20 @@ function M.render(s)
 	if s.uncounted then
 		lines[#lines + 1] = s.uncounted .. " without counts"
 	end
+	local hint_start = #lines + 1
 	lines[#lines + 1] = "Enter review  P preview  o edit"
+	local opts = require("lazyvcs.config").get()
+	if opts.session_keymaps then
+		local keys = {}
+		for _, key in ipairs({ opts.keymaps.next_file, opts.keymaps.prev_file }) do
+			if key then
+				keys[#keys + 1] = M.display(key)
+			end
+		end
+		if #keys > 0 then
+			lines[#lines + 1] = table.concat(keys, " / ") .. " files"
+		end
+	end
 	lines[#lines + 1] = "R refresh  b base  ? help"
 	lines[#lines + 1] = ""
 	local offset = #lines
@@ -115,7 +128,7 @@ function M.render(s)
 	for row = 4, offset do
 		mark(row, 0, #lines[row], "Path")
 	end
-	for row = offset - 2, offset - 1 do
+	for row = hint_start, offset - 1 do
 		for a, key in lines[row]:gmatch("()(%S+)%s+%S+") do
 			mark(row, a - 1, a - 1 + #key, "Hint")
 		end

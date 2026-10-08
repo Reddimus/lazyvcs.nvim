@@ -101,6 +101,8 @@ the GitHub release.
 - `source_control/jobs.lua` bounds and profiles repository/comparison commands.
 - `compare.lua` owns review tabs, source-control navigation, and read-only
   previews.
+- `compare_navigation.lua` owns hunk navigation and per-path review positions.
+- `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_view.lua` builds file rows, highlights, and cached width
   measurements.
 - `blame_selection.lua` presents selected-line reports through a cancellable
@@ -134,3 +136,8 @@ changes use cached measurements; cursor movement does not load previews.
 Selection blame sends one bounded request chain, never a command per line. Git
 maps selections to historical ranges on older Git; SVN maps historical blame
 through the captured contents. CI also runs native E2E with Ubuntu 22.04 Git.
+
+Compare file navigation selects its destination in O(1) and loads only that
+preview. Review history stores O(visited paths) view metadata, prunes removed
+paths, and resets when the pinned base changes. It does not cache file contents
+or alter AstroNvim's buffer list.

@@ -67,8 +67,14 @@ refreshing to include their latest edits.
 
 The comparison tab has a file list and two read-only panes. Press `Enter` or
 double-click a file to review its first hunk. `]v` and `[v` move between hunks
-and wrap within that file. `Esc` returns to the list; `P` previews without
-leaving it. Deleted files open in the base pane.
+and wrap within that file. `]b` and `[b` cycle files, wrap, and restore your
+review position. Counts work, such as `3]b`. These keys apply only in Compare;
+your ordinary buffers stay unchanged. `Esc` returns to the list; `P` previews
+without leaving it. Deleted files open in the base pane.
+
+AstroNvim file and grep searches also work inside Compare. Selecting a changed
+file opens its preview; grep results focus the matching saved line. Other files
+open in your original editing window.
 
 Press `e` to widen the list, `o` to edit, `R` to refresh, or `b` to change the
 base. `q` closes Compare; your sidebar mapping returns to source control.

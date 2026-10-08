@@ -21,6 +21,8 @@ local defaults = {
 		close = "q",
 		next_hunk = "]v",
 		prev_hunk = "[v",
+		next_file = "]b",
+		prev_file = "[b",
 		revert_hunk = "<leader>vr",
 	},
 	signs = {
@@ -226,15 +228,21 @@ local function normalize(opts)
 	end
 
 	local active_keymaps = {}
+	local reserved = {}
+	for _, key in ipairs({ "q", "R", "b", "?", "o", "e", "p", "<CR>", "P", "<Esc>", "<2-LeftMouse>" }) do
+		reserved[vim.api.nvim_replace_termcodes(key, true, false, true)] = true
+	end
 	for name, value in pairs(opts.keymaps) do
 		optional_keymap("keymaps." .. name, value)
 		if value ~= false then
-			if active_keymaps[value] then
-				error(
-					string.format("lazyvcs keymaps.%s duplicates keymaps.%s (%s)", name, active_keymaps[value], value)
-				)
+			local key = vim.api.nvim_replace_termcodes(value, true, false, true)
+			if (name == "next_file" or name == "prev_file") and reserved[key] then
+				error("lazyvcs keymaps." .. name .. " conflicts with a fixed Compare action (" .. value .. ")")
 			end
-			active_keymaps[value] = name
+			if active_keymaps[key] then
+				error(string.format("lazyvcs keymaps.%s duplicates keymaps.%s (%s)", name, active_keymaps[key], value))
+			end
+			active_keymaps[key] = name
 		end
 	end
 
