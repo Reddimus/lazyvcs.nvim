@@ -89,6 +89,8 @@ apt-get install -y --no-install-recommends \
 	git \
 	gzip \
 	locales \
+	python3 \
+	python3-pexpect \
 	ripgrep \
 	subversion \
 	tar \
@@ -142,6 +144,8 @@ return {
     event = { "BufReadPre", "BufNewFile" },
     keys = {
       { "<leader>vs", "<cmd>LazyVCS sidebar toggle<cr>", desc = "Toggle VCS sidebar" },
+      { "<leader>vc", "<cmd>LazyVCS compare<cr>", desc = "Compare against base" },
+      { "<leader>vC", "<cmd>LazyVCS compare base<cr>", desc = "Choose comparison base" },
     },
     opts = {
       source_control = {
@@ -167,6 +171,7 @@ run_logged plugin-registration timeout 180s nvim --headless "+Lazy! sync" \
 	"+lua local plugin = require('lazy.core.config').plugins['lazyvcs.nvim']; assert(plugin and plugin.dir == '/work/lazyvcs.nvim', 'lazyvcs.nvim is not registered from the mounted plugin path')" \
 	"+qa"
 run_logged checkhealth timeout 180s nvim --headless "+checkhealth lazyvcs" "+qa"
+run_logged compare-terminal timeout 180s python3 /work/lazyvcs.nvim/tests/e2e/compare.py /artifacts/compare
 
 WORKSPACE=/tmp/lazyvcs-e2e-workspace
 SVN_REPO=/tmp/lazyvcs-e2e-svn-store

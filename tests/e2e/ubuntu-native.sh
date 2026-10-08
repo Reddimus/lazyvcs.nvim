@@ -58,6 +58,9 @@ mkdir -p "${XDG_CONFIG_HOME}/nvim" "${XDG_DATA_HOME}" "${XDG_STATE_HOME}" "${XDG
 cat >"${XDG_CONFIG_HOME}/nvim/init.lua" <<'LUA'
 vim.opt.runtimepath:prepend("/work/lazyvcs.nvim")
 vim.cmd.runtime("plugin/lazyvcs.lua")
+vim.g.mapleader = " "
+vim.keymap.set("n", "<leader>vc", "<cmd>LazyVCS compare<cr>")
+vim.keymap.set("n", "<leader>vC", "<cmd>LazyVCS compare base<cr>")
 require("lazyvcs").setup({
   source_control = {
     ui = "native",
@@ -153,6 +156,7 @@ finally:
 PY
 
 LAZYVCS_E2E_WORKSPACE="${workspace}" python3 /tmp/lazyvcs-pty-smoke.py >/artifacts/pty-smoke.log 2>&1
+python3 /work/lazyvcs.nvim/tests/e2e/compare.py /artifacts/compare >/artifacts/compare.log 2>&1
 CONTAINER
 
 printf 'lazyvcs native E2E artifacts: %s\n' "${ARTIFACT_DIR}"

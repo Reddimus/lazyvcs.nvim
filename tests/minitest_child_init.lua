@@ -10,6 +10,8 @@ package.path = table.concat({
 vim.g.mapleader = " "
 vim.cmd.runtime("plugin/lazyvcs.lua")
 vim.keymap.set("n", "<leader>vs", "<cmd>LazyVCS sidebar toggle<cr>", { desc = "Toggle VCS sidebar" })
+vim.keymap.set("n", "<leader>vc", "<cmd>LazyVCS compare<cr>", { desc = "Compare against base" })
+vim.keymap.set("n", "<leader>vC", "<cmd>LazyVCS compare base<cr>", { desc = "Choose comparison base" })
 
 require("lazyvcs").setup({
 	source_control = {

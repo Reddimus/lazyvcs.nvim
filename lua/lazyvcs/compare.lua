@@ -4,6 +4,9 @@ local util = require("lazyvcs.util")
 local json = require("lazyvcs.json_file")
 local view = require("lazyvcs.compare_view")
 local highlighting = require("lazyvcs.highlighting")
+local navigation = require("lazyvcs.compare_navigation")
+local compat = require("lazyvcs.compat")
+local config = require("lazyvcs.config")
 local M = {}
 local sessions = {}
 local write, display = view.write, view.display
@@ -131,6 +134,8 @@ local function labels(s, left, right)
 	end
 end
 local function failure(s, err)
+	navigation.cancel(s)
+	s.navigation = nil
 	s.preview_result, s.shown_item, s.mode = nil, nil, "message"
 	message(s, "Comparison unavailable")
 	preview_options(s, s.leftwin)
@@ -182,13 +187,15 @@ local function show_result(s, mode)
 	end
 	view.marker(s)
 end
-local function preview(s, item, mode, saved_views)
+local function preview(s, item, mode, saved_views, intent, saved_reviewed)
 	item = item or selected(s)
 	if not item or not s.snapshot then
 		return
 	end
 	s.preview_generation = (s.preview_generation or 0) + 1
 	cancel(s, "preview_job")
+	navigation.cancel(s)
+	s.navigation, s.preview_mode = nil, mode or "text"
 	local generation = s.preview_generation
 	s.preview_result, s.text_views, s.shown_item, s.mode = nil, nil, item, "message"
 	local path = s.root .. "/" .. item.relpath
@@ -200,6 +207,7 @@ local function preview(s, item, mode, saved_views)
 	write(s.left, { "Loading " .. display(item.relpath) .. "..." })
 	write(s.right, {})
 	view.marker(s)
+	s.navigation_intent = intent
 	s.preview_job = s.provider.preview(s.snapshot, item, function(result, err)
 		if not alive(s) or generation ~= s.preview_generation then
 			return
@@ -215,12 +223,38 @@ local function preview(s, item, mode, saved_views)
 			return
 		end
 		s.preview_result = result
-		show_result(s, mode)
+		navigation.load(s, result, item)
+		-- nvim_win_call emits window events while configuring and restoring panes.
+		-- Those internal visits must not cancel an explicit review request.
+		local pending = s.navigation_intent
+		s.navigation_intent = nil
+		show_result(s, s.preview_mode)
 		if saved_views and s.mode == "text" then
 			restore(s.leftwin, saved_views[1])
 			restore(s.rightwin, saved_views[2])
+			s.navigation.reviewed = saved_reviewed == true
 		end
+		s.navigation_intent = pending
+		navigation.complete(s, s.navigation_intent)
 	end)
+end
+local function request_preview(s, kind)
+	local item = vim.api.nvim_get_current_win() == s.sidewin and selected(s) or s.shown_item
+	navigation.cancel(s)
+	if not item then
+		return
+	end
+	local intent = kind ~= "preview" and navigation.intent(s, item, kind) or nil
+	if item == s.shown_item and s.preview_result then
+		if s.mode ~= "text" then
+			show_result(s, "text")
+		end
+		navigation.complete(s, intent)
+	elseif item == s.shown_item and s.preview_job then
+		s.preview_mode = "text"
+	else
+		preview(s, item, "text", nil, intent)
+	end
 end
 local function choose_base(s)
 	if s.prompting then
@@ -238,6 +272,8 @@ local function choose_base(s)
 		if not value or value == "" then
 			if not s.base then
 				M.close(s)
+			elseif not s.snapshot then
+				M.refresh(s)
 			end
 			return
 		end
@@ -258,6 +294,7 @@ function M.refresh(s, context_checked)
 		return
 	end
 	if not context_checked then
+		navigation.cancel(s)
 		if not s.restore and s.snapshot then
 			local cursor = selected(s)
 			s.restore = {
@@ -266,8 +303,10 @@ function M.refresh(s, context_checked)
 				side = capture(s.sidewin),
 				index = cursor and s.rows_cache.by_path[cursor.relpath],
 				views = { capture(s.leftwin), capture(s.rightwin) },
+				reviewed = s.navigation and s.navigation.reviewed,
 			}
 		end
+		s.navigation = nil
 		s.generation, s.preview_generation = (s.generation or 0) + 1, (s.preview_generation or 0) + 1
 		cancel(s, "job")
 		cancel(s, "preview_job")
@@ -298,6 +337,7 @@ function M.refresh(s, context_checked)
 				if s.explicit_untracked ~= nil then
 					other.include_untracked = s.explicit_untracked
 				end
+				other.choose_base_requested = s.choose_base_requested
 				M.close(s, false)
 				vim.api.nvim_set_current_tabpage(other.tab)
 				vim.api.nvim_set_current_win(other.sidewin)
@@ -327,6 +367,10 @@ function M.refresh(s, context_checked)
 		return
 	end
 	s.explicit_base = false
+	if s.choose_base_requested then
+		s.choose_base_requested = nil
+		return choose_base(s)
+	end
 	if not s.base then
 		message(s, "Select a comparison base")
 		return choose_base(s)
@@ -385,7 +429,7 @@ function M.refresh(s, context_checked)
 					restore(s.sidewin, saved.side)
 				end
 				local shown = saved and saved.shown and s.rows_cache.by_path[saved.shown]
-				preview(s, shown and items[shown] or item, "text", saved and saved.views)
+				preview(s, shown and items[shown] or item, "text", saved and saved.views, nil, saved and saved.reviewed)
 			else
 				labels(s, "No saved changes", "SAVED WORKTREE")
 			end
@@ -395,10 +439,27 @@ end
 function M.base()
 	local s = sessions[vim.api.nvim_get_current_tabpage()]
 	if s and s.context then
+		navigation.cancel(s)
 		choose_base(s)
 	else
-		M.open()
+		M.open({ choose_base = true })
 	end
+end
+function M.jump_to_hunk(direction)
+	local s = sessions[vim.api.nvim_get_current_tabpage()]
+	if not navigation.owns(s) then
+		return false
+	end
+	if vim.api.nvim_get_current_win() == s.sidewin then
+		request_preview(s, direction == "next" and "first" or "last")
+	else
+		navigation.cancel(s)
+		if s.preview_result and s.mode ~= "text" then
+			show_result(s, "text")
+		end
+		navigation.jump(s, direction)
+	end
+	return true
 end
 local function editor_window(win)
 	return valid(win)
@@ -458,6 +519,7 @@ function M.close(s, return_focus)
 		return
 	end
 	s.closed = true
+	navigation.cancel(s)
 	highlighting.release(s.leftwin)
 	highlighting.release(s.rightwin)
 	cancel(s, "job")
@@ -520,7 +582,8 @@ local function help(s)
 	local lines = {
 		"Comparison help",
 		"",
-		"Enter / double-click: preview selected saved file",
+		"Enter / double-click: review selected file at its first hunk",
+		"P: preview without leaving the file list; Esc: return to the list",
 		"e: fit sidebar width; press again to restore",
 		"o: edit the real file in the original editing window",
 		"p: toggle metadata or properties; Enter returns to text",
@@ -536,6 +599,14 @@ local function help(s)
 		"Nonignored untracked files are included by default.",
 		"Binary files and files larger than 1 MiB have no text preview.",
 	}
+	local opts = config.get()
+	if opts.session_keymaps then
+		for _, mapping in ipairs({ { opts.keymaps.next_hunk, "next" }, { opts.keymaps.prev_hunk, "previous" } }) do
+			if mapping[1] then
+				table.insert(lines, 5, mapping[1] .. ": " .. mapping[2] .. " hunk; wraps within this file")
+			end
+		end
+	end
 	local buf = vim.api.nvim_create_buf(false, true)
 	vim.bo[buf].bufhidden = "wipe"
 	write(buf, lines)
@@ -550,7 +621,7 @@ local function help(s)
 	})
 	vim.w[s.helpwin].lazyvcs_compare = true
 	for _, key in ipairs({ "q", "?", "<Esc>" }) do
-		vim.keymap.set("n", key, function()
+		compat.keymap_set("n", key, function()
 			if valid(s.helpwin) then
 				vim.api.nvim_win_close(s.helpwin, true)
 			end
@@ -587,6 +658,7 @@ local function open_session(opts, origin)
 			if opts.include_untracked ~= nil then
 				existing.include_untracked = opts.include_untracked
 			end
+			existing.choose_base_requested = opts.choose_base or nil
 			M.refresh(existing)
 			return existing
 		end
@@ -597,6 +669,7 @@ local function open_session(opts, origin)
 		explicit_base = opts.base ~= nil,
 		include_untracked = opts.include_untracked ~= false,
 		explicit_untracked = opts.include_untracked,
+		choose_base_requested = opts.choose_base,
 		items = {},
 		rows = {},
 		row_by_path = {},
@@ -632,11 +705,10 @@ local function open_session(opts, origin)
 	sessions[s.tab] = s
 	resize(s)
 	local function enter()
-		local item = vim.api.nvim_get_current_win() == s.sidewin and selected(s) or s.shown_item
-		if s.preview_result and item == s.shown_item then
-			show_result(s, "text")
+		if vim.api.nvim_get_current_win() == s.sidewin then
+			request_preview(s, "review")
 		else
-			preview(s, item)
+			request_preview(s, "preview")
 		end
 	end
 	for _, buf in ipairs({ s.sidebar, s.left, s.right }) do
@@ -685,6 +757,7 @@ local function open_session(opts, origin)
 			},
 			p = {
 				function()
+					navigation.cancel(s)
 					local item = target(s)
 					if s.preview_result and item == s.shown_item then
 						show_result(s, s.mode == "metadata" and "text" or "metadata")
@@ -694,14 +767,57 @@ local function open_session(opts, origin)
 				end,
 				"Toggle metadata or properties",
 			},
-			["<CR>"] = { enter, "Preview comparison file" },
+			["<CR>"] = { enter, "Review comparison file" },
+			P = {
+				function()
+					request_preview(s, "preview")
+				end,
+				"Preview comparison file",
+			},
 		}
+		if buf ~= s.sidebar then
+			bindings["<Esc>"] = {
+				function()
+					navigation.cancel(s)
+					local item = s.shown_item
+					if item and s.row_by_path[item.relpath] then
+						vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
+					end
+					vim.api.nvim_set_current_win(s.sidewin)
+				end,
+				"Return to comparison files",
+			}
+		end
 		for key, binding in pairs(bindings) do
-			vim.keymap.set("n", key, binding[1], { buffer = buf, nowait = true, silent = true, desc = binding[2] })
+			compat.keymap_set("n", key, binding[1], { buffer = buf, nowait = true, silent = true, desc = binding[2] })
+		end
+		local opts = config.get()
+		if opts.session_keymaps then
+			for _, mapping in ipairs({ { opts.keymaps.next_hunk, "next" }, { opts.keymaps.prev_hunk, "prev" } }) do
+				if mapping[1] then
+					compat.keymap_set("n", mapping[1], function()
+						M.jump_to_hunk(mapping[2])
+					end, { buffer = buf, silent = true, desc = "lazyvcs " .. mapping[2] .. " hunk" })
+				end
+			end
 		end
 	end
-	vim.keymap.set("n", "<2-LeftMouse>", enter, { buffer = s.sidebar, silent = true })
+	compat.keymap_set("n", "<2-LeftMouse>", enter, { buffer = s.sidebar, silent = true })
 	s.augroup = vim.api.nvim_create_augroup("lazyvcs_compare_" .. s.tab, { clear = true })
+	vim.api.nvim_create_autocmd({ "WinLeave", "TabLeave", "CursorMoved" }, {
+		group = s.augroup,
+		callback = function(args)
+			local intent = s.navigation_intent
+			if intent and not s.resizing then
+				local item = selected(s)
+				if
+					args.event ~= "CursorMoved" or (vim.api.nvim_get_current_win() == s.sidewin and item ~= intent.item)
+				then
+					navigation.cancel(s)
+				end
+			end
+		end,
+	})
 	vim.api.nvim_create_autocmd("TabClosed", {
 		group = s.augroup,
 		callback = function()
@@ -740,6 +856,7 @@ function M.open(opts)
 		if opts.include_untracked ~= nil then
 			existing.include_untracked = opts.include_untracked
 		end
+		existing.choose_base_requested = opts.choose_base or nil
 		M.refresh(existing)
 		return existing
 	end

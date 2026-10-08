@@ -22,6 +22,10 @@ With lazy.nvim:
   main = "lazyvcs",
   event = { "BufReadPost", "BufNewFile" },
   cmd = "LazyVCS",
+  keys = {
+    { "<leader>vc", "<cmd>LazyVCS compare<cr>", desc = "Compare against base" },
+    { "<leader>vC", "<cmd>LazyVCS compare base<cr>", desc = "Choose comparison base" },
+  },
   opts = {},
 }
 ```
@@ -61,11 +65,16 @@ committed, staged, unstaged, and nonignored untracked changes. SVN compares the
 selected repository revision with the working copy. Save buffers before
 refreshing to include their latest edits.
 
-The comparison tab has a file list and two read-only panes. Press `Enter` to
-preview, `e` to widen the list, `o` to edit, `R` to refresh, or `b` to change
-the base. `q` closes the comparison; your sidebar mapping returns to source
-control. `C` reopens the comparison, refreshes it, and preserves your place.
-Binary and oversized files remain listed without a text preview.
+The comparison tab has a file list and two read-only panes. Press `Enter` or
+double-click a file to review its first hunk. `]v` and `[v` move between hunks
+and wrap within that file. `Esc` returns to the list; `P` previews without
+leaving it. Deleted files open in the base pane.
+
+Press `e` to widen the list, `o` to edit, `R` to refresh, or `b` to change the
+base. `q` closes Compare; your sidebar mapping returns to source control.
+Reopening and refreshing preserve your position. The installation mappings use
+`<leader>vc` to open Compare and `<leader>vC` to choose its base. Binary and
+oversized files remain listed without a text preview.
 
 ## Blame selected lines
 

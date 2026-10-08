@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-10-08
+
+### Added
+
+- Navigate Compare hunks with `]v` and `[v` from either pane or the file list.
+- Review files with Enter or double-click, preview with `P`, and return with
+  `Esc`. First activation focuses the first hunk; later activation preserves
+  your position. Deleted files focus the base pane.
+- Document `<leader>vc` and `<leader>vC` shortcuts for lazy.nvim and AstroNvim.
+
+### Fixed
+
+- Choose a comparison base from the editor even when a remembered base exists.
+- Cancel stale preview focus requests after navigation, refresh, or closing.
+- Keep deletion anchors and folded hunks visible when navigating.
+- Remove vulnerable glob tooling from Markdown checks and update its math
+  parser.
+
 ## [0.8.1] - 2026-10-01
 
 ### Fixed

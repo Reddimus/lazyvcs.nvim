@@ -4,17 +4,15 @@
   "scripts": {
     "format:md": "prettier --write \"**/*.md\"",
     "format:md:check": "prettier --check \"**/*.md\"",
-    "lint:md": "markdownlint-cli2 \"**/*.md\" \"#deps/**\" \"#node_modules/**\"",
+    "lint:md": "node tests/ci/lint-markdown.mjs",
     "lint:links": "node tests/ci/check-local-links.mjs",
     "audit": "npm audit --include=dev --audit-level=high"
   },
   "devDependencies": {
-    "markdownlint-cli2": "0.23.3",
+    "markdownlint": "0.41.1",
     "prettier": "3.9.9"
   },
   "overrides": {
-    "markdownlint-cli2": {
-      "smol-toml": "1.7.1"
-    }
+    "katex": "0.18.2"
   }
 }

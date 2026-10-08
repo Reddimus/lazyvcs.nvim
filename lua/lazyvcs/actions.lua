@@ -1003,6 +1003,10 @@ function M.toggle()
 end
 
 function M.revert_hunk()
+	if require("lazyvcs.compare_navigation").owns(require("lazyvcs.compare").current()) then
+		util.notify("This comparison is read-only", vim.log.levels.WARN)
+		return false
+	end
 	local session = state.current()
 	if not session then
 		return require("lazyvcs.signs").revert_hunk()
@@ -1060,6 +1064,9 @@ function M.revert_hunk()
 end
 
 function M.jump_to_hunk(direction)
+	if require("lazyvcs.compare").jump_to_hunk(direction) then
+		return
+	end
 	local session = state.current()
 	if not session then
 		return require("lazyvcs.signs").jump_to_hunk(direction)

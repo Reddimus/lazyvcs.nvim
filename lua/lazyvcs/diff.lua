@@ -101,7 +101,7 @@ function M.compute_target_view(hunk, win_height, line_count)
 	end
 
 	return {
-		lnum = anchor,
+		lnum = math.max(1, math.min(anchor, line_count)),
 		col = 0,
 		curswant = 0,
 		topline = math.max(1, math.min(topline, max_topline)),
@@ -111,6 +111,8 @@ end
 function M.focus_hunk(winid, bufnr, hunk)
 	local view = M.compute_target_view(hunk, vim.api.nvim_win_get_height(winid), vim.api.nvim_buf_line_count(bufnr))
 	vim.api.nvim_win_call(winid, function()
+		vim.api.nvim_win_set_cursor(winid, { view.lnum, 0 })
+		vim.cmd("normal! zv")
 		vim.fn.winrestview(view)
 	end)
 end

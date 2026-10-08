@@ -19,7 +19,7 @@ before opening a pull request.
 ```sh
 npm ci
 npm run format:md:check                       # Markdown formatting
-npm run lint:md                               # markdownlint-cli2
+npm run lint:md                               # markdownlint
 npm run lint:links                            # local Markdown link targets
 npm run audit                                 # includes development dependencies
 stylua --check lua tests                      # Lua formatting
