@@ -112,7 +112,10 @@ reuses the comparison tab, refreshes it, and preserves the selected path.
 
 The review tab owns its sidebar and read-only preview buffers. Narrow windows
 stack the preview panes vertically:
-    Enter       Preview the selected saved file.
+    Enter       Review the selected file; double-click does the same.
+    P           Preview without leaving the file list.
+    Esc         Return from either preview pane to the file list.
+    ]v, [v      Next/previous hunk; wrap within the current file.
     e           Fit the file list width; press again to restore.
     o           Open the real file in the original editing window.
     R           Refresh changes and resolve the base again.
@@ -120,6 +123,13 @@ stack the preview panes vertically:
     p           Show metadata or SVN property changes.
     ?           Show floating help; q or Escape dismisses it.
     q           Close the review and return to the original window.
+
+First activation focuses the saved pane at the first hunk, or the base pane
+for a wholly deleted file. Reactivating the displayed file preserves position.
+From the file list, ]v starts at the first hunk and [v at the last. Navigation
+uses config.keymaps.next_hunk/prev_hunk and respects session_keymaps = false.
+Moving the list cursor and background refreshes preserve focus. Unavailable
+text previews stay in the list. Enter in a preview restores text from metadata.
 
 File rows show the filename before the directory. The > marker identifies the
 previewed file independently of the cursor. Auto-fit measures file rows, caps
@@ -158,6 +168,8 @@ Suggested global mappings:
     <leader>vq   close live diff
     <leader>vr   revert current hunk
     <leader>vs   toggle source-control sidebar
+    <leader>vc   open or refresh comparison
+    <leader>vC   choose comparison base
     ]v           next hunk
     [v           previous hunk
 

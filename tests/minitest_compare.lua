@@ -68,4 +68,65 @@ end,10), 'selection blame did not load')
 		child.type_keys("q")
 	end
 end
+local function navigation_fixture()
+	child.lua([[
+local helpers = require('helpers')
+local lines = {}
+for i=1,60 do lines[i]='line ' .. i end
+helpers.write_file(fixture.file,table.concat(lines,'\n') .. '\n')
+helpers.exec({'git','add','sample.txt'},fixture.root)
+helpers.exec({'git','commit','-m','keyboard navigation'},fixture.root)
+lines[8],lines[30],lines[50]='changed eight','changed thirty','changed fifty'
+helpers.write_file(fixture.file,table.concat(lines,'\n') .. '\n')
+vim.ui.input=function(_,cb) cb('HEAD') end
+]])
+end
+local function position()
+	return child.lua_get([[(function()
+local s=require('lazyvcs.compare').current()
+return {vim.api.nvim_get_current_win()==s.sidewin, vim.api.nvim_get_current_win()==s.rightwin,
+vim.api.nvim_win_get_cursor(s.rightwin)[1]}
+end)()]])
+end
+T["compare shortcuts, activation, hunk wrap, and return use real keys"] = function()
+	navigation_fixture()
+	child.type_keys("<Space>vc")
+	ready()
+	eq(position(), { true, false, 1 })
+	child.type_keys("P", "<CR>")
+	eq(position(), { false, true, 8 })
+	child.type_keys("]v")
+	eq(position(), { false, true, 30 })
+	child.type_keys("]v", "]v", "[v")
+	eq(position(), { false, true, 50 })
+	child.type_keys("<Esc>", "<CR>")
+	eq(position(), { false, true, 50 })
+	child.type_keys("<Esc>", "[v")
+	eq(position(), { false, true, 50 })
+	child.type_keys("<Space>vC")
+	ready()
+	eq(position(), { false, true, 50 })
+end
+T["mouse selection stays in the list and double click starts review"] = function()
+	child.api.nvim_ui_attach(160, 40, {})
+	navigation_fixture()
+	child.type_keys("<Space>vc")
+	ready()
+	local coords = child.lua_get([[(function()
+local s=require('lazyvcs.compare').current()
+local pos=vim.api.nvim_win_get_position(s.sidewin)
+return {pos[1]+s.row_by_path['sample.txt'], pos[2]+5}
+end)()]])
+	child.lua("vim.o.mouse='a'")
+	child.api.nvim_input_mouse("left", "press", "", 0, coords[1], coords[2])
+	child.cmd("redraw")
+	child.api.nvim_input_mouse("left", "release", "", 0, coords[1], coords[2])
+	child.cmd("redraw")
+	eq(position()[1], true)
+	child.api.nvim_input_mouse("left", "press", "2", 0, coords[1], coords[2])
+	child.cmd("redraw")
+	child.api.nvim_input_mouse("left", "release", "", 0, coords[1], coords[2])
+	child.cmd("redraw")
+	eq(position(), { false, true, 8 })
+end
 return T

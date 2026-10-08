@@ -92,7 +92,7 @@ function M.render(s)
 	if s.uncounted then
 		lines[#lines + 1] = s.uncounted .. " without counts"
 	end
-	lines[#lines + 1] = "Enter preview  o edit"
+	lines[#lines + 1] = "Enter review  P preview  o edit"
 	lines[#lines + 1] = "R refresh  b base  ? help"
 	lines[#lines + 1] = ""
 	local offset = #lines
