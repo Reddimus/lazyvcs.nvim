@@ -42,8 +42,22 @@ end
 local function restore(win, saved)
 	if valid(win) and saved then
 		vim.api.nvim_win_call(win, function()
-			vim.fn.winrestview({ lnum = saved.lnum, col = saved.col, topline = saved.topline })
+			vim.fn.winrestview(saved)
+			if vim.wo.diff then
+				vim.cmd("normal! zv")
+				vim.fn.winrestview(saved)
+			end
 		end)
+	end
+end
+local function bind(s, buf)
+	for _, mapping in ipairs(s.keymaps and s.keymaps[buf] or {}) do
+		compat.keymap_set("n", mapping.key, mapping.callback, {
+			buffer = buf,
+			nowait = mapping.nowait,
+			silent = true,
+			desc = mapping.desc,
+		})
 	end
 end
 local function preview_options(s, win)
@@ -54,18 +68,35 @@ local function preview_options(s, win)
 	end
 	vim.api.nvim_win_call(win, function()
 		vim.w.lazyvcs_compare = true
-		vim.wo.winfixbuf = true
+		vim.wo.winfixbuf = false
 		vim.cmd(s.mode == "text" and "diffthis" or "diffoff")
 		if s.mode ~= "text" then
 			vim.wo.foldenable, vim.wo.cursorbind, vim.wo.scrollbind = false, false, false
 		end
 	end)
 end
+local function sidebar_options(s)
+	vim.w[s.sidewin].lazyvcs_compare = true
+	local wo = vim.wo[s.sidewin]
+	wo.winfixwidth, wo.winfixbuf, wo.cursorline = true, false, true
+	wo.number, wo.relativenumber, wo.wrap, wo.spell, wo.foldenable = false, false, false, false, false
+	wo.diff, wo.cursorbind, wo.scrollbind = false, false, false
+	wo.signcolumn, wo.foldcolumn, wo.list, wo.listchars = "no", "0", true, "extends:>,precedes:<"
+end
 local function resize(s, manual_event)
 	if not alive(s) or vim.api.nvim_get_current_tabpage() ~= s.tab or s.resizing then
 		return
 	end
 	if not (valid(s.sidewin) and valid(s.leftwin) and valid(s.rightwin)) then
+		return
+	end
+	-- A file-opening action may temporarily occupy a pane until its scheduled
+	-- restoration. Never close or rebuild that window around a borrowed buffer.
+	if
+		vim.api.nvim_win_get_buf(s.sidewin) ~= s.sidebar
+		or vim.api.nvim_win_get_buf(s.leftwin) ~= s.left
+		or vim.api.nvim_win_get_buf(s.rightwin) ~= s.right
+	then
 		return
 	end
 	if
@@ -141,6 +172,8 @@ local function failure(s, err)
 	preview_options(s, s.leftwin)
 	preview_options(s, s.rightwin)
 	vim.bo[s.left].filetype, vim.bo[s.right].filetype = "", ""
+	bind(s, s.left)
+	bind(s, s.right)
 	labels(s, "Comparison unavailable", "Recovery")
 	write(s.left, util.split_lines(tostring(err)))
 	write(s.right, s.context and { "b: choose another base", "R: retry", "q: close" } or { "R: retry", "q: close" })
@@ -175,6 +208,8 @@ local function show_result(s, mode)
 	end
 	preview_options(s, s.leftwin)
 	preview_options(s, s.rightwin)
+	bind(s, s.left)
+	bind(s, s.right)
 	if s.mode == "text" then
 		vim.api.nvim_win_call(s.leftwin, function()
 			vim.cmd("diffupdate")
@@ -192,6 +227,7 @@ local function preview(s, item, mode, saved_views, intent, saved_reviewed)
 	if not item or not s.snapshot then
 		return
 	end
+	navigation.remember(s)
 	s.preview_generation = (s.preview_generation or 0) + 1
 	cancel(s, "preview_job")
 	navigation.cancel(s)
@@ -203,6 +239,8 @@ local function preview(s, item, mode, saved_views, intent, saved_reviewed)
 	preview_options(s, s.leftwin)
 	preview_options(s, s.rightwin)
 	vim.bo[s.left].filetype, vim.bo[s.right].filetype = "", ""
+	bind(s, s.left)
+	bind(s, s.right)
 	labels(s, "Loading: " .. item.relpath, "SAVED WORKTREE")
 	write(s.left, { "Loading " .. display(item.relpath) .. "..." })
 	write(s.right, {})
@@ -217,21 +255,31 @@ local function preview(s, item, mode, saved_views, intent, saved_reviewed)
 			result, err = nil, "File changed during preview; press R to refresh"
 		end
 		if not result then
+			navigation.cancel(s)
 			labels(s, "Preview unavailable: " .. item.relpath, "SAVED WORKTREE")
 			write(s.left, vim.list_extend({ "Preview unavailable" }, util.split_lines(tostring(err))))
 			write(s.right, {})
 			return
 		end
-		s.preview_result = result
+		s.preview_result, s.preview_stamp = result, stamp
 		navigation.load(s, result, item)
 		-- nvim_win_call emits window events while configuring and restoring panes.
 		-- Those internal visits must not cancel an explicit review request.
 		local pending = s.navigation_intent
 		s.navigation_intent = nil
 		show_result(s, s.preview_mode)
+		local remembered = s.file_views and s.file_views[item.relpath]
+		if not saved_views and remembered and remembered.old_path == item.old_path and s.mode == "text" then
+			restore(s.leftwin, remembered.views[1])
+			restore(s.rightwin, remembered.views[2])
+			navigation.restore(s, remembered, stamp)
+		end
 		if saved_views and s.mode == "text" then
 			restore(s.leftwin, saved_views[1])
 			restore(s.rightwin, saved_views[2])
+			if remembered then
+				navigation.restore(s, remembered, stamp)
+			end
 			s.navigation.reviewed = saved_reviewed == true
 		end
 		s.navigation_intent = pending
@@ -295,6 +343,7 @@ function M.refresh(s, context_checked)
 	end
 	if not context_checked then
 		navigation.cancel(s)
+		navigation.remember(s)
 		if not s.restore and s.snapshot then
 			local cursor = selected(s)
 			s.restore = {
@@ -302,7 +351,7 @@ function M.refresh(s, context_checked)
 				shown = s.shown_item and s.shown_item.relpath,
 				side = capture(s.sidewin),
 				index = cursor and s.rows_cache.by_path[cursor.relpath],
-				views = { capture(s.leftwin), capture(s.rightwin) },
+				views = s.text_views or { capture(s.leftwin), capture(s.rightwin) },
 				reviewed = s.navigation and s.navigation.reviewed,
 			}
 		end
@@ -397,6 +446,7 @@ function M.refresh(s, context_checked)
 			if not items then
 				return failure(s, list_err)
 			end
+			navigation.reconcile(s, snapshot, items)
 			s.snapshot, s.items = snapshot, items
 			if s.context.branch and s.context.branch ~= "" then
 				local saved = json.read(state_path())
@@ -458,6 +508,43 @@ function M.jump_to_hunk(direction)
 			show_result(s, "text")
 		end
 		navigation.jump(s, direction)
+	end
+	return true
+end
+
+function M.navigate_file(direction, count)
+	count = count == nil and 1 or count
+	if type(count) ~= "number" or count < 1 or count == math.huge or count ~= math.floor(count) then
+		error("lazyvcs comparison file count must be a positive integer")
+	end
+	local s = sessions[vim.api.nvim_get_current_tabpage()]
+	if not navigation.owns(s) then
+		return false
+	end
+	if not s.snapshot or #s.items == 0 then
+		util.notify(s.snapshot and "No comparison files" or "Comparison is still loading", vim.log.levels.INFO)
+		return true
+	end
+	local item = vim.api.nvim_get_current_win() == s.sidewin and selected(s) or s.shown_item
+	item = item or s.shown_item
+	local index = item and s.rows_cache.by_path[item.relpath]
+	local step = direction == "next" and count or -count
+	index = index and (index - 1 + step % #s.items) % #s.items + 1 or (direction == "next" and 1 or #s.items)
+	item = s.items[index]
+	if item == s.shown_item and vim.api.nvim_get_current_win() ~= s.sidewin and (s.preview_result or s.preview_job) then
+		return true
+	end
+	vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
+	local intent = navigation.intent(s, item, "file")
+	if item == s.shown_item and s.preview_result then
+		if s.mode ~= "text" then
+			show_result(s, "text")
+		end
+		navigation.complete(s, intent)
+	elseif item == s.shown_item and s.preview_job then
+		s.preview_mode = "text"
+	else
+		preview(s, item, "text", nil, intent)
 	end
 	return true
 end
@@ -554,6 +641,20 @@ end
 local function target(s)
 	return vim.api.nvim_get_current_win() == s.sidewin and selected(s) or s.shown_item
 end
+local function edit_buffer(s, buf, position)
+	local win = origin_window(s, true, buf)
+	vim.api.nvim_set_current_win(win)
+	if vim.wo.winfixbuf or (vim.bo.modified and not vim.o.hidden) then
+		vim.cmd("rightbelow sbuffer " .. buf)
+		s.origin_edit_win = vim.api.nvim_get_current_win()
+	end
+	vim.api.nvim_win_set_buf(0, buf)
+	if position then
+		local line = math.min(position[1], vim.api.nvim_buf_line_count(buf))
+		local text = vim.api.nvim_buf_get_lines(buf, line - 1, line, false)[1] or ""
+		vim.api.nvim_win_set_cursor(0, { line, math.min(position[2], #text) })
+	end
+end
 local function edit(s)
 	local item = target(s)
 	if not item then
@@ -566,13 +667,7 @@ local function edit(s)
 	local buf = vim.fn.bufadd(path)
 	vim.bo[buf].buflisted = true
 	vim.fn.bufload(buf)
-	local win = origin_window(s, true, buf)
-	vim.api.nvim_set_current_win(win)
-	if vim.wo.winfixbuf or (vim.bo.modified and not vim.o.hidden) then
-		vim.cmd("rightbelow sbuffer " .. buf)
-		s.origin_edit_win = vim.api.nvim_get_current_win()
-	end
-	vim.api.nvim_win_set_buf(0, buf)
+	edit_buffer(s, buf)
 end
 local function help(s)
 	if valid(s.helpwin) then
@@ -601,6 +696,11 @@ local function help(s)
 	}
 	local opts = config.get()
 	if opts.session_keymaps then
+		for _, mapping in ipairs({ { opts.keymaps.next_file, "next" }, { opts.keymaps.prev_file, "previous" } }) do
+			if mapping[1] then
+				table.insert(lines, 5, mapping[1] .. ": " .. mapping[2] .. " file; wraps and restores your position")
+			end
+		end
 		for _, mapping in ipairs({ { opts.keymaps.next_hunk, "next" }, { opts.keymaps.prev_hunk, "previous" } }) do
 			if mapping[1] then
 				table.insert(lines, 5, mapping[1] .. ": " .. mapping[2] .. " hunk; wraps within this file")
@@ -697,11 +797,7 @@ local function open_session(opts, origin)
 	preview_options(s, s.leftwin)
 	preview_options(s, s.rightwin)
 	vim.bo[s.sidebar].filetype = "lazyvcs-comparison"
-	vim.w[s.sidewin].lazyvcs_compare = true
-	local wo = vim.wo[s.sidewin]
-	wo.winfixwidth, wo.winfixbuf, wo.cursorline = true, true, true
-	wo.number, wo.relativenumber, wo.wrap, wo.spell, wo.foldenable = false, false, false, false, false
-	wo.signcolumn, wo.foldcolumn, wo.list, wo.listchars = "no", "0", true, "extends:>,precedes:<"
+	sidebar_options(s)
 	sessions[s.tab] = s
 	resize(s)
 	local function enter()
@@ -711,7 +807,9 @@ local function open_session(opts, origin)
 			request_preview(s, "preview")
 		end
 	end
+	s.keymaps = {}
 	for _, buf in ipairs({ s.sidebar, s.left, s.right }) do
+		s.keymaps[buf] = {}
 		local bindings = {
 			q = {
 				function()
@@ -747,11 +845,19 @@ local function open_session(opts, origin)
 			},
 			e = {
 				function()
+					local width = vim.api.nvim_win_get_width(s.sidewin)
 					if not s.auto_width then
-						s.manual_width = vim.api.nvim_win_get_width(s.sidewin)
+						s.manual_width = width
 					end
 					s.auto_width = not s.auto_width
 					resize(s)
+					if s.auto_width and vim.api.nvim_win_get_width(s.sidewin) == width then
+						util.notify(
+							(s.rows_cache and s.rows_cache.width or 0) < width and "Comparison file list already fits"
+								or "Comparison file list is at its width limit; enlarge the terminal",
+							vim.log.levels.INFO
+						)
+					end
 				end,
 				"Fit or restore comparison width",
 			},
@@ -789,21 +895,76 @@ local function open_session(opts, origin)
 			}
 		end
 		for key, binding in pairs(bindings) do
-			compat.keymap_set("n", key, binding[1], { buffer = buf, nowait = true, silent = true, desc = binding[2] })
+			s.keymaps[buf][#s.keymaps[buf] + 1] = { key = key, callback = binding[1], nowait = true, desc = binding[2] }
 		end
 		local opts = config.get()
 		if opts.session_keymaps then
+			for _, mapping in ipairs({ { opts.keymaps.next_file, "next" }, { opts.keymaps.prev_file, "prev" } }) do
+				if mapping[1] then
+					s.keymaps[buf][#s.keymaps[buf] + 1] = {
+						key = mapping[1],
+						callback = function()
+							M.navigate_file(mapping[2], vim.v.count1)
+						end,
+						desc = "lazyvcs " .. mapping[2] .. " comparison file",
+					}
+				end
+			end
 			for _, mapping in ipairs({ { opts.keymaps.next_hunk, "next" }, { opts.keymaps.prev_hunk, "prev" } }) do
 				if mapping[1] then
-					compat.keymap_set("n", mapping[1], function()
-						M.jump_to_hunk(mapping[2])
-					end, { buffer = buf, silent = true, desc = "lazyvcs " .. mapping[2] .. " hunk" })
+					s.keymaps[buf][#s.keymaps[buf] + 1] = {
+						key = mapping[1],
+						callback = function()
+							M.jump_to_hunk(mapping[2])
+						end,
+						desc = "lazyvcs " .. mapping[2] .. " hunk",
+					}
 				end
 			end
 		end
+		bind(s, buf)
 	end
 	compat.keymap_set("n", "<2-LeftMouse>", enter, { buffer = s.sidebar, silent = true })
 	s.augroup = vim.api.nvim_create_augroup("lazyvcs_compare_" .. s.tab, { clear = true })
+	require("lazyvcs.compare_open").setup(s, {
+		remember = navigation.remember,
+		restore = function(views)
+			views = views or {}
+			sidebar_options(s)
+			preview_options(s, s.leftwin)
+			preview_options(s, s.rightwin)
+			for _, buf in ipairs({ s.sidebar, s.left, s.right }) do
+				bind(s, buf)
+			end
+			if s.mode == "text" then
+				vim.api.nvim_win_call(s.leftwin, function()
+					vim.cmd("diffupdate")
+				end)
+			end
+			restore(s.leftwin, views[1])
+			restore(s.rightwin, views[2])
+			restore(s.sidewin, views[3])
+			resize(s)
+		end,
+		select = function(item, position)
+			vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
+			local intent = navigation.intent(s, item, "search")
+			intent.position = position
+			if item == s.shown_item and s.preview_result then
+				if s.mode ~= "text" then
+					show_result(s, "text")
+				end
+				navigation.complete(s, intent)
+			elseif item == s.shown_item and s.preview_job then
+				s.preview_mode = "text"
+			else
+				preview(s, item, "text", nil, intent)
+			end
+		end,
+		edit = function(buf, position)
+			edit_buffer(s, buf, position)
+		end,
+	})
 	vim.api.nvim_create_autocmd({ "WinLeave", "TabLeave", "CursorMoved" }, {
 		group = s.augroup,
 		callback = function(args)

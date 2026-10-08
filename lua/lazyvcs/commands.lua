@@ -56,6 +56,16 @@ local spec = {
 		desc = "Total saved comparison",
 		default = "open",
 		verbs = {
+			next = {
+				run = function()
+					return sidebar().compare_next()
+				end,
+			},
+			prev = {
+				run = function()
+					return sidebar().compare_prev()
+				end,
+			},
 			open = {
 				run = function(a)
 					require("lazyvcs.compare").open({ base = path_arg(a) })

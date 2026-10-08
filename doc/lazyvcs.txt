@@ -56,7 +56,7 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
                       Control the live diff view for the current file.
                       Defaults to `toggle`.
 
-:LazyVCS compare {open [base], base, refresh, close}
+:LazyVCS compare {open [base], base, next, prev, refresh, close}
                       Review total saved changes. Defaults to `open`.
                       See |lazyvcs-comparison|.
 
@@ -116,6 +116,7 @@ stack the preview panes vertically:
     P           Preview without leaving the file list.
     Esc         Return from either preview pane to the file list.
     ]v, [v      Next/previous hunk; wrap within the current file.
+    ]b, [b      Next/previous file; wrap and restore review positions.
     e           Fit the file list width; press again to restore.
     o           Open the real file in the original editing window.
     R           Refresh changes and resolve the base again.
@@ -128,8 +129,25 @@ First activation focuses the saved pane at the first hunk, or the base pane
 for a wholly deleted file. Reactivating the displayed file preserves position.
 From the file list, ]v starts at the first hunk and [v at the last. Navigation
 uses config.keymaps.next_hunk/prev_hunk and respects session_keymaps = false.
+File navigation uses keymaps.next_file/prev_file and accepts counts, such as
+3]b. From a pane it keeps that side when possible. Added files use the saved
+pane; deleted files use the base pane. First visits start at the first hunk.
+Revisiting restores both panes' cursor and scroll positions. Binary, oversized,
+empty, and property-only paths remain navigable. No editing buffers are added.
+Positions last for this session, survive refreshes for the same pinned base,
+and reset when the base revision or SVN URL changes. Removed paths are forgotten.
 Moving the list cursor and background refreshes preserve focus. Unavailable
 text previews stay in the list. Enter in a preview restores text from metadata.
+Compare actions work in both preview panes as well as the file list. If e
+cannot widen the list, it explains whether the content fits or the layout limit
+has been reached.
+
+File and grep pickers, including AstroNvim <leader>ff and <leader>fw, can open
+files from any Compare window. Compared paths open their read-only preview;
+search positions focus the saved line (clamped to saved contents). Other paths
+open in the original editor, splitting when needed to preserve unsaved buffers.
+Explicit split or tab picker actions keep their usual behavior. Pickers may
+add the files you select to your ordinary buffer list.
 
 File rows show the filename before the directory. The > marker identifies the
 previewed file independently of the cursor. Auto-fit measures file rows, caps
@@ -154,8 +172,14 @@ Lua API: >lua
     })
     require("lazyvcs").compare_refresh()
     require("lazyvcs").compare_close()
+    require("lazyvcs").compare_next(3) -- count defaults to 1
+    require("lazyvcs").compare_prev()
     require("lazyvcs").blame_selection(3, 12) -- inclusive line numbers
 <
+compare_next/compare_prev return false outside Compare's sidebar and panes.
+Their optional count must be a positive integer. :LazyVCS compare next/prev
+advance one file, including when session mappings are disabled.
+
 Blame and signs skip buffers whose saved or in-memory size exceeds
 `signs.max_file_bytes`. Ignored/untracked files have no automatic blame warning.
 
@@ -373,7 +397,7 @@ Main options:
                        diff panes. "editor" keeps the editor's colors.
     use_gitsigns       Prefer `gitsigns.reset_hunk()` for Git hunks.
     set_winbar         Set simple winbar labels during live diff.
-    session_keymaps    Add buffer-local live diff mappings.
+    session_keymaps    Add buffer-local live diff and Compare navigation mappings.
     base_window.width  Left/base diff window width. Ratio when <= 1.
     base_window.cursor_sync
                        Keep both diff cursors on corresponding lines.
@@ -393,8 +417,14 @@ Live diff keymaps:
     keymaps.revert_hunk
                        Revert the hunk under the cursor. Default "<leader>vr".
 
+Compare-only file keymaps:
+
+    keymaps.next_file  Next comparison file. Default "]b".
+    keymaps.prev_file  Previous comparison file. Default "[b".
+
 Each accepts a string, or `false` to leave the key unmapped. Empty strings are
 rejected, and binding two of them to the same key is a configuration error.
+File keymaps cannot replace fixed Compare actions such as q, b, R, or Enter.
 
 Unknown or removed configuration keys are reported once at startup with
 |vim.notify_once()| rather than being ignored silently.

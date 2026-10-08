@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-10-08
+
+### Added
+
+- Cycle Compare files with `]b` and `[b`, including counts such as `3]b`.
+  Revisiting restores both panes' review positions without adding editing
+  buffers.
+- Add `:LazyVCS compare next` and `prev`, Lua `compare_next(count)` and
+  `compare_prev(count)`, and configurable file navigation keys.
+
+### Fixed
+
+- Open AstroNvim file and grep search results from Compare without `E1513`. Keep
+  the diff panes and focus the selected saved line.
+- Keep Compare actions such as `e` available in both panes after filetype
+  changes. Explain when the file list already fits or cannot widen further.
+- Clear pending focus requests when a comparison preview fails.
+- Restore horizontal scrolling and keep reviewed lines visible inside folds.
+
 ## [0.9.0] - 2026-10-08
 
 ### Added

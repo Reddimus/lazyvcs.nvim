@@ -7065,6 +7065,7 @@ vim.list_extend(
 vim.list_extend(cases, require("spec_audit")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_compare")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_compare_navigation")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_compare_files")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_highlighting")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {
