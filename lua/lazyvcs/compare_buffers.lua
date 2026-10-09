@@ -5,6 +5,7 @@ local M = {}
 local resources = {}
 local installed = false
 local sequence = 0
+local namespace = vim.fn.sha256(tostring(vim.uv.hrtime()) .. ":" .. vim.uv.os_getpid()):sub(1, 32)
 
 local function protected_write(buf, update)
 	vim.bo[buf].modifiable, vim.bo[buf].readonly = true, false
@@ -149,8 +150,8 @@ end
 function M.init(s)
 	M.setup()
 	sequence = sequence + 1
-	s.buffer_id = sequence
-	s.buffer_cache = { pairs = {}, count = 0 }
+	s.buffer_id = namespace .. "-" .. sequence
+	s.buffer_cache = { pairs = {}, count = 0, sequence = 0 }
 	s.message_left, s.message_right = M.scratch(), M.scratch()
 	s.left, s.right = s.message_left, s.message_right
 	resources[s.sidebar] = { session = s, presentation = "sidebar" }
@@ -321,6 +322,7 @@ function M.store(s, item, result)
 		if pair then
 			discard(s, pair)
 		end
+		cache.sequence = cache.sequence + 1
 		pair = { path = item.relpath, old_path = item.old_path, left = M.scratch(), right = M.scratch() }
 		cache.pairs[item.relpath], cache.count = pair, cache.count + 1
 		for _, side in ipairs({
@@ -329,7 +331,14 @@ function M.store(s, item, result)
 		}) do
 			vim.api.nvim_buf_set_name(
 				side[2],
-				"lazyvcs://compare/" .. s.buffer_id .. "/" .. side[1] .. "/" .. escaped(item.relpath)
+				"lazyvcs://compare/"
+					.. s.buffer_id
+					.. "-"
+					.. cache.sequence
+					.. "/"
+					.. side[1]
+					.. "/"
+					.. escaped(item.relpath)
 			)
 			local resource =
 				{ session = s, pair = pair, side = side[1], directory = vim.fs.dirname(s.root .. "/" .. side[3]) }

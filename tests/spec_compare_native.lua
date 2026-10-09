@@ -33,6 +33,51 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_comparison_native_base_refresh_keeps_externally_displayed_snapshot",
+			function()
+				local f, s = fixture()
+				local frozen = s.right
+				local before = vim.api.nvim_buf_get_lines(frozen, 0, -1, false)
+				local name = vim.api.nvim_buf_get_name(frozen)
+				vim.cmd("tab sbuffer " .. frozen)
+				local external = vim.api.nvim_get_current_tabpage()
+				vim.api.nvim_set_current_win(s.rightwin)
+				h.exec({ "git", "add", "." }, f.root)
+				h.exec({ "git", "commit", "-m", "advance comparison base" }, f.root)
+				h.write_file(f.root .. "/a.txt", "new changed contents\n")
+				compare.refresh(s)
+				ready(s, "a.txt")
+				assert(vim.api.nvim_buf_get_lines(s.right, 0, 1, false)[1] == "new changed contents")
+				assert(s.right ~= frozen and vim.api.nvim_buf_get_name(s.right) ~= name)
+				assert(vim.deep_equal(before, vim.api.nvim_buf_get_lines(frozen, 0, -1, false)))
+				assert(vim.api.nvim_buf_get_name(frozen) == name and not vim.bo[frozen].modifiable)
+				compare.close(s)
+				vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(external))
+				assert(not vim.api.nvim_buf_is_valid(frozen))
+			end,
+		},
+		{
+			"test_comparison_native_close_respects_unmodified_buffer_lifetimes",
+			function()
+				for _, hidden in ipairs({ "wipe", "delete", "unload" }) do
+					local _, s = fixture()
+					local buf = vim.api.nvim_create_buf(true, true)
+					vim.bo[buf].bufhidden = hidden
+					vim.cmd("split")
+					vim.api.nvim_win_set_buf(0, buf)
+					compare.close(s)
+					if hidden == "wipe" then
+						assert(not vim.api.nvim_buf_is_valid(buf), "close retained wipe buffer")
+					else
+						assert(not vim.api.nvim_buf_is_loaded(buf), "close retained loaded " .. hidden .. " buffer")
+						if hidden == "delete" then
+							assert(not vim.bo[buf].buflisted)
+						end
+					end
+				end
+			end,
+		},
+		{
 			"test_comparison_native_empty_snapshots_remain_locked_after_filetype_plugins",
 			function()
 				local group = vim.api.nvim_create_augroup("lazyvcs_native_readonly_test", { clear = true })

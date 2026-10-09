@@ -654,7 +654,7 @@ function M.close(s, return_focus)
 	if vim.api.nvim_tabpage_is_valid(s.tab) then
 		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(s.tab)) do
 			local buf = vim.api.nvim_win_get_buf(win)
-			if not buffers.is_managed(buf) then
+			if not buffers.is_managed(buf) and vim.bo[buf].modified then
 				borrowed[buf] = vim.bo[buf].bufhidden
 				vim.bo[buf].bufhidden = "hide"
 			end
@@ -866,7 +866,7 @@ local function open_session(opts, origin)
 	vim.cmd("tab sbuffer " .. s.sidebar)
 	s.tab, s.sidewin = vim.api.nvim_get_current_tabpage(), vim.api.nvim_get_current_win()
 	for label, buf in pairs({ files = s.sidebar, base = s.left, saved = s.right }) do
-		vim.api.nvim_buf_set_name(buf, "lazyvcs://compare/" .. s.tab .. "/" .. label)
+		vim.api.nvim_buf_set_name(buf, "lazyvcs://compare/" .. s.buffer_id .. "/" .. label)
 	end
 	vim.wo.winfixbuf = false
 	vim.cmd("rightbelow vsplit")

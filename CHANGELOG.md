@@ -28,6 +28,7 @@ and this project adheres to
 - Protect snapshot reloads and stale snapshot names from filesystem reads.
 - Preserve snapshot text and marks through reload failures, and keep the current
   snapshot cached while metadata is shown.
+- Keep externally displayed snapshots intact when the comparison base changes.
 - Match editing paths exactly. Close the last comparison tab safely and preserve
   unsaved buffers, including extra editing splits.
 
