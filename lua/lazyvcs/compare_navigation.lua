@@ -122,18 +122,21 @@ function M.complete(s, intent)
 		return
 	end
 	local navigation = s.navigation
-	if intent.kind == "search" and intent.position and s.mode == "text" and #s.preview_result.right > 0 then
-		local line = math.min(intent.position[1], #s.preview_result.right)
-		local column = math.min(intent.position[2], #(s.preview_result.right[line] or ""))
-		vim.api.nvim_set_current_win(s.rightwin)
-		vim.api.nvim_win_set_cursor(s.rightwin, { line, column })
+	if intent.kind == "native" and intent.position and s.mode == "text" then
+		local win = intent.side == "base" and s.leftwin or s.rightwin
+		local buf = vim.api.nvim_win_get_buf(win)
+		local line = math.min(intent.position[1], vim.api.nvim_buf_line_count(buf))
+		local text = vim.api.nvim_buf_get_lines(buf, line - 1, line, false)[1] or ""
+		local column = math.min(intent.position[2], #text)
+		vim.api.nvim_set_current_win(win)
+		vim.api.nvim_win_set_cursor(win, { line, column })
 		vim.cmd("normal! zv")
 		navigation.reviewed, navigation.index, navigation.positions = true, nil, nil
 		return
 	end
 	if s.mode ~= "text" or not navigation or #navigation.saved == 0 then
-		if intent.kind ~= "file" and intent.kind ~= "search" then
-			util.notify("No text hunks to review; use p for metadata", vim.log.levels.INFO)
+		if intent.kind ~= "file" and intent.kind ~= "native" then
+			util.notify("No text hunks to review; use :LazyVCS compare metadata", vim.log.levels.INFO)
 		end
 		return
 	end

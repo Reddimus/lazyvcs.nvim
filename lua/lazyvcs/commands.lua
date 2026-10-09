@@ -255,6 +255,16 @@ local spec = {
 }
 
 -- Deterministic ordering for completion and error messages.
+for _, action in ipairs(require("lazyvcs.compare_actions")) do
+	if action.public and not spec.compare.verbs[action.name] then
+		spec.compare.verbs[action.name] = {
+			run = function()
+				return sidebar().compare_action(action.name)
+			end,
+		}
+	end
+end
+
 local function sorted_keys(tbl)
 	local keys = vim.tbl_keys(tbl)
 	table.sort(keys)

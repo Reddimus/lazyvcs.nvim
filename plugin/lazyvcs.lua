@@ -5,3 +5,4 @@ end
 vim.g.loaded_lazyvcs = 1
 
 require("lazyvcs.commands").setup()
+require("lazyvcs.compare_buffers").setup()

@@ -141,7 +141,7 @@ return function(ctx)
 				assert(vim.bo.buftype == "" and vim.api.nvim_buf_get_name(0) == fixture.file)
 				assert(vim.api.nvim_tabpage_is_valid(s.tab))
 				compare.close(s)
-				vim.cmd.tabclose()
+				assert(#vim.api.nvim_list_tabpages() == 1)
 			end,
 		},
 		{
@@ -284,7 +284,7 @@ return function(ctx)
 				vim.api.nvim_feedkeys("p", "x", false)
 				assert(s.mode == "metadata" and not vim.wo[s.leftwin].diff and not vim.wo[s.rightwin].diff)
 				vim.api.nvim_set_current_win(s.rightwin)
-				vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
+				vim.cmd("LazyVCS compare metadata")
 				assert(s.mode == "text" and vim.wo[s.leftwin].diff and vim.wo[s.rightwin].diff)
 				assert(vim.deep_equal(content, vim.api.nvim_buf_get_lines(s.right, 0, -1, false)))
 				compare.close(s)

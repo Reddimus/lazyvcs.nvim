@@ -103,6 +103,9 @@ the GitHub release.
   previews.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
+- `compare_buffers.lua` owns snapshot identity, reload guards, and bounded
+  caching.
+- `compare_actions.lua` shares action names across mappings, commands, and help.
 - `compare_view.lua` builds file rows, highlights, and cached width
   measurements.
 - `blame_selection.lua` presents selected-line reports through a cancellable
@@ -139,5 +142,6 @@ through the captured contents. CI also runs native E2E with Ubuntu 22.04 Git.
 
 Compare file navigation selects its destination in O(1) and loads only that
 preview. Review history stores O(visited paths) view metadata, prunes removed
-paths, and resets when the pinned base changes. It does not cache file contents
-or alter AstroNvim's buffer list.
+paths, and resets when the pinned base changes. Snapshots use an O(1) LRU cache
+with a default limit of 32 file pairs, plus visible or pending files. Each side
+is bounded to 1 MiB. The cache does not alter AstroNvim's ordinary buffer list.

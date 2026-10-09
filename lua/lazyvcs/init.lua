@@ -58,6 +58,10 @@ function M.compare_prev(count)
 	return require("lazyvcs.compare").navigate_file("prev", count)
 end
 
+function M.compare_action(action)
+	return require("lazyvcs.compare").action(action)
+end
+
 -- Hunks ----------------------------------------------------------------------
 
 function M.revert_hunk()

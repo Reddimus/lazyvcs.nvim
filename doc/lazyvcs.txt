@@ -57,6 +57,7 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
                       Defaults to `toggle`.
 
 :LazyVCS compare {open [base], base, next, prev, refresh, close}
+                 {edit, files, width, metadata, help}
                       Review total saved changes. Defaults to `open`.
                       See |lazyvcs-comparison|.
 
@@ -111,10 +112,12 @@ picker. The sidebar mapping returns from Compare to source control. Reopening
 reuses the comparison tab, refreshes it, and preserves the selected path.
 
 The review tab owns its sidebar and read-only preview buffers. Narrow windows
-stack the preview panes vertically:
+stack the preview panes vertically. Single-key actions apply to the file list:
     Enter       Review the selected file; double-click does the same.
     P           Preview without leaving the file list.
-    Esc         Return from either preview pane to the file list.
+    <leader>vf  Return from either preview pane to the file list.
+    <leader>ve  Edit at the current review position.
+    <leader>v?  Show help from either preview pane.
     ]v, [v      Next/previous hunk; wrap within the current file.
     ]b, [b      Next/previous file; wrap and restore review positions.
     e           Fit the file list width; press again to restore.
@@ -137,15 +140,17 @@ empty, and property-only paths remain navigable. No editing buffers are added.
 Positions last for this session, survive refreshes for the same pinned base,
 and reset when the base revision or SVN URL changes. Removed paths are forgotten.
 Moving the list cursor and background refreshes preserve focus. Unavailable
-text previews stay in the list. Enter in a preview restores text from metadata.
-Compare actions work in both preview panes as well as the file list. If e
-cannot widen the list, it explains whether the content fits or the layout limit
-has been reached.
+text previews stay in the list. Text panes preserve normal Vim motions,
+search, macros, marks, and jump history. Both snapshots are non-editable.
+Use :LazyVCS compare metadata to toggle metadata from a pane; width, refresh,
+base, edit, files, help, and close are also available as commands.
 
 File and grep pickers, including AstroNvim <leader>ff and <leader>fw, can open
-files from any Compare window. Compared paths open their read-only preview;
-search positions focus the saved line (clamped to saved contents). Other paths
-open in the original editor, splitting when needed to preserve unsaved buffers.
+files from any Compare window. Selections open actual editable files in the
+original editor and preserve search positions. Compare keeps its current file.
+A split is created when needed to preserve unsaved buffers or winfixbuf.
+Editing from a text pane maps the review position through saved and unsaved
+changes. Above 1 MiB of editing contents, it clamps the position instead.
 Explicit split or tab picker actions keep their usual behavior. Pickers may
 add the files you select to your ordinary buffer list.
 
@@ -174,11 +179,14 @@ Lua API: >lua
     require("lazyvcs").compare_close()
     require("lazyvcs").compare_next(3) -- count defaults to 1
     require("lazyvcs").compare_prev()
+    require("lazyvcs").compare_action("files") -- also edit, width, metadata,
+                                              -- help, base, refresh, close
     require("lazyvcs").blame_selection(3, 12) -- inclusive line numbers
 <
 compare_next/compare_prev return false outside Compare's sidebar and panes.
 Their optional count must be a positive integer. :LazyVCS compare next/prev
 advance one file, including when session mappings are disabled.
+compare_action returns false outside a comparison tab and rejects unknown names.
 
 Blame and signs skip buffers whose saved or in-memory size exceeds
 `signs.max_file_bytes`. Ignored/untracked files have no automatic blame warning.
@@ -422,9 +430,27 @@ Compare-only file keymaps:
     keymaps.next_file  Next comparison file. Default "]b".
     keymaps.prev_file  Previous comparison file. Default "[b".
 
-Each accepts a string, or `false` to leave the key unmapped. Empty strings are
+Compare pane shortcuts:
+
+    compare.keymaps.files  Focus the file list. Default "<leader>vf".
+    compare.keymaps.edit   Edit at the review position. Default "<leader>ve".
+    compare.keymaps.help   Show help. Default "<leader>v?".
+
+    compare.max_cached_files
+                       Maximum cached files, plus protected visible/pending
+                       files. Default 32; 0 means unlimited. Must be a
+                       nonnegative integer. Snapshots are unlisted and loaded
+                       on demand. Eviction drops marks and native jump targets;
+                       remembered review positions survive. Refresh keeps
+                       cached buffers for the same base; closing releases them.
+                       Snapshots displayed elsewhere remain frozen until hidden.
+
+Each key accepts a string, or `false` to leave the key unmapped. Empty strings are
 rejected, and binding two of them to the same key is a configuration error.
-File keymaps cannot replace fixed Compare actions such as q, b, R, or Enter.
+File/hunk keys cannot replace fixed list actions such as q, b, R, or Enter.
+Pane shortcuts cannot duplicate each other or file/hunk keys. Validation expands
+Leader, LocalLeader, and terminal key notation. session_keymaps = false disables
+Compare navigation and pane shortcuts; sidebar actions and commands still work.
 
 Unknown or removed configuration keys are reported once at startup with
 |vim.notify_once()| rather than being ignored silently.

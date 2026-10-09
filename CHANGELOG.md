@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-10-09
+
+### Added
+
+- Native per-file Compare snapshots preserve marks and jump history. Cache up to
+  32 files by default; `compare.max_cached_files = 0` keeps all visited files.
+- Add configurable `<leader>vf` (files), `<leader>ve` (edit), and `<leader>v?`
+  (help) pane shortcuts, `compare_action()`, and matching Compare commands.
+- Edit at the review cursor, mapping through saved and unsaved changes.
+
+### Changed
+
+- Single-key Compare actions apply only to the file list. Text panes retain
+  ordinary Vim motions, search, macros, and selection.
+- File and grep searches open editable files in the original editing window,
+  preserving search positions and the current comparison.
+
+### Fixed
+
+- Protect snapshot reloads and stale snapshot names from filesystem reads.
+- Preserve snapshot marks during refresh and unsaved buffers during picker
+  restoration or immediate comparison closure.
+
 ## [0.10.0] - 2026-10-08
 
 ### Added
@@ -482,3 +505,4 @@ First tagged release.
 [0.8.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.7.0...v0.7.1
 [0.8.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.8.0...v0.8.1
+[0.11.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.10.0...v0.11.0
