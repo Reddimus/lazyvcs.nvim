@@ -297,6 +297,8 @@ jobs:
     name: Ubuntu and AstroNvim E2E
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    env:
+      UBUNTU_IMAGE: public.ecr.aws/docker/library/ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
     steps:
       - name: Checkout exact revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -311,7 +313,7 @@ jobs:
 
       - name: Run native E2E with Ubuntu 22.04 Git
         env:
-          UBUNTU_IMAGE: ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc
+          UBUNTU_IMAGE: public.ecr.aws/docker/library/ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc
           E2E_ARTIFACT_DIR: ${{ runner.temp }}/native-old-git-e2e
         run: tests/e2e/ubuntu-native.sh
 

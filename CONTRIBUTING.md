@@ -47,6 +47,8 @@ to `shellcheck`.
 
 Container E2E (Linux + Docker):
 
+CI pulls the same pinned Docker Official Images from their public ECR mirror.
+
 ```sh
 tests/e2e/ubuntu-native.sh
 tests/e2e/ubuntu-astronvim.sh
