@@ -20,7 +20,7 @@ With lazy.nvim:
 {
   "Reddimus/lazyvcs.nvim",
   main = "lazyvcs",
-  event = { "BufReadPost", "BufNewFile" },
+  event = { "BufReadPost", "BufNewFile", "BufReadCmd lazyvcs://compare/*" },
   cmd = "LazyVCS",
   keys = {
     { "<leader>vc", "<cmd>LazyVCS compare<cr>", desc = "Compare against base" },
@@ -65,22 +65,31 @@ committed, staged, unstaged, and nonignored untracked changes. SVN compares the
 selected repository revision with the working copy. Save buffers before
 refreshing to include their latest edits.
 
-The comparison tab has a file list and two read-only panes. Press `Enter` or
-double-click a file to review its first hunk. `]v` and `[v` move between hunks
-and wrap within that file. `]b` and `[b` cycle files, wrap, and restore your
-review position. Counts work, such as `3]b`. These keys apply only in Compare;
-your ordinary buffers stay unchanged. `Esc` returns to the list; `P` previews
-without leaving it. Deleted files open in the base pane.
+The comparison uses native Neovim buffers and windows. Press `Enter` or
+double-click a file in the list to focus its first hunk. `]v` and `[v` cycle
+hunks; `]b` and `[b` cycle files and restore your position. Both wrap, and file
+counts work, such as `3]b`. These mappings apply only in Compare.
 
-AstroNvim file and grep searches also work inside Compare. Selecting a changed
-file opens its preview; grep results focus the matching saved line. Other files
-open in your original editing window.
+Text panes keep normal Vim motions, search, macros, marks, and jump history.
+Both panes are read-only snapshots of saved contents. Use `<leader>vf` for the
+file list, `<leader>ve` to edit at your review position, or `<leader>v?` for
+help. File and grep searches, including AstroNvim's `<leader>ff` and
+`<leader>fw`, open actual files in your editing window.
 
-Press `e` to widen the list, `o` to edit, `R` to refresh, or `b` to change the
-base. `q` closes Compare; your sidebar mapping returns to source control.
-Reopening and refreshing preserve your position. The installation mappings use
-`<leader>vc` to open Compare and `<leader>vC` to choose its base. Binary and
-oversized files remain listed without a text preview.
+In the file list, `P` previews, `e` fits the width, `o` edits, `R` refreshes,
+`b` changes the base, `p` toggles metadata, and `q` closes. From any Compare
+pane, use `:LazyVCS compare width`, `metadata`, `refresh`, or `close`. The
+installation mappings use `<leader>vc` to compare and `<leader>vC` to choose a
+base. Deleted files focus the base pane; binary and oversized files remain
+listed without a text preview.
+
+Snapshots are unlisted and loaded on demand; ordinary buffer cycling stays
+unchanged. Compare keeps up to 32 cached files, plus current, visible, or
+pending files. Eviction drops snapshot marks and jumps; review positions remain
+remembered. Set `compare.max_cached_files = 0` for an unlimited cache. Customize
+or disable pane shortcuts with
+`compare.keymaps = { files = "<leader>vf", edit = "<leader>ve", help = "<leader>v?" }`;
+use `false` to disable a key.
 
 ## Blame selected lines
 

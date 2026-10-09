@@ -74,6 +74,15 @@ def expect_focus(kind, line=None):
     return state
 
 
+def assert_editor(name, line):
+    path = artifacts / "editor-state.json"
+    path.unlink(missing_ok=True)
+    ex("lua vim.fn.writefile({vim.json.encode({name=vim.api.nvim_buf_get_name(0),line=vim.api.nvim_win_get_cursor(0)[1],editable=vim.bo.modifiable and vim.bo.buftype==''})}," + json.dumps(str(path)) + ")")
+    pause(0.5)
+    state = json.loads(path.read_text())
+    assert state["name"].endswith("/" + name) and state["line"] == line and state["editable"], state
+
+
 with (artifacts / "compare-terminal.log").open("w") as transcript:
     child.logfile = transcript
     try:
@@ -116,28 +125,32 @@ with (artifacts / "compare-terminal.log").open("w") as transcript:
             child.send(mouse + release)
             reviewed = expect_focus("saved", 8)
             child.send("e")
+            assert expect_focus("saved", 8)["width"] == reviewed["width"]
+            child.send("b")
+            expect_focus("saved", 8)
+            ex("LazyVCS compare width")
             widened = expect_focus("saved", 8)
             assert widened["auto"] and widened["width"] > reviewed["width"], widened
-            child.send("e")
+            ex("LazyVCS compare width")
             assert expect_focus("saved", 8)["width"] == reviewed["width"]
             for keys, line in (("]v", 30), ("]v", 50), ("]v", 8), ("[v", 50)):
                 child.send(keys)
                 expect_focus("saved", line)
-            child.send("\x1b")
+            child.send(" vf")
             expect_focus("list")
             child.send("\r")
             expect_focus("saved", 50)
             child.send("\x17h")
             base = expect_focus("base", 50)
-            child.send("e")
+            ex("LazyVCS compare width")
             assert expect_focus("base", 50)["width"] > base["width"]
-            child.send("e")
+            ex("LazyVCS compare width")
             assert expect_focus("base", 50)["width"] == base["width"]
             child.send("]v")
             expect_focus("base", 8)
-            child.send("p")
+            ex("LazyVCS compare metadata")
             snapshot()
-            child.send("\r")
+            ex("LazyVCS compare metadata")
             expect_focus("base", 8)
             child.send(" vC")
             expect_focus("base", 8)
@@ -159,40 +172,38 @@ with (artifacts / "compare-terminal.log").open("w") as transcript:
             child.send("]b")
             state = expect_focus("base", 30)
             assert state["path"] == "sample.txt", state
-            child.send("\x1b/third.txt\r")
+            child.send(" vf/third.txt\r")
             expect_focus("list")
             child.send("\r")
             expect_focus("saved", 8)
-            child.send("e")
+            ex("LazyVCS compare width")
             assert expect_focus("saved", 8)["auto"]
-            child.send("e")
+            ex("LazyVCS compare width")
             assert not expect_focus("saved", 8)["auto"]
             ex("lua assert(fixture.listed==#vim.fn.getbufinfo({buflisted=1}))")
             ex("lua assert(fixture.before==require('helpers').exec({'" + vcs + "','diff'},fixture.root))")
             if state["picker"]:
                 ex("lua vim.cmd('silent cd ' .. vim.fn.fnameescape(fixture.root))")
                 snapshot()
+                ex("lua review_win=vim.api.nvim_get_current_win()")
                 child.send(" ff")
                 pause(0.7)
                 child.send("second.txt")
                 pause(0.7)
                 child.send("\r")
                 pause(0.7)
-                picked = expect_focus("saved", 1)
-                assert picked["path"] == "second.txt", picked
-                child.send("e")
-                assert expect_focus("saved", 1)["auto"]
-                child.send("e")
+                assert_editor("second.txt", 1)
+                ex("lua vim.api.nvim_set_current_win(review_win)")
+                picked = expect_focus("saved", 8)
+                assert picked["path"] == "third.txt", picked
                 ex("lua Snacks.picker.grep({cwd=fixture.root,search='changed thirty',glob='third.txt'})")
                 pause(1)
                 child.send("\r")
                 pause(0.7)
-                picked = expect_focus("saved", 30)
-                assert picked["path"] == "third.txt", picked
-                child.send("e")
-                assert expect_focus("saved", 30)["auto"]
-                child.send("e")
-            child.send("q")
+                assert_editor("third.txt", 30)
+                ex("lua vim.api.nvim_set_current_win(review_win)")
+                expect_focus("saved", 8)
+            ex("LazyVCS compare close")
             ex("lua require('helpers').cleanup()")
         ex("qa!")
         child.expect(pexpect.EOF)

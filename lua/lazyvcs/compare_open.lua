@@ -1,4 +1,5 @@
 local util = require("lazyvcs.util")
+local buffers = require("lazyvcs.compare_buffers")
 local M = {}
 
 -- File pickers finish setting their search position after BufEnter. Restore the
@@ -18,7 +19,7 @@ function M.setup(s, actions)
 	vim.api.nvim_create_autocmd("BufWinLeave", {
 		group = s.augroup,
 		callback = function(args)
-			if not valid() or s.resizing then
+			if not valid() or s.resizing or (s.swapping or 0) > 0 then
 				return
 			end
 			local win = vim.api.nvim_get_current_win()
@@ -38,7 +39,7 @@ function M.setup(s, actions)
 		callback = function(args)
 			local win, buf = vim.api.nvim_get_current_win(), args.buf
 			local owned = slots()[win]
-			if not valid() or not owned or buf == owned then
+			if not valid() or s.resizing or (s.swapping or 0) > 0 or not owned or buf == owned then
 				return
 			end
 			local request = pending[win]
@@ -59,13 +60,17 @@ function M.setup(s, actions)
 				end
 				pending[win] = nil
 				local position = vim.api.nvim_win_get_cursor(win)
-				local path = util.is_real_file_buffer(buf) and util.canonical_entry_path(vim.api.nvim_buf_get_name(buf))
+				local resource = buffers.resource(buf)
 				local ok, err = pcall(function()
 					-- A picker may select an existing unsaved buffer with 'nohidden'.
 					-- Keep it loaded while restoring the preview, without discarding it.
 					local hidden = vim.bo[buf].bufhidden
 					vim.bo[buf].bufhidden = "hide"
-					local restored, restore_error = pcall(vim.api.nvim_win_set_buf, win, owned)
+					s.swapping = (s.swapping or 0) + 1
+					local restored, restore_error = pcall(vim.api.nvim_win_call, win, function()
+						vim.cmd("keepjumps buffer " .. owned)
+					end)
+					s.swapping = s.swapping - 1
 					if vim.api.nvim_buf_is_valid(buf) then
 						vim.bo[buf].bufhidden = hidden
 					end
@@ -77,17 +82,11 @@ function M.setup(s, actions)
 					if not focused or generation ~= s.generation or preview_generation ~= s.preview_generation then
 						return
 					end
-					if buf == s.sidebar or buf == s.left or buf == s.right then
+					if buffers.is_presentation(buf) or buf == s.left or buf == s.right then
 						return
 					end
-					if path then
-						local root = util.canonical_path(s.root)
-						local relative = path == root and "."
-							or path:sub(1, #root + 1) == root .. "/" and path:sub(#root + 2)
-						local row = relative and s.row_by_path[relative]
-						if row then
-							return actions.select(s.rows[row], position)
-						end
+					if resource and resource.session and not resource.session.closed then
+						return actions.snapshot(resource, position)
 					end
 					actions.edit(buf, position)
 				end)

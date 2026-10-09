@@ -141,7 +141,7 @@ return {
       { "CopilotC-Nvim/CopilotChat.nvim", optional = true },
     },
     cmd = { "LazyVCS" },
-    event = { "BufReadPre", "BufNewFile" },
+    event = { "BufReadPre", "BufNewFile", "BufReadCmd lazyvcs://compare/*" },
     keys = {
       { "<leader>vs", "<cmd>LazyVCS sidebar toggle<cr>", desc = "Toggle VCS sidebar" },
       { "<leader>vc", "<cmd>LazyVCS compare<cr>", desc = "Compare against base" },

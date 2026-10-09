@@ -17,6 +17,10 @@ local defaults = {
 	use_gitsigns = true,
 	set_winbar = true,
 	session_keymaps = true,
+	compare = {
+		max_cached_files = 32,
+		keymaps = { files = "<leader>vf", edit = "<leader>ve", help = "<leader>v?" },
+	},
 	keymaps = {
 		close = "q",
 		next_hunk = "]v",
@@ -153,6 +157,15 @@ local function normalize(opts)
 	vim.validate("set_winbar", opts.set_winbar, "boolean")
 	vim.validate("session_keymaps", opts.session_keymaps, "boolean")
 	vim.validate("keymaps", opts.keymaps, "table")
+	vim.validate("compare", opts.compare, "table")
+	vim.validate("compare.keymaps", opts.compare.keymaps, "table")
+	finite_number("compare.max_cached_files", opts.compare.max_cached_files)
+	if
+		opts.compare.max_cached_files < 0
+		or opts.compare.max_cached_files ~= math.floor(opts.compare.max_cached_files)
+	then
+		error("lazyvcs compare.max_cached_files must be a nonnegative integer")
+	end
 	vim.validate("base_window", opts.base_window, "table")
 	vim.validate("source_control", opts.source_control, "table")
 	vim.validate("signs", opts.signs, "table")
@@ -229,20 +242,52 @@ local function normalize(opts)
 
 	local active_keymaps = {}
 	local reserved = {}
-	for _, key in ipairs({ "q", "R", "b", "?", "o", "e", "p", "<CR>", "P", "<Esc>", "<2-LeftMouse>" }) do
-		reserved[vim.api.nvim_replace_termcodes(key, true, false, true)] = true
+	local function effective(key)
+		key = key:gsub("<[Ll][Oo][Cc][Aa][Ll][Ll][Ee][Aa][Dd][Ee][Rr]>", function()
+			return vim.g.maplocalleader or "\\"
+		end):gsub("<[Ll][Ee][Aa][Dd][Ee][Rr]>", function()
+			return vim.g.mapleader or "\\"
+		end)
+		return vim.api.nvim_replace_termcodes(key, true, false, true)
 	end
+	for _, action in ipairs(require("lazyvcs.compare_actions")) do
+		if action.key then
+			reserved[effective(action.key)] = true
+		end
+	end
+	reserved[effective("<2-LeftMouse>")] = true
 	for name, value in pairs(opts.keymaps) do
 		optional_keymap("keymaps." .. name, value)
 		if value ~= false then
-			local key = vim.api.nvim_replace_termcodes(value, true, false, true)
-			if (name == "next_file" or name == "prev_file") and reserved[key] then
+			local key = effective(value)
+			if
+				opts.session_keymaps
+				and vim.tbl_contains({ "next_file", "prev_file", "next_hunk", "prev_hunk" }, name)
+				and reserved[key]
+			then
 				error("lazyvcs keymaps." .. name .. " conflicts with a fixed Compare action (" .. value .. ")")
 			end
 			if active_keymaps[key] then
 				error(string.format("lazyvcs keymaps.%s duplicates keymaps.%s (%s)", name, active_keymaps[key], value))
 			end
 			active_keymaps[key] = name
+		end
+	end
+	local compare_keys = {}
+	for _, name in ipairs({ "next_file", "prev_file", "next_hunk", "prev_hunk" }) do
+		local key = opts.keymaps[name]
+		if key then
+			compare_keys[effective(key)] = "keymaps." .. name
+		end
+	end
+	for name, value in pairs(opts.compare.keymaps) do
+		optional_keymap("compare.keymaps." .. name, value)
+		if value and opts.session_keymaps then
+			local key = effective(value)
+			if compare_keys[key] then
+				error("lazyvcs compare.keymaps." .. name .. " duplicates " .. compare_keys[key])
+			end
+			compare_keys[key] = "compare.keymaps." .. name
 		end
 	end
 
