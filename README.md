@@ -84,10 +84,10 @@ base. Deleted files focus the base pane; binary and oversized files remain
 listed without a text preview.
 
 Snapshots are unlisted and loaded on demand; ordinary buffer cycling stays
-unchanged. Compare keeps up to 32 cached files, plus visible or pending files.
-Eviction drops snapshot marks and jumps; review positions remain remembered. Set
-`compare.max_cached_files = 0` for an unlimited cache. Customize or disable pane
-shortcuts with
+unchanged. Compare keeps up to 32 cached files, plus current, visible, or
+pending files. Eviction drops snapshot marks and jumps; review positions remain
+remembered. Set `compare.max_cached_files = 0` for an unlimited cache. Customize
+or disable pane shortcuts with
 `compare.keymaps = { files = "<leader>vf", edit = "<leader>ve", help = "<leader>v?" }`;
 use `false` to disable a key.
 

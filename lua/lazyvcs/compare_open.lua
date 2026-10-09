@@ -82,7 +82,7 @@ function M.setup(s, actions)
 					if not focused or generation ~= s.generation or preview_generation ~= s.preview_generation then
 						return
 					end
-					if buf == s.sidebar or buf == s.left or buf == s.right then
+					if buffers.is_presentation(buf) or buf == s.left or buf == s.right then
 						return
 					end
 					if resource and resource.session and not resource.session.closed then

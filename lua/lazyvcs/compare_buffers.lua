@@ -21,12 +21,64 @@ local function locked(buf)
 	vim.bo[buf].modifiable, vim.bo[buf].readonly = false, true
 end
 
+local function restore_unloaded(buf, resource)
+	local saved = resource and resource.restore
+	if not saved then
+		return
+	end
+	resource.restore = nil
+	protected_write(buf, function()
+		vim.api.nvim_buf_set_lines(buf, 0, -1, false, saved.lines)
+	end)
+	for _, mark in ipairs(saved.marks) do
+		if mark.pos[2] > 0 then
+			pcall(vim.api.nvim_buf_set_mark, buf, mark.mark:sub(2), mark.pos[2], math.max(0, mark.pos[3] - 1), {})
+		end
+	end
+	for win, view in pairs(saved.views) do
+		if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == buf then
+			vim.api.nvim_win_call(win, function()
+				vim.fn.winrestview(view)
+			end)
+		end
+	end
+end
+
 function M.setup()
 	if installed then
 		return
 	end
 	installed = true
 	local group = vim.api.nvim_create_augroup("lazyvcs_compare_resources", { clear = true })
+	vim.api.nvim_create_autocmd("BufUnload", {
+		group = group,
+		callback = function(args)
+			local resource = resources[args.buf]
+			if
+				not resource
+				or (resource.session and resource.session.closed)
+				or not vim.api.nvim_buf_is_loaded(args.buf)
+			then
+				return
+			end
+			local ok, err = pcall(function()
+				local marks, views = vim.fn.getmarklist(args.buf), {}
+				for _, mark in ipairs(vim.fn.getmarklist()) do
+					if mark.pos[1] == args.buf then
+						marks[#marks + 1] = mark
+					end
+				end
+				for _, win in ipairs(vim.fn.win_findbuf(args.buf)) do
+					views[win] = vim.api.nvim_win_call(win, vim.fn.winsaveview)
+				end
+				resource.restore =
+					{ lines = vim.api.nvim_buf_get_lines(args.buf, 0, -1, false), marks = marks, views = views }
+			end)
+			if not ok then
+				util.notify("Could not preserve snapshot: " .. tostring(err):gsub("[\r\n]+", " "), vim.log.levels.ERROR)
+			end
+		end,
+	})
 	vim.api.nvim_create_autocmd("BufReadCmd", {
 		group = group,
 		pattern = "lazyvcs://compare/*",
@@ -34,13 +86,27 @@ function M.setup()
 			local ok, err = pcall(function()
 				local resource = resources[args.buf]
 				locked(args.buf)
+				restore_unloaded(args.buf, resource)
+				if resource and resource.presentation then
+					if resource.presentation == "sidebar" and not resource.session.closed then
+						local view = require("lazyvcs.compare_view")
+						view.render(resource.session)
+						view.marker(resource.session)
+					end
+					return util.notify("Use :LazyVCS compare refresh to refresh this comparison", vim.log.levels.INFO)
+				end
+				if resource and resource.rehydrating then
+					return
+				end
 				if resource and resource.session and not resource.session.closed then
 					return resource.session.reload(resource)
 				end
 				if resource and resource.detached then
-					protected_write(args.buf, function()
-						vim.api.nvim_buf_set_lines(args.buf, 0, -1, false, resource.lines)
-					end)
+					if not vim.deep_equal(vim.api.nvim_buf_get_lines(args.buf, 0, -1, false), resource.lines) then
+						protected_write(args.buf, function()
+							vim.api.nvim_buf_set_lines(args.buf, 0, -1, false, resource.lines)
+						end)
+					end
 					return util.notify("This comparison is closed; the snapshot is unchanged", vim.log.levels.INFO)
 				end
 				protected_write(args.buf, function()
@@ -87,6 +153,9 @@ function M.init(s)
 	s.buffer_cache = { pairs = {}, count = 0 }
 	s.message_left, s.message_right = M.scratch(), M.scratch()
 	s.left, s.right = s.message_left, s.message_right
+	resources[s.sidebar] = { session = s, presentation = "sidebar" }
+	resources[s.message_left] = { session = s, presentation = "message" }
+	resources[s.message_right] = { session = s, presentation = "message" }
 end
 
 function M.swap(s, left, right)
@@ -161,6 +230,7 @@ local function discard(s, pair)
 					pcall(compat.keymap_del, "n", mapping.key, { buffer = buf })
 				end
 			else
+				resources[buf] = nil
 				vim.api.nvim_buf_delete(buf, { force = true })
 			end
 		end
@@ -179,7 +249,8 @@ function M.trim(s)
 		local next_pair = pair.next
 		if
 			not pair.reload_job
-			and not (s.preview_job and s.shown_item and s.shown_item.relpath == pair.path)
+			and not (s.shown_item and s.shown_item.relpath == pair.path)
+			and not (s.restore and s.restore.shown == pair.path)
 			and not visible(pair.left)
 			and not visible(pair.right)
 		then
@@ -221,6 +292,7 @@ local function source_context(buf, resource)
 end
 
 local function update(buf, lines)
+	locked(buf)
 	lines = #lines == 0 and { "" } or lines
 	local current = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 	if vim.deep_equal(current, lines) then
@@ -268,6 +340,17 @@ function M.store(s, item, result)
 		end
 	end
 	pair.version = (pair.version or 0) + 1
+	for _, buf in ipairs({ pair.left, pair.right }) do
+		if not vim.api.nvim_buf_is_loaded(buf) then
+			local resource = resources[buf]
+			resource.rehydrating = true
+			local ok, err = pcall(vim.fn.bufload, buf)
+			resource.rehydrating = nil
+			if not ok then
+				error(err)
+			end
+		end
+	end
 	update(pair.left, result.left)
 	update(pair.right, result.right)
 	touch(cache, pair)
@@ -282,7 +365,17 @@ function M.context(buf)
 end
 
 function M.resource(buf)
-	return resources[buf]
+	local resource = resources[buf]
+	return resource and resource.pair and resource or nil
+end
+
+function M.is_managed(buf)
+	return resources[buf] ~= nil
+end
+
+function M.is_presentation(buf)
+	local resource = resources[buf]
+	return resource and resource.presentation ~= nil or false
 end
 
 function M.reconcile(s, snapshot, items)

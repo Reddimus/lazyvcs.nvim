@@ -437,7 +437,7 @@ Compare pane shortcuts:
     compare.keymaps.help   Show help. Default "<leader>v?".
 
     compare.max_cached_files
-                       Maximum cached files, plus protected visible/pending
+                       Maximum cached files, plus current or visible/pending
                        files. Default 32; 0 means unlimited. Must be a
                        nonnegative integer. Snapshots are unlisted and loaded
                        on demand. Eviction drops marks and native jump targets;

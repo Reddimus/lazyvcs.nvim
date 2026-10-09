@@ -33,6 +33,178 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_comparison_native_empty_snapshots_remain_locked_after_filetype_plugins",
+			function()
+				local group = vim.api.nvim_create_augroup("lazyvcs_native_readonly_test", { clear = true })
+				vim.api.nvim_create_autocmd("FileType", {
+					group = group,
+					pattern = "text",
+					callback = function(args)
+						if vim.api.nvim_buf_get_name(args.buf):find("lazyvcs://compare/", 1, true) then
+							vim.bo[args.buf].modifiable = true
+							vim.bo[args.buf].readonly = false
+						end
+					end,
+				})
+				local f, s = fixture()
+				h.write_file(f.root .. "/empty.txt", "")
+				require("lazyvcs").compare_refresh()
+				ready(s)
+				vim.api.nvim_set_current_win(s.sidewin)
+				vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path["empty.txt"], 0 })
+				keys("P")
+				ready(s, "empty.txt")
+				vim.api.nvim_del_augroup_by_id(group)
+				assert(not vim.bo[s.left].modifiable and vim.bo[s.left].readonly)
+				assert(not vim.bo[s.right].modifiable and vim.bo[s.right].readonly)
+				compare.close(s)
+			end,
+		},
+
+		{
+			"test_comparison_native_reload_during_refresh_keeps_previous_snapshot",
+			function()
+				local _, s = fixture()
+				local snapshot, items, buf = s.snapshot, s.items, s.right
+				local before = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+				local util = require("lazyvcs.util")
+				local notify, errors = util.notify, 0
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.notify = function(_, level)
+					if level == vim.log.levels.ERROR then
+						errors = errors + 1
+					end
+				end
+				s.snapshot, s.items = nil, {}
+				vim.cmd("edit!")
+				util.notify = notify
+				s.snapshot, s.items = snapshot, items
+				assert(errors == 0, "reload failed while comparison was refreshing")
+				assert(vim.deep_equal(before, vim.api.nvim_buf_get_lines(buf, 0, -1, false)))
+				compare.close(s)
+			end,
+		},
+
+		{
+			"test_comparison_native_close_preserves_unowned_unsaved_editor_split",
+			function()
+				local f, s = fixture()
+				vim.cmd("split " .. vim.fn.fnameescape(f.root .. "/c.txt"))
+				local buf = vim.api.nvim_get_current_buf()
+				vim.api.nvim_buf_set_lines(buf, 0, 1, false, { "unsaved editor split" })
+				vim.bo[buf].bufhidden = "wipe"
+				compare.close(s)
+				assert(
+					vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].modified,
+					"close discarded an unowned unsaved editing split"
+				)
+				assert(vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] == "unsaved editor split")
+				vim.bo[buf].bufhidden = "hide"
+			end,
+		},
+
+		{
+			"test_comparison_native_edit_uses_exact_path_not_partial_pattern",
+			function()
+				local f, s = fixture()
+				local misleading = vim.fn.bufadd(f.root .. "/a.txt.local")
+				h.write_file(f.root .. "/a.txt.local", "other file\n")
+				vim.fn.bufload(misleading)
+				require("lazyvcs").compare_action("edit")
+				assert(
+					vim.fs.normalize(vim.api.nvim_buf_get_name(0)) == f.root .. "/a.txt",
+					"edit opened a partial filename match"
+				)
+				compare.close(s)
+			end,
+		},
+		{
+			"test_comparison_native_last_tab_close_with_unowned_editor_split",
+			function()
+				local f, s = fixture()
+				vim.cmd("split " .. vim.fn.fnameescape(f.root .. "/c.txt"))
+				vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(s.origin_tab))
+				local ok, err = pcall(compare.close, s)
+				assert(ok, err)
+				assert(not vim.api.nvim_tabpage_is_valid(s.tab) and #vim.api.nvim_list_tabpages() >= 1)
+			end,
+		},
+		{
+			"test_comparison_native_reload_failure_preserves_snapshot_marks_and_sidebar",
+			function()
+				local _, s = fixture()
+				local buf = s.right
+				local before = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+				vim.api.nvim_win_set_cursor(s.rightwin, { 12, 3 })
+				keys("mAma")
+				local preview = s.provider.preview
+				s.provider.preview = function(_, _, callback)
+					local task = require("lazyvcs.backends.task").new(callback)
+					vim.schedule(function()
+						task:finish(nil, "forced reload failure")
+					end)
+					return task
+				end
+				vim.cmd("edit!")
+				ctx.wait_for(function()
+					return not s.preview_job and not s.buffer_cache.pairs["a.txt"].reload_job
+				end, "reload did not finish")
+				s.provider.preview = preview
+				assert(
+					vim.deep_equal(before, vim.api.nvim_buf_get_lines(buf, 0, -1, false)),
+					"failed reload erased the snapshot"
+				)
+				assert(vim.deep_equal(vim.api.nvim_buf_get_mark(buf, "a"), { 12, 3 }), "reload changed snapshot marks")
+				assert(vim.api.nvim_get_mark("A", {})[1] == 12 and vim.api.nvim_get_mark("A", {})[3] == buf)
+				vim.api.nvim_set_current_win(s.sidewin)
+				local sidebar = vim.api.nvim_buf_get_lines(s.sidebar, 0, -1, false)
+				vim.cmd("edit!")
+				assert(
+					vim.deep_equal(sidebar, vim.api.nvim_buf_get_lines(s.sidebar, 0, -1, false)),
+					"sidebar reload replaced file list"
+				)
+				compare.close(s)
+			end,
+		},
+		{
+			"test_comparison_native_presentation_buffer_never_routes_to_editor",
+			function()
+				local _, s = fixture()
+				local origin = vim.api.nvim_win_get_buf(s.origin_win)
+				local snapshot = s.right
+				vim.api.nvim_win_set_buf(s.rightwin, s.message_right)
+				ctx.wait_for(function()
+					return vim.api.nvim_win_get_buf(s.rightwin) == snapshot
+				end, "presentation buffer was not restored")
+				assert(
+					vim.api.nvim_get_current_win() == s.rightwin and vim.api.nvim_win_get_buf(s.origin_win) == origin,
+					"presentation routed into the editor"
+				)
+				compare.close(s)
+			end,
+		},
+		{
+			"test_comparison_native_metadata_protects_current_pair_from_eviction",
+			function()
+				local _, s = fixture({ compare = { max_cached_files = 1 } })
+				vim.cmd("tab sbuffer " .. s.right)
+				local external = vim.api.nvim_get_current_tabpage()
+				vim.api.nvim_set_current_win(s.rightwin)
+				keys("]b")
+				ready(s, "b.txt")
+				local b = s.right
+				keys("ma")
+				require("lazyvcs").compare_action("metadata")
+				vim.wait(50)
+				assert(vim.api.nvim_buf_is_valid(b), "metadata evicted the current snapshot")
+				require("lazyvcs").compare_action("metadata")
+				assert(s.right == b and vim.api.nvim_buf_get_mark(b, "a")[1] > 0)
+				compare.close(s)
+				vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(external))
+			end,
+		},
+
+		{
 			"test_comparison_native_edit_base_hunk_and_large_unsaved_buffer",
 			function()
 				local f, s = fixture()
@@ -114,11 +286,11 @@ return function(ctx)
 				local preview = s.provider.preview
 				s.provider.preview = function(_, _, callback)
 					callbacks[#callbacks + 1] = callback
-					return {
-						cancel = function()
-							cancelled = cancelled + 1
-						end,
-					}
+					local task = require("lazyvcs.backends.task").new(callback)
+					task:on_cancel(function()
+						cancelled = cancelled + 1
+					end)
+					return task
 				end
 				s.reload(resource)
 				s.reload(resource)
@@ -328,6 +500,8 @@ return function(ctx)
 				keys("ma]b")
 				ready(s, "b.txt")
 				assert(s.right ~= a, "different files share the same preview buffer")
+				vim.cmd("bunload " .. a)
+				assert(not vim.api.nvim_buf_is_loaded(a))
 				keys("[b")
 				ready(s, "a.txt")
 				assert(s.right == a and vim.deep_equal(vim.api.nvim_buf_get_mark(a, "a"), { 12, 3 }))

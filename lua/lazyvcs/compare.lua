@@ -556,7 +556,7 @@ function M.navigate_file(direction, count)
 	if item == s.shown_item and vim.api.nvim_get_current_win() ~= s.sidewin and (s.preview_result or s.preview_job) then
 		return true
 	end
-	if s.mode == "text" and vim.api.nvim_get_current_win() ~= s.sidewin then
+	if s.mode == "text" and buffers.resource(vim.api.nvim_get_current_buf()) then
 		vim.cmd("normal! m'")
 	end
 	vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
@@ -582,10 +582,10 @@ end
 
 local function origin_window(s, editing, buf)
 	local win = editing and s.origin_edit_win or s.origin_win
-	if valid(win) and (not editing or editor_window(win)) then
+	if valid(win) and vim.api.nvim_win_get_tabpage(win) ~= s.tab and (not editing or editor_window(win)) then
 		return win
 	end
-	if vim.api.nvim_tabpage_is_valid(s.origin_tab) then
+	if s.origin_tab ~= s.tab and vim.api.nvim_tabpage_is_valid(s.origin_tab) then
 		for _, candidate in ipairs(vim.api.nvim_tabpage_list_wins(s.origin_tab)) do
 			if editor_window(candidate) then
 				s.origin_edit_win = candidate
@@ -594,7 +594,7 @@ local function origin_window(s, editing, buf)
 		end
 	end
 	for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
-		if not sessions[tab] then
+		if tab ~= s.tab and not sessions[tab] then
 			for _, candidate in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
 				if editor_window(candidate) then
 					s.origin_edit_win = candidate
@@ -651,10 +651,10 @@ function M.close(s, return_focus)
 		vim.api.nvim_win_close(s.helpwin, true)
 	end
 	local borrowed = {}
-	for _, slot in ipairs({ { s.sidewin, s.sidebar }, { s.leftwin, s.left }, { s.rightwin, s.right } }) do
-		if valid(slot[1]) then
-			local buf = vim.api.nvim_win_get_buf(slot[1])
-			if buf ~= slot[2] then
+	if vim.api.nvim_tabpage_is_valid(s.tab) then
+		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(s.tab)) do
+			local buf = vim.api.nvim_win_get_buf(win)
+			if not buffers.is_managed(buf) then
 				borrowed[buf] = vim.bo[buf].bufhidden
 				vim.bo[buf].bufhidden = "hide"
 			end
@@ -724,8 +724,8 @@ local function edit(s)
 	if not vim.uv.fs_lstat(path) then
 		return util.notify("This path is deleted from the working tree", vim.log.levels.INFO)
 	end
-	local buf = vim.fn.bufnr(path)
-	if buf < 0 then
+	local buf = -1
+	do
 		local resolved = util.canonical_path(path)
 		for _, candidate in ipairs(vim.api.nvim_list_bufs()) do
 			if
@@ -994,8 +994,8 @@ local function open_session(opts, origin)
 		if not index then
 			return
 		end
-		if navigation.owns(s) then
-			return s.select_snapshot(resource, vim.api.nvim_win_get_cursor(0))
+		if not s.snapshot or not s.items[index] then
+			return util.notify("Comparison is refreshing; the snapshot is unchanged", vim.log.levels.INFO)
 		end
 		if pair.reload_job then
 			pair.reload_job:cancel()

@@ -143,5 +143,6 @@ through the captured contents. CI also runs native E2E with Ubuntu 22.04 Git.
 Compare file navigation selects its destination in O(1) and loads only that
 preview. Review history stores O(visited paths) view metadata, prunes removed
 paths, and resets when the pinned base changes. Snapshots use an O(1) LRU cache
-with a default limit of 32 file pairs, plus visible or pending files. Each side
-is bounded to 1 MiB. The cache does not alter AstroNvim's ordinary buffer list.
+with a default limit of 32 file pairs, plus current, visible, or pending files.
+Each side is bounded to 1 MiB. The cache does not alter AstroNvim's ordinary
+buffer list.

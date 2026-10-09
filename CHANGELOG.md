@@ -26,8 +26,10 @@ and this project adheres to
 ### Fixed
 
 - Protect snapshot reloads and stale snapshot names from filesystem reads.
-- Preserve snapshot marks during refresh and unsaved buffers during picker
-  restoration or immediate comparison closure.
+- Preserve snapshot text and marks through reload failures, and keep the current
+  snapshot cached while metadata is shown.
+- Match editing paths exactly. Close the last comparison tab safely and preserve
+  unsaved buffers, including extra editing splits.
 
 ## [0.10.0] - 2026-10-08
 
