@@ -138,12 +138,14 @@ return function(ctx)
 				local buf = vim.api.nvim_get_current_buf()
 				vim.api.nvim_buf_set_lines(buf, 0, 1, false, { "unsaved editor split" })
 				vim.bo[buf].bufhidden = "wipe"
+				vim.cmd("split")
 				compare.close(s)
 				assert(
 					vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].modified,
 					"close discarded an unowned unsaved editing split"
 				)
 				assert(vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] == "unsaved editor split")
+				assert(vim.bo[buf].bufhidden == "wipe", "close lost the shared editing buffer's original lifetime")
 				vim.bo[buf].bufhidden = "hide"
 			end,
 		},

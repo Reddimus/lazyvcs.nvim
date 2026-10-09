@@ -655,7 +655,7 @@ function M.close(s, return_focus)
 		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(s.tab)) do
 			local buf = vim.api.nvim_win_get_buf(win)
 			if not buffers.is_managed(buf) and vim.bo[buf].modified then
-				borrowed[buf] = vim.bo[buf].bufhidden
+				borrowed[buf] = borrowed[buf] or vim.bo[buf].bufhidden
 				vim.bo[buf].bufhidden = "hide"
 			end
 		end
