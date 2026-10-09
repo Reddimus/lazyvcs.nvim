@@ -137,6 +137,16 @@ return function(ctx)
 					s.preview_result.right[1] == "latest" and #s.navigation.saved == 0,
 					"reload left stale hunk state"
 				)
+				assert(vim.api.nvim_get_current_win() == s.origin_win, "reload stole editing focus")
+				s.reload(resource)
+				local newer = vim.deepcopy(s.preview_result)
+				newer.right = { "newer preview" }
+				require("lazyvcs.compare_buffers").store(s, s.shown_item, newer)
+				callbacks[3]({ left = { "stale" }, right = { "stale" } })
+				assert(
+					vim.api.nvim_buf_get_lines(pair.right, 0, 1, false)[1] == "newer preview",
+					"late reload overwrote a newer preview"
+				)
 				s.provider.preview = preview
 				compare.close(s)
 			end,
@@ -170,7 +180,7 @@ return function(ctx)
 				vim.api.nvim_win_set_cursor(s.rightwin, { 12, 0 })
 				keys("gf")
 				ctx.wait_for(function()
-					return vim.api.nvim_buf_get_name(0) == target
+					return vim.fs.normalize(vim.api.nvim_buf_get_name(0)) == target
 						and vim.api.nvim_get_current_win() == s.origin_edit_win
 				end, "gf did not resolve the source directory")
 				assert(vim.api.nvim_get_current_win() == s.origin_edit_win)

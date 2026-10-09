@@ -56,7 +56,7 @@ return function(ctx)
 	local function edited(s, path, line, column)
 		ctx.wait_for(function()
 			return vim.api.nvim_get_current_win() == s.origin_edit_win
-				and vim.api.nvim_buf_get_name(0) == s.root .. "/" .. path
+				and vim.fs.normalize(vim.api.nvim_buf_get_name(0)) == s.root .. "/" .. path
 		end, "file did not open in the editing window")
 		assert(vim.api.nvim_win_get_cursor(0)[1] == line)
 		if column then
