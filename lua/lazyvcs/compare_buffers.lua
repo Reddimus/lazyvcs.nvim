@@ -267,6 +267,7 @@ function M.store(s, item, result)
 			s.keymaps[side[2]] = s.pane_mappings
 		end
 	end
+	pair.version = (pair.version or 0) + 1
 	update(pair.left, result.left)
 	update(pair.right, result.right)
 	touch(cache, pair)

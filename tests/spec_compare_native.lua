@@ -126,8 +126,17 @@ return function(ctx)
 				callbacks[1]({ left = { "old" }, right = { "old" } })
 				assert(cancelled == 1 and pair.reload_job == job)
 				assert(vim.api.nvim_buf_get_lines(pair.right, 0, 1, false)[1] ~= "old")
-				callbacks[2]({ left = { "latest" }, right = { "latest" } })
+				callbacks[2]({
+					left = { "latest" },
+					right = { "latest" },
+					left_label = "BASE",
+					right_label = "SAVED WORKTREE",
+				})
 				assert(pair.reload_job == nil and vim.api.nvim_buf_get_lines(pair.right, 0, 1, false)[1] == "latest")
+				assert(
+					s.preview_result.right[1] == "latest" and #s.navigation.saved == 0,
+					"reload left stale hunk state"
+				)
 				s.provider.preview = preview
 				compare.close(s)
 			end,

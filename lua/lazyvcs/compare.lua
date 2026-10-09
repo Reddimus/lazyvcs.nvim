@@ -1000,7 +1000,9 @@ local function open_session(opts, origin)
 		if pair.reload_job then
 			pair.reload_job:cancel()
 		end
-		local generation, item = s.generation, s.items[index]
+		local generation, item, version = s.generation, s.items[index], pair.version
+		local path = s.root .. "/" .. item.relpath
+		local stamp = file_stamp(path)
 		pair.reload_generation = (pair.reload_generation or 0) + 1
 		local reload_generation = pair.reload_generation
 		pair.reload_job = s.provider.preview(s.snapshot, item, function(result, err)
@@ -1012,8 +1014,24 @@ local function open_session(opts, origin)
 				return
 			end
 			local ok, update_err = pcall(function()
+				if pair.version ~= version then
+					buffers.trim(s)
+					return
+				end
+				if result and stamp ~= file_stamp(path) then
+					result, err = nil, "File changed during reload; use :LazyVCS compare refresh"
+				end
 				if result then
 					buffers.store(s, item, result)
+					if s.preview_result and s.shown_item and s.shown_item.relpath == item.relpath then
+						local reviewed = s.navigation and s.navigation.reviewed
+						s.preview_result, s.preview_stamp = result, stamp
+						navigation.load(s, result, item)
+						s.navigation.reviewed = reviewed
+						if s.mode == "text" then
+							show_result(s, "text")
+						end
+					end
 				else
 					util.notify(err, vim.log.levels.WARN)
 				end
