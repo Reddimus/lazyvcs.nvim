@@ -5,7 +5,7 @@ return function(ctx)
 	end
 	local function ready(s, path)
 		ctx.wait_for(function()
-			return s.preview_result and (not path or s.shown_item.relpath == path)
+			return not s.job and not s.preview_job and s.preview_result and (not path or s.shown_item.relpath == path)
 		end, "native comparison did not load", 15000)
 	end
 	local function fixture(opts)
@@ -31,7 +31,245 @@ return function(ctx)
 		keys("<CR>")
 		return f, s
 	end
-	return {
+	local function distinct_fixture(limit)
+		require("lazyvcs").setup({ compare = { max_cached_files = limit or 32 } })
+		local f = h.make_git_fixture()
+		for file = 1, 6 do
+			local lines = {}
+			for line = 1, 30 do
+				lines[line] = string.format("file %d line %d", file, line)
+			end
+			h.write_file(f.root .. "/f" .. file .. ".txt", table.concat(lines, "\n") .. "\n")
+		end
+		h.exec({ "git", "add", "." }, f.root)
+		h.exec({ "git", "commit", "-m", "distinct comparison pairs" }, f.root)
+		for file = 1, 6 do
+			local path = f.root .. "/f" .. file .. ".txt"
+			local lines = vim.fn.readfile(path)
+			lines[12] = "changed " .. file
+			h.write_file(path, table.concat(lines, "\n") .. "\n")
+		end
+		vim.cmd.edit(vim.fn.fnameescape(f.file))
+		local session = assert(compare.open({ path = f.root, base = "HEAD" }))
+		ready(session)
+		return f, session
+	end
+	local function check_pair(s, file)
+		for _, slot in ipairs({ { s.leftwin, s.left }, { s.rightwin, s.right } }) do
+			assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2])
+			assert(vim.api.nvim_get_option_value("diff", { win = slot[1], scope = "local" }))
+			vim.api.nvim_win_call(slot[1], function()
+				vim.cmd("diffupdate")
+				assert(vim.api.nvim_buf_get_lines(0, 0, 1, false)[1] == "file " .. file .. " line 1")
+				for line = 1, 30 do
+					assert(
+						(vim.fn.diff_hlID(line, 1) ~= 0) == (line == 12),
+						"file " .. file .. " unexpected diff at line " .. line
+					)
+				end
+			end)
+		end
+	end
+	local function select_file(s, file)
+		local path = "f" .. file .. ".txt"
+		vim.api.nvim_set_current_win(s.sidewin)
+		vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[path], 0 })
+		keys("<CR>")
+		ready(s, path)
+		check_pair(s, file)
+	end
+	local function cycle(s)
+		for _, file in ipairs({ 1, 2, 3, 4, 5, 6, 2, 5, 1, 6, 3 }) do
+			select_file(s, file)
+		end
+	end
+	local function independent(win)
+		for _, name in ipairs({ "diff", "scrollbind", "cursorbind" }) do
+			assert(not vim.api.nvim_get_option_value(name, { win = win, scope = "local" }), name .. " bound UI")
+		end
+	end
+	local function guarded(callback)
+		return function()
+			local diffopt, columns, lines = vim.o.diffopt, vim.o.columns, vim.o.lines
+			local util = require("lazyvcs.util")
+			local notify, errors = util.notify, {}
+			---@diagnostic disable-next-line: duplicate-set-field
+			util.notify = function(message, level)
+				if level == vim.log.levels.ERROR or message:find("E96", 1, true) then
+					errors[#errors + 1] = message
+				end
+			end
+			local ok, err = xpcall(callback, debug.traceback)
+			pcall(compare.close)
+			vim.o.diffopt, vim.o.columns, vim.o.lines = diffopt, columns, lines
+			util.notify = notify
+			assert(ok, err)
+			assert(#errors == 0, table.concat(errors, "\n"))
+		end
+	end
+
+	local cases = {
+		{
+			"test_comparison_native_file_switch_diffs_only_the_shown_pair",
+			guarded(function()
+				for _, hiddenoff in ipairs({ false, true }) do
+					vim.opt.diffopt:remove("hiddenoff")
+					if hiddenoff then
+						vim.opt.diffopt:append("hiddenoff")
+					end
+					for _, limit in ipairs({ 32, 0 }) do
+						local _, session = distinct_fixture(limit)
+						cycle(session)
+						compare.close(session)
+					end
+				end
+			end),
+		},
+		{
+			"test_comparison_native_metadata_refresh_and_layout_keep_diff_pair",
+			guarded(function()
+				vim.opt.diffopt:remove("hiddenoff")
+				local f, session = distinct_fixture()
+				select_file(session, 1)
+				for _ = 1, 3 do
+					vim.api.nvim_set_current_win(session.rightwin)
+					require("lazyvcs").compare_action("metadata")
+					independent(session.leftwin)
+					independent(session.rightwin)
+					require("lazyvcs").compare_action("metadata")
+					check_pair(session, 1)
+					compare.refresh(session)
+					ready(session, "f1.txt")
+					assert(compare.open({ path = f.root, base = "HEAD" }) == session)
+					ready(session, "f1.txt")
+					for _, width in ipairs({ 65, 160 }) do
+						vim.o.columns = width
+						vim.api.nvim_exec_autocmds("VimResized", {})
+						check_pair(session, 1)
+					end
+				end
+				cycle(session)
+				compare.close(session)
+			end),
+		},
+		{
+			"test_comparison_native_picker_restore_does_not_retain_borrowed_diff_buffers",
+			guarded(function()
+				vim.opt.diffopt:remove("hiddenoff")
+				local f, session = distinct_fixture()
+				select_file(session, 1)
+				local cached = session.right
+				select_file(session, 2)
+				for _, win in ipairs({ session.leftwin, session.rightwin, session.sidewin }) do
+					vim.api.nvim_set_current_win(win)
+					local owned = vim.api.nvim_win_get_buf(win)
+					vim.api.nvim_win_set_buf(win, cached)
+					if win ~= session.sidewin then
+						vim.api.nvim_win_call(win, function()
+							vim.cmd("diffthis")
+						end)
+					end
+					local first = vim.fn.bufadd(f.root .. "/f4.txt")
+					local latest = vim.fn.bufadd(f.root .. "/f5.txt")
+					vim.fn.bufload(first)
+					vim.fn.bufload(latest)
+					vim.bo[latest].bufhidden = "unload"
+					vim.api.nvim_win_set_buf(win, first)
+					vim.api.nvim_win_set_buf(win, latest)
+					vim.api.nvim_win_set_cursor(win, { 20, 3 })
+					ctx.wait_for(function()
+						return vim.api.nvim_win_get_buf(win) == owned
+							and vim.api.nvim_get_current_buf() == latest
+							and vim.api.nvim_get_current_win() == session.origin_edit_win
+					end, "picker selection not restored/routed")
+					assert(vim.bo[latest].bufhidden == "unload")
+					assert(vim.deep_equal(vim.api.nvim_win_get_cursor(0), { 20, 3 }))
+					assert(session.shown_item.relpath == "f2.txt")
+					check_pair(session, 2)
+				end
+				cycle(session)
+				compare.close(session)
+			end),
+		},
+		{
+			"test_comparison_native_refresh_preserves_unowned_diff_windows",
+			guarded(function()
+				vim.opt.diffopt:remove("hiddenoff")
+				local _, session = distinct_fixture()
+				select_file(session, 1)
+				vim.cmd("split")
+				local user = vim.api.nvim_get_current_win()
+				local buf = vim.api.nvim_create_buf(true, true)
+				vim.api.nvim_win_set_buf(user, buf)
+				vim.api.nvim_win_call(user, function()
+					vim.cmd("diffthis")
+				end)
+				compare.refresh(session)
+				ready(session, "f1.txt")
+				assert(
+					vim.api.nvim_get_option_value("diff", { win = user, scope = "local" }),
+					"refresh disabled user diff"
+				)
+				vim.api.nvim_win_call(user, function()
+					vim.cmd("diffoff")
+				end)
+				vim.api.nvim_win_close(user, true)
+				cycle(session)
+				compare.close(session)
+			end),
+		},
+		{
+			"test_comparison_native_window_options_do_not_bind_new_floats",
+			guarded(function()
+				local api = vim.api
+				local names = {
+					"scrollbind",
+					"cursorbind",
+					"number",
+					"relativenumber",
+					"cursorline",
+					"wrap",
+					"spell",
+					"foldenable",
+					"foldcolumn",
+					"signcolumn",
+					"list",
+					"listchars",
+					"winbar",
+					"statusline",
+					"winhighlight",
+				}
+				local win = api.nvim_get_current_win()
+				local defaults = {}
+				for _, name in ipairs(names) do
+					defaults[name] = api.nvim_get_option_value(name, { win = win, scope = "global" })
+				end
+				local _, session = distinct_fixture()
+				for _, pane in ipairs({ session.leftwin, session.rightwin, session.sidewin }) do
+					for name, value in pairs(defaults) do
+						assert(
+							api.nvim_get_option_value(name, { win = pane, scope = "global" }) == value,
+							name .. " leaked"
+						)
+					end
+					api.nvim_win_call(pane, function()
+						local buf = api.nvim_create_buf(false, true)
+						local float = api.nvim_open_win(
+							buf,
+							false,
+							{ relative = "editor", row = 1, col = 1, width = 20, height = 3 }
+						)
+						local ok, err = pcall(independent, float)
+						api.nvim_win_close(float, true)
+						api.nvim_buf_delete(buf, { force = true })
+						assert(ok, err)
+					end)
+				end
+				require("lazyvcs").compare_action("help")
+				independent(session.helpwin)
+				compare.close(session)
+			end),
+		},
 		{
 			"test_comparison_native_base_refresh_keeps_externally_displayed_snapshot",
 			function()
@@ -578,4 +816,5 @@ return function(ctx)
 			end,
 		},
 	}
+	return cases
 end

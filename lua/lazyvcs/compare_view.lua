@@ -1,3 +1,4 @@
+local util = require("lazyvcs.util")
 local M = {}
 local ns = vim.api.nvim_create_namespace("lazyvcs_compare_rows")
 local marker_ns = vim.api.nvim_create_namespace("lazyvcs_compare_marker")
@@ -73,7 +74,11 @@ end
 
 function M.hints(s)
 	if vim.api.nvim_win_is_valid(s.sidewin) then
-		vim.wo[s.sidewin].statusline = " e " .. (s.auto_width and "restore" or "widen") .. "  ? help  q close"
+		util.set_win_option(
+			s.sidewin,
+			"statusline",
+			" e " .. (s.auto_width and "restore" or "widen") .. "  ? help  q close"
+		)
 	end
 end
 
@@ -140,7 +145,11 @@ function M.render(s)
 	end
 	M.marker(s)
 	M.hints(s)
-	vim.wo[s.sidewin].winbar = "%#LazyVcsComparePath#%<" .. M.display(s.root or s.path):gsub("%%", "%%%%")
+	util.set_win_option(
+		s.sidewin,
+		"winbar",
+		"%#LazyVcsComparePath#%<" .. M.display(s.root or s.path):gsub("%%", "%%%%")
+	)
 end
 
 function M.layout(columns, manual, auto, content)

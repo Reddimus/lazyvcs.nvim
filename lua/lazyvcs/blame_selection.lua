@@ -97,8 +97,13 @@ function M.open(first, last)
 		width = math.max(1, math.min(120, vim.o.columns - 4)),
 		height = math.max(1, math.min(last - first + 4, vim.o.lines - 5)),
 	})
-	vim.wo[request.win].wrap, vim.wo[request.win].cursorline = false, true
-	vim.wo[request.win].winbar = "Blame " .. display(path):gsub("%%", "%%%%") .. " | " .. first .. "-" .. last
+	util.unbind_window(request.win)
+	util.set_win_options(request.win, { wrap = false, cursorline = true })
+	util.set_win_option(
+		request.win,
+		"winbar",
+		"Blame " .. display(path):gsub("%%", "%%%%") .. " | " .. first .. "-" .. last
+	)
 	for _, key in ipairs({ "q", "<Esc>" }) do
 		vim.keymap.set("n", key, function()
 			close(request)

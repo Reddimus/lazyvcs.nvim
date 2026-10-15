@@ -2,6 +2,15 @@ local util = require("lazyvcs.util")
 local buffers = require("lazyvcs.compare_buffers")
 local M = {}
 
+local function protected(callback)
+	return function(...)
+		local ok, err = pcall(callback, ...)
+		if not ok then
+			util.notify("Could not restore comparison: " .. tostring(err):gsub("[\r\n]+", " "), vim.log.levels.ERROR)
+		end
+	end
+end
+
 -- File pickers finish setting their search position after BufEnter. Restore the
 -- owned window on the next turn, then route only its latest file selection.
 function M.setup(s, actions)
@@ -18,25 +27,30 @@ function M.setup(s, actions)
 	local views, pending = nil, {}
 	vim.api.nvim_create_autocmd("BufWinLeave", {
 		group = s.augroup,
-		callback = function(args)
+		callback = protected(function(args)
 			if not valid() or s.resizing or (s.swapping or 0) > 0 then
 				return
 			end
 			local win = vim.api.nvim_get_current_win()
-			if slots()[win] ~= args.buf then
+			if not slots()[win] or vim.api.nvim_win_get_buf(win) ~= args.buf then
 				return
 			end
-			actions.remember(s)
-			views = {
-				vim.api.nvim_win_call(s.leftwin, vim.fn.winsaveview),
-				vim.api.nvim_win_call(s.rightwin, vim.fn.winsaveview),
-				vim.api.nvim_win_call(s.sidewin, vim.fn.winsaveview),
-			}
-		end,
+			if slots()[win] == args.buf then
+				actions.remember(s)
+				views = {
+					vim.api.nvim_win_call(s.leftwin, vim.fn.winsaveview),
+					vim.api.nvim_win_call(s.rightwin, vim.fn.winsaveview),
+					vim.api.nvim_win_call(s.sidewin, vim.fn.winsaveview),
+				}
+			end
+			if util.get_win_option(win, "diff") then
+				util.diff_off(win)
+			end
+		end),
 	})
 	vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
 		group = s.augroup,
-		callback = function(args)
+		callback = protected(function(args)
 			local win, buf = vim.api.nvim_get_current_win(), args.buf
 			local owned = slots()[win]
 			if not valid() or s.resizing or (s.swapping or 0) > 0 or not owned or buf == owned then
@@ -49,7 +63,7 @@ function M.setup(s, actions)
 				pending[win] = request
 			end
 			local saved, generation, preview_generation = request.views, request.generation, request.preview_generation
-			vim.schedule(function()
+			vim.schedule(protected(function()
 				if not valid() or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= buf then
 					return
 				end
@@ -67,9 +81,7 @@ function M.setup(s, actions)
 					local hidden = vim.bo[buf].bufhidden
 					vim.bo[buf].bufhidden = "hide"
 					s.swapping = (s.swapping or 0) + 1
-					local restored, restore_error = pcall(vim.api.nvim_win_call, win, function()
-						vim.cmd("keepjumps buffer " .. owned)
-					end)
+					local restored, restore_error = pcall(util.show_win_buffer, win, owned)
 					s.swapping = s.swapping - 1
 					if vim.api.nvim_buf_is_valid(buf) then
 						vim.bo[buf].bufhidden = hidden
@@ -96,8 +108,8 @@ function M.setup(s, actions)
 						vim.log.levels.ERROR
 					)
 				end
-			end)
-		end,
+			end))
+		end),
 	})
 end
 

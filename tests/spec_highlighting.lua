@@ -38,6 +38,43 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_core_diff_highlighting_release_preserves_window_defaults",
+			function()
+				local guard = require("lazyvcs.highlighting")
+				local _, win = sample()
+				local global = api.nvim_get_option_value("winhighlight", { win = win, scope = "global" })
+				local set = api.nvim_set_option_value
+				set("winhighlight", "Normal:ErrorMsg", { win = win, scope = "local" })
+				local expected = attr(win)
+				guard.apply(win, "syntax")
+				local managed = api.nvim_get_hl_ns({ winid = win })
+				-- Keep a second managed window so release cannot remove the OptionSet listener.
+				vim.cmd.vsplit()
+				local other = api.nvim_get_current_win()
+				guard.apply(other, "syntax")
+				api.nvim_set_current_win(win)
+				local ok, err = xpcall(function()
+					guard.release(win)
+					api.nvim_exec_autocmds("OptionSet", { pattern = "winhighlight" })
+					vim.wait(50)
+					assert(api.nvim_get_hl_ns({ winid = win }) ~= managed, "released namespace reacquired")
+					assert(attr(win) == expected, "mapping colors not restored")
+					assert(
+						api.nvim_get_option_value("winhighlight", { win = win, scope = "local" }) == "Normal:ErrorMsg"
+					)
+					assert(
+						api.nvim_get_option_value("winhighlight", { win = win, scope = "global" }) == global,
+						"global mapping changed"
+					)
+				end, debug.traceback)
+				guard.release(other)
+				set("winhighlight", global, { win = win, scope = "global" })
+				set("winhighlight", "", { win = win, scope = "local" })
+				vim.cmd.only()
+				assert(ok, err)
+			end,
+		},
+		{
 			"test_core_diff_highlighting_keeps_diff_background_and_diagnostics",
 			function()
 				local guard = require("lazyvcs.highlighting")

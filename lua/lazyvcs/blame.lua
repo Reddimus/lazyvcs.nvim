@@ -14,26 +14,8 @@ local line_log_views = {}
 local inline_enabled = false
 local STORE_KEY = "blame_inline_enabled"
 
-local function capture_win_options(winid, names)
-	local out = {}
-	for _, name in ipairs(names) do
-		local ok, value = pcall(function()
-			return vim.wo[winid][name]
-		end)
-		if ok then
-			out[name] = value
-		end
-	end
-	return out
-end
-
-local function apply_win_options(winid, opts)
-	for name, value in pairs(opts or {}) do
-		pcall(function()
-			vim.wo[winid][name] = value
-		end)
-	end
-end
+local capture_win_options = util.capture_win_options
+local apply_win_options = util.set_win_options
 
 -- Use the shared cached resolver; cursor movement must not spawn repository probes.
 local function backend_for_path(path)
@@ -539,26 +521,31 @@ function M.blame_split(resolved)
 			highlight_blame(created_buf, lines)
 
 			vim.api.nvim_win_call(source_win, function()
-				vim.cmd("leftabove " .. width .. "vnew")
+				vim.cmd("leftabove " .. width .. "vsplit")
 				created_win = vim.api.nvim_get_current_win()
 			end)
-			vim.api.nvim_win_set_buf(created_win, created_buf)
-			vim.wo[created_win].number = false
-			vim.wo[created_win].relativenumber = false
-			vim.wo[created_win].signcolumn = "no"
-			vim.wo[created_win].foldcolumn = "0"
-			vim.wo[created_win].wrap = false
-			vim.wo[created_win].linebreak = false
-			vim.wo[created_win].list = false
-			vim.wo[created_win].spell = false
-			vim.wo[created_win].cursorline = false
+			util.show_win_buffer(created_win, created_buf)
+			util.unbind_window(created_win)
+			util.set_win_option(created_win, "number", false)
+			util.set_win_option(created_win, "relativenumber", false)
+			util.set_win_option(created_win, "signcolumn", "no")
+			util.set_win_option(created_win, "foldcolumn", "0")
+			util.set_win_option(created_win, "wrap", false)
+			util.set_win_option(created_win, "linebreak", false)
+			util.set_win_option(created_win, "list", false)
+			util.set_win_option(created_win, "spell", false)
+			util.set_win_option(created_win, "cursorline", false)
 			apply_win_options(created_win, {
 				statuscolumn = "",
 				scrollbind = true,
 				cursorbind = true,
 			})
-			vim.wo[created_win].winfixwidth = true
-			vim.wo[created_win].winhighlight = "Normal:LazyVcsBlame,NormalNC:LazyVcsBlame,EndOfBuffer:LazyVcsBlame"
+			util.set_win_option(created_win, "winfixwidth", true)
+			util.set_win_option(
+				created_win,
+				"winhighlight",
+				"Normal:LazyVcsBlame,NormalNC:LazyVcsBlame,EndOfBuffer:LazyVcsBlame"
+			)
 			pcall(vim.api.nvim_win_set_width, created_win, width)
 			source_options = capture_win_options(source_win, { "scrollbind", "cursorbind" })
 			apply_win_options(source_win, { scrollbind = true, cursorbind = true })
@@ -725,6 +712,7 @@ function M.line_log()
 				title = " " .. backend.name:upper() .. " " .. revision .. " ",
 			})
 		end)
+		util.unbind_window(win)
 		local popup_augroup = vim.api.nvim_create_augroup(
 			"lazyvcs_line_log_" .. source_bufnr .. "_" .. tostring(vim.uv.hrtime()),
 			{ clear = true }

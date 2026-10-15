@@ -1,3 +1,4 @@
+local util = require("lazyvcs.util")
 local compat = require("lazyvcs.compat")
 local config = require("lazyvcs.config")
 local modal = require("lazyvcs.source_control.modal")
@@ -50,18 +51,19 @@ function M.open(opts, on_choice)
 		width = size.width,
 		height = size.height,
 	})
+	util.unbind_window(winid)
 
 	vim.bo[bufnr].buftype = "nofile"
 	vim.bo[bufnr].bufhidden = "wipe"
 	vim.bo[bufnr].modifiable = false
 	vim.bo[bufnr].swapfile = false
-	vim.wo[winid].cursorline = true
-	vim.wo[winid].number = false
-	vim.wo[winid].relativenumber = false
-	vim.wo[winid].signcolumn = "no"
-	vim.wo[winid].foldcolumn = "0"
-	vim.wo[winid].wrap = false
-	vim.wo[winid].winhighlight = "Normal:NormalFloat,FloatBorder:FloatBorder,CursorLine:Visual"
+	util.set_win_option(winid, "cursorline", true)
+	util.set_win_option(winid, "number", false)
+	util.set_win_option(winid, "relativenumber", false)
+	util.set_win_option(winid, "signcolumn", "no")
+	util.set_win_option(winid, "foldcolumn", "0")
+	util.set_win_option(winid, "wrap", false)
+	util.set_win_option(winid, "winhighlight", "Normal:NormalFloat,FloatBorder:FloatBorder,CursorLine:Visual")
 
 	local function render()
 		if not vim.api.nvim_buf_is_valid(bufnr) then

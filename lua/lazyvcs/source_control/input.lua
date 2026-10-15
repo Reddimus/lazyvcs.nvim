@@ -76,8 +76,9 @@ function M.open_text(opts, on_submit)
 		row = size.row,
 		col = size.col,
 	})
-	vim.wo[winid].winblend = 0
-	vim.wo[winid].winhighlight = "Normal:Normal,FloatBorder:FloatBorder,FloatTitle:FloatTitle"
+	util.unbind_window(winid)
+	util.set_win_option(winid, "winblend", 0)
+	util.set_win_option(winid, "winhighlight", "Normal:Normal,FloatBorder:FloatBorder,FloatTitle:FloatTitle")
 	vim.cmd("startinsert!")
 
 	local owner = modal.new({

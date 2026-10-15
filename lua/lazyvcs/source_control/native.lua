@@ -783,14 +783,15 @@ local function ensure_window(state, opts)
 		state.bufnr = vim.api.nvim_create_buf(false, true)
 		setup_buffer(state)
 	end
-	vim.api.nvim_win_set_buf(state.winid, state.bufnr)
-	vim.wo[state.winid].number = false
-	vim.wo[state.winid].relativenumber = false
-	vim.wo[state.winid].signcolumn = "no"
-	vim.wo[state.winid].foldcolumn = "0"
-	vim.wo[state.winid].wrap = false
-	vim.wo[state.winid].cursorline = true
-	vim.wo[state.winid].winfixwidth = true
+	util.show_win_buffer(state.winid, state.bufnr)
+	util.unbind_window(state.winid)
+	util.set_win_option(state.winid, "number", false)
+	util.set_win_option(state.winid, "relativenumber", false)
+	util.set_win_option(state.winid, "signcolumn", "no")
+	util.set_win_option(state.winid, "foldcolumn", "0")
+	util.set_win_option(state.winid, "wrap", false)
+	util.set_win_option(state.winid, "cursorline", true)
+	util.set_win_option(state.winid, "winfixwidth", true)
 	if opts.focus == false and valid_win(current) then
 		vim.api.nvim_set_current_win(current)
 	end
@@ -882,16 +883,22 @@ local function prepare_state(path)
 	end
 	state.lazyvcs_get_node = current_node
 	state.lazyvcs_open_file = function(_, path_to_open)
+		local created = false
 		if valid_win(state.editor_winid) and state.editor_winid ~= state.winid then
 			vim.api.nvim_set_current_win(state.editor_winid)
 		else
 			vim.cmd("wincmd l")
 			if vim.api.nvim_get_current_win() == state.winid then
 				vim.cmd("rightbelow split")
+				util.editor_window(vim.api.nvim_get_current_win())
+				created = true
 			end
 			state.editor_winid = vim.api.nvim_get_current_win()
 		end
 		vim.cmd.edit(vim.fn.fnameescape(path_to_open))
+		if created then
+			util.editor_window(state.editor_winid)
+		end
 	end
 	reset_for_path(state, state.path)
 	return state
@@ -940,6 +947,7 @@ local function teardown_state(state, opts)
 	if opts.close_window and valid_win(state.winid) then
 		if #vim.api.nvim_tabpage_list_wins(state.tabid) == 1 then
 			pcall(vim.api.nvim_win_call, state.winid, function()
+				util.editor_window(state.winid)
 				vim.cmd("enew")
 			end)
 		else

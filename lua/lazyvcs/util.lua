@@ -1,5 +1,71 @@
 local M = {}
 
+---@param winid integer
+---@param name string
+---@return boolean|integer|string
+function M.get_win_option(winid, name)
+	return vim.api.nvim_get_option_value(name, { win = winid, scope = "local" })
+end
+
+---@param winid integer
+---@param name string
+---@param value boolean|integer|string
+function M.set_win_option(winid, name, value)
+	vim.api.nvim_set_option_value(name, value, { win = winid, scope = "local" })
+end
+
+---@param winid integer
+---@param values table<string, boolean|integer|string>
+function M.set_win_options(winid, values)
+	for name, value in pairs(values) do
+		M.set_win_option(winid, name, value)
+	end
+end
+
+---@param winid integer
+---@param names string[]
+---@return table<string, boolean|integer|string>
+function M.capture_win_options(winid, names)
+	local values = {}
+	for _, name in ipairs(names) do
+		values[name] = M.get_win_option(winid, name)
+	end
+	return values
+end
+
+---@param winid integer
+function M.diff_off(winid)
+	vim.api.nvim_win_call(winid, function()
+		vim.cmd("silent diffoff")
+	end)
+end
+
+---@param winid integer
+---@param bufnr integer
+function M.show_win_buffer(winid, bufnr)
+	if vim.api.nvim_win_get_buf(winid) == bufnr then
+		return
+	end
+	vim.api.nvim_win_call(winid, function()
+		if M.get_win_option(winid, "diff") then
+			M.diff_off(winid)
+		end
+		vim.cmd("keepjumps buffer " .. bufnr)
+	end)
+end
+
+---@param winid integer
+function M.unbind_window(winid)
+	M.diff_off(winid)
+	M.set_win_options(winid, { scrollbind = false, cursorbind = false })
+end
+
+---@param winid integer
+function M.editor_window(winid)
+	M.unbind_window(winid)
+	M.set_win_options(winid, { winbar = "", statusline = "", winfixwidth = false })
+end
+
 function M.svn_target(path, revision)
 	return path .. "@" .. (revision and tostring(revision) or "")
 end
@@ -13,12 +79,15 @@ local function command_options(args, opts)
 end
 
 function M.show_text(title, lines)
-	vim.cmd("botright new")
+	vim.cmd("botright split")
+	local win = vim.api.nvim_get_current_win()
+	M.show_win_buffer(win, vim.api.nvim_create_buf(false, true))
+	M.unbind_window(win)
 	local buf = vim.api.nvim_get_current_buf()
 	vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
 	vim.bo[buf].modifiable, vim.bo[buf].readonly = false, true
-	vim.wo.winbar = title:gsub("%%", "%%%%")
+	M.set_win_option(win, "winbar", title:gsub("%%", "%%%%"))
 	vim.keymap.set("n", "q", "<Cmd>close<CR>", { buffer = buf, silent = true })
 	return buf
 end
