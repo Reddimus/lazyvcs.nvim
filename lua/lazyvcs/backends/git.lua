@@ -128,40 +128,64 @@ function M.probe_async(path, on_done, opts)
 	return task
 end
 
--- Index blobs use UTF-8 when Git applies working-tree-encoding. Query only the
--- attribute: running filters here can execute user smudge drivers.
+-- Only built-in ident expansion is safe for background checkout-form reads.
 local function index_encoding(records)
-	local value = records:match("^[^%z]*%zworking%-tree%-encoding%z([^%z]*)%z$")
-	if value and value ~= "unspecified" and value ~= "unset" then
-		return "utf-8", value
+	local attrs = {}
+	for name, value in records:gmatch("[^%z]*%z([^%z]*)%z([^%z]*)%z") do
+		attrs[name] = value
 	end
+	local attribute = attrs["working-tree-encoding"]
+	if attribute == "unspecified" or attribute == "unset" then
+		attribute = nil
+	end
+	local filter = attrs.filter
+	local checkout = attrs.ident == "set" and (filter == "unspecified" or filter == "unset")
+	return { encoding = not checkout and attribute and "utf-8" or nil, attribute = attribute, checkout = checkout }
+end
+
+local function index_command(relpath, oid, encoding)
+	if encoding.checkout then
+		return { "git", "cat-file", "--filters", "--path=" .. relpath, oid }
+	end
+	return { "git", "show", oid }
 end
 
 local function encoding_sync(root, relpath)
 	local result, err = util.system(
-		{ "git", "check-attr", "-z", "working-tree-encoding", "--", relpath },
+		{ "git", "check-attr", "-z", "working-tree-encoding", "ident", "filter", "--", relpath },
 		{ cwd = root, text = false }
 	)
 	if not result then
 		return nil, err
 	end
-	local encoding, attribute = index_encoding(result.stdout)
-	return { encoding = encoding, attribute = attribute }
+	return index_encoding(result.stdout)
 end
 
-local function finish_index_payload(task, root, relpath, payload, opts)
+local function finish_index_payload(task, root, relpath, payload, opts, oid)
 	task:add(
 		process.bytes(
-			{ "git", "check-attr", "-z", "working-tree-encoding", "--", relpath },
+			{ "git", "check-attr", "-z", "working-tree-encoding", "ident", "filter", "--", relpath },
 			{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
 			function(records, err)
 				if not records then
 					return task:finish(nil, err)
 				end
-				local encoding, attribute = index_encoding(records)
-				payload.base_encoding = encoding
-				payload.base_identity.working_tree_encoding = attribute
-				task:finish(payload)
+				local encoding = index_encoding(records)
+				payload.base_encoding = encoding.encoding
+				payload.base_identity.working_tree_encoding = encoding.attribute
+				if not encoding.checkout then
+					return task:finish(payload)
+				end
+				task:add(process.bytes(index_command(relpath, oid or payload.base_identity.oid, encoding), {
+					cwd = root,
+					timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+				}, function(bytes, filter_err)
+					if bytes == nil then
+						return task:finish(nil, filter_err)
+					end
+					payload.base_bytes = bytes
+					task:finish(payload)
+				end))
 			end
 		)
 	)
@@ -193,7 +217,7 @@ function M.load(path)
 	local base_label = "EMPTY"
 
 	if tracked then
-		local loaded, load_err = util.system({ "git", "show", item.oid }, { cwd = root, text = false })
+		local loaded, load_err = util.system(index_command(relpath, item.oid, encoding), { cwd = root, text = false })
 		if not loaded then
 			return nil, load_err or err
 		end
@@ -298,7 +322,7 @@ function M.load_base(path)
 	if not encoding then
 		return nil, encoding_err
 	end
-	local loaded, load_err = util.system({ "git", "show", item.oid }, { cwd = root, text = false })
+	local loaded, load_err = util.system(index_command(relpath, item.oid, encoding), { cwd = root, text = false })
 	if not loaded then
 		return nil, load_err
 	end
@@ -470,7 +494,8 @@ local function conflict_base_async(path, root, relpath, callback, opts)
 							root,
 							relpath,
 							{ base_bytes = bytes, base_identity = identity },
-							opts
+							opts,
+							ours
 						)
 					end))
 				end

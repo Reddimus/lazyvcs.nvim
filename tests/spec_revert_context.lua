@@ -19,8 +19,6 @@ return function(ctx)
 		})
 		local f = svn and h.make_svn_transfer_fixture() or h.make_git_transfer_fixture()
 		vim.cmd.edit(vim.fn.fnameescape(f.file1))
-		-- Explicit refresh still uses the native signs state with rendering enabled.
-		require("lazyvcs.config").get().signs.enabled = true
 		return f, api.nvim_get_current_buf()
 	end
 	local function pending()

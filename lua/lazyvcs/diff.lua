@@ -69,6 +69,10 @@ end
 function M.compute_text_hunks(base, current)
 	local raw =
 		compat.diff(text.serialize(base), text.serialize(current), { algorithm = "histogram", result_type = "indices" })
+	return M.text_hunks(raw, base, current)
+end
+
+function M.text_hunks(raw, base, current)
 	local hunks = {}
 	for _, item in ipairs(type(raw) == "table" and raw or {}) do
 		local hunk = normalize_hunk(item)

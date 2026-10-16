@@ -174,7 +174,15 @@ the GitHub release.
   and strips copied overlays from unowned windows. Only explicit theme
   namespaces use its pool, which grows with concurrently managed custom
   namespaces.
-- `signs.lua` and `blame.lua` own buffer state and cancel stale generations.
+- `signs.lua` and `blame.lua` own loaded-buffer state and cancel stale
+  generations. Native signs retain only eligibility metadata for size-skipped
+  buffers and release state on unload. Hunk computation and gutter rendering
+  have separate caches. Large sign comparisons keep histogram diff options and
+  run in a worker thread, with synchronous fallback if the runtime lacks
+  threaded `vim.diff`. Results must match the state object, buffer text
+  identity, and base generation. Index and SVN BASE mutation hooks run after
+  preflight at process startup and settlement. Logical cancellation does not
+  release base ownership.
 - New regression cases belong in sibling `tests/spec_*.lua` modules. The main
   spec is near LuaJIT's local-variable limit.
 

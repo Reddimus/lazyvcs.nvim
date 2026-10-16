@@ -25,9 +25,9 @@ lazyvcs.nvim provides native VCS workflows:
 - a standalone source-control sidebar for nested Git/SVN working copies
 
 The live diff shows the read-only base on the left and your editable file on
-the right. Git compares against the index with `git show :path`. SVN uses BASE with
+the right. Git compares against the index. SVN uses BASE with
 `svn cat -r BASE path`. Git untracked files and SVN added files use an empty
-base.
+base. See |lazyvcs-inline-signs| for Git attribute handling.
 
 The source-control sidebar is native Neovim UI. Neo-tree is not required.
 
@@ -272,13 +272,32 @@ INLINE SIGNS                                           *lazyvcs-inline-signs*
 
 Git and SVN file buffers get gutter signs automatically. lazyvcs compares the
 buffer against the backend base in the background and updates signs after edits:
-the index for Git (`git show :path`) and working-copy BASE for SVN
-(`svn cat -r BASE`). Git untracked files and SVN added files use an empty base,
-and inline blame renders their rows as uncommitted lines.
+the index for Git and working-copy BASE for SVN (`svn cat -r BASE`). Git
+untracked files and SVN added files use an empty base, and inline blame renders
+their rows as uncommitted lines.
 
-When `use_gitsigns` is true (the default) and gitsigns.nvim is installed, Git
-gutter signs are left to gitsigns.nvim to avoid a doubled-up sign column.
+Git reads raw index bytes with `git show`. For files with `ident` enabled and no
+filter driver, `git cat-file --filters` supplies checkout-form content. Background
+base loads never invoke external smudge drivers. Files with a filter driver keep
+raw index content. Historical object comparisons also keep raw content.
+
+When `use_gitsigns` is true (the default), lazyvcs delegates Git signs and hunk
+commands when gitsigns.nvim can report this buffer's hunks. Unattached buffers,
+including untracked files under default gitsigns settings, use native fallback.
 lazyvcs always renders SVN signs.
+
+`signs.enabled` controls gutter decorations. Standalone hunk commands and previews
+remain available when signs are disabled, without automatic base reads.
+Oversized files resume automatic signs after both the buffer and saved file fall
+below `signs.max_file_bytes`. Unloading a buffer releases its native sign state.
+LazyVCS index and SVN BASE mutations invalidate matching bases at process startup
+and settlement. Commands wait for settlement, and pending revert confirmations
+reject changed base generations. External VCS mutations require
+`:LazyVCS signs refresh` to reload a cached base.
+
+Large native sign comparisons run histogram diff in a worker thread. Results from
+older edits or bases are discarded. Small comparisons run synchronously. Preview
+reports insufficient editor space without allocating a scratch buffer.
 
 Commands:
 
@@ -575,14 +594,14 @@ LSP clients stay attached. This also prevents inactive-code dimming when a
 language server cannot resolve build flags. It does not fix missing build flags.
 LazyVCS uses available syntax highlighting without installing parsers.
 
-SVN signs options:
+Native gutter signs options:
 
-    signs.enabled      Enable SVN gutter signs.
+    signs.enabled      Enable native Git and SVN gutter decorations.
     signs.debounce_ms  Delay sign refresh after buffer edits.
     signs.sign_priority
                        Sign-column priority.
     signs.max_file_bytes
-                       Skip large files.
+                       Skip files exceeding the limit on disk or in memory.
     signs.text         Sign glyphs for add/change/delete/topdelete/changedelete.
 
 Git/SVN blame options:
