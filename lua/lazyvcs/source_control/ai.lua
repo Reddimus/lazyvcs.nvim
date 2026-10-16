@@ -1,5 +1,6 @@
 local config = require("lazyvcs.config")
 local fs = require("lazyvcs.fs")
+local jobs = require("lazyvcs.source_control.jobs")
 local util = require("lazyvcs.util")
 
 local M = {}
@@ -83,7 +84,10 @@ local function new_request(callback)
 		if type(callback) == "function" then
 			local ok, callback_err = pcall(callback, message, err, provider)
 			if not ok then
-				util.notify("AI callback failed: " .. tostring(callback_err), vim.log.levels.ERROR)
+				util.notify(
+					"AI callback failed: " .. (tostring(callback_err):gsub("[\r\n]+", " ")),
+					vim.log.levels.ERROR
+				)
 			end
 		end
 	end
@@ -104,6 +108,39 @@ local function new_request(callback)
 	return request
 end
 
+local function start_context_command(request, command, callback)
+	local completed = false
+	local id = jobs.command(request.repo, "ai_context", command.args, {
+		cwd = command.cwd,
+		timeout_ms = command.timeout,
+		owner = request.owner,
+		scope = "ai_context",
+		priority = 10,
+	}, function(result, err)
+		completed = true
+		if not request.active then
+			return
+		end
+		request.handle = nil
+		if not result or err then
+			return request:finish(nil, err or "Could not collect commit context")
+		end
+		if result.stdout_truncated or result.stderr_truncated then
+			return request:finish(nil, "Commit context exceeded the output limit")
+		end
+		callback(result.stdout or "")
+	end)
+	if not completed then
+		request:set_handle({
+			kill = function()
+				jobs.cancel(function(job)
+					return job.id == id
+				end, "AI request cancelled")
+			end,
+		})
+	end
+end
+
 local function run_context_commands(request, commands, index, callback)
 	if not request.active then
 		return
@@ -112,18 +149,12 @@ local function run_context_commands(request, commands, index, callback)
 	if not command then
 		return callback("")
 	end
-	local handle = util.system_start(command.args, { cwd = command.cwd, timeout = command.timeout }, function(result)
-		if not request.active then
-			return
-		end
-		request.handle = nil
-		local stdout = result and util.trim(result.stdout) or ""
-		if stdout ~= "" then
-			return callback(result.stdout)
+	start_context_command(request, command, function(stdout)
+		if util.trim(stdout) ~= "" then
+			return callback(stdout)
 		end
 		run_context_commands(request, commands, index + 1, callback)
 	end)
-	request:set_handle(handle)
 end
 
 local function collect_context_commands(request, commands, callback)
@@ -138,28 +169,12 @@ local function collect_context_commands(request, commands, callback)
 		if not command then
 			return callback(table.concat(output, "\n"))
 		end
-		local handle = util.system_start(
-			command.args,
-			{ cwd = command.cwd, timeout = command.timeout },
-			function(result, err)
-				if not request.active then
-					return
-				end
-				request.handle = nil
-				if not result then
-					return request:finish(nil, err or "Could not collect commit context")
-				end
-				if result.stdout_truncated or result.stderr_truncated then
-					return request:finish(nil, "Commit context exceeded the output limit")
-				end
-				local stdout = result and util.trim(result.stdout) or ""
-				if stdout ~= "" then
-					output[#output + 1] = stdout
-				end
-				next_command()
+		start_context_command(request, command, function(stdout)
+			if util.trim(stdout) ~= "" then
+				output[#output + 1] = util.trim(stdout)
 			end
-		)
-		request:set_handle(handle)
+			next_command()
+		end)
 	end
 	next_command()
 end
@@ -203,7 +218,7 @@ local function svn_context(request, repo_root, callback)
 	local timeout = config.get().source_control.background.status_timeout_ms
 	local commands = {
 		{ args = { "svn", "diff", repo_root }, cwd = repo_root, timeout = timeout },
-		{ args = { "svn", "status", repo_root }, cwd = repo_root, timeout = timeout },
+		{ args = { "svn", "status", util.svn_target(repo_root) }, cwd = repo_root, timeout = timeout },
 	}
 	local context = config.get().ai.commit_message.context
 	if context == "status" then
@@ -279,13 +294,13 @@ local function run_cli_provider(request, provider, repo, prompt, callback)
 	elseif provider == "codex" then
 		args = {
 			"codex",
+			"--ask-for-approval",
+			"never",
 			"exec",
 			"--skip-git-repo-check",
 			"--ephemeral",
 			"--sandbox",
 			"read-only",
-			"--ask-for-approval",
-			"never",
 			"-",
 		}
 	elseif provider == "gemini" then
@@ -415,7 +430,8 @@ function M.available()
 	return false
 end
 
-function M.generate(repo, callback)
+function M.generate(repo, callback, opts)
+	opts = opts or {}
 	if config.get().ai.commit_message.provider == "off" then
 		return nil, "AI commit-message generation is disabled"
 	end
@@ -426,6 +442,8 @@ function M.generate(repo, callback)
 	end
 
 	local request = new_request(callback)
+	request.repo = repo
+	request.owner = opts.owner or repo.root
 	confirm_privacy(function(accepted)
 		if not request.active then
 			return

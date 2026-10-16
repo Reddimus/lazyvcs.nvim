@@ -1088,6 +1088,7 @@ return function(ctx)
 		local mutation_started = false
 		---@diagnostic disable-next-line: duplicate-set-field
 		repo_switch.open_async = function(target_repo, opts)
+			opts.on_complete()
 			opts.on_ready(target_repo)
 			opts.run_mutation(
 				target_repo,
@@ -1345,6 +1346,7 @@ return function(ctx)
 		local mutation_started = false
 		---@diagnostic disable-next-line: duplicate-set-field
 		repo_switch.open_async = function(target_repo, opts)
+			opts.on_complete()
 			opts.on_ready(target_repo)
 			opts.run_mutation(
 				target_repo,

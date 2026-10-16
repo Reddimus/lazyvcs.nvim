@@ -543,7 +543,7 @@ local function test_ai_commit_message_auto_falls_back_to_next_cli_provider()
 			on_exit({ code = 0, stdout = "diff --git a/app.lua b/app.lua\n+return true\n", stderr = "" }, nil)
 		elseif key:match("^claude ") then
 			on_exit(nil, "claude failed")
-		elseif key:match("^codex exec") then
+		elseif key:match("^codex %-%-ask%-for%-approval never exec") then
 			codex_stdin = opts.stdin
 			on_exit({ code = 0, stdout = "Add generated commit message\n\nignored body\n", stderr = "" }, nil)
 		else
@@ -574,7 +574,7 @@ local function test_ai_commit_message_auto_falls_back_to_next_cli_provider()
 	assert(codex_stdin:match("diff %-%-git"), "diff context should be included")
 	eq(calls[1], "git diff --staged --stat --patch --minimal --unified=1")
 	assert(calls[2]:match("^claude "), "auto provider should try claude first")
-	eq(calls[3], "codex exec --skip-git-repo-check --ephemeral --sandbox read-only --ask-for-approval never -")
+	eq(calls[3], "codex --ask-for-approval never exec --skip-git-repo-check --ephemeral --sandbox read-only -")
 
 	util.system_start = previous_system_start
 	ai._test_reset_privacy()
@@ -6425,7 +6425,7 @@ local function test_source_control_switch_open_async_uses_async_default_mutation
 				},
 			},
 		}, nil)
-		return { kill = function() end }
+		return require("lazyvcs.backends.task").new()
 	end
 	---@diagnostic disable-next-line: duplicate-set-field
 	util.system = function()
@@ -6456,7 +6456,7 @@ local function test_source_control_switch_open_async_uses_async_default_mutation
 			"svn",
 			"switch",
 			"--ignore-ancestry",
-			"https://example.test/svn/branches/next",
+			"https://example.test/svn/branches/next@",
 			vim.fn.getcwd(),
 		})
 		eq(after_count, 0, "async switch completion must wait for the process callback")
@@ -6574,6 +6574,7 @@ local function test_source_control_switch_repo_closes_matching_sessions_and_refr
 	session_state.buffer_index = {}
 	---@diagnostic disable-next-line: duplicate-set-field
 	switch.open_async = function(repo, opts)
+		opts.on_complete()
 		opts.on_ready(repo)
 		opts.before_mutation(repo)
 		opts.run_mutation(repo, { short = "main" }, { "git", "switch", "main" }, { cwd = repo.root })
@@ -7153,6 +7154,11 @@ vim.list_extend(cases, require("spec_source_control_ops_safety")({ helpers = hel
 vim.list_extend(cases, require("spec_mutation_start")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_copilotchat_context")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_confirm")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_commit_messages")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_confirm_modes")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_ai_drafts")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_ai_context")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_switch_refs")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_window_options")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_integrity")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_text")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))

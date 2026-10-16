@@ -330,7 +330,18 @@ Behavior:
   Discarding directory property changes leaves child edits intact.
 - Tag checkout and branch creation use the selected full ref, including tags
   whose names start with a dash or match a local branch.
+- Branches that share names with tags and real refs ending in /HEAD remain
+  selectable. Symbolic remote HEAD aliases are hidden. If ref enumeration exceeds
+  the output limit, switching reports an error instead of showing a partial list.
+  Closing the sidebar releases pending switch-target loading state.
+- Generated SVN switch targets are literal URLs, including @ characters. Manual
+  Switch URL input accepts SVN URL@PEG syntax. End a literal URL containing @
+  with another @ to select the URL without a peg revision.
 - Opens changed files in the live diff view.
+
+Git and SVN commits read messages from private temporary files, which are deleted
+when the commit process exits. Message length does not consume process argument
+space. Failed or cancelled commits preserve the draft.
 
 Pressing `e` outside a commit-message row toggles sidebar auto-fit. The width is
 capped by `source_control.auto_expand_max_width_ratio`, then restored when `e`
@@ -613,9 +624,20 @@ CopilotChat model and temperature are reused.
 
 CLI diff context reaches providers over stdin, or as a private 0600 attachment
 that is deleted on completion, so it never appears in process arguments or
-task listings.
+task listings. Codex runs with a read-only sandbox and approval disabled.
 
-Mutation confirmations use a small native popup. Press 1 to confirm, 2 to
+New sidebar generation cancels the previous request for that repository. Submitted
+drafts and successful commits invalidate pending results, even when submitted
+text is unchanged. Closing the sidebar, changing its path, or cancelling repository
+work also cancels its pending generation. Separate sidebar drafts stay independent.
+
+AI context commands use the repository scheduler and its cancellation and output
+limits. Failed context commands stop generation and report the error. Only a
+successful empty diff falls back to other changes. SVN status context supports
+working-copy paths containing @.
+
+Mutation confirmations enter Normal mode, including after an Insert-mode <C-o>
+command, and use a small native popup. Press 1 to confirm, 2 to
 confirm and skip more mutation prompts for the current Neovim session, or 3,
 q, or <Esc> to cancel. j/k and arrow keys move the selection; <CR> runs the
 highlighted choice, including after normal cursor or mouse movement. Confirm is

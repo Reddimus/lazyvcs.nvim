@@ -172,6 +172,7 @@ local function reset_for_path(state, path)
 	if state.lazyvcs_invalidate_hydration then
 		state.lazyvcs_invalidate_hydration(state, nil, "source path changed")
 	end
+	ops.cancel_commit_generations(state)
 	state.lazyvcs_repo_root = path
 	reset_discovery(state)
 	state.lazyvcs_repo_cache = {}
@@ -924,6 +925,7 @@ function M.open(opts)
 end
 
 local function cancel_state_jobs(state)
+	ops.cancel_commit_generations(state)
 	invalidate_hydration(state, nil, "owner closed")
 	if state.lazyvcs_discovery_handle and type(state.lazyvcs_discovery_handle.kill) == "function" then
 		pcall(state.lazyvcs_discovery_handle.kill, state.lazyvcs_discovery_handle, 15)

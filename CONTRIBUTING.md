@@ -137,6 +137,15 @@ the GitHub release.
 - `compare_actions.lua` shares action names across mappings, commands, and help.
 - `compare_view.lua` builds file rows, highlights, and cached width
   measurements.
+- Switch-target enumeration finalizes its own repository marker before checking
+  sidebar liveness. A stale callback cannot clear another operation's marker.
+- Commit message files are created exclusively with private permissions at
+  process start and removed after process exit, including cancellation and spawn
+  failure.
+- Sidebar AI drafts belong to one state and repository root. Request tickets and
+  draft revisions reject superseded responses. Context commands use the
+  scheduler; repository cancellation also stops provider requests after context
+  collection.
 - `blame_context.lua` captures source identity and changedtick for blame
   requests.
 - `blame_selection.lua` presents selected-line reports through a cancellable

@@ -14,6 +14,95 @@ local util = require("lazyvcs.util")
 
 local M = {}
 local mutation_generations = {}
+local draft_states = setmetatable({}, { __mode = "k" })
+
+local function draft_record(state, root)
+	state.lazyvcs_commit_generations = state.lazyvcs_commit_generations or {}
+	local record = state.lazyvcs_commit_generations[root]
+	if not record then
+		record = { revision = 0 }
+		state.lazyvcs_commit_generations[root] = record
+	end
+	return record
+end
+
+local function detach_generation(state, record)
+	local ticket = record.current
+	if not ticket then
+		return
+	end
+	record.current = nil
+	state.lazyvcs_commit_pending[ticket.root] = nil
+	ticket.active = false
+	state.lazyvcs_commit_generation_count = state.lazyvcs_commit_generation_count - 1
+	if state.lazyvcs_commit_generation_count == 0 then
+		draft_states[state] = nil
+	end
+	return ticket
+end
+
+local function cancel_ticket(ticket)
+	local task = ticket and ticket.task
+	if task then
+		local cancel = task.cancel or task.kill
+		if type(cancel) == "function" then
+			pcall(cancel, task)
+		end
+		ticket.task = nil
+	end
+end
+
+function M.cancel_commit_generations(state, root)
+	local records = state.lazyvcs_commit_generations or {}
+	if root then
+		local record = records[root]
+		local ticket = record and detach_generation(state, record)
+		cancel_ticket(ticket)
+		return ticket and 1 or 0
+	end
+	local count = 0
+	for _, record in pairs(state.lazyvcs_commit_pending or {}) do
+		local ticket = detach_generation(state, record)
+		if ticket then
+			count = count + 1
+			cancel_ticket(ticket)
+		end
+	end
+	return count
+end
+
+local function set_commit_draft(state, root, value)
+	local record = draft_record(state, root)
+	record.revision = record.revision + 1
+	M.cancel_commit_generations(state, root)
+	state.lazyvcs_commit_drafts = state.lazyvcs_commit_drafts or {}
+	state.lazyvcs_commit_drafts[root] = value
+end
+
+local function begin_commit_generation(state, root)
+	M.cancel_commit_generations(state, root)
+	local record = draft_record(state, root)
+	local ticket = { state = state, root = root, revision = record.revision, active = true }
+	record.current = ticket
+	state.lazyvcs_commit_pending = state.lazyvcs_commit_pending or {}
+	state.lazyvcs_commit_pending[root] = record
+	state.lazyvcs_commit_generation_count = (state.lazyvcs_commit_generation_count or 0) + 1
+	draft_states[state] = true
+	return ticket
+end
+
+local function finish_commit_generation(ticket, message)
+	local state = ticket.state
+	local record = draft_record(state, ticket.root)
+	if not ticket.active or record.current ~= ticket or record.revision ~= ticket.revision then
+		return false
+	end
+	detach_generation(state, record)
+	if message and util.trim(message) ~= "" then
+		set_commit_draft(state, ticket.root, message)
+	end
+	return true
+end
 
 local function current_node(state)
 	if state.lazyvcs_get_node then
@@ -227,7 +316,7 @@ local function finish_repo_job(state, repo, spec, result, err, raw)
 
 	session_state.clear_repo_job(repo.root)
 	if spec.clear_draft then
-		state.lazyvcs_commit_drafts[repo.root] = ""
+		set_commit_draft(state, repo.root, "")
 	end
 	if spec.checktime then
 		vim.cmd("silent! checktime")
@@ -292,7 +381,7 @@ end
 local function start_command(repo, kind, args, on_done, opts)
 	opts = opts or {}
 	local timeout = opts.timeout_ms or config.get().source_control.background.mutation_timeout_ms
-	local process_start
+	local process_start = opts.start
 	if opts.guard_modified_buffers or opts.branch_ref or opts.svn_discard then
 		process_start = function(command, process_opts, on_exit)
 			return mutation_start.start(repo, command, process_opts, opts, on_exit)
@@ -311,6 +400,57 @@ local function start_command(repo, kind, args, on_done, opts)
 	}, function(result, err, raw)
 		on_done(result, err, raw)
 	end)
+end
+
+local function start_commit_command(repo, message, on_done)
+	local args = { repo.vcs, "commit", "-F", "-" }
+	if repo.vcs == "svn" then
+		args[#args + 1] = "--encoding"
+		args[#args + 1] = "UTF-8"
+		args[#args + 1] = util.svn_target(repo.root)
+	end
+	return start_command(repo, repo.vcs .. "_commit", args, on_done, {
+		start = function(command, process_opts, on_exit)
+			local message_index
+			for index, arg in ipairs(command) do
+				if arg == "-F" then
+					message_index = index + 1
+					break
+				end
+			end
+			if not message_index or not command[message_index] then
+				on_exit(nil, "Commit command is missing the -F message file argument")
+				return
+			end
+			local path = vim.fn.tempname() .. "-lazyvcs-commit.txt"
+			local fd, open_err = vim.uv.fs_open(path, "wx", 384)
+			if not fd then
+				on_exit(nil, "Could not create private commit message: " .. tostring(open_err))
+				return
+			end
+			local function cleanup()
+				pcall(vim.uv.fs_unlink, path)
+			end
+			local ok, written, write_err = pcall(require("lazyvcs.fs").write_all, fd, message, 0)
+			local closed, close_err = vim.uv.fs_close(fd)
+			if not ok or not written or not closed then
+				cleanup()
+				on_exit(nil, "Could not write commit message: " .. tostring(ok and (write_err or close_err) or written))
+				return
+			end
+			command[message_index] = path
+			local started, handle = pcall(util.system_start, command, process_opts, function(...)
+				cleanup()
+				on_exit(...)
+			end)
+			if not started then
+				cleanup()
+				on_exit(nil, util.truncate((tostring(handle):gsub("[\r\n]+", " ")), 512))
+				return
+			end
+			return handle
+		end,
+	})
 end
 
 local function start_simple_repo_job(state, repo, spec, kind, args, opts)
@@ -678,7 +818,7 @@ function M.edit_commit_message(state, node)
 		if value == nil then
 			return
 		end
-		state.lazyvcs_commit_drafts[repo.root] = util.trim(value)
+		set_commit_draft(state, repo.root, util.trim(value))
 		navigate(state)
 	end)
 end
@@ -692,19 +832,26 @@ function M.generate_commit_message(state, node)
 	if busy then
 		return notify_repo_busy(repo, job)
 	end
-	local ok, err = ai.generate(repo, function(message, generate_err)
+	local ticket = begin_commit_generation(state, repo.root)
+	local ok, task, err = pcall(ai.generate, repo, function(message, generate_err)
+		if not finish_commit_generation(ticket, message) then
+			return
+		end
 		if generate_err then
-			util.notify(generate_err, vim.log.levels.WARN)
-			return
+			util.notify((tostring(generate_err):gsub("[\r\n]+", " ")), vim.log.levels.WARN)
+		elseif message and util.trim(message) ~= "" then
+			navigate(state)
 		end
-		if not message or util.trim(message) == "" then
-			return
+	end, { owner = state })
+	if not ok or not task then
+		if finish_commit_generation(ticket) then
+			util.notify((tostring(ok and err or task):gsub("[\r\n]+", " ")), vim.log.levels.WARN)
 		end
-		state.lazyvcs_commit_drafts[repo.root] = message
-		navigate(state)
-	end)
-	if not ok then
-		util.notify(err, vim.log.levels.WARN)
+		return
+	end
+	ticket.task = task
+	if not ticket.active then
+		cancel_ticket(ticket)
 	end
 end
 
@@ -996,17 +1143,12 @@ function M.commit_repo(state, node)
 								if add_err then
 									return reject(add_err, add_raw)
 								end
-								start_command(
-									repo,
-									"git_commit",
-									{ "git", "commit", "-m", message },
-									function(result, commit_err, commit_raw)
-										if commit_err then
-											return reject(commit_err, commit_raw)
-										end
-										resolve(result, commit_raw)
+								start_commit_command(repo, message, function(result, commit_err, commit_raw)
+									if commit_err then
+										return reject(commit_err, commit_raw)
 									end
-								)
+									resolve(result, commit_raw)
+								end)
 							end)
 						end,
 					})
@@ -1020,7 +1162,7 @@ function M.commit_repo(state, node)
 				remote_refresh = true,
 				clear_draft = true,
 				start = function(resolve, reject)
-					start_command(repo, "git_commit", { "git", "commit", "-m", message }, function(result, err, raw)
+					start_commit_command(repo, message, function(result, err, raw)
 						if err then
 							return reject(err, raw)
 						end
@@ -1042,17 +1184,12 @@ function M.commit_repo(state, node)
 			remote_refresh = true,
 			clear_draft = true,
 			start = function(resolve, reject)
-				start_command(
-					repo,
-					"svn_commit",
-					{ "svn", "commit", "-m", message, util.svn_target(repo.root) },
-					function(result, err, raw)
-						if err then
-							return reject(err, raw)
-						end
-						resolve(result, raw)
+				start_commit_command(repo, message, function(result, err, raw)
+					if err then
+						return reject(err, raw)
 					end
-				)
+					resolve(result, raw)
+				end)
 			end,
 		})
 	end)
@@ -1167,6 +1304,12 @@ end
 function M.cancel(path, opts)
 	opts = opts or {}
 	local root = normalize_cancel_root(path)
+	local ai_count = 0
+	for state in pairs(draft_states) do
+		if opts.all_owners or opts.owner == nil or opts.owner == state then
+			ai_count = ai_count + M.cancel_commit_generations(state, root)
+		end
+	end
 	local count = jobs.cancel(function(job)
 		if job.kind == "buffer" then
 			return false
@@ -1196,7 +1339,7 @@ function M.cancel(path, opts)
 			end
 		end
 	end
-	return count
+	return count + ai_count
 end
 
 function M.cancel_repo(state, node)
@@ -1427,7 +1570,9 @@ function M.switch_repo(state, node)
 		return notify_repo_busy(repo, job)
 	end
 
+	local marker = {}
 	set_repo_job(state, repo.root, {
+		token = marker,
 		status = "running",
 		action = "switch_targets",
 		label = "Loading targets...",
@@ -1442,13 +1587,23 @@ function M.switch_repo(state, node)
 	local switch_generation = (state.lazyvcs_switch_generations[switch_scope] or 0) + 1
 	state.lazyvcs_switch_generations[switch_scope] = switch_generation
 	return repo_switch.open_async(repo, {
+		cancel_id = function(id)
+			jobs.cancel(function(candidate)
+				return candidate.id == id
+			end, "switch targets cancelled")
+		end,
 		-- Check picker liveness separately; cancelled SVN callbacks can continue the
 		-- enumeration chain.
 		is_stale = function()
 			return state.lazyvcs_tearing_down == true or not window_exists(state)
 		end,
+		on_complete = function()
+			local current = session_state.get_repo_job(repo.root)
+			if current and current.token == marker then
+				session_state.clear_repo_job(repo.root)
+			end
+		end,
 		on_ready = function()
-			session_state.clear_repo_job(repo.root)
 			navigate_if_visible(state)
 		end,
 		before_mutation = function()
