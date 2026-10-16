@@ -200,6 +200,46 @@ end
 
 local delegate_to_gitsigns
 local threaded_diff
+
+local function delegate_after_command(bufnr, state)
+	if
+		buffers[bufnr] == state
+		and state.delegate_after_command
+		and (state.native_holds or 0) == 0
+		and (state.notifying_waiters or 0) == 0
+	then
+		delegate_to_gitsigns(bufnr, state)
+	end
+end
+
+local function notify_waiters(bufnr, state, keys, loaded, err)
+	local waiters = {}
+	for _, key in ipairs(keys) do
+		vim.list_extend(waiters, state[key] or {})
+		state[key] = nil
+	end
+	state.notifying_waiters = (state.notifying_waiters or 0) + 1
+	for _, waiter in ipairs(waiters) do
+		util.safe_callback(waiter)(loaded, err)
+	end
+	state.notifying_waiters = state.notifying_waiters - 1
+	delegate_after_command(bufnr, state)
+end
+
+local function hold_native(bufnr, state)
+	state.native_holds = (state.native_holds or 0) + 1
+	state.native, state.delegated = true, nil
+	local released = false
+	return function()
+		if released then
+			return
+		end
+		released = true
+		state.native_holds = state.native_holds - 1
+		delegate_after_command(bufnr, state)
+	end
+end
+
 local function render(bufnr, on_ready)
 	local state = buffers[bufnr]
 	if not state or not vim.api.nvim_buf_is_loaded(bufnr) then
@@ -209,14 +249,7 @@ local function render(bufnr, on_ready)
 		return false
 	end
 	local function complete(loaded, err)
-		local waiters = state.compute_waiters or {}
-		state.compute_waiters = nil
-		for _, waiter in ipairs(waiters) do
-			util.safe_callback(waiter)(loaded, err)
-		end
-		if state.delegate_after_command then
-			delegate_to_gitsigns(bufnr, state)
-		end
+		notify_waiters(bufnr, state, { "compute_waiters" }, loaded, err)
 	end
 	if on_ready then
 		state.compute_waiters = state.compute_waiters or {}
@@ -370,15 +403,13 @@ delegate_to_gitsigns = function(bufnr, state, on_ready)
 	if not defers_to_gitsigns(state.backend or (backend and backend.name), bufnr) then
 		return false
 	end
-	if
-		state.native
-		and (#(state.load_waiters or {}) > 0 or #(state.compute_waiters or {}) > 0 or #(state.base_waiters or {}) > 0)
-	then
+	if (state.native_holds or 0) > 0 or (state.notifying_waiters or 0) > 0 then
 		-- Serve commands already using the native base before handing signs over.
 		state.delegate_after_command = true
 		if on_ready then
-			state.compute_waiters = state.compute_waiters or {}
-			state.compute_waiters[#state.compute_waiters + 1] = on_ready
+			local key = state.loading and "load_waiters" or "compute_waiters"
+			state[key] = state[key] or {}
+			state[key][#state[key] + 1] = on_ready
 		end
 		return true
 	end
@@ -473,6 +504,8 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 	if not native and delegate_to_gitsigns(bufnr, state, on_ready) then
 		return
 	end
+	-- Autocmd reloads share the command's native ownership, including async callbacks.
+	native = native or (state.native_holds or 0) > 0 or nil
 	local profile, profile_err = compare_text.profile(bufnr)
 	if not profile then
 		clear(bufnr)
@@ -490,14 +523,8 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 	end
 	state.native, state.delegated = native, nil
 	on_ready = function(loaded, err)
-		local waiters = state.load_waiters or {}
-		state.load_waiters = nil
-		for _, waiter in ipairs(waiters) do
-			util.safe_callback(waiter)(loaded, err)
-		end
-		if state.delegate_after_command then
-			delegate_to_gitsigns(bufnr, state)
-		end
+		local keys = loaded and { "load_waiters" } or { "load_waiters", "compute_waiters" }
+		notify_waiters(bufnr, state, keys, loaded, err)
 	end
 	if not reload_base and state.loaded and state.base_text and state.base_text.profile_key == profile.key then
 		render(bufnr, state.load_waiters and on_ready or nil)
@@ -628,46 +655,44 @@ local function schedule(bufnr)
 	)
 end
 
-local function with_current_state(context, on_ready)
+local function with_current_state(context, on_ready, asynchronous)
 	local bufnr = context.bufnr
-	local state = buffers[bufnr]
-	local profile = compare_text.profile(bufnr)
-	if
-		state
-		and state.loaded
-		and state.path == supported_buffer(bufnr)
-		and profile
-		and state.base_text
-		and state.base_text.profile_key == profile.key
-	then
-		state.native, state.delegated = true, nil
-		local result = false
-		local completed = render(bufnr, function(loaded, err)
-			if
-				loaded
-				and vim.api.nvim_get_current_win() == context.winid
-				and util.buffer_context_is_unchanged(context)
-			then
-				result = on_ready(loaded)
-			elseif err then
-				util.notify(err, vim.log.levels.WARN)
+	local path = supported_buffer(bufnr)
+	local state = path and ensure_state(bufnr, path)
+	if not state then
+		M.refresh(bufnr, true, function(_, err)
+			util.notify(err or "No VCS signs state for the current buffer", vim.log.levels.WARN)
+		end, true)
+		return true
+	end
+	local release = hold_native(bufnr, state)
+	local result = false
+	local function ready(loaded, err)
+		if loaded and vim.api.nvim_get_current_win() == context.winid and util.buffer_context_is_unchanged(context) then
+			local ok, value = pcall(on_ready, loaded, release)
+			if not asynchronous or not ok then
+				release()
 			end
-		end)
+			if not ok then
+				error(value)
+			end
+			result = value
+		else
+			release()
+			if not loaded or err then
+				util.notify(err or "No VCS signs state for the current buffer", vim.log.levels.WARN)
+			end
+		end
+	end
+	local profile = compare_text.profile(bufnr)
+	if state.loaded and profile and state.base_text and state.base_text.profile_key == profile.key then
+		local completed = render(bufnr, ready)
 		if completed and result ~= nil then
 			return result
 		end
 		return true
 	end
-	M.refresh(bufnr, true, function(loaded, err)
-		if not loaded then
-			util.notify(err or "No VCS signs state for the current buffer", vim.log.levels.WARN)
-			return
-		end
-		if vim.api.nvim_get_current_win() ~= context.winid or not util.buffer_context_is_unchanged(context) then
-			return
-		end
-		on_ready(loaded)
-	end, true)
+	M.refresh(bufnr, true, ready, true)
 	return true
 end
 
@@ -724,14 +749,16 @@ local function revert_hunk(context)
 		end)
 	end
 	local bufnr = context.bufnr
-	return with_current_state(context, function(state)
+	return with_current_state(context, function(state, release)
 		if vim.api.nvim_get_current_win() ~= context.winid or not util.buffer_context_is_unchanged(context) then
+			release()
 			return false
 		end
 		local line = context.cursor[1]
 		local hunk = diff.find_current_hunk(state.hunks or {}, line)
 		if not hunk then
 			util.notify("No modified hunk at the cursor", vim.log.levels.WARN)
+			release()
 			return
 		end
 		local confirmed_generation = state.base_generation
@@ -767,17 +794,21 @@ local function revert_hunk(context)
 			before_confirm = context_is_unchanged,
 		}, function()
 			if not context_is_unchanged() then
+				release()
 				return false
 			end
 			local function reset()
 				if not context_is_unchanged() then
+					release()
 					return false
 				end
-				return with_unchanged_buffer(context, function()
+				local result = with_unchanged_buffer(context, function()
 					diff.reset_text_hunk(bufnr, confirmed_base, state.current_text, confirmed_hunk)
 					schedule(bufnr)
 					return true
 				end)
+				release()
+				return result
 			end
 			if not state.base_identity then
 				return reset()
@@ -791,19 +822,22 @@ local function revert_hunk(context)
 							"Hunk base changed while confirmation was open; nothing was reverted",
 							vim.log.levels.WARN
 						)
+						release()
 						return
 					end
 					if not valid then
 						clear(bufnr)
+						release()
 						return util.notify(err or "Hunk base is no longer editable", vim.log.levels.WARN)
 					end
 					reset()
 				end)
 			)
 		end, function()
+			release()
 			return false
 		end)
-	end)
+	end, true)
 end
 
 local function jump_to_hunk(context, direction)
