@@ -400,8 +400,9 @@ return function(ctx)
 					wait(function()
 						local p = processes[index]
 						if p and vim.uv.fs_stat(p.path) then
+							-- The pid file can exist before the provider has written its pid.
 							p.pid = require("process_helpers").pid(p.path)
-							return true
+							return p.pid ~= nil
 						end
 					end, "offline provider did not start", 15000)
 					return processes[index]
