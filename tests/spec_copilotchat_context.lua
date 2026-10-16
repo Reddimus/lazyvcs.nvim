@@ -16,7 +16,11 @@ return function(ctx)
 		end
 		package.loaded["plenary.curl"] = { get = function() end, post = function() end }
 		package.loaded["CopilotChat.utils.curl"] = { get = function() end, post = function() end }
-		package.loaded["plenary.job"] = { new = function() end, shutdown = function() end }
+		package.loaded["plenary.job"] = {
+			new = function() end,
+			shutdown = function() end,
+			add_on_exit_callback = function() end,
+		}
 		local chat = {
 			config = {
 				model = "configured-model",

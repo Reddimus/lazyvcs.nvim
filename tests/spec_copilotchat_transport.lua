@@ -15,6 +15,13 @@ return function(ctx)
 					"plenary.job",
 				}
 				local defer = vim.defer_fn
+				local new_timer, timers = vim.uv.new_timer, {}
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.uv.new_timer = function()
+					local timer = assert(new_timer())
+					timers[#timers + 1] = timer
+					return timer
+				end
 				local previous = {}
 				for _, name in ipairs(names) do
 					previous[name] = package.loaded[name]
@@ -63,18 +70,18 @@ return function(ctx)
 					local second_job, second_pid = ready(2)
 					first:cancel()
 					assert(
-						vim.wait(1000, function()
-							return not process.alive(first_pid)
+						vim.wait(5000, function()
+							return process.reaped(first_pid)
 						end, 10),
-						"cancelled CopilotChat transport still alive"
+						"cancelled CopilotChat transport was not reaped (expected ESRCH)"
 					)
 					assert(process.alive(second_pid), "cancellation stopped another request")
 					assert(callbacks == 0 and chunks == 0, "cancelled request delivered output")
 					second:cancel()
 					wait(function()
-						return not process.alive(second_pid)
-					end, "second transport survived cancellation", 3000)
-					assert(second_job.job.is_shutdown, "Job shutdown was not called")
+						return process.reaped(second_pid)
+					end, "second transport was not reaped", 5000)
+					assert(second_job.job.is_shutdown, "Job exit callback did not shut down the job")
 					local timeout_count, timeout_error = 0, nil
 					local timeout_callback
 					-- Hold only this deadline until the child is ready; startup can be slow.
@@ -107,8 +114,8 @@ return function(ctx)
 					end, "timeout callback missing")
 					assert(timeout_error == "CopilotChat timed out")
 					wait(function()
-						return not process.alive(timeout_pid)
-					end, "timed-out transport still alive", 3000)
+						return process.reaped(timeout_pid)
+					end, "timed-out transport was not reaped (expected ESRCH)", 5000)
 					vim.wait(30)
 					assert(timeout_count == 1 and callbacks == 0 and chunks == 0, "late timeout output delivered")
 					local wrapper, chat_wrapper = curl.post, chat_curl.post
@@ -133,8 +140,8 @@ return function(ctx)
 					local _, final_pid = ready(6)
 					chained:cancel()
 					wait(function()
-						return not process.alive(final_pid)
-					end, "post-auth transport survived cancellation", 3000)
+						return process.reaped(final_pid)
+					end, "post-auth transport was not reaped", 5000)
 					assert(process.alive(outside_pid) and ordinary == outside.job, "ordinary curl call changed")
 					assert(curl.post == wrapper and chat_curl.post == chat_wrapper, "curl wrapper installed twice")
 					h.write_file(outside.path .. ".finish", "done")
@@ -218,8 +225,8 @@ return function(ctx)
 					end, "late leaf error callback missing")
 					assert(jobs[late_index].job.is_shutdown and late_error == "cancelled")
 					wait(function()
-						return not process.alive(jobs[late_index].job.pid)
-					end, "late leaf child survived cancellation")
+						return process.reaped(jobs[late_index].job.pid)
+					end, "late leaf child was not reaped")
 					assert(callbacks == 0, "late request delivered a result")
 					local closed = assert(transport.new_scope())
 					closed:close()
@@ -231,9 +238,32 @@ return function(ctx)
 						end)
 					end)
 					wait(function()
-						return closed_error ~= nil and not process.alive(jobs[closed_index].job.pid)
-					end, "closed scope did not stop late child through its error callback")
+						return closed_error ~= nil and process.reaped(jobs[closed_index].job.pid)
+					end, "closed scope did not reap late child through its error callback")
 					assert(closed_error == "cancelled")
+					-- A child that ignores TERM must be killed after the bounded grace,
+					-- with its spawn callback still responsible for reaping and shutdown.
+					local stubborn_scope = assert(transport.new_scope())
+					local stubborn_index, stubborn_error = #jobs + 1, nil
+					async.run(function()
+						stubborn_scope:run(function()
+							local _, failure = chat_curl.post(
+								"offline://fixture",
+								vim.tbl_extend("force", options, { ignore_term = true })
+							)
+							stubborn_error = failure
+						end)
+					end)
+					local stubborn, stubborn_pid = ready(stubborn_index)
+					stubborn_scope:cancel()
+					stubborn_scope:cancel()
+					wait(function()
+						return process.reaped(stubborn_pid) and stubborn_error ~= nil
+					end, "TERM-resistant child was not reaped after the grace period", 5000)
+					assert(stubborn_error == "cancelled" and stubborn.job.is_shutdown)
+					if vim.fn.has("win32") == 0 then
+						assert(stubborn.job.signal == 9, "TERM-resistant child did not receive SIGKILL")
+					end
 					local called = false
 					---@diagnostic disable-next-line: duplicate-set-field
 					client.ask = function()
@@ -248,8 +278,12 @@ return function(ctx)
 						return requirement ~= nil
 					end, "missing transport error not reported")
 					assert(not called and requirement:find("requires"), "missing transport started client")
+					for _, timer in ipairs(timers) do
+						assert(timer:is_closing(), "request or termination timer leaked")
+					end
 				end, debug.traceback)
 				vim.defer_fn = defer
+				vim.uv.new_timer = new_timer
 				if timeout_timer and not timeout_timer:is_closing() then
 					timeout_timer:close()
 				end
@@ -257,13 +291,24 @@ return function(ctx)
 					handle:cancel()
 				end
 				for _, item in ipairs(jobs) do
-					local pid = process.pid(item.path)
-					if process.alive(pid) then
+					local pid = item.job.pid
+					if pid and not process.reaped(pid) then
 						pcall(vim.uv.kill, pid, 9)
 					end
-					pcall(item.job.shutdown, item.job)
 				end
-				vim.wait(50)
+				vim.wait(1000, function()
+					for _, item in ipairs(jobs) do
+						if not process.reaped(item.job.pid) then
+							return false
+						end
+					end
+					return true
+				end, 10)
+				for _, timer in ipairs(timers) do
+					if not timer:is_closing() then
+						timer:close()
+					end
+				end
 				for _, name in ipairs(names) do
 					package.loaded[name] = previous[name]
 				end

@@ -1,17 +1,41 @@
-local util = require("lazyvcs.util")
 local M = {}
 local scopes = setmetatable({}, { __mode = "k" })
 local installed = setmetatable({}, { __mode = "k" })
 local pending_scope
 
 local function terminate(job)
-	if not job.is_shutdown then
-		-- Job:shutdown closes handles but does not signal the process.
-		if job.handle and not job.handle:is_closing() then
-			pcall(job.handle.kill, job.handle, 15)
-		end
-		util.safe_callback(job.shutdown)(job)
+	local handle = job.handle
+	if job.is_shutdown or not handle or handle:is_closing() then
+		return
 	end
+	local on_exit = job._user_on_exit
+	if on_exit then
+		job._user_on_exit = function(self, code, signal)
+			-- A signal-only exit has code 0 in libuv. Plenary curl checks only
+			-- the code, so route it to on_error instead of parsing missing output.
+			if code == 0 and signal and signal ~= 0 then
+				code = 128 + signal
+			end
+			return on_exit(self, code, signal)
+		end
+	end
+	local timer = assert(vim.uv.new_timer())
+	local function close_timer()
+		if not timer:is_closing() then
+			timer:stop()
+			timer:close()
+		end
+	end
+	job:add_on_exit_callback(close_timer)
+	-- Keep the process handle open so libuv reaps the child before plenary's
+	-- spawn exit callback shuts down the Job. Job:shutdown closes it too early.
+	pcall(handle.kill, handle, 15)
+	timer:start(2000, 0, function()
+		close_timer()
+		if not job.is_shutdown and not handle:is_closing() then
+			pcall(handle.kill, handle, 9)
+		end
+	end)
 end
 
 function M.new_scope()
@@ -27,6 +51,7 @@ function M.new_scope()
 		or type(curl) ~= "table"
 		or type(Job) ~= "table"
 		or type(Job.shutdown) ~= "function"
+		or type(Job.add_on_exit_callback) ~= "function"
 		or type(Job.new) ~= "function"
 		or type(curl.get) ~= "function"
 		or type(curl.post) ~= "function"

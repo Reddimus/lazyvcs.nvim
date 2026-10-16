@@ -40,16 +40,10 @@ function M.transport(dir, child, async)
 			error("fixture request failure")
 		end
 		local path = dir .. "/job-" .. (#jobs + 1)
-		local job = setmetatable({}, { __index = self })
-		local function finish(code)
-			if job.is_shutdown then
-				return
-			end
-			job.is_shutdown = true
-			if not job.handle:is_closing() then
-				job.handle:close()
-			end
+		local job = setmetatable({ exit_callbacks = {} }, { __index = self })
+		function job:_user_on_exit(code, _signal)
 			vim.schedule(function()
+				-- Match plenary curl's code-only success test, including signal exits.
 				if code == 0 then
 					if opts.stream then
 						opts.stream(nil, "Generated subject")
@@ -60,17 +54,44 @@ function M.transport(dir, child, async)
 				end
 			end)
 		end
+		local function finish(code, signal)
+			if job.is_shutdown then
+				return
+			end
+			job.signal = signal
+			job:_user_on_exit(code, signal)
+			for _, callback in ipairs(job.exit_callbacks) do
+				callback(job, code)
+			end
+			if not job.handle:is_closing() then
+				job.handle:close()
+			end
+			job.is_shutdown = true
+		end
 		function job:shutdown()
-			-- Deliberately only close the handle: callers must signal the child first.
+			-- Model plenary: early shutdown closes the handle before libuv can reap.
 			finish(143)
 		end
 		job.handle, job.pid = assert(vim.uv.spawn(vim.v.progpath, {
-			args = { "--headless", "-u", "NONE", "-i", "NONE", "-l", child, path },
+			args = {
+				"--headless",
+				"-u",
+				"NONE",
+				"-i",
+				"NONE",
+				"-l",
+				child,
+				path,
+				opts.ignore_term and "ignore-term" or "",
+			},
 		}, finish))
 		jobs[#jobs + 1] = { job = job, path = path }
 		return job
 	end
 	function Job:shutdown() end
+	function Job:add_on_exit_callback(callback)
+		self.exit_callbacks[#self.exit_callbacks + 1] = callback
+	end
 	for _, name in ipairs({ "get", "post" }) do
 		curl[name] = function(url, opts)
 			return Job:new(url, opts)

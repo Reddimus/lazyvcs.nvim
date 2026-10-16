@@ -16,6 +16,15 @@ function M.alive(pid)
 	return true
 end
 
+-- Unlike alive(), this rejects zombies on every platform.
+function M.reaped(pid)
+	if not pid then
+		return false
+	end
+	local ok, _, code = vim.uv.kill(pid, 0)
+	return not ok and code == "ESRCH"
+end
+
 function M.pid(path)
 	local file = io.open(path, "r")
 	if not file then
