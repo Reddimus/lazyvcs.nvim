@@ -139,7 +139,15 @@ return function(ctx)
 					local log = blame._test_line_log_views()[buf]
 					return log and log.winid
 				end, "CRLF line history")
-				api.nvim_win_close(blame._test_line_log_views()[buf].winid, true)
+				local log_win = blame._test_line_log_views()[buf].winid
+				if not svn then
+					local head = vim.trim(h.exec({ "git", "rev-parse", "HEAD" }, f.root))
+					assert(
+						vim.inspect(api.nvim_win_get_config(log_win).title):find(head, 1, true),
+						"CRLF line history chose the wrong revision"
+					)
+				end
+				api.nvim_win_close(log_win, true)
 				local report = assert(require("lazyvcs.blame_selection").open(1, 2))
 				ctx.wait_for(function()
 					return report.entries
@@ -152,6 +160,55 @@ return function(ctx)
 			end,
 		}
 	end
+	cases[#cases + 1] = {
+		"test_git_blame_fileformat_change_drops_crlf_attribution",
+		function()
+			local _, buf = fixture(false, "a\r\nb\r\n")
+			local blame, context = require("lazyvcs.blame"), require("lazyvcs.blame_context")
+			local captured = assert(context.capture(buf, api.nvim_get_current_win()))
+			vim.bo[buf].fileformat = "unix"
+			assert(not context.valid(captured), "a fileformat change kept the blame context valid")
+			vim.bo[buf].fileformat = "dos"
+			local function committed(entries)
+				return entries and #entries == 2 and not entries[1].uncommitted and not entries[2].uncommitted
+			end
+			assert(blame.blame_split())
+			ctx.wait_for(function()
+				local view = blame._test_blame_views()[buf]
+				return view and view.bufnr and not view.loading
+			end, "CRLF blame split")
+			local split = blame._test_blame_views()[buf].bufnr
+			local before = table.concat(api.nvim_buf_get_lines(split, 0, -1, false), "\n")
+			vim.bo[buf].fileformat = "unix"
+			ctx.wait_for(function()
+				local view = blame._test_blame_views()[buf]
+				return view and table.concat(api.nvim_buf_get_lines(view.bufnr, 0, -1, false), "\n") ~= before
+			end, "blame split did not reload after a fileformat change")
+			blame.blame_split()
+			vim.bo[buf].fileformat = "dos"
+			assert(blame.blame())
+			ctx.wait_for(function()
+				local inline = blame._test_inline_state().views[buf]
+				return inline and committed(inline.entries)
+			end, "CRLF inline blame")
+			vim.bo[buf].fileformat = "unix"
+			ctx.wait_for(function()
+				local inline = blame._test_inline_state().views[buf]
+				return inline and inline.entries and inline.entries[1].uncommitted
+			end, "inline blame kept CRLF attribution after a fileformat change")
+			blame.blame_clear()
+			vim.bo[buf].fileformat = "dos"
+			local report = assert(require("lazyvcs.blame_selection").open(1, 2))
+			vim.bo[buf].fileformat = "unix"
+			ctx.wait_for(function()
+				return report.handle == nil
+					and table
+						.concat(api.nvim_buf_get_lines(report.buf, 0, -1, false), "\n")
+						:find("Source changed", 1, true)
+			end, "selection blame used CRLF attribution after a fileformat change")
+			api.nvim_win_close(report.win, true)
+		end,
+	}
 	cases[#cases + 1] = {
 		"test_capture_write_syncs_endofline_without_modified",
 		function()

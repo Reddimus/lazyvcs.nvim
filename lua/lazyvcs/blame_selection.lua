@@ -191,6 +191,7 @@ function M.open(first, last)
 				if
 					not vim.api.nvim_buf_is_valid(source)
 					or vim.api.nvim_buf_get_changedtick(source) ~= request.tick
+					or vim.bo[source].fileformat ~= target.fileformat
 					or (target.valid and not target.valid())
 					or (not target.snapshot and util.buf_path(source) ~= path)
 				then

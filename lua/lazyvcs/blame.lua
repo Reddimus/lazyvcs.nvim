@@ -558,6 +558,15 @@ local function observe_source(view, bufnr, close, changed)
 		buffer = bufnr,
 		callback = protect(changed, close),
 	})
+	vim.api.nvim_create_autocmd("OptionSet", {
+		group = view.augroup,
+		pattern = "fileformat",
+		callback = protect(function()
+			if vim.api.nvim_get_current_buf() == bufnr then
+				changed()
+			end
+		end, close),
+	})
 end
 
 function M.blame_split()
@@ -791,7 +800,7 @@ function M.blame_split()
 						debounce()
 					end
 				end),
-				{ contents = contents, fileformat = vim.bo[captured.bufnr].fileformat, root = root }
+				{ contents = contents, fileformat = captured.fileformat, root = root }
 			)
 		end
 		local backend, root = backends.resolve_cached(captured.name)
@@ -952,7 +961,7 @@ function M.line_log()
 					{ root = root }
 				)
 			end),
-			{ contents = contents, fileformat = vim.bo[captured.bufnr].fileformat, root = root }
+			{ contents = contents, fileformat = captured.fileformat, root = root }
 		)
 	end)
 	safe(function()
@@ -1003,6 +1012,15 @@ function M.setup()
 		callback = protect(function(args)
 			if inline_enabled then
 				invalidate_inline(args.buf)
+			end
+		end),
+	})
+	vim.api.nvim_create_autocmd("OptionSet", {
+		group = augroup,
+		pattern = "fileformat",
+		callback = protect(function()
+			if inline_enabled and inline_views[vim.api.nvim_get_current_buf()] then
+				invalidate_inline(vim.api.nvim_get_current_buf())
 			end
 		end),
 	})
