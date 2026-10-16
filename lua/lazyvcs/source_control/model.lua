@@ -631,6 +631,9 @@ local function git_status_entries(raw)
 			entries[index] = "?? " .. entry:sub(3)
 		elseif entry:sub(1, 2) == "! " then
 			entries[index] = "!! " .. entry:sub(3)
+		elseif entry:sub(1, 2) == "# " then
+			table.remove(entries, index)
+			index = index - 1
 		elseif entry:sub(1, 2):find("[RC]") then
 			index = index + 1
 		end
@@ -654,7 +657,7 @@ local function parse_git_entries(root, raw, sort_key)
 
 	local items, gitlinks = git_status_entries(raw)
 	local records, err = require("lazyvcs.backends.git_status").parse(
-		table.concat(items, "\0") .. ((raw or ""):sub(-1) == "\0" and "\0" or "")
+		table.concat(items, "\0") .. (#items > 0 and (raw or ""):sub(-1) == "\0" and "\0" or "")
 	)
 	if not records then
 		return nil, nil, err
