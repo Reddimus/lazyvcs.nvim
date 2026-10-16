@@ -764,6 +764,16 @@ local function revert_hunk(context)
 		local confirmed_generation = state.base_generation
 		local confirmed_base = vim.deepcopy(state.base_text)
 		local confirmed_hunk = vim.deepcopy(hunk)
+		local function release_on_error(callback)
+			return function(...)
+				local ok, result = pcall(callback, ...)
+				if not ok then
+					release()
+					error(result, 0)
+				end
+				return result
+			end
+		end
 		local function context_is_unchanged()
 			if not util.buffer_context_is_unchanged(context) then
 				util.notify(
@@ -789,10 +799,7 @@ local function revert_hunk(context)
 			end
 			return true
 		end
-		return confirm.mutation({
-			prompt = "Revert hunk under cursor?",
-			before_confirm = context_is_unchanged,
-		}, function()
+		local function on_confirm()
 			if not context_is_unchanged() then
 				release()
 				return false
@@ -816,7 +823,7 @@ local function revert_hunk(context)
 			return backends.validate_editable_base_async(
 				context.path,
 				state.base_identity,
-				util.safe_callback(function(valid, err)
+				util.safe_callback(release_on_error(function(valid, err)
 					if buffers[bufnr] ~= state or state.base_generation ~= confirmed_generation then
 						util.notify(
 							"Hunk base changed while confirmation was open; nothing was reverted",
@@ -831,12 +838,26 @@ local function revert_hunk(context)
 						return util.notify(err or "Hunk base is no longer editable", vim.log.levels.WARN)
 					end
 					reset()
-				end)
+				end))
 			)
-		end, function()
-			release()
-			return false
-		end)
+		end
+		return confirm.mutation(
+			{
+				prompt = "Revert hunk under cursor?",
+				before_confirm = function()
+					local valid = context_is_unchanged()
+					if not valid then
+						release()
+					end
+					return valid
+				end,
+			},
+			release_on_error(on_confirm),
+			function()
+				release()
+				return false
+			end
+		)
 	end, true)
 end
 

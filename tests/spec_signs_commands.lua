@@ -248,6 +248,76 @@ return function(ctx)
 			end),
 		}
 	end
+	for _, failure in ipairs({ "validation_throw", "callback_throw", "before_false" }) do
+		cases[#cases + 1] = {
+			"test_signs_confirmed_revert_" .. failure .. "_releases_native_hold",
+			s.guard(function()
+				local _, buf = s.fixture(false, {
+					use_gitsigns = true,
+					source_control = { confirm_mutations = true },
+				})
+				local state = assert(s.refresh(buf, true))
+				local attached, held = false, nil
+				package.loaded.gitsigns = {
+					get_hunks = function()
+						return attached and {} or nil
+					end,
+				}
+				local backends, util = require("lazyvcs.backends"), require("lazyvcs.util")
+				local validate, unchanged = backends.validate_editable_base_async, util.buffer_context_is_unchanged
+				local ok, err = xpcall(function()
+					s.api.nvim_win_set_cursor(0, { 2, 0 })
+					vim.cmd("LazyVCS hunk revert")
+					local accept = vim.fn.maparg("1", "n", false, true).callback
+					assert(type(accept) == "function" and state.native_holds == 1)
+					attached = true
+					s.api.nvim_exec_autocmds("User", { pattern = "GitSignsUpdate", data = { buffer = buf } })
+					assert(not state.delegated, "revert delegated before confirmation")
+					---@diagnostic disable-next-line: duplicate-set-field
+					backends.validate_editable_base_async = function(_, _, cb)
+						if failure == "validation_throw" then
+							error("injected confirmed validation error")
+						end
+						held = cb
+					end
+					if failure == "before_false" then
+						s.api.nvim_buf_set_lines(buf, 1, 2, false, { "edited during confirmation" })
+					end
+					local accepted, why = pcall(accept)
+					if failure == "validation_throw" then
+						assert(
+							not accepted and tostring(why):find("injected", 1, true),
+							"validation error was swallowed"
+						)
+					else
+						assert(accepted, why)
+					end
+					if failure == "callback_throw" then
+						assert(held, "confirmed validation did not start")
+						local notified = false
+						vim.notify = function(message)
+							notified = message:find("injected confirmed callback error", 1, true) ~= nil
+						end
+						---@diagnostic disable-next-line: duplicate-set-field
+						util.buffer_context_is_unchanged = function()
+							error("injected confirmed callback error")
+						end
+						held(true)
+						assert(notified, "async validation error was not reported")
+					end
+					assert(state.native_holds == 0, "confirmed revert failure retained native hold")
+					assert(state.delegated, "confirmed revert failure prevented gitsigns delegation")
+					assert(#s.marks(buf) == 0, "failed revert retained native decorations")
+					assert(
+						s.api.nvim_buf_get_lines(buf, 1, 2, false)[1]
+							== (failure == "before_false" and "edited during confirmation" or "changed")
+					)
+				end, debug.traceback)
+				backends.validate_editable_base_async, util.buffer_context_is_unchanged = validate, unchanged
+				assert(ok, err)
+			end),
+		}
+	end
 	for _, choice in ipairs({ "confirm", "cancel" }) do
 		cases[#cases + 1] = {
 			"test_signs_late_attach_revert_" .. choice .. "_settles_before_delegation",

@@ -7156,6 +7156,7 @@ vim.list_extend(cases, require("spec_signs_performance")({ helpers = helpers, wa
 vim.list_extend(cases, require("spec_signs_attributes")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_signs_rendering")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_signs_base_changes")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_signs_commits")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_signs_commands")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_signs_lifecycle")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_window_options")({ helpers = helpers, wait_for = wait_for }))
