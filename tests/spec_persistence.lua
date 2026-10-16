@@ -1,5 +1,7 @@
 return function(ctx)
 	local h, api = ctx.helpers, vim.api
+	-- The suite can run from any directory, so child editors load the plugin from this file's repository.
+	local repo_root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
 	return {
 		{
 			"test_source_control_persistence_isolates_project_writers",
@@ -12,7 +14,7 @@ return function(ctx)
 					h.write_file(
 						script,
 						"vim.opt.rtp:prepend("
-							.. string.format("%q", vim.fn.getcwd())
+							.. string.format("%q", repo_root)
 							.. ")\n"
 							.. code
 							.. '\nvim.cmd("qa!")\n'
@@ -52,7 +54,7 @@ assert(vim.wait(15000, function() return vim.uv.fs_stat(%q) ~= nil end, 10))
 require("lazyvcs.source_control.persist").save(%q, { changes_sort = "path" })
 vim.cmd("qa!")
 ]],
-								vim.fn.getcwd(),
+								repo_root,
 								ready,
 								barrier .. "/go",
 								root
