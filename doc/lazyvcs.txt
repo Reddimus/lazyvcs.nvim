@@ -218,7 +218,8 @@ Focus changes to the base pane, other splits, floats, or tabs preserve the
 session. Programmatic buffer changes in the editable window also transfer it,
 including changes made from another window or tab, without moving focus.
 Transfers reuse the window pair for supported Git/SVN buffers. Unsupported
-buffers close the session cleanly.
+buffers close the session cleanly. Hunk revert is unavailable until a pending
+transfer finishes. Close and toggle also work while the new base is loading.
 Splits of the editable window share its diff while the session is active and
 leave diff mode when it closes or moves to another buffer, including a move
 that is abandoned before it completes.

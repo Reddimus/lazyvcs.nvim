@@ -62,7 +62,7 @@ function M.get(bufnr)
 end
 
 function M.current()
-	return M.get(vim.api.nvim_get_current_buf())
+	return M.get(vim.api.nvim_get_current_buf()) or M.for_window(vim.api.nvim_get_current_win())
 end
 
 function M.list()

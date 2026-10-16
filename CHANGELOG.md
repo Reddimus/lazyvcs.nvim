@@ -25,6 +25,14 @@ and this project adheres to
   for ratios and column counts for absolute values.
 - Restore Markdown editor guards after transfers and release closed sessions
   without waiting for another buffer edit.
+- Avoid retaining previous base contents in undo history or leaving extra
+  scratch buffers behind during live-diff transfers.
+- Reject hunk reverts during live-diff transfers to protect unsaved edits in the
+  previous file.
+- Restore a file's own window options and winbar when you return to it after a
+  live-diff transfer, or when a transfer ends on an unsupported file.
+- Restore Aerial symbol updates for outgoing files still visible in other
+  splits.
 
 ## [0.11.0] - 2026-10-09
 

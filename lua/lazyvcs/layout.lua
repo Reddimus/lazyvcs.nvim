@@ -4,6 +4,7 @@ local editor = require("lazyvcs.integrations.editor")
 local highlighting = require("lazyvcs.highlighting")
 
 local M = {}
+local departed_buffers = {}
 
 local function sanitize_root(text)
 	return (vim.fs.normalize(text or ""):gsub("[%c]", " "))
@@ -69,11 +70,8 @@ local function set_window_labels(session)
 			or util.get_win_option(session.editable_win, "winbar")
 		local right_label = session.right_label or session.base_label
 		local right_role = session.readonly_comparison and "right" or "editable"
-		util.set_win_option(
-			session.editable_win,
-			"winbar",
-			string.format(" lazyvcs %s %s [%s]", session.backend, right_label:lower(), right_role)
-		)
+		session.editable_label = string.format(" lazyvcs %s %s [%s]", session.backend, right_label:lower(), right_role)
+		util.set_win_option(session.editable_win, "winbar", session.editable_label)
 	end
 
 	if util.win_is_valid(session.base_win) then
@@ -98,6 +96,7 @@ local function configure_base_buffer(session)
 	vim.bo[buf].bufhidden = "wipe"
 	vim.bo[buf].buflisted = false
 	vim.bo[buf].swapfile = false
+	vim.bo[buf].undolevels = -1
 	vim.bo[buf].modifiable = true
 	vim.bo[buf].readonly = false
 	vim.bo[buf].filetype = vim.bo[session.editable_bufnr].filetype
@@ -153,6 +152,59 @@ local function restore_window_options(winid, values)
 	for _, name in ipairs(tracked_window_options) do
 		restore_window_option(winid, name, values[name])
 	end
+end
+
+-- close_buffer saves wininfo before BufWinLeave. Clean inherited records on entry,
+-- before a transfer can capture them as the next session's original options.
+function M.remember_departed(session)
+	departed_buffers[session.editable_bufnr] = {
+		options = session.editable_window_options,
+		applied = session.editable_applied_options,
+		winbar = session.editable_prev_winbar,
+		label = session.editable_label,
+	}
+end
+
+function M.forget_departed(bufnr)
+	departed_buffers[bufnr] = nil
+end
+
+local function undo_applied(win, record, bindings_only)
+	if not record or not record.options or not record.applied then
+		return
+	end
+	local current = capture_window_options(win)
+	local values = vim.deepcopy(current)
+	for name, value in pairs(record.options) do
+		if
+			(not bindings_only or name == "diff" or name == "scrollbind" or name == "cursorbind")
+			and current[name] == record.applied[name]
+		then
+			values[name] = value
+		end
+	end
+	if current.diff and not values.diff then
+		util.diff_off(win)
+	end
+	-- diffoff can restore native saved options too. Preserve values the user or
+	-- the incoming buffer changed since we applied the session's options.
+	restore_window_options(win, values)
+	if record.label and util.get_win_option(win, "winbar") == record.label then
+		restore_winbar(win, record.winbar)
+	end
+end
+
+function M.cleanup_buffer(bufnr, win)
+	local owned = require("lazyvcs.state").for_window(win)
+	if
+		owned
+		and not owned.closing
+		and owned.phase == "active"
+		and (owned.editable_bufnr == bufnr or owned.base_bufnr == bufnr)
+	then
+		return
+	end
+	undo_applied(win, departed_buffers[bufnr])
 end
 
 ---Reset diff mode in one owned window without touching unrelated diff groups.
@@ -220,6 +272,7 @@ function M.bind_pair(session, source_win)
 		highlighting.apply(win, session.opts.diff_highlighting)
 		util.set_win_options(win, { scrollbind = true, cursorbind = session.opts.base_window.cursor_sync })
 	end
+	session.editable_applied_options = capture_window_options(session.editable_win)
 	if source_win ~= session.editable_win and source_win ~= session.base_win then
 		source_win = session.editable_win
 	end
@@ -248,6 +301,7 @@ function M.rebind(old, replacement)
 	-- The target is now displayed in EW. Its FileType/window settings belong to
 	-- this session; restoring the previous buffer's snapshot would overwrite them.
 	util.diff_off(replacement.editable_win)
+	M.forget_departed(replacement.editable_bufnr)
 	replacement.editable_window_options = capture_window_options(replacement.editable_win)
 	replacement.editable_prev_winbar = util.get_win_option(replacement.editable_win, "winbar")
 	replacement.editable_had_diff = util.get_win_option(replacement.editable_win, "diff")
@@ -257,7 +311,16 @@ function M.rebind(old, replacement)
 	vim.bo[buf].readonly = false
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, replacement.base_lines)
 	vim.bo[buf].filetype = vim.bo[replacement.editable_bufnr].filetype
-	vim.api.nvim_buf_set_name(buf, resolve_base_buffer_name(replacement))
+	local old_name = vim.api.nvim_buf_get_name(buf)
+	local new_name = resolve_base_buffer_name(replacement)
+	vim.api.nvim_buf_set_name(buf, new_name)
+	-- Renaming a named buffer creates an unlisted alternate with the old name.
+	if old_name ~= "" and old_name ~= new_name then
+		local alternate = vim.fn.bufnr(old_name)
+		if alternate > 0 and alternate ~= buf and #vim.fn.win_findbuf(alternate) == 0 then
+			pcall(vim.api.nvim_buf_delete, alternate, { force = true })
+		end
+	end
 	vim.bo[buf].modifiable = false
 	vim.bo[buf].readonly = true
 	set_window_labels(replacement)
@@ -280,6 +343,7 @@ function M.open(session)
 			session.preexisting_diff_windows[win] = true
 		end
 	end
+	M.forget_departed(session.editable_bufnr)
 	session.editable_had_diff = vim.wo[editable_win].diff
 	session.editable_window_options = capture_window_options(editable_win)
 
@@ -434,15 +498,18 @@ function M.close(session, opts)
 	require("lazyvcs.align").clear(session)
 
 	if util.win_is_valid(session.editable_win) then
-		pcall(vim.api.nvim_win_call, session.editable_win, function()
+		if vim.api.nvim_win_get_buf(session.editable_win) == session.editable_bufnr then
 			if not session.editable_had_diff then
-				vim.cmd("silent diffoff")
+				util.diff_off(session.editable_win)
 			end
-		end)
-		if session.opts.set_winbar then
-			restore_winbar(session.editable_win, session.editable_prev_winbar)
+			if session.opts.set_winbar then
+				restore_winbar(session.editable_win, session.editable_prev_winbar)
+			end
+			restore_window_options(session.editable_win, session.editable_window_options)
+		else
+			M.remember_departed(session)
+			undo_applied(session.editable_win, departed_buffers[session.editable_bufnr], true)
 		end
-		restore_window_options(session.editable_win, session.editable_window_options)
 	end
 
 	if util.win_is_valid(session.base_win) then

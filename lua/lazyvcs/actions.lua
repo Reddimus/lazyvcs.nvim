@@ -203,6 +203,18 @@ local function ensure_global_autocmds()
 	end
 
 	global_augroup = vim.api.nvim_create_augroup("lazyvcs_global", { clear = true })
+	vim.api.nvim_create_autocmd("BufWinEnter", {
+		group = global_augroup,
+		callback = safe_callback(function(args)
+			layout.cleanup_buffer(args.buf, vim.api.nvim_get_current_win())
+		end),
+	})
+	vim.api.nvim_create_autocmd("BufWipeout", {
+		group = global_augroup,
+		callback = safe_callback(function(args)
+			layout.forget_departed(args.buf)
+		end),
+	})
 	vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter", "TabEnter" }, {
 		group = global_augroup,
 		callback = safe_callback(function()
@@ -727,7 +739,7 @@ local function open_target_impl(comparison, failure_context)
 	local editor_win, created_editor_win = target_editor_window()
 	failure_context.editor_win = editor_win
 	failure_context.created_editor_win = created_editor_win
-	local current_session = state.get(vim.api.nvim_win_get_buf(editor_win))
+	local current_session = state.for_window(editor_win) or state.get(vim.api.nvim_win_get_buf(editor_win))
 	local inherited_editor_win = current_session and current_session.owned_editor_win or false
 	if current_session then
 		close_session(current_session, { keep_editor_win = true })
@@ -806,16 +818,17 @@ function M.close(target)
 		pending_opens[bufnr] = nil
 	end
 	local session = state.get(bufnr)
+	if not session and target == nil then
+		session = state.for_window(vim.api.nvim_get_current_win())
+	end
 	if not session then
-		local transfer = state.peek_pending_transfer(vim.api.nvim_get_current_win())
-		if
-			transfer
-			and transfer.editable_win == vim.api.nvim_get_current_win()
-			and vim.api.nvim_win_get_buf(transfer.editable_win) == bufnr
-		then
-			session = state.get(transfer.editable_bufnr)
-			if not session then
-				state.clear_pending_transfer(transfer.editable_win)
+		for _, pending_transfer in pairs(state.pending_transfers) do
+			if
+				util.win_is_valid(pending_transfer.editable_win)
+				and vim.api.nvim_win_get_buf(pending_transfer.editable_win) == bufnr
+			then
+				session = state.for_window(pending_transfer.editable_win)
+				break
 			end
 		end
 	end
@@ -848,6 +861,18 @@ function M.revert_hunk()
 		return false
 	end
 
+	local function can_mutate()
+		return state.get(session.editable_bufnr) == session
+			and not session.closing
+			and session.phase == "active"
+			and util.win_is_valid(session.editable_win)
+			and vim.api.nvim_win_get_buf(session.editable_win) == session.editable_bufnr
+	end
+	if not can_mutate() then
+		util.notify("Wait for the live diff transfer to finish before reverting a hunk", vim.log.levels.WARN)
+		return false
+	end
+
 	refresh(session.editable_bufnr)
 	local line = vim.api.nvim_win_get_cursor(session.editable_win)[1]
 	local hunk = diff.find_current_hunk(session.hunks or {}, line)
@@ -856,13 +881,13 @@ function M.revert_hunk()
 		return
 	end
 	local context = util.capture_buffer_context(session.editable_win)
-	if not context then
+	if not context or context.bufnr ~= session.editable_bufnr then
 		return false
 	end
 	local confirmed_base_lines = vim.deepcopy(session.base_lines)
 	local confirmed_hunk = vim.deepcopy(hunk)
 	local function context_is_unchanged()
-		if state.get(session.editable_bufnr) ~= session then
+		if not can_mutate() or context.bufnr ~= session.editable_bufnr then
 			return false
 		end
 		if not util.buffer_context_is_unchanged(context) then

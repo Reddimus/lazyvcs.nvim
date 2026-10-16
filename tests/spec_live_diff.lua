@@ -778,5 +778,311 @@ return function(ctx)
 		vim.api.nvim_buf_set_lines(b, 0, 1, false, { "idle edit" })
 		assert(not state.get(b))
 	end)
+	for _, scenario in ipairs({ "closed", "transfer", "user" }) do
+		add("revisit_cleans_saved_options_" .. scenario, function()
+			local f, s = fixture(nil, nil, function()
+				vim.wo.foldmethod, vim.wo.foldcolumn, vim.wo.winbar = "indent", "2", "original A"
+			end)
+			local ew = s.editable_win
+			vim.cmd.edit(vim.fn.fnameescape(f.file2))
+			local r = transferred(s, f.file2)
+			if scenario ~= "transfer" then
+				actions.close(r.editable_bufnr)
+			end
+			if scenario == "user" then
+				vim.cmd.edit(vim.fn.fnameescape(f.file1))
+				vim.wo.winbar, vim.wo.foldcolumn = "user A", "4"
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+			end
+			vim.cmd.edit(vim.fn.fnameescape(f.file1))
+			if scenario == "transfer" then
+				r = transferred(r, f.file1)
+				assert(r.editable_prev_winbar == "original A", "captured stale label")
+				actions.close(r.editable_bufnr)
+			end
+			assert(
+				not vim.wo[ew].diff and not vim.wo[ew].scrollbind and not vim.wo[ew].cursorbind,
+				"saved diff resurrected"
+			)
+			assert(vim.wo[ew].foldmethod == "indent", "saved foldmethod resurrected")
+			assert(vim.wo[ew].winbar == (scenario == "user" and "user A" or "original A"), "stale winbar")
+			assert(vim.wo[ew].foldcolumn == (scenario == "user" and "4" or "2"), "lost foldcolumn")
+		end)
+	end
+	for _, mode in ipairs({ "unsupported", "failed", "cancelled" }) do
+		add("departed_close_preserves_incoming_options_" .. mode, function()
+			local f, s = fixture(nil, nil, function()
+				vim.wo.wrap, vim.wo.linebreak, vim.wo.number = false, false, false
+			end)
+			local path = h.tempdir() .. "/outside.md"
+			h.write_file(path, "# Outside\n")
+			local group = vim.api.nvim_create_augroup("lazyvcs_test_outside_options", { clear = true })
+			vim.api.nvim_create_autocmd("FileType", {
+				group = group,
+				pattern = "markdown",
+				callback = function()
+					vim.wo.wrap, vim.wo.linebreak, vim.wo.number, vim.wo.winbar = true, true, true, "outside"
+				end,
+			})
+			local detecting = vim.fn.exists("#filetypedetect") == 1
+			vim.cmd("filetype on")
+			local ok, err = xpcall(function()
+				delayed(function(rs)
+					vim.cmd.edit(vim.fn.fnameescape(path))
+					local req = request(rs, 1)
+					if mode == "cancelled" then
+						actions.close(s.editable_bufnr)
+					else
+						req.done(nil, mode == "unsupported" and "not tracked" or "read failed")
+					end
+					assert(not state.get(s.editable_bufnr))
+					assert(
+						vim.wo[s.editable_win].wrap and vim.wo[s.editable_win].linebreak,
+						"lost incoming Markdown options"
+					)
+					assert(
+						vim.wo[s.editable_win].number and vim.wo[s.editable_win].winbar == "outside",
+						"restored outgoing options"
+					)
+				end)
+			end, debug.traceback)
+			vim.api.nvim_del_augroup_by_id(group)
+			if not detecting then
+				vim.cmd("filetype off")
+			end
+			if not ok then
+				error(err, 0)
+			end
+		end)
+	end
+	local function scratch_count()
+		local count = 0
+		for _, b in ipairs(vim.api.nvim_list_bufs()) do
+			if vim.api.nvim_buf_get_name(b):find("lazyvcs://", 1, true) then
+				count = count + 1
+			end
+		end
+		return count
+	end
+	add("repeated_transfers_do_not_leak_scratch_buffers", function()
+		local before = scratch_count()
+		local f, s = fixture()
+		for i = 1, 6 do
+			local path = i % 2 == 1 and f.file2 or f.file1
+			vim.cmd.edit(vim.fn.fnameescape(path))
+			s = transferred(s, path)
+			assert(scratch_count() == before + 1, "rename leaked alternate scratch buffer")
+		end
+		actions.close(s.editable_bufnr)
+		assert(scratch_count() == before, "close leaked scratch buffer")
+	end)
+	for _, command in ipairs({ "toggle", "close", "explicit_target", "open_target" }) do
+		add("loading_session_lookup_" .. command, function()
+			local f, s = fixture()
+			delayed(function(rs)
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+				local b = vim.api.nvim_get_current_buf()
+				local req = request(rs, 1)
+				if command == "toggle" then
+					assert(state.current() == s, "loading editor lost current session")
+					vim.cmd("LazyVCS diff toggle")
+				elseif command == "close" then
+					require("lazyvcs").close()
+				elseif command == "explicit_target" then
+					vim.api.nvim_set_current_win(s.base_win)
+					actions.close(b)
+				else
+					actions.open_target({
+						backend = "git",
+						root = f.root,
+						path = f.file2,
+						relpath = "beta.txt",
+						kind = "git_worktree",
+						left = { label = "HEAD", lines = f.base2 },
+						right = { label = "Worktree", modifiable = true },
+						editable_side = "right",
+					})
+				end
+				assert(state.get(s.editable_bufnr) ~= s, "loading session survived command")
+				assert(req.killed, "loading backend was not cancelled")
+				assert(#state.list() == (command == "open_target" and 1 or 0), "duplicate session")
+				req.done(result(f, f.file2))
+				assert(state.get(s.editable_bufnr) ~= s, "late callback revived session")
+			end)
+		end)
+	end
+	add("guard_only_read_does_not_rebind_or_refetch", function()
+		local f, s = fixture()
+		local aerial = require("lazyvcs.integrations.aerial")
+		local bind, refetch = layout.bind_pair, aerial.refetch_buffer
+		local binds, fetches = 0, 0
+		---@diagnostic disable-next-line: duplicate-set-field
+		layout.bind_pair = function(...)
+			binds = binds + 1
+			return bind(...)
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		aerial.refetch_buffer = function(...)
+			fetches = fetches + 1
+			return refetch(...)
+		end
+		local ok, err = xpcall(function()
+			local b = vim.fn.bufadd(f.file2)
+			vim.api.nvim_exec_autocmds("BufReadPre", { buffer = b })
+			assert(state.peek_pending_transfer(s.editable_win), "guard did not record read")
+			wait(function()
+				return not state.peek_pending_transfer(s.editable_win)
+			end)
+			assert(binds == 0 and fetches == 0, "guard-only read rebound/refetched")
+			bound(s)
+		end, debug.traceback)
+		layout.bind_pair, aerial.refetch_buffer = bind, refetch
+		if not ok then
+			error(err, 0)
+		end
+	end)
+	add("base_transfers_do_not_retain_undo_documents", function()
+		local f, s = fixture()
+		local a = s.editable_bufnr
+		vim.api.nvim_buf_set_lines(a, 0, 1, false, { "unsaved user text" })
+		for i = 1, 6 do
+			local path = i % 2 == 1 and f.file2 or f.file1
+			vim.cmd.edit(vim.fn.fnameescape(path))
+			s = transferred(s, path)
+		end
+		local tree = vim.api.nvim_buf_call(s.base_bufnr, vim.fn.undotree)
+		assert(#tree.entries == 0, "base retained old documents in undo")
+		assert(vim.bo[a].undolevels ~= -1, "editable undo disabled")
+		assert(#vim.api.nvim_buf_call(a, vim.fn.undotree).entries > 0, "editable undo history lost")
+	end)
+	for _, outcome in ipairs({ "commit", "abort" }) do
+		add("loading_resize_replayed_on_" .. outcome, function()
+			local f, s = fixture({ base_window = { width = 0.5 } })
+			delayed(function(rs)
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+				local req = request(rs, 1)
+				vim.cmd("topleft vnew")
+				vim.api.nvim_win_set_width(0, 30)
+				vim.api.nvim_exec_autocmds("WinResized", {})
+				vim.wait(80)
+				if outcome == "commit" then
+					req.done(result(f, f.file2))
+					s = transferred(s, f.file2)
+				else
+					vim.api.nvim_win_set_buf(s.editable_win, s.editable_bufnr)
+					wait(function()
+						return not state.peek_pending_transfer(s.editable_win)
+					end)
+				end
+				assert(
+					math.abs(vim.api.nvim_win_get_width(s.base_win) - vim.api.nvim_win_get_width(s.editable_win)) <= 1,
+					"loading resize was dropped"
+				)
+				bound(s)
+			end)
+		end)
+	end
+	add("revert_rejects_loading_session_and_preserves_hidden_edits", function()
+		local f, s = fixture()
+		local a = s.editable_bufnr
+		vim.api.nvim_buf_set_lines(a, 0, 1, false, { "precious unsaved edit" })
+		local before = vim.api.nvim_buf_get_lines(a, 0, -1, false)
+		actions.refresh_current()
+		wait(function()
+			return s.hunks and s.hunks[1] and s.hunks[1].current_start == 1
+		end)
+		delayed(function(rs)
+			vim.cmd.edit(vim.fn.fnameescape(f.file2))
+			request(rs, 1)
+			vim.api.nvim_win_set_cursor(s.editable_win, { 1, 0 })
+			vim.api.nvim_set_current_win(s.base_win)
+			local confirmation = actions.revert_hunk()
+			local cb = vim.fn.maparg("1", "n", false, true).callback
+			if cb then
+				cb()
+			end
+			assert(
+				vim.deep_equal(before, vim.api.nvim_buf_get_lines(a, 0, -1, false)),
+				"reverted hidden outgoing buffer"
+			)
+			assert(confirmation == false, "loading session opened confirmation")
+		end)
+	end)
+	add("outgoing_aerial_backend_is_reattached_in_buffer_context", function()
+		local names = { "aerial", "aerial.backends", "aerial.util" }
+		local saved = {}
+		for _, name in ipairs(names) do
+			saved[name] = package.loaded[name]
+		end
+		local attached, watches, contexts = {}, {}, {}
+		package.loaded["aerial.util"] = {
+			is_ignored_win = function()
+				return false
+			end,
+		}
+		package.loaded["aerial.backends"] = {
+			get_attached_backend = function(b)
+				return attached[b]
+			end,
+			get_backend_by_name = function()
+				return {
+					detach = function(b)
+						attached[b], watches[b] = nil, false
+					end,
+				}
+			end,
+		}
+		package.loaded["aerial"] = {
+			refetch_symbols = function(b)
+				attached[b], watches[b], contexts[b] = "markdown", true, vim.api.nvim_get_current_buf()
+			end,
+		}
+		local ok, err = xpcall(function()
+			local f, s = fixture()
+			local a = s.editable_bufnr
+			wait(function()
+				return watches[a]
+			end)
+			vim.cmd.split()
+			local other = vim.api.nvim_get_current_win()
+			vim.api.nvim_set_current_win(s.editable_win)
+			vim.cmd.edit(vim.fn.fnameescape(f.file2))
+			transferred(s, f.file2)
+			vim.wait(80)
+			assert(vim.api.nvim_win_get_buf(other) == a)
+			assert(watches[a] and attached[a] == "markdown", "outgoing backend lost watchers")
+			assert(contexts[a] == a, "refetched outgoing backend in incoming context")
+		end, debug.traceback)
+		for _, name in ipairs(names) do
+			package.loaded[name] = saved[name]
+		end
+		if not ok then
+			error(err, 0)
+		end
+	end)
+	add("revert_confirmation_rechecks_loading_phase", function()
+		local f, s = fixture()
+		local a = s.editable_bufnr
+		vim.api.nvim_buf_set_lines(a, 1, 2, false, { "precious edit" })
+		vim.api.nvim_win_set_cursor(s.editable_win, { 2, 0 })
+		local before = vim.api.nvim_buf_get_lines(a, 0, -1, false)
+		local dialog = actions.revert_hunk()
+		assert(type(dialog) == "table" and dialog.winid)
+		local choose = vim.fn.maparg("1", "n", false, true).callback
+		delayed(function(rs)
+			vim.api.nvim_win_set_buf(s.editable_win, target(f.file2))
+			request(rs, 1)
+			-- Keep the captured buffer context valid while the session is loading.
+			-- This isolates the phase check from the existing context checks.
+			vim.api.nvim_win_set_buf(s.editable_win, a)
+			vim.api.nvim_win_set_cursor(s.editable_win, { 2, 0 })
+			choose()
+			assert(
+				vim.deep_equal(before, vim.api.nvim_buf_get_lines(a, 0, -1, false)),
+				"confirmation mutated during loading"
+			)
+			assert(not vim.api.nvim_win_is_valid(dialog.winid))
+		end)
+	end)
 	return cases
 end

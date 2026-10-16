@@ -130,7 +130,9 @@ function M.refetch_buffer(bufnr)
 
 	vim.schedule(function()
 		if bufnr and bufnr ~= 0 and vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_is_loaded(bufnr) then
-			pcall(aerial.refetch_symbols, bufnr)
+			pcall(vim.api.nvim_buf_call, bufnr, function()
+				aerial.refetch_symbols(bufnr)
+			end)
 		end
 	end)
 end

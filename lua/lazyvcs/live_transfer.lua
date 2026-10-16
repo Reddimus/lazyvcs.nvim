@@ -70,6 +70,9 @@ function M.new(lifecycle)
 				p.detached, p.aerial_state = false, nil
 				restore(aerial.restore_buffer, snapshot)
 				restore(aerial.resume_win, p.editable_win)
+				if snapshot and snapshot.attached_backend then
+					restore(aerial.refetch_buffer, snapshot.bufnr)
+				end
 			end
 			if failure then
 				error(failure)
@@ -84,6 +87,7 @@ function M.new(lifecycle)
 			return p
 		end
 		p.detached = true
+		layout.remember_departed(s)
 		s.phase = "leaving"
 		p.view = vim.api.nvim_win_call(s.editable_win, vim.fn.winsaveview)
 		require("lazyvcs.align").clear(s)
@@ -110,16 +114,20 @@ function M.new(lifecycle)
 		local p = state.peek_pending_transfer(s.editable_win)
 		if target == s.editable_bufnr then
 			if p then
-				local view = p.view
+				local view, detached = p.view, p.detached
 				state.clear_pending_transfer(s.editable_win)
 				s.phase = "active"
-				if view then
-					vim.api.nvim_win_call(s.editable_win, function()
-						vim.fn.winrestview(view)
-					end)
+				if detached then
+					if view then
+						vim.api.nvim_win_call(s.editable_win, function()
+							vim.fn.winrestview(view)
+						end)
+					end
+					layout.rebalance(s)
+					layout.refresh(s)
+					assert(layout.bind_pair(s, s.editable_win), "could not restore diff pair")
+					aerial.refetch_buffer(s.editable_bufnr)
 				end
-				assert(layout.bind_pair(s, s.editable_win), "could not restore diff pair")
-				aerial.refetch_buffer(s.editable_bufnr)
 			end
 			return
 		end
@@ -188,6 +196,7 @@ function M.new(lifecycle)
 					p.phase = "closed"
 					p.dispose()
 					replacement.phase = "active"
+					layout.rebalance(replacement)
 					assert(layout.bind_pair(replacement, replacement.editable_win), "could not bind replacement")
 					aerial.refetch_buffer(target)
 				end)
