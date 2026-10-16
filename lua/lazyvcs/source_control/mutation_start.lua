@@ -17,6 +17,7 @@ function M.start(repo, args, opts, guards, on_exit)
 	local deadline = (opts.timeout and opts.timeout > 0) and (vim.uv.hrtime() / 1e6 + opts.timeout) or nil
 	local child, terminal, done
 	local request, pending, timer
+	local unlink_pending = false
 	local serial = 0
 	local handle = {}
 	local function report(err)
@@ -50,7 +51,7 @@ function M.start(repo, args, opts, guards, on_exit)
 			return
 		end
 		terminal = raw or { code = 130, stdout = "", stderr = err or "Cancelled", cancelled = true }
-		if opts.on_terminate then
+		if opts.on_terminate and not unlink_pending then
 			local ok, callback_err = pcall(opts.on_terminate, nil, terminal.stderr, terminal)
 			if not ok then
 				report(callback_err)
@@ -59,7 +60,7 @@ function M.start(repo, args, opts, guards, on_exit)
 	end
 	function handle:cancel(reason)
 		if done or terminal then
-			return false
+			return not done and unlink_pending and "pending" or false
 		end
 		terminate(nil, nil, {
 			code = 130,
@@ -69,6 +70,10 @@ function M.start(repo, args, opts, guards, on_exit)
 		})
 		if request then
 			pcall(vim.uv.cancel, request)
+		end
+		-- The scheduler must wait for the unlink result before reporting cancellation.
+		if unlink_pending then
+			return "pending"
 		end
 		if child then
 			return child:cancel(reason)
@@ -213,10 +218,17 @@ function M.start(repo, args, opts, guards, on_exit)
 				return
 			end
 			pending = true
+			unlink_pending = operation == vim.uv.fs_unlink
 			local submitted, value, submit_err = pcall(operation, plan.path, function(err, result)
 				vim.schedule(function()
 					pending, request = false, nil
 					local ok, callback_err = pcall(function()
+						if unlink_pending and not err then
+							-- A completed deletion is authoritative, even after interruption.
+							terminal, unlink_pending = nil, false
+							return finish({ code = 0, stdout = "", stderr = "" })
+						end
+						unlink_pending = false
 						if stopped() then
 							return
 						end
@@ -232,7 +244,7 @@ function M.start(repo, args, opts, guards, on_exit)
 				end)
 			end)
 			if not submitted or not value then
-				pending = false
+				pending, unlink_pending = false, false
 				return reject(tostring(submitted and submit_err or value):gsub("[\r\n]+", " "))
 			end
 			request = value

@@ -387,8 +387,8 @@ Behavior:
   starts. A branch change stops the operation with a retry error.
 - Unstage preserves working-file edits made after staging a new file. Staged
   rename Unstage and Discard cover both the source and destination paths.
-- Untracked-file Discard deletes only the selected file or symlink. Directory
-  replacements are refused, and symlink targets remain intact.
+- Untracked-file Discard deletes only the selected file or symlink. All directory
+  rows, including nested repositories, are refused. Symlink targets remain intact.
 - Successful Discard runs Neovim's timestamp check. With 'autoread', unmodified
   buffers reload from disk. Unsaved buffer edits keep Neovim's normal protection.
 - Discarding a deleted SVN directory restores its descendants recursively. The

@@ -5,9 +5,15 @@ return function(ctx)
 	local jobs = require("lazyvcs.source_control.jobs")
 	local session = require("lazyvcs.state")
 	local confirm = require("lazyvcs.source_control.confirm")
-	local function fixture()
+	local function fixture(relpath)
 		local f = h.make_git_fixture()
-		f.path = f.root .. "/victim"
+		relpath = relpath or "victim"
+		f.path = f.root .. "/" .. relpath
+		if relpath:find("/", 1, true) then
+			vim.fn.mkdir(f.root .. "/newdir/deep", "p")
+			f.sibling = f.root .. "/" .. (relpath == "newdir/one.txt" and "newdir/deep/two.txt" or "newdir/one.txt")
+			h.write_file(f.sibling, "sibling\n")
+		end
 		h.write_file(f.path, "untracked\n")
 		local repo, failure
 		local model = require("lazyvcs.source_control.model")
@@ -27,20 +33,24 @@ return function(ctx)
 			lazyvcs_force_expand = { [model.repo_changes_id(f.root)] = true },
 			lazyvcs_render = function() end,
 		}
-		local function find(node)
-			if node.type == "file" and node.path == f.path then
+		local function find(node, path)
+			if node.type == "file" and node.path == path then
 				return node
 			end
 			for _, child in ipairs(node.children or {}) do
-				local found = find(child)
+				local found = find(child, path)
 				if found then
 					return found
 				end
 			end
 		end
-		f.node = assert(find(model.collect(f.state, { root = f.root, scan_depth = 1 })), "untracked row missing")
+		local rows = model.collect(f.state, { root = f.root, scan_depth = 1 })
+		f.node = assert(find(rows, f.path), "untracked row missing")
+		if f.sibling then
+			assert(find(rows, f.sibling), "sibling untracked row missing")
+		end
 
-		assert(h.exec({ "git", "status", "--porcelain", "--", "victim" }, f.root) == "?? victim\n")
+		assert(h.exec({ "git", "status", "--porcelain", "--", relpath }, f.root) == "?? " .. relpath .. "\n")
 		return f
 	end
 	local function finished(f)
@@ -55,15 +65,102 @@ return function(ctx)
 		h.write_file(f.path .. "/child", "child\n")
 		h.write_file(f.path .. "/sibling", "sibling\n")
 	end
+	local function completed_unlink(mode)
+		local config = require("lazyvcs.config")
+		local saved_config = vim.deepcopy(config.get())
+		local unlink, cancel = vim.uv.fs_unlink, vim.uv.cancel
+		local complete
+		local ok, err = xpcall(function()
+			require("lazyvcs").setup({
+				use_gitsigns = false,
+				signs = { enabled = false },
+				source_control = { confirm_mutations = false, background = { git_workers = 1 } },
+			})
+			local f = fixture()
+			local terminated, queued
+			local request = {}
+			-- Submit the real unlink, but hold its completion until after interruption.
+			---@diagnostic disable-next-line: duplicate-set-field
+			vim.uv.fs_unlink = function(path, callback)
+				if path == f.path and callback then
+					unlink(path, function(unlink_err, result)
+						vim.schedule(function()
+							complete = function()
+								callback(unlink_err, result)
+							end
+						end)
+					end)
+					return request
+				end
+				return unlink(path, callback)
+			end
+			-- Signal that cancellation/the deadline landed without relying on sleeps.
+			---@diagnostic disable-next-line: duplicate-set-field
+			vim.uv.cancel = function(value)
+				if value == request then
+					terminated = true
+					return nil, "EBUSY"
+				end
+				return cancel(value)
+			end
+			config.get().source_control.background.mutation_timeout_ms = mode == "timeout" and 1000 or 15000
+			jobs.clear_history()
+			ops.revert_file(f.state, f.node)
+			wait(function()
+				return complete
+			end, "unlink was not submitted")
+			if mode == "cancel" then
+				jobs.cancel_repo(f.root)
+			else
+				wait(function()
+					return terminated
+				end, "unlink deadline did not fire")
+			end
+			jobs.command({ root = f.root, vcs = "git" }, "after", { "git", "status" }, {
+				start = function(_, _, done)
+					queued = true
+					done({ code = 0, stdout = "", stderr = "" })
+					return {}
+				end,
+			})
+			assert(not queued, "worker released before unlink completion")
+			complete()
+			complete = nil
+			wait(function()
+				return queued
+			end, "unlink completion did not release worker")
+			local history = jobs.history()
+			assert(history[1].status == "ok", mode .. ": successful unlink reported " .. history[1].status)
+			assert(not session.get_repo_job(f.root), "successful Discard left an error")
+			assert(not vim.uv.fs_lstat(f.path), "successful unlink left the file")
+			assert(vim.uv.fs_stat(f.file), "discard deleted another file")
+		end, debug.traceback)
+		vim.uv.fs_unlink, vim.uv.cancel = unlink, cancel
+		if complete then
+			complete()
+			vim.wait(20)
+		end
+		config.setup(saved_config)
+		assert(ok, err)
+	end
 	return {
+		{
+			"test_source_control_untracked_discard_cancel_during_unlink",
+			function()
+				completed_unlink("cancel")
+			end,
+		},
+		{
+			"test_source_control_untracked_discard_timeout_during_unlink",
+			function()
+				completed_unlink("timeout")
+			end,
+		},
 		{
 			"test_source_control_untracked_discard_refuses_replacement_directories",
 			function()
-				require("lazyvcs").setup({
-					use_gitsigns = false,
-					signs = { enabled = false },
-					source_control = { confirm_mutations = false, background = { git_workers = 1 } },
-				})
+				local config = require("lazyvcs.config")
+				local saved_config = vim.deepcopy(config.get())
 				local open, unlink, lstat, notify, start =
 					confirm.open, vim.uv.fs_unlink, vim.uv.fs_lstat, util.notify, util.system_start
 				local notices = {}
@@ -72,6 +169,11 @@ return function(ctx)
 					notices[#notices + 1] = message
 				end
 				local ok, err = xpcall(function()
+					require("lazyvcs").setup({
+						use_gitsigns = false,
+						signs = { enabled = false },
+						source_control = { confirm_mutations = false, background = { git_workers = 1 } },
+					})
 					for _, phase in ipairs({ "cached", "modified", "confirmation", "queued", "unlink", "nested" }) do
 						local f = fixture()
 						local release
@@ -135,6 +237,8 @@ return function(ctx)
 					assert(table.concat(notices, " "):find("director"), "directory refusal was not reported")
 					for _, mode in ipairs({
 						"file",
+						"nested_file",
+						"deep_file",
 						"staged",
 						"ignored",
 						"symlink",
@@ -143,7 +247,9 @@ return function(ctx)
 						"newline",
 						"truncated",
 					}) do
-						local f = fixture()
+						local relpath = mode == "nested_file" and "newdir/one.txt"
+							or mode == "deep_file" and "newdir/deep/two.txt"
+						local f = fixture(relpath)
 						if mode == "literal" or mode == "newline" then
 							local literal = mode == "newline" and "line\r\nbreak" or ":(glob)*"
 							if vim.fn.has("win32") == 1 then
@@ -184,13 +290,16 @@ return function(ctx)
 						end
 						ops.revert_file(f.state, f.node)
 						finished(f)
-						if mode == "file" or mode == "symlink" or mode == "literal" or mode == "newline" then
+						if mode == "file" or mode == "symlink" or mode == "literal" or mode == "newline" or relpath then
 							assert(not lstat(f.path), "selected file was not deleted")
 						else
 							assert(lstat(f.path), mode .. " file was deleted")
 						end
 						if mode == "symlink" then
 							assert(vim.fn.readfile(f.root .. "/target")[1] == "target", "symlink target changed")
+						end
+						if f.sibling then
+							assert(vim.fn.readfile(f.sibling)[1] == "sibling", "untracked sibling changed")
 						end
 						assert(vim.uv.fs_stat(f.file), "discard deleted another file")
 						vim.uv.fs_unlink, util.system_start = unlink, start
@@ -236,6 +345,7 @@ return function(ctx)
 				end, debug.traceback)
 				confirm.open, vim.uv.fs_unlink, vim.uv.fs_lstat, util.notify, util.system_start =
 					open, unlink, lstat, notify, start
+				config.setup(saved_config)
 				assert(ok, err)
 			end,
 		},

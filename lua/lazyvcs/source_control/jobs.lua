@@ -485,7 +485,7 @@ function M.cancel(filter, reason)
 		end
 		for _, job in pairs(running) do
 			local ok, matches = pcall(filter, job)
-			if ok and matches and not job.finalized then
+			if ok and matches and not job.finalized and not job.cancel_pending then
 				selected[#selected + 1] = job
 			end
 		end
@@ -523,10 +523,12 @@ function M.cancel(filter, reason)
 				job.termination_requested = true
 				job.termination_reason = reason
 				if job.started then
-					cancel_handle(job.handle, reason)
+					local handled, state = cancel_handle(job.handle, reason)
+					-- Native unlink keeps its result authoritative until its callback.
+					job.cancel_pending = handled and state == "pending"
 				end
 				local message = reason == "cancelled" and "Cancelled" or ("Cancelled: " .. reason)
-				if not job.finalized then
+				if not job.finalized and not job.cancel_pending then
 					finish(job, "cancelled", nil, message, {
 						code = 130,
 						stdout = "",
