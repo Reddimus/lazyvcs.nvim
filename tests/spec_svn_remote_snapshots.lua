@@ -200,6 +200,69 @@ return function(ctx)
 			end),
 		},
 		{
+			"test_svn_source_control_delayed_local_summary_preserves_mutation_unknown",
+			guard(function(f)
+				local first = open(f.root)
+				cache.publish(cache.begin(f.root), incoming_items(f))
+				vim.cmd.tabnew()
+				local second = open(f.root)
+				local loader = model.load_repo_summary_async
+				local delayed, summary
+				---@diagnostic disable-next-line: duplicate-set-field
+				model.load_repo_summary_async = function(repo, opts, run, done)
+					assert(not opts.remote_refresh, "local refresh requested a remote check")
+					loader(repo, opts, run, function(result)
+						summary, delayed = result, done
+					end)
+				end
+				native.refresh(false)
+				wait(function()
+					return delayed ~= nil
+				end, "local summary did not reach completion", 15000)
+				model.load_repo_summary_async = loader
+				assert(summary.remote_unknown == false, "summary was already unknown before mutation")
+				vim.api.nvim_set_current_tabpage(first.tabid)
+				local start, mutation_done, remote_checks = util.system_start, nil, 0
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.system_start = function(args, opts, done)
+					if args[1] == "svn" and args[2] == "update" then
+						mutation_done = done
+						return { kill = function() end }
+					end
+					if args[1] == "svn" and args[2] == "status" and vim.tbl_contains(args, "-u") then
+						remote_checks = remote_checks + 1
+					end
+					return start(args, opts, done)
+				end
+				local node = { type = "repo", path = f.root, extra = { repo_root = f.root, action = "update" } }
+				require("lazyvcs.source_control.ops").run_primary_action(first, node)
+				wait(function()
+					return mutation_done ~= nil
+				end, "SVN mutation did not start", 15000)
+				assert(second.lazyvcs_repo_cache[f.root].remote_unknown, "mutation did not mark other tab unknown")
+				assert(not cache.read(f.root) and not cache.is_dropped(f.root), "mutation retained remote metadata")
+				-- Settle without a remote refresh so only the delayed local result can change tab B.
+				assert(mutation_done)(nil, "cancelled", { code = 130, cancelled = true })
+				wait(function()
+					local job = require("lazyvcs.state").get_repo_job(f.root)
+					return not job or job.status ~= "running"
+				end, "SVN mutation did not settle", 15000)
+				settled(first)
+				vim.api.nvim_set_current_tabpage(second.tabid)
+				delayed(summary)
+				settled(second)
+				assert(second.lazyvcs_repo_cache[f.root].remote_unknown, "delayed local summary cleared unknown")
+				displayed(second, f.root, "unknown", "Commit")
+				assert(second.lazyvcs_repo_visibility[f.root], "unknown repository hidden with show_clean=false")
+				assert(remote_checks == 0, "local summary or cancellation ran a new remote check")
+				cache.publish(cache.begin(f.root), {})
+				native.render(second)
+				assert(not second.lazyvcs_repo_cache[f.root].remote_unknown, "new snapshot did not clear unknown")
+				assert(second.lazyvcs_repo_cache[f.root].sync.status == "synced", "new empty snapshot did not sync")
+				assert(not second.lazyvcs_repo_visibility[f.root], "checked clean repository remained visible")
+			end),
+		},
+		{
 			"test_svn_source_control_revert_preserves_incoming_and_signs_base",
 			guard(function(f)
 				local state = open(f.root)

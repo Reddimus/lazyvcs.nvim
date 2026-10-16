@@ -1014,6 +1014,7 @@ function M.merge_summary(current, summary)
 	end
 	-- The live cache may have replaced or invalidated the summary's private snapshot.
 	result.remote_local = current.remote_local
+	result.remote_unknown = current.remote_unknown
 	if current.details_loaded then
 		result.sections = current.sections
 		result.details_loaded = true
