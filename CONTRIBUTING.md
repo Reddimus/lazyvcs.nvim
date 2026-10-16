@@ -135,7 +135,9 @@ the GitHub release.
   project changes discard it.
 - Sidebar window ownership requires the window to display its sidebar buffer.
   Pending opens capture the originating editor and buffer, and reject replaced
-  owners or destinations.
+  owners or destinations. `editor_target.lua` shares destination eligibility and
+  capture across sidebar file and diff opens. Fallback selection scans only the
+  originating tab.
 - `source_control/persist.lua` writes independent project files and reads the
   legacy shared file without changing it. Same-project saves use the last write.
 - `source_control/mutation_start.lua` holds one scheduler worker and one
@@ -170,6 +172,11 @@ the GitHub release.
   backend loader.
 - `actions.lua`, `layout.lua`, and `state.lua` own editable per-file diff
   sessions.
+- The optional Resession adapter uses save hooks and one projection token.
+  Projection writes suppress autocmds and preserve close-time snapshots. Save
+  hooks and extensions must finish synchronously so scheduled failure recovery
+  cannot run during serialization. Projection visits only active sessions in
+  scope and adds no VCS work.
 - `highlighting.lua` uses native `winhighlight` overlays for inherited colors
   and strips copied overlays from unowned windows. Only explicit theme
   namespaces use its pool, which grows with concurrently managed custom

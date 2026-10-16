@@ -509,6 +509,16 @@ buffer_nav_smoke() {
 
 run_logged buffer-nav-smoke buffer_nav_smoke
 
+for backend in git svn; do
+	export LAZYVCS_INTEGRATION_BACKEND="${backend}"
+	export LAZYVCS_INTEGRATION_STATE="/tmp/lazyvcs-integration-${backend}.json"
+	run_logged "integrations-${backend}-save" env LAZYVCS_INTEGRATION_MODE=save \
+		timeout 180s nvim --headless -l /work/lazyvcs.nvim/tests/e2e/integrations.lua
+	run_logged "integrations-${backend}-load" env LAZYVCS_INTEGRATION_MODE=load \
+		timeout 180s nvim --headless -l /work/lazyvcs.nvim/tests/e2e/integrations.lua
+done
+
+
 if [ -n "${KEEP_E2E_HOME}" ]; then
 	cp -a "${HOME}" /artifacts/home
 fi

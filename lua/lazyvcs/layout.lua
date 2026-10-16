@@ -267,8 +267,84 @@ local function valid_pair(session)
 		and vim.api.nvim_win_get_buf(session.base_win) == session.base_bufnr
 end
 
+local function save_owned(token)
+	local s = token.session
+	return require("lazyvcs.state").get(token.buf) == s
+		and s.id == token.id
+		and s.editable_bufnr == token.buf
+		and s.editable_win == token.win
+		and s.base_win == token.base_win
+		and s.base_bufnr == token.base_buf
+		and valid_pair(s)
+end
+
+function M.prepare_session_save(session, tokens)
+	if session.phase ~= "active" or session.readonly_comparison or not valid_pair(session) then
+		return
+	end
+	local token = {
+		session = session,
+		id = session.id,
+		win = session.editable_win,
+		buf = session.editable_bufnr,
+		base_win = session.base_win,
+		base_buf = session.base_bufnr,
+		options = capture_window_options(session.editable_win),
+		winbar = util.get_win_option(session.editable_win, "winbar"),
+		views = {},
+		changedtick = vim.api.nvim_buf_get_changedtick(session.editable_bufnr),
+	}
+	for _, win in ipairs({ session.editable_win, session.base_win }) do
+		token.views[win] = vim.api.nvim_win_call(win, vim.fn.winsaveview)
+	end
+	tokens[#tokens + 1] = token
+	session.phase = "saving"
+	for name, value in pairs(session.editable_window_options) do
+		if token.options[name] == session.editable_applied_options[name] then
+			util.set_win_option_noautocmd(token.win, name, value)
+		end
+	end
+	if session.editable_label and token.winbar == session.editable_label then
+		util.set_win_option_noautocmd(token.win, "winbar", session.editable_prev_winbar)
+	end
+end
+
+function M.finish_session_save(token)
+	local session = token.session
+	if not save_owned(token) then
+		if session.phase == "saving" then
+			session.phase = "active"
+			require("lazyvcs.actions").resume_session_save(session)
+		end
+		return
+	end
+	local failure
+	local function restore(fn, ...)
+		local ok, err = pcall(fn, ...)
+		if not ok then
+			failure = failure or err
+		end
+	end
+	for name, value in pairs(token.options) do
+		restore(util.set_win_option_noautocmd, token.win, name, value)
+	end
+	restore(util.set_win_option_noautocmd, token.win, "winbar", token.winbar)
+	for win, view in pairs(token.views) do
+		restore(vim.api.nvim_win_call, win, function()
+			vim.fn.winrestview(view)
+		end)
+	end
+	session.phase = "active"
+	if vim.api.nvim_buf_get_changedtick(session.editable_bufnr) ~= token.changedtick then
+		require("lazyvcs.actions").resume_session_save(session)
+	end
+	if failure then
+		error(failure)
+	end
+end
+
 function M.bind_pair(session, source_win)
-	if not valid_pair(session) then
+	if not valid_pair(session) or session.phase == "saving" then
 		return false
 	end
 	for _, win in ipairs({ session.editable_win, session.base_win }) do
@@ -336,13 +412,20 @@ end
 
 function M.open(session)
 	local current_win = vim.api.nvim_get_current_win()
-	local editable_win = vim.api.nvim_win_get_buf(current_win) == session.editable_bufnr and current_win
-		or vim.fn.bufwinid(session.editable_bufnr)
+	local editable_win = session.editable_win
+		or (
+			vim.api.nvim_win_get_buf(current_win) == session.editable_bufnr and current_win
+			or vim.fn.bufwinid(session.editable_bufnr)
+		)
 	if editable_win == -1 then
 		vim.cmd.buffer(session.editable_bufnr)
 		editable_win = vim.api.nvim_get_current_win()
 	end
 
+	assert(
+		util.win_is_valid(editable_win) and vim.api.nvim_win_get_buf(editable_win) == session.editable_bufnr,
+		"Editor destination changed while opening"
+	)
 	session.editable_win = editable_win
 	session.tabpage = vim.api.nvim_win_get_tabpage(editable_win)
 	session.preexisting_diff_windows = {}
@@ -366,6 +449,7 @@ function M.open(session)
 	session.base_window_options = capture_window_options(session.base_win)
 	session.base_prev_winbar = util.get_win_option(session.base_win, "winbar")
 	util.show_win_buffer(session.base_win, session.base_bufnr)
+	assert(valid_pair(session), "Comparison panes changed while opening")
 	session.base_had_diff = false
 
 	vim.cmd.wincmd("p")
@@ -520,7 +604,7 @@ function M.close(session, opts)
 		end
 	end
 
-	if util.win_is_valid(session.base_win) then
+	if util.win_is_valid(session.base_win) and vim.api.nvim_win_get_buf(session.base_win) == session.base_bufnr then
 		pcall(vim.api.nvim_win_call, session.base_win, function()
 			if not session.base_had_diff then
 				vim.cmd("silent diffoff")

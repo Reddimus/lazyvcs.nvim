@@ -14,6 +14,14 @@ function M.set_win_option(winid, name, value)
 	vim.api.nvim_set_option_value(name, value, { win = winid, scope = "local" })
 end
 
+---Write transient presentation without dispatching OptionSet listeners.
+function M.set_win_option_noautocmd(winid, name, value)
+	vim.api.nvim_win_call(winid, function()
+		local literal = type(value) == "boolean" and (value and "1" or "0") or vim.fn.string(value)
+		vim.api.nvim_cmd({ cmd = "let", args = { "&l:" .. name .. " = " .. literal }, mods = { noautocmd = true } }, {})
+	end)
+end
+
 ---@param winid integer
 ---@param values table<string, boolean|integer|string>
 function M.set_win_options(winid, values)

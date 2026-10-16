@@ -110,6 +110,13 @@ local function open_session(session)
 	local registered = false
 	local ok, err = xpcall(function()
 		layout.open(session)
+		assert(
+			util.win_is_valid(session.editable_win)
+				and util.win_is_valid(session.base_win)
+				and vim.api.nvim_win_get_buf(session.editable_win) == session.editable_bufnr
+				and vim.api.nvim_win_get_buf(session.base_win) == session.base_bufnr,
+			"Comparison panes changed while opening"
+		)
 		state.register(session)
 		registered = true
 		set_session_maps(session)
@@ -325,6 +332,13 @@ refresh = function(bufnr)
 		session.hunks = diff.compute_hunks(session.base_lines, util.get_buf_lines(session.editable_bufnr))
 	end
 	layout.refresh(session)
+end
+
+function M.resume_session_save(session)
+	if state.get(session.editable_bufnr) == session and not session.closing then
+		transfer.schedule(session)
+		refresh(session.editable_bufnr)
+	end
 end
 
 local function schedule_refresh(bufnr)
@@ -734,16 +748,13 @@ function M.open(opts)
 end
 
 local function target_editor_window()
-	local current = vim.api.nvim_get_current_win()
-	local current_buf = vim.api.nvim_win_get_buf(current)
-	if vim.bo[current_buf].filetype ~= "lazyvcs-source-control" then
-		return current, false
+	local target = require("lazyvcs.editor_target").capture(vim.api.nvim_get_current_win())
+	if not target.fallback then
+		return target.winid, false
 	end
-	for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-		local bufnr = vim.api.nvim_win_get_buf(winid)
-		if winid ~= current and vim.bo[bufnr].filetype ~= "lazyvcs-source-control" then
-			return winid, false
-		end
+	local current_buf = vim.api.nvim_win_get_buf(target.winid)
+	if vim.bo[current_buf].filetype ~= "lazyvcs-source-control" then
+		return target.winid, false
 	end
 	vim.cmd("rightbelow split")
 	util.editor_window(vim.api.nvim_get_current_win())
@@ -754,7 +765,7 @@ local function comparison_buffer(comparison, side, editor_win)
 	if comparison.editable_side == "right" and side.modifiable and side.path then
 		local bufnr = vim.fn.bufadd(side.path)
 		vim.fn.bufload(bufnr)
-		vim.api.nvim_win_set_buf(editor_win, bufnr)
+		util.show_win_buffer(editor_win, bufnr)
 		return bufnr, false
 	end
 
@@ -782,7 +793,7 @@ local function comparison_buffer(comparison, side, editor_win)
 	end
 	vim.bo[bufnr].modifiable = false
 	vim.bo[bufnr].readonly = true
-	vim.api.nvim_win_set_buf(editor_win, bufnr)
+	util.show_win_buffer(editor_win, bufnr)
 	return bufnr, true
 end
 
@@ -792,7 +803,11 @@ local function cleanup_failed_comparison(context)
 	end
 	local editor_win = context.editor_win
 	local editable_bufnr = context.editable_bufnr
-	if context.created_editor_win and util.win_is_valid(editor_win) then
+	if
+		context.created_editor_win
+		and util.win_is_valid(editor_win)
+		and vim.api.nvim_win_get_buf(editor_win) == (editable_bufnr or context.original_bufnr)
+	then
 		pcall(vim.api.nvim_win_close, editor_win, true)
 	elseif not editor_win and context.tabpage and vim.api.nvim_tabpage_is_valid(context.tabpage) then
 		for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(context.tabpage)) do
@@ -803,6 +818,7 @@ local function cleanup_failed_comparison(context)
 	elseif
 		context.owned_editable_buf
 		and util.win_is_valid(editor_win)
+		and vim.api.nvim_win_get_buf(editor_win) == editable_bufnr
 		and util.buf_is_valid(context.original_bufnr)
 	then
 		pcall(vim.api.nvim_win_set_buf, editor_win, context.original_bufnr)
@@ -837,6 +853,10 @@ local function open_target_impl(comparison, failure_context)
 	local editable_bufnr, owned = comparison_buffer(comparison, comparison.right, editor_win)
 	failure_context.editable_bufnr = editable_bufnr
 	failure_context.owned_editable_buf = owned
+	assert(
+		util.win_is_valid(editor_win) and vim.api.nvim_win_get_buf(editor_win) == editable_bufnr,
+		"Editor destination changed while opening"
+	)
 	local existing = state.get(editable_bufnr)
 	if existing then
 		close_session(existing)
@@ -848,6 +868,7 @@ local function open_target_impl(comparison, failure_context)
 	end
 	local session = {
 		editable_bufnr = editable_bufnr,
+		editable_win = editor_win,
 		source_path = comparison.path,
 		backend = comparison.backend or comparison.vcs,
 		backend_impl = backend_impl,
@@ -893,11 +914,7 @@ end
 function M.open_target(comparison, opts)
 	local previous_win = vim.api.nvim_get_current_win()
 	if opts then
-		if
-			not util.win_is_valid(opts.winid)
-			or vim.api.nvim_win_get_tabpage(opts.winid) ~= opts.tabid
-			or vim.api.nvim_win_get_buf(opts.winid) ~= opts.bufnr
-		then
+		if not require("lazyvcs.editor_target").valid(opts) then
 			return nil
 		end
 		vim.api.nvim_set_current_win(opts.winid)

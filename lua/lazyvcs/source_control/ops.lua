@@ -956,14 +956,10 @@ function M.open_change(state, node)
 		path = node.path,
 	})
 	M.cancel_diff_target(state, "target replaced")
-	local origin_tab = vim.api.nvim_get_current_tabpage()
 	local origin_win = vim.api.nvim_get_current_win()
 	local origin_path = state.path
-	local editor = state.editor_winid
-	if not (editor and vim.api.nvim_win_is_valid(editor) and vim.api.nvim_win_get_tabpage(editor) == origin_tab) then
-		editor = origin_win
-	end
-	local editor_buf = vim.api.nvim_win_get_buf(editor)
+	local editor_target = require("lazyvcs.editor_target")
+	local destination = editor_target.capture(state.editor_winid, origin_win)
 	local generation = state.lazyvcs_diff_target_generation
 	state.lazyvcs_diff_target_root = repo.root
 	navigate_if_visible(state)
@@ -975,10 +971,7 @@ function M.open_change(state, node)
 			return
 		end
 		local owner_valid = not state.lazyvcs_target_owner_valid or state.lazyvcs_target_owner_valid(state)
-		local destination_valid = vim.api.nvim_tabpage_is_valid(origin_tab)
-			and vim.api.nvim_win_is_valid(editor)
-			and vim.api.nvim_win_get_tabpage(editor) == origin_tab
-			and vim.api.nvim_win_get_buf(editor) == editor_buf
+		local destination_valid = editor_target.valid(destination)
 		if not owner_valid or state.path ~= origin_path or not destination_valid then
 			M.cancel_diff_target(state, "target owner changed")
 			return
@@ -995,12 +988,8 @@ function M.open_change(state, node)
 			util.notify("Typed diff UI support is unavailable", vim.log.levels.ERROR)
 			return
 		end
-		local ok, open_err = pcall(actions.open_target, loaded, {
-			winid = editor,
-			bufnr = editor_buf,
-			tabid = origin_tab,
-			preserve_focus = vim.api.nvim_get_current_win() ~= origin_win,
-		})
+		destination.preserve_focus = vim.api.nvim_get_current_win() ~= origin_win
+		local ok, open_err = pcall(actions.open_target, loaded, destination)
 		if not ok then
 			util.notify(tostring(open_err):gsub("[\r\n]+", " "), vim.log.levels.ERROR)
 		end
