@@ -7228,6 +7228,12 @@ vim.list_extend(cases, require("spec_svn_ignores")({ helpers = helpers, wait_for
 
 vim.list_extend(cases, require("spec_commands_config")({ helpers = helpers, wait_for = wait_for }))
 
+vim.list_extend(cases, require("spec_live_diff_lifecycle")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_live_diff_alignment")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_integrations_resession_batch")({ helpers = helpers, wait_for = wait_for }))
+
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,
 }

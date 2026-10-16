@@ -98,7 +98,13 @@ function M.new(lifecycle)
 		return p
 	end
 	function api.reconcile(s)
-		if not current(s) or s.phase == "saving" or s.phase == "committing" or s.readonly_comparison then
+		if not current(s) or s.phase == "saving" or s.phase == "committing" then
+			return
+		end
+		if s.readonly_comparison then
+			if s.source_detached then
+				return lifecycle.close(s, { reset_tab_diff = true })
+			end
 			return
 		end
 		if
@@ -113,6 +119,13 @@ function M.new(lifecycle)
 		local target = vim.api.nvim_win_get_buf(s.editable_win)
 		local p = state.peek_pending_transfer(s.editable_win)
 		if target == s.editable_bufnr then
+			if not vim.api.nvim_buf_is_loaded(target) or s.editable_wiping then
+				return lifecycle.close(s, { reset_tab_diff = true })
+			end
+			if s.source_detached then
+				s.source_detached = nil
+				lifecycle.attach_source(s)
+			end
 			if p then
 				local view, detached = p.view, p.detached
 				state.clear_pending_transfer(s.editable_win)
@@ -216,15 +229,22 @@ function M.new(lifecycle)
 			kill(handle)
 		end
 	end
+	function api.detached(s)
+		s.source_detached = true
+		api.schedule(s)
+	end
 	function api.schedule(s)
 		if not current(s) or s.reconcile_pending then
 			return
 		end
 		s.reconcile_pending = true
+		local id = s.id
 		vim.schedule(function()
 			s.reconcile_pending = false
 			guarded(s, function()
-				api.reconcile(s)
+				if s.id == id then
+					api.reconcile(s)
+				end
 			end)
 		end)
 	end

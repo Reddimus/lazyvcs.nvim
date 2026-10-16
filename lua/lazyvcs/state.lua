@@ -24,12 +24,34 @@ local function cancel_transfer(pending)
 	end
 end
 
+-- Check every key before mutating any index. Replacement may reuse its old keys.
+local function registration_error(session, old)
+	for _, buf in ipairs({ session.editable_bufnr, session.base_bufnr }) do
+		local key = M.buffer_index[buf]
+		local owner = M.sessions[buf] or (key and M.sessions[key])
+		if (key and (not old or key ~= old.editable_bufnr)) or (owner and owner ~= old) then
+			return "Buffer already has a live diff owner"
+		end
+	end
+	for _, win in ipairs({ session.editable_win, session.base_win }) do
+		local owner = M.window_index[win]
+		if owner and owner ~= old then
+			return "Window already has a live diff owner"
+		end
+	end
+end
+
 function M.register(session)
+	local err = registration_error(session)
+	if err then
+		return nil, err
+	end
 	M.window_index[session.editable_win] = session
 	M.window_index[session.base_win] = session
 	M.sessions[session.editable_bufnr] = session
 	M.buffer_index[session.editable_bufnr] = session.editable_bufnr
 	M.buffer_index[session.base_bufnr] = session.editable_bufnr
+	return session
 end
 
 function M.unregister(session)
@@ -46,9 +68,10 @@ function M.unregister(session)
 		end
 	end
 	M.sessions[session.editable_bufnr] = nil
-	M.buffer_index[session.editable_bufnr] = nil
-	if session.base_bufnr then
-		M.buffer_index[session.base_bufnr] = nil
+	for _, buf in ipairs({ session.editable_bufnr, session.base_bufnr }) do
+		if M.buffer_index[buf] == session.editable_bufnr then
+			M.buffer_index[buf] = nil
+		end
 	end
 end
 
@@ -80,8 +103,10 @@ end
 function M.replace(old, replacement)
 	assert(M.get(old.editable_bufnr) == old, "session lost ownership")
 	assert(not M.get(replacement.editable_bufnr), "target already owned")
+	local err = registration_error(replacement, old)
+	assert(not err, err)
 	M.unregister(old)
-	M.register(replacement)
+	assert(M.register(replacement))
 end
 
 function M.set_pending_transfer(winid, pending)

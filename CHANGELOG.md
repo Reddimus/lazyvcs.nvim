@@ -19,6 +19,13 @@ and this project adheres to
 - Handle leading-dash Git remote names in Push, Publish, Pull, and Sync.
 - Store sidebar Git commit messages as UTF-8 when repository settings declare a
   legacy encoding.
+- Transfer, refresh or close live diffs after buffer unload, deletion, wipeout
+  and reload without E565, and let `:LazyVCS diff close` finish a failed
+  cleanup.
+- Keep delayed live diff opens in their originating window and preserve focus.
+- Update wrapped diff padding after wrap and break option changes, including
+  global showbreak, and clear it when wrapping stops.
+- Avoid repeated fold scans when Resession saves several live diffs in one tab.
 
 ## [0.11.3] - 2026-10-16
 

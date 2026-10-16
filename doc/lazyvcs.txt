@@ -236,10 +236,14 @@ Live diff buffer-local mappings:
     ]v           next hunk
     [v           previous hunk
 
+Pending direct opens stay tied to their original window, buffer, and tab.
+Completion preserves focus; a changed destination cancels the open.
+
 Only buffer changes in the session's editable window transfer live diff.
 Focus changes to the base pane, other splits, floats, or tabs preserve the
-session. Programmatic buffer changes in the editable window also transfer it,
-including changes made from another window or tab, without moving focus.
+session. Transfers also work with 'nohidden'. Programmatic buffer changes
+in the editable window also transfer it, including changes made from another
+window or tab, without moving focus.
 Transfers reuse the window pair for supported Git/SVN buffers. Unsupported
 buffers close the session cleanly. Hunk revert is unavailable until a pending
 transfer finishes. Close and toggle also work while the new base is loading.
@@ -828,7 +832,8 @@ NOTES                                                           *lazyvcs-notes*
   excluded. A user diff window remains eligible when no non-diff editor exists.
   A pending open is cancelled if its captured destination changes.
 - With Resession installed, saving an active live diff serializes the editable
-  window's pre-session options. The live panes resume after saving. Options
+  window's pre-session options. The live panes resume after saving. Saves preserve
+  affected folds and views, including neighboring user diff windows. Options
   changed by the user during the session are preserved. Temporary bases and
   LazyVCS sessions are not restored in a new process. No dependency is required.
 - Git compares live diff buffers against the index.
@@ -873,8 +878,9 @@ NOTES                                                           *lazyvcs-notes*
   by default because native scroll binding cannot see the padding and may
   drift while scrolling.
 
-  Padding changes no text and clears on close. It is skipped when another
-  window shows the same file, because buffer-local extmarks would appear there.
+  Padding changes no text. It updates after wrapping-option changes and clears
+  when both panes stop wrapping or the session closes. It is skipped when
+  another window shows the same file, because buffer-local extmarks appear there.
 
 - Inline blame is one global toggle; with `blame.persist` it is saved to
   `stdpath('state')/lazyvcs/state.json` and restored on the next launch.

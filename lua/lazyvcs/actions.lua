@@ -17,6 +17,7 @@ local reload_session
 local clear_session_maps
 local set_session_maps
 local attach_session
+local attach_source
 local schedule_scroll_sync
 local schedule_rebalance
 local rebalance_tab
@@ -102,6 +103,17 @@ end
 -- Return a session or nil, err. Catch failures so autocmds cannot trigger a hit-enter
 -- prompt.
 local function open_session(session)
+	local owner = state.for_window(session.editable_win or vim.api.nvim_get_current_win())
+	local prior = state.get(session.editable_bufnr)
+	if (owner and owner.closing) or (prior and prior.closing) then
+		return nil, "Previous live diff cleanup is unfinished"
+	end
+	if owner and owner.editable_bufnr ~= session.editable_bufnr then
+		return nil, "Live diff window is owned by another buffer"
+	end
+	if prior then
+		return nil, "Buffer already has a live diff session"
+	end
 	session_sequence = session_sequence + 1
 	session.id = session_sequence
 	session.editor_state = session.editor_state
@@ -117,7 +129,7 @@ local function open_session(session)
 				and vim.api.nvim_win_get_buf(session.base_win) == session.base_bufnr,
 			"Comparison panes changed while opening"
 		)
-		state.register(session)
+		assert(state.register(session))
 		registered = true
 		require("lazyvcs.integrations.resession").setup(not session.readonly_comparison)
 		set_session_maps(session)
@@ -146,14 +158,18 @@ local function open_session(session)
 	return session
 end
 
-local function close_session(session, opts)
+local close_session
+close_session = function(session, opts, automatic_retry)
 	opts = opts or {}
-	if not session or session.closing then
+	if not session or session.close_running or state.get(session.editable_bufnr) ~= session then
 		return
 	end
 
+	session.close_running = true
 	session.closing = true
-	session.phase = "closed"
+	session.phase = "closing"
+	session.close_opts = session.close_opts or opts
+	opts = session.close_opts
 	if session.refresh_job and type(session.refresh_job.kill) == "function" then
 		pcall(session.refresh_job.kill, session.refresh_job, 15)
 		session.refresh_job = nil
@@ -170,14 +186,23 @@ local function close_session(session, opts)
 	if session.augroup then
 		pcall(vim.api.nvim_del_augroup_by_id, session.augroup)
 	end
-	state.unregister(session)
 	cleanup(layout.close, session, opts)
-	cleanup(editor.restore_buffer, session.editor_state)
-	session.editor_state = nil
-	if session.owned_editor_win and not opts.keep_editor_win and util.win_is_valid(session.editable_win) then
+	if not cleanup_error then
+		cleanup(editor.restore_buffer, session.editor_state)
+		if not cleanup_error then
+			session.editor_state = nil
+		end
+	end
+	if
+		not cleanup_error
+		and session.owned_editor_win
+		and not opts.keep_editor_win
+		and util.win_is_valid(session.editable_win)
+		and vim.api.nvim_win_get_buf(session.editable_win) == session.editable_bufnr
+	then
 		pcall(vim.api.nvim_win_close, session.editable_win, true)
 	end
-	if session.owned_editable_buf and not session.editable_wiping then
+	if not cleanup_error and session.owned_editable_buf and not session.editable_wiping then
 		if
 			not session.owned_editor_win
 			and util.win_is_valid(session.editable_win)
@@ -190,8 +215,30 @@ local function close_session(session, opts)
 			pcall(vim.api.nvim_buf_delete, session.editable_bufnr, { force = true })
 		end
 	end
+	session.close_running = false
 	if cleanup_error then
-		util.notify("lazyvcs: cleanup failed: " .. one_line(cleanup_error), vim.log.levels.ERROR)
+		if not automatic_retry then
+			util.notify("lazyvcs: cleanup failed: " .. one_line(cleanup_error), vim.log.levels.ERROR)
+		end
+		if not session.close_retry_used then
+			session.close_retry_used = true
+			vim.schedule(util.safe_callback(function()
+				if state.get(session.editable_bufnr) == session then
+					close_session(session, opts, true)
+				end
+			end))
+		end
+		return
+	end
+	session.phase = "closed"
+	state.unregister(session)
+end
+
+-- Automatic events may have queued before a failed close removed the autocmds.
+-- Only explicit closes and the one scheduled retry may retry a closing owner.
+local function close_automatically(session, opts)
+	if session and not session.closing then
+		close_session(session, opts)
 	end
 end
 
@@ -227,8 +274,11 @@ end
 
 transfer = require("lazyvcs.live_transfer").new({
 	build = build_session_async,
-	close = close_session,
+	close = close_automatically,
 	commit = commit_transfer,
+	attach_source = function(session)
+		attach_source(session, true)
+	end,
 })
 
 local function safe_callback(fn)
@@ -338,7 +388,16 @@ end
 function M.resume_session_save(session)
 	if state.get(session.editable_bufnr) == session and not session.closing then
 		transfer.schedule(session)
-		refresh(session.editable_bufnr)
+		if
+			util.win_is_valid(session.editable_win)
+			and util.win_is_valid(session.base_win)
+			and vim.api.nvim_win_get_buf(session.editable_win) == session.editable_bufnr
+			and vim.api.nvim_win_get_buf(session.base_win) == session.base_bufnr
+			and vim.api.nvim_win_get_tabpage(session.editable_win) == session.tabpage
+			and vim.api.nvim_win_get_tabpage(session.base_win) == session.tabpage
+		then
+			refresh(session.editable_bufnr)
+		end
 	end
 end
 
@@ -535,7 +594,7 @@ set_session_maps = function(session)
 	session.maps_installed = true
 end
 
-attach_session = function(session)
+attach_source = function(session, reattach)
 	if not session.readonly_comparison and not source_attachments[session.editable_bufnr] then
 		source_attachments[session.editable_bufnr] = vim.api.nvim_buf_attach(session.editable_bufnr, false, {
 			on_lines = safe_callback(function(_, bufnr)
@@ -548,12 +607,19 @@ attach_session = function(session)
 				source_attachments[bufnr] = nil
 				local live = state.get(bufnr)
 				if live and live.editable_bufnr == bufnr then
-					M.close(bufnr)
+					transfer.detached(live)
 				end
 			end),
 		})
+		-- A reload detaches the source; refresh hunks against the reloaded text.
+		if reattach then
+			schedule_refresh(session.editable_bufnr)
+		end
 	end
+end
 
+attach_session = function(session)
+	attach_source(session)
 	session.augroup = vim.api.nvim_create_augroup("lazyvcs_" .. session.editable_bufnr, { clear = true })
 
 	vim.api.nvim_create_autocmd("OptionSet", {
@@ -565,13 +631,47 @@ attach_session = function(session)
 			end
 		end),
 	})
+	vim.api.nvim_create_autocmd("OptionSet", {
+		group = session.augroup,
+		pattern = {
+			"wrap",
+			"linebreak",
+			"breakindent",
+			"breakindentopt",
+			"showbreak",
+			"tabstop",
+			"vartabstop",
+			"diffopt",
+		},
+		callback = safe_callback(function(args)
+			if state.get(session.editable_bufnr) ~= session or session.closing then
+				return
+			end
+			for _, pane in ipairs({ session.editable_win, session.base_win }) do
+				local buf = pane == session.editable_win and session.editable_bufnr or session.base_bufnr
+				if not util.win_is_valid(pane) or vim.api.nvim_win_get_buf(pane) ~= buf then
+					return
+				end
+			end
+			local win = vim.api.nvim_get_current_win()
+			if
+				args.match == "diffopt"
+				or (args.match == "showbreak" and vim.v.option_type == "global")
+				or win == session.editable_win
+				or win == session.base_win
+			then
+				require("lazyvcs.align").schedule(session)
+			end
+		end),
+	})
+
 	vim.api.nvim_create_autocmd("BufFilePost", {
 		group = session.augroup,
 		buffer = session.editable_bufnr,
 		callback = safe_callback(function()
 			session.base_invalid, session.hunks = true, {}
 			vim.schedule(safe_callback(function()
-				M.close(session.editable_bufnr)
+				close_automatically(session)
 			end))
 		end),
 	})
@@ -609,9 +709,7 @@ attach_session = function(session)
 		buffer = session.editable_bufnr,
 		callback = safe_callback(function()
 			session.editable_wiping = true
-			if state.get(session.editable_bufnr) then
-				M.close(session.editable_bufnr)
-			end
+			transfer.detached(session)
 		end),
 	})
 
@@ -622,9 +720,11 @@ attach_session = function(session)
 			-- Deleting a buffer during its BufWipeout raises E937. Mark it so layout.close skips
 			-- deletion.
 			session.base_wiping = true
-			if state.get(session.base_bufnr) then
-				M.close(session.base_bufnr)
-			end
+			vim.schedule(safe_callback(function()
+				if state.get(session.editable_bufnr) == session then
+					close_automatically(session)
+				end
+			end))
 		end),
 	})
 
@@ -646,7 +746,7 @@ attach_session = function(session)
 			session.phase = "closed"
 			vim.schedule(safe_callback(function()
 				if state.get(session.editable_bufnr) == session then
-					M.close(session.editable_bufnr)
+					close_automatically(session)
 				end
 			end))
 		end),
@@ -660,7 +760,7 @@ attach_session = function(session)
 			session.phase = "closed"
 			vim.schedule(safe_callback(function()
 				if state.get(session.editable_bufnr) == session then
-					M.close(session.editable_bufnr)
+					close_automatically(session)
 				end
 			end))
 		end),
@@ -683,8 +783,27 @@ function M.open(opts)
 
 	local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
 	local invoking_win = opts.winid or vim.api.nvim_get_current_win()
+	local invoking_tab = util.win_is_valid(invoking_win) and vim.api.nvim_win_get_tabpage(invoking_win)
+	local owner = state.for_window(invoking_win)
+	if owner and owner.closing then
+		if not opts.silent then
+			util.notify("Previous live diff cleanup is unfinished", vim.log.levels.WARN)
+		end
+		return owner
+	end
+	-- A window whose session is mid-transfer keeps that owner. Buffers that already
+	-- have a session (including a session's base buffer) focus it below.
+	if owner and owner.editable_bufnr ~= bufnr and not state.get(bufnr) then
+		return owner
+	end
 	local existing = state.get(bufnr)
 	if existing then
+		if existing.closing then
+			if not opts.silent then
+				util.notify("Previous live diff cleanup is unfinished", vim.log.levels.WARN)
+			end
+			return existing
+		end
 		if util.win_is_valid(existing.editable_win) then
 			vim.api.nvim_set_current_win(existing.editable_win)
 		end
@@ -724,10 +843,18 @@ function M.open(opts)
 		if not util.buf_is_valid(bufnr) or util.buf_path(bufnr) ~= source_path or state.get(bufnr) then
 			return
 		end
-		if not util.win_is_valid(invoking_win) or vim.api.nvim_win_get_buf(invoking_win) ~= bufnr then
+		if
+			not util.win_is_valid(invoking_win)
+			or vim.api.nvim_win_get_tabpage(invoking_win) ~= invoking_tab
+			or vim.api.nvim_win_get_buf(invoking_win) ~= bufnr
+		then
 			return
 		end
-		local opened, open_err = open_session(session)
+		session.editable_win = invoking_win
+		local opened, open_err
+		vim.api.nvim_win_call(invoking_win, function()
+			opened, open_err = open_session(session)
+		end)
 		if not opened then
 			notify_open_error(open_err, opts)
 			return
