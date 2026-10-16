@@ -67,6 +67,43 @@ local function local_path(path)
 	return path
 end
 
+-- SVN uses native endings for its syntax, but value lines retain their own bytes.
+local function property_lines(raw)
+	local lines = require("lazyvcs.util").split_lines(raw)
+	local in_hunk = false
+	for index, line in ipairs(lines) do
+		local text = line:gsub("\r$", "")
+		local section = text:match("^Index: ") or text:match("^Property changes on: ")
+		if section then
+			in_hunk = false
+		end
+		local hunk = text:match("^## %-%d+,?%d* %+%d+,?%d* ##$")
+		local marker = text == "\\ No newline at end of property"
+		if
+			section
+			or text == ""
+			or text:match("^=+$")
+			or text:match("^_+$")
+			or text:match("^Added: ")
+			or text:match("^Modified: ")
+			or text:match("^Deleted: ")
+			or hunk
+			or marker
+			or (not in_hunk and (text:match("^%-%-%- ") or text:match("^%+%+%+ ")))
+		then
+			lines[index] = text
+		end
+		if marker and line ~= text and index > 1 then
+			-- An unterminated value gets SVN's native newline before the marker.
+			lines[index - 1] = lines[index - 1]:gsub("\r$", "")
+		end
+		if hunk then
+			in_hunk = true
+		end
+	end
+	return lines
+end
+
 local function load_property_patch(task, snapshot, item, done)
 	if item.kind == "dir" then
 		return require("lazyvcs.backends.svn_properties").load_directory_patch(task, snapshot, item, done)
@@ -86,7 +123,7 @@ local function load_property_patch(task, snapshot, item, done)
 		if (result and result.stdout_truncated) or (raw and #raw > common.max_file_bytes) then
 			err = "Property patch exceeds the 1 MiB preview limit"
 		end
-		done(raw and raw ~= "" and require("lazyvcs.util").split_text_lines(raw) or nil, err)
+		done(raw and raw ~= "" and property_lines(raw) or nil, err)
 	end, { output_limit_bytes = 2 * common.max_file_bytes })
 end
 

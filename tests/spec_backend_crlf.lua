@@ -66,6 +66,30 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_svn_compare_crlf_info_urls",
+			function()
+				local url = "file:///repo/trunk"
+				local raw = '<info>\r\n<entry revision="2" kind="dir" path=".">\r\n<url>'
+					.. url
+					.. "</url>\r\n<repository><root>file:///repo</root></repository>\r\n</entry>\r\n</info>\r\n"
+				with_output(function()
+					return raw
+				end, function()
+					local context = await(function(done)
+						svn.context({ root = h.tempdir() }, done)
+					end)
+					assert(context.branch == url and context.suggestion == url .. "@2")
+					local resolved = await(function(done)
+						svn.resolve({ root = h.tempdir() }, url .. "@2", done)
+					end)
+					assert(resolved.url == url and resolved.revision == "2")
+				end)
+				-- parse_info preserves text inside tags; CRLF after </url> is outside the URL.
+				local embedded = raw:gsub("</url>", "\r</url>")
+				assert(require("lazyvcs.backends.xml").parse_info(embedded).url == url .. "\r")
+			end,
+		},
+		{
 			"test_svn_compare_crlf_optional_property_error",
 			function()
 				local root = h.tempdir()
@@ -164,23 +188,15 @@ return function(ctx)
 			end,
 		},
 		{
-			"test_core_blame_log_property_text_readers_normalize_crlf",
+			"test_core_process_lines_normalize_crlf",
 			function()
 				with_output(function()
 					return "metadata\r\nsource\r\n"
 				end, function()
-					for _, args in ipairs({
-						{ "git", "blame" },
-						{ "git", "show" },
-						{ "svn", "blame" },
-						{ "svn", "log" },
-						{ "svn", "diff", "--properties-only" },
-					}) do
-						local lines = await(function(done)
-							require("lazyvcs.backends.process").lines(args, { cwd = h.tempdir() }, done)
-						end)
-						clean(lines, { "metadata", "source" })
-					end
+					local lines = await(function(done)
+						require("lazyvcs.backends.process").lines({ "git", "show" }, { cwd = h.tempdir() }, done)
+					end)
+					clean(lines, { "metadata", "source" })
 				end)
 			end,
 		},
@@ -277,7 +293,33 @@ return function(ctx)
 			function()
 				with_output(function(args)
 					assert(vim.tbl_contains(args, "--properties-only"))
-					return "Property changes on: sample.txt\r\nAdded: custom\r\n+value\r\n"
+					return table.concat({
+						"Index: sample.txt\r",
+						string.rep("=", 67) .. "\r",
+						"--- sample.txt\t(revision 1)\r",
+						"+++ sample.txt\t(working copy)\r",
+						"\r",
+						"Property changes on: sample.txt\r",
+						string.rep("_", 67) .. "\r",
+						"Modified: custom\r",
+						"## -1,2 +1,3 ##\r",
+						"-one",
+						"-two",
+						"+one\r",
+						"+two\r",
+						"+last\r",
+						"\\ No newline at end of property\r",
+						"Added: another\r",
+						"## -0,0 +1 ##\r",
+						"+value",
+						"Deleted: removed\r",
+						"## -1,2 +1 ##\r",
+						"-value",
+						-- These look like file headers but are property content.
+						"--- literal\r",
+						"+++ literal\r",
+						"",
+					}, "\n")
 				end, function()
 					local value = await(function(done)
 						svn.preview(
@@ -286,7 +328,34 @@ return function(ctx)
 							done
 						)
 					end)
-					clean(value.right, { "Property changes on: sample.txt", "Added: custom", "+value" })
+					assert(
+						vim.deep_equal(value.right, {
+							"Index: sample.txt",
+							string.rep("=", 67),
+							"--- sample.txt\t(revision 1)",
+							"+++ sample.txt\t(working copy)",
+							"",
+							"Property changes on: sample.txt",
+							string.rep("_", 67),
+							"Modified: custom",
+							"## -1,2 +1,3 ##",
+							"-one",
+							"-two",
+							"+one\r",
+							"+two\r",
+							"+last",
+							"\\ No newline at end of property",
+							"Added: another",
+							"## -0,0 +1 ##",
+							"+value",
+							"Deleted: removed",
+							"## -1,2 +1 ##",
+							"-value",
+							"--- literal\r",
+							"+++ literal\r",
+						}),
+						vim.inspect(value.right)
+					)
 					assert(vim.deep_equal(value.right, value.properties))
 				end)
 			end,
@@ -295,27 +364,27 @@ return function(ctx)
 			"test_svn_compare_crlf_directory_property_values",
 			function()
 				with_output(function(args)
-					local path = args[#args]:sub(1, -2)
+					local path = args[#args]:gsub("@[^@]*$", "")
 					return '<properties>\r\n<target path="'
 						.. path
 						.. '"><property name="custom" encoding="base64">'
-						.. vim.base64.encode("one\r\ntwo\r\n")
+						.. vim.base64.encode(vim.tbl_contains(args, "-r") and "one\ntwo\n" or "one\r\ntwo\r\n")
 						.. "</property></target>\r\n</properties>\r\n"
 				end, function()
 					local value = await(function(done)
 						svn.preview(
 							{ root = h.tempdir(), url = "file:///repo", revision = "1" },
-							{ relpath = "folder", status = "A", kind = "dir", property_only = true },
+							{ relpath = "folder", status = "M", kind = "dir", property_only = true },
 							done
 						)
 					end)
-					local added = {}
+					local changed = {}
 					for _, line in ipairs(value.right) do
-						if line:sub(1, 1) == "+" then
-							added[#added + 1] = line
+						if line:match("^[+-]") then
+							changed[#changed + 1] = line
 						end
 					end
-					clean(added, { "+one", "+two" })
+					assert(vim.deep_equal(changed, { "-one", "-two", "+one\r", "+two\r" }), vim.inspect(changed))
 				end)
 			end,
 		},
