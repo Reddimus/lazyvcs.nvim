@@ -212,7 +212,9 @@ function M.open(state, repo, default_value, on_submit)
 		default_value = default_value or "",
 		can_generate = ai.available(),
 		on_generate = function(done, on_cancel)
-			local ok, start_err = ai.generate(repo, done, { owner = state, on_cancel = on_cancel })
+			-- Popups outlive sidebar states and cancel through their repository root.
+			local ok, start_err =
+				ai.generate(repo, done, { owner = util.canonical_path(repo.root), on_cancel = on_cancel })
 			if not ok then
 				done(nil, start_err)
 			end

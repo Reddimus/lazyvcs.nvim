@@ -17,6 +17,7 @@ local remote_snapshots = require("lazyvcs.source_control.remote_refresh")
 ---@field loading_summary? boolean
 ---@field loading_details? boolean
 ---@field remote_snapshot? table[]
+---@field remote_local? {items: table[], version: number}
 ---@field remote_unknown? boolean
 ---@field remote_version? integer
 ---@field error? string
@@ -154,6 +155,7 @@ local function placeholder_status(repo, previous)
 		unborn = previous and previous.unborn or false,
 		upstream_gone = previous and previous.upstream_gone or false,
 		remote_snapshot = previous and previous.remote_snapshot or nil,
+		remote_local = previous and previous.remote_local or nil,
 		remote_unknown = previous and previous.remote_unknown or false,
 		remote_error = previous and previous.remote_error or nil,
 		sections = previous and previous.sections or {},
@@ -1054,6 +1056,7 @@ function M.with_remote_snapshot(status, snapshot, unknown)
 		return status
 	end
 	status = vim.tbl_extend("force", {}, status)
+	snapshot = snapshot or status.remote_local
 	status.remote_snapshot = snapshot and snapshot.items or nil
 	status.remote_version = snapshot and snapshot.version or nil
 	status.remote_unknown = not snapshot
@@ -1077,6 +1080,7 @@ function M.refresh_cache(cache)
 		if status.vcs == "svn" and (status.remote_snapshot or status.remote_unknown) then
 			retained[root] = placeholder_status(status, {
 				remote_snapshot = status.remote_snapshot,
+				remote_local = status.remote_local,
 				remote_unknown = status.remote_unknown,
 				counts = { remote = status.remote_snapshot and #status.remote_snapshot or 0 },
 			})

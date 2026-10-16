@@ -588,6 +588,8 @@ remote_admission.set_listener(function(root)
 		for _, state in pairs(states) do
 			local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[root]
 			if cached and cached.vcs == "svn" then
+				-- Invalidation and new publications supersede this tab's private result.
+				cached.remote_local = nil
 				state.lazyvcs_repo_cache[root] = model.with_remote_snapshot(
 					cached,
 					remote_admission.read(root),
@@ -680,11 +682,14 @@ local function start_summary_hydration(state, remote_refresh)
 				published = remote_admission.publish(token, summary.remote_snapshot or {})
 			end
 			local snapshot = remote_admission.read(current_repo.root)
+			local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[current_repo.root] or nil
 			if published and token and summary and not snapshot then
 				-- The shared cache can reject a large result; its producer still owns it.
 				snapshot = { items = summary.remote_snapshot or {}, version = token.version }
+				if cached then
+					cached.remote_local = snapshot
+				end
 			end
-			local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[current_repo.root] or nil
 			state.lazyvcs_repo_cache[current_repo.root] = model.with_remote_snapshot(
 				model.merge_summary(
 					cached,

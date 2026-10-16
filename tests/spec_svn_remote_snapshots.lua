@@ -91,6 +91,7 @@ return function(ctx)
 			"test_svn_source_control_oversized_publish_keeps_incoming_action",
 			guard(function(f)
 				local state = open(f.root)
+				local loader = model.load_repo_summary_async
 				local items = incoming_items(f)
 				items[1].padding = string.rep("x", 4 * 1024 * 1024)
 				---@diagnostic disable-next-line: duplicate-set-field
@@ -101,9 +102,32 @@ return function(ctx)
 				settled(state)
 				assert(not cache.read(f.root), "oversized snapshot retained")
 				displayed(state, f.root, "incoming", "Update")
+				model.load_repo_summary_async = loader
+				state.lazyvcs_expanded[model.repo_changes_id(f.root)] = false
+				require("lazyvcs.source_control.ops").open_repo(state, {
+					type = "repo",
+					path = f.root,
+					extra = { repo_root = f.root },
+				})
+				wait(function()
+					return state.lazyvcs_repo_cache[f.root].details_loaded
+						and not state.lazyvcs_repo_cache[f.root].loading_summary
+						and not state.lazyvcs_repo_cache[f.root].loading_details
+				end, "oversized snapshot details did not load", 15000)
+				displayed(state, f.root, "incoming", "Update")
+				assert(
+					state.lazyvcs_repo_cache[f.root].remote_snapshot[1].id == items[1].id,
+					"details lost incoming row"
+				)
+				native.refresh(false)
+				settled(state)
+				displayed(state, f.root, "incoming", "Update")
 				vim.cmd.tabnew()
 				local second = open(f.root)
 				displayed(second, f.root, "unknown", "Commit")
+				cache.invalidate(f.root)
+				displayed(state, f.root, "unknown", "Commit")
+				assert(not state.lazyvcs_repo_cache[f.root].remote_local, "invalidation retained private snapshot")
 			end),
 		},
 		{

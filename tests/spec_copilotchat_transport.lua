@@ -22,6 +22,7 @@ return function(ctx)
 				local fixture = assert(loadfile(tests .. "/fixtures/ai_transport_helpers.lua"))()
 				local async = fixture.async()
 				local dir, chunks, callbacks = h.tempdir(), 0, 0
+				local timeout_timer
 				local curl, chat_curl, Job, jobs = fixture.transport(dir, tests .. "/fixtures/ai_transport.lua", async)
 				local requests = {}
 				package.loaded["plenary.async"] = async
@@ -75,7 +76,7 @@ return function(ctx)
 					end, "second transport survived cancellation", 3000)
 					assert(second_job.job.is_shutdown, "Job shutdown was not called")
 					local timeout_count, timeout_error = 0, nil
-					local timeout_timer, timeout_callback
+					local timeout_callback
 					-- Hold only this deadline until the child is ready; startup can be slow.
 					---@diagnostic disable-next-line: duplicate-set-field
 					vim.defer_fn = function(callback, delay)
@@ -89,11 +90,18 @@ return function(ctx)
 						timeout_error = failure
 					end)
 					vim.defer_fn = defer
-					-- Exercise readiness observed later than the configured deadline.
+					-- Allow slow child startup while the test deadline remains paused.
 					vim.wait(300)
 					local _, timeout_pid = ready(3)
 					assert(timeout_count == 0 and process.alive(timeout_pid), "deadline fired before child readiness")
-					assert(timeout_timer):start(250, 0, vim.schedule_wrap(assert(timeout_callback)))
+					assert(timeout_timer):start(
+						250,
+						0,
+						vim.schedule_wrap(function()
+							assert(timeout_timer):close()
+							assert(timeout_callback)()
+						end)
+					)
 					wait(function()
 						return timeout_count == 1
 					end, "timeout callback missing")
@@ -242,6 +250,9 @@ return function(ctx)
 					assert(not called and requirement:find("requires"), "missing transport started client")
 				end, debug.traceback)
 				vim.defer_fn = defer
+				if timeout_timer and not timeout_timer:is_closing() then
+					timeout_timer:close()
+				end
 				for _, handle in ipairs(requests) do
 					handle:cancel()
 				end

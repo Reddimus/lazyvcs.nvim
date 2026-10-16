@@ -3,7 +3,150 @@ return function(ctx)
 	local ai, util = require("lazyvcs.source_control.ai"), require("lazyvcs.util")
 	local input, ops = require("lazyvcs.source_control.input"), require("lazyvcs.source_control.ops")
 	local fixture = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h") .. "/fixtures/ai_transport.lua"
+	local function cancel_reopened_popup(stage, second_tab, use_key)
+		require("lazyvcs").setup({
+			use_gitsigns = false,
+			signs = { enabled = false },
+			source_control = { remote_refresh = "manual" },
+			ai = { commit_message = { provider = "codex", confirm_privacy = false } },
+		})
+		ai._test_set_executable_checker(function()
+			return true
+		end)
+		local native = require("lazyvcs.source_control.native")
+		local f = h.make_git_fixture()
+		local function open()
+			local state = native.open({ path = f.root })
+			wait(function()
+				return not state.lazyvcs_discovering and not state.lazyvcs_hydration_active
+			end, "sidebar did not load", 15000)
+			return state
+		end
+		local state = open()
+		local start, notify = util.system_start, vim.notify
+		local held, popup, killed, provider_calls, cancellation_notice
+		killed, provider_calls = 0, 0
+		local ok, err = xpcall(function()
+			---@diagnostic disable-next-line: duplicate-set-field
+			util.system_start = function(args, opts, done)
+				local context = args[1] == "git" and vim.tbl_contains(args, "diff")
+				local provider = args[1] == "codex"
+				if provider then
+					provider_calls = provider_calls + 1
+				end
+				if context and stage == "context" or provider and stage == "provider" then
+					held = done
+					return {
+						kill = function()
+							killed = killed + 1
+							done(nil, "cancelled", { cancelled = true })
+						end,
+					}
+				elseif context then
+					done({ code = 0, stdout = "staged diff", stderr = "" })
+					return {}
+				end
+				return start(args, opts, done)
+			end
+			popup = input.open(state, state.lazyvcs_repo_cache[f.root], "original", function() end)
+			popup.generate()
+			wait(function()
+				return held ~= nil
+			end, "popup generation did not start")
+			if second_tab then
+				vim.cmd.tabnew()
+			else
+				native.close()
+				assert(vim.api.nvim_win_is_valid(popup.winid), "sidebar closed popup")
+				assert(killed == 0, "sidebar close killed popup generation")
+			end
+			state = open()
+			local count
+			if use_key then
+				vim.notify = function(message)
+					cancellation_notice = message
+				end
+				for row, node in pairs(state.lazyvcs_line_nodes) do
+					if node.type == "repo" and node.extra.repo_root == f.root then
+						vim.api.nvim_set_current_win(state.winid)
+						vim.api.nvim_win_set_cursor(state.winid, { row, 0 })
+					end
+				end
+				vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("X", true, false, true), "xt", false)
+				assert(
+					cancellation_notice
+						== "Cancelled the active operation for " .. state.lazyvcs_repo_cache[f.root].name,
+					"X did not report exactly one cancellation: " .. tostring(cancellation_notice)
+				)
+			else
+				count = require("lazyvcs").source_control_cancel(f.root)
+				assert(count == 1, "repository cancellation missed popup or counted it twice: " .. count)
+			end
+			assert(killed == 1, "popup generation survived repository cancellation")
+			assert(held)({ code = 0, stdout = "late generated message", stderr = "" })
+			assert(vim.api.nvim_buf_get_lines(popup.bufnr, 0, 1, false)[1] == "original", "late result changed popup")
+			assert(provider_calls == (stage == "provider" and 1 or 0), "cancelled context started provider")
+		end, debug.traceback)
+		if popup then
+			popup.close()
+		end
+		pcall(native.close)
+		vim.cmd("silent! tabonly!")
+		pcall(native.close)
+		util.system_start, vim.notify = start, notify
+		ai._test_reset_privacy()
+		assert(ok, err)
+	end
 	return {
+		{
+			"test_source_control_jobs_release_completed_request_owners",
+			function()
+				local jobs = require("lazyvcs.source_control.jobs")
+				local repo = { root = h.tempdir(), vcs = "git" }
+				local owners = setmetatable({}, { __mode = "v" })
+				for index = 1, 100 do
+					local owner = {}
+					owners[index] = owner
+					jobs.command(repo, "ai_context", { "fixture" }, {
+						owner = owner,
+						scope = "request:" .. index,
+						generation = index,
+						start = function(_, _, done)
+							if index % 2 == 0 then
+								done({ code = 0, stdout = "", stderr = "" })
+							end
+							return {
+								kill = function()
+									done(nil, "cancelled", { cancelled = true })
+								end,
+							}
+						end,
+					}, function() end)
+					assert(jobs.cancel_owner(owner) == index % 2, "completed owner retained cancellable work")
+				end
+				collectgarbage("collect")
+				collectgarbage("collect")
+				assert(next(owners) == nil, "scheduler retained completed request owners")
+			end,
+		},
+		{
+			"test_source_control_popup_cancel_after_sidebar_reopen",
+			function()
+				for _, stage in ipairs({ "context", "provider" }) do
+					cancel_reopened_popup(stage, false, false)
+					cancel_reopened_popup(stage, false, true)
+				end
+			end,
+		},
+		{
+			"test_source_control_popup_cancel_from_second_tab",
+			function()
+				for _, stage in ipairs({ "context", "provider" }) do
+					cancel_reopened_popup(stage, true, false)
+					cancel_reopened_popup(stage, true, true)
+				end
+			end,
+		},
 		{
 			"test_source_control_popup_context_survives_sidebar_close",
 			function()
@@ -67,6 +210,7 @@ return function(ctx)
 					popup.close()
 				end
 				pcall(native.close)
+				ai._test_reset_privacy()
 				assert(ok, err)
 			end,
 		},
@@ -85,6 +229,8 @@ return function(ctx)
 					return true
 				end)
 				local start, select = util.system_start, vim.ui.select
+				local config = require("lazyvcs.config").get().ai.commit_message
+				local confirm_privacy = config.confirm_privacy
 				local processes, popups = {}, {}
 				local root = h.tempdir()
 				local state, other_owner = {}, {}
@@ -162,7 +308,7 @@ return function(ctx)
 						{ owner = state }
 					)
 					local third, fourth = launched(3), launched(4)
-					assert(ops.cancel(root, { owner = state }) == 1, "popup cancellation count or owner incorrect")
+					assert(ops.cancel(root, { owner = root }) == 1, "popup cancellation count or owner incorrect")
 					wait(function()
 						return not alive(retry)
 					end, "retry provider survived cancellation", 3000)
@@ -182,7 +328,7 @@ return function(ctx)
 					wait(function()
 						return held ~= nil
 					end, "context did not start")
-					assert(ops.cancel(root, { owner = state }) > 0)
+					assert(ops.cancel(root, { owner = root }) == 1)
 					held({ code = 0, stdout = "late context" })
 					assert(#processes == 5, "cancelled context started provider")
 					pending.close()
@@ -216,7 +362,6 @@ return function(ctx)
 						vim.api.nvim_buf_get_lines(sync.bufnr, 0, 1, false)[1] == "synchronous",
 						"stale confirmation replaced message"
 					)
-					local config = require("lazyvcs.config").get().ai.commit_message
 					config.confirm_privacy = true
 					ai._test_reset_privacy()
 					local privacy, cancellations = nil, 0
@@ -272,6 +417,7 @@ return function(ctx)
 				end
 				ops.cancel(root)
 				util.system_start, vim.ui.select = start, select
+				config.confirm_privacy = confirm_privacy
 				ai._test_reset_privacy()
 				assert(ok, err)
 			end,

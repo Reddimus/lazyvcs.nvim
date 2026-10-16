@@ -80,6 +80,28 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_source_control_popup_exit_kills_context_and_provider",
+			function()
+				if vim.fn.has("win32") == 1 then
+					error({ lazyvcs_skip = "POSIX process groups" })
+				end
+				local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+				for _, stage in ipairs({ "context", "provider" }) do
+					local f = h.make_git_fixture()
+					p.guarded(f.root, function()
+						p.editor(root .. "/tests/fixtures/popup_shutdown.lua", f.root, { root, f.root, stage })
+						ctx.wait_for(function()
+							return p.dead(f.root)
+						end, "popup process tree survived editor exit", 1000)
+						local state = vim.json.decode(table.concat(vim.fn.readfile(f.root .. "/popup-exit.json"), "\n"))
+						assert(state.closed and not state.active, "exit did not cancel popup request registration")
+						assert(state.message == "original", "shutdown changed popup text")
+						assert(vim.fn.filereadable(f.root .. "/callback") == 0, "shutdown delivered popup result")
+					end)
+				end
+			end,
+		},
+		{
 			"test_source_control_commit_file_survives_slow_hook_after_exit",
 			function()
 				message_shutdown(false, false)
