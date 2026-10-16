@@ -145,6 +145,119 @@ return function(ctx)
 	end
 	local cases = {
 		{
+			"test_live_diff_open_target_refuses_closing_buffer_in_other_tab",
+			function()
+				local f = setup()
+				local s = opened()
+				local close = layout.close
+				---@diagnostic disable-next-line: duplicate-set-field
+				layout.close = function()
+					error("persistent cleanup failure")
+				end
+				vim.cmd.tabnew()
+				local destination = api.nvim_get_current_win()
+				local result = actions.open_target({
+					backend = "git",
+					kind = "git_worktree",
+					path = f.file1,
+					root = f.root,
+					relpath = "alpha.txt",
+					editable_side = "right",
+					left = { label = "HEAD", lines = s.base_lines },
+					right = { label = "WORKTREE", path = f.file1, modifiable = true },
+				})
+				assert(not result, "comparison replaced a buffer whose close is unfinished")
+				assert(state.get(s.editable_bufnr) == s and state.for_window(s.base_win) == s)
+				assert(not state.for_window(destination) and #api.nvim_tabpage_list_wins(0) == 1)
+				layout.close = close
+				ctx.wait_for(function()
+					return not state.get(s.editable_bufnr)
+				end, "blocked comparison stranded original cleanup")
+				assert(not api.nvim_win_is_valid(s.base_win) and not api.nvim_buf_is_valid(s.base_bufnr))
+			end,
+		},
+		{
+			"test_live_diff_explicit_failed_close_reports_each_attempt",
+			function()
+				setup()
+				local s = opened()
+				local calls, messages = 0, {}
+				---@diagnostic disable-next-line: duplicate-set-field
+				layout.close = function()
+					calls = calls + 1
+					error("persistent cleanup failure")
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				require("lazyvcs.util").notify = function(message)
+					messages[#messages + 1] = message
+				end
+				actions.close(s.editable_bufnr)
+				ctx.wait_for(function()
+					return calls == 2
+				end, "automatic close retry did not run")
+				assert(#messages == 1, "automatic retry repeated cleanup notification")
+				actions.close(s.editable_bufnr)
+				assert(#messages == 2, "explicit failed close was silent")
+				assert(state.current() == s and s.phase == "closing", "closing owner must remain discoverable")
+				actions.open()
+				assert(#messages == 3 and messages[3]:find("cleanup is unfinished"), "blocked open was silent")
+				vim.cmd.tabnew()
+				actions.open({ bufnr = s.editable_bufnr })
+				assert(#messages == 4 and messages[4]:find("cleanup is unfinished"), "closing buffer owner was silent")
+			end,
+		},
+		{
+			"test_live_diff_reload_refreshes_without_another_edit",
+			function()
+				for _, command in ipairs({ "edit!", "checktime" }) do
+					local f = setup()
+					vim.bo.autoread = true
+					local s = opened()
+					h.write_file(f.file1, "reloaded replacement with different size\n")
+					vim.cmd(command)
+					assert(
+						api.nvim_buf_get_lines(s.editable_bufnr, 0, 1, false)[1]:find("reloaded replacement"),
+						"reload fixture did not reload"
+					)
+					ctx.wait_for(function()
+						return s.current_text and s.current_text.lines[1] == "reloaded replacement with different size"
+					end, command .. " left stale diff text")
+					local expected = require("lazyvcs.diff").compute_text_hunks(s.base_text, s.current_text)
+					assert(vim.deep_equal(s.hunks, expected), "reload left stale hunks")
+					h.cleanup()
+					vim.cmd("silent! only!")
+				end
+			end,
+		},
+		{
+			"test_live_diff_cleanup_tolerates_wiped_buffer_and_closed_window",
+			function()
+				setup()
+				local s = opened()
+				local editor = require("lazyvcs.integrations.editor")
+				local aerial = require("lazyvcs.integrations.aerial")
+				local snapshot = editor.guard_markdown_buffer(s.editable_bufnr, "source.md")
+				vim.cmd("belowright new")
+				api.nvim_win_close(s.editable_win, true)
+				api.nvim_buf_delete(s.editable_bufnr, { force = true })
+				assert(not api.nvim_buf_is_valid(s.editable_bufnr) and not api.nvim_win_is_valid(s.editable_win))
+				for _ = 1, 2 do
+					require("lazyvcs.align").clear(s)
+					assert(aerial.disable_buffer(s.editable_bufnr, { detach = true }) == nil)
+					editor.restore_buffer(snapshot)
+					require("lazyvcs.highlighting").release(s.editable_win)
+				end
+				ctx.wait_for(function()
+					return not state.get(s.editable_bufnr)
+				end, "wiped owner retained session")
+				assert(
+					not api.nvim_win_is_valid(s.base_win) and not api.nvim_buf_is_valid(s.base_bufnr),
+					"invalid source aborted cleanup before base pane closed"
+				)
+			end,
+		},
+
+		{
 			"test_live_diff_async_open_keeps_origin_and_completion_focus",
 			function()
 				for _, variant in ipairs({ "tab", "sibling", "closed", "replaced", "moved", "failure" }) do
@@ -175,11 +288,16 @@ return function(ctx)
 					elseif variant == "replaced" then
 						api.nvim_win_set_buf(win, api.nvim_create_buf(true, false))
 					elseif variant == "moved" then
-						api.nvim_set_current_win(win)
-						vim.cmd("wincmd T")
+						vim.cmd.tabnew()
+						api.nvim_win_set_config(win, { win = api.nvim_get_current_win(), split = "right" })
+						assert(
+							api.nvim_win_is_valid(win) and api.nvim_win_get_tabpage(win) ~= tab,
+							"fixture must move the original handle to another tab"
+						)
 						api.nvim_set_current_win(other)
 					end
 					local count = #api.nvim_tabpage_list_wins(other_tab)
+					local origin_count = api.nvim_tabpage_is_valid(tab) and #api.nvim_tabpage_list_wins(tab)
 					local open = layout.open
 					if variant == "failure" then
 						---@diagnostic disable-next-line: duplicate-set-field
@@ -197,6 +315,18 @@ return function(ctx)
 						assert(callback_focus == other, "on_open ran before focus restoration")
 					else
 						assert(not s, "obsolete or failed destination installed a session")
+						for _, candidate in ipairs(api.nvim_list_bufs()) do
+							assert(
+								not api.nvim_buf_get_name(candidate):match("^lazyvcs://"),
+								"cancelled or failed open retained a base buffer"
+							)
+						end
+						if variant == "failure" then
+							assert(
+								#api.nvim_tabpage_list_wins(tab) == origin_count,
+								"failed open left a partial pane in the original tab"
+							)
+						end
 					end
 					assert(api.nvim_get_current_win() == other, "completion changed focus")
 					assert(api.nvim_win_get_buf(other) == other_buf, "completion replaced unrelated buffer")
@@ -275,8 +405,8 @@ return function(ctx)
 				end, "scheduled retry did not finish cleanup")
 				assert(calls == 2 and not api.nvim_win_is_valid(s.base_win), "failed close left a base pane")
 				assert(
-					#messages == 1 and not messages[1]:find("\n"),
-					"cleanup failure was not one single-line notification"
+					#messages == 2 and not messages[1]:find("\n") and messages[2]:find("cleanup is unfinished"),
+					"failed close or blocked open did not notify"
 				)
 				layout.close, require("lazyvcs.util").notify = close, notify
 				-- A later explicit close can finish a persistent failure without closing a new owner.

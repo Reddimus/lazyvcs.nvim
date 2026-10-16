@@ -151,6 +151,35 @@ return function(ctx)
 	end
 	local cases = {
 		{
+			"test_live_diff_resession_preserves_other_tab_user_diff",
+			function()
+				local sessions = fixture(false)
+				local first_tab = sessions[1].tabpage
+				vim.cmd.tabnew()
+				local f = h.make_git_fixture()
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				local buf = api.nvim_get_current_buf()
+				require("lazyvcs").open()
+				ctx.wait_for(function()
+					return state.get(buf) ~= nil
+				end, "other-tab diff did not open", 15000)
+				local outside = assert(state.get(buf))
+				api.nvim_set_current_tabpage(first_tab)
+				vim.cmd("belowright new")
+				local win = api.nvim_get_current_win()
+				api.nvim_win_set_buf(win, buf)
+				vim.cmd.diffthis()
+				local before = util.capture_win_options(win, names)
+				dispatch("pre_save")
+				assert(
+					vim.deep_equal(util.capture_win_options(win, names), before),
+					"save projected another tab's session onto user diff window"
+				)
+				dispatch("post_save")
+				assert(outside.phase == "active" and vim.deep_equal(util.capture_win_options(win, names), before))
+			end,
+		},
+		{
 			"test_live_diff_resession_disabled_folds_do_not_scan_lines",
 			function()
 				local sessions, wins = fixture(false)

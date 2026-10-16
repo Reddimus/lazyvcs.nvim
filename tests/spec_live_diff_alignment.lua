@@ -12,13 +12,13 @@ return function(ctx)
 	end
 	local function guarded(fn)
 		return function()
-			local diffopt, columns, lines = vim.o.diffopt, vim.o.columns, vim.o.lines
+			local diffopt, columns, lines, showbreak = vim.o.diffopt, vim.o.columns, vim.o.lines, vim.go.showbreak
 			local schedule = align.schedule
 			local ok, err = xpcall(fn, debug.traceback)
 			align.schedule = schedule
 			h.cleanup()
 			vim.cmd("silent! only!")
-			vim.o.diffopt, vim.o.columns, vim.o.lines = diffopt, columns, lines
+			vim.o.diffopt, vim.o.columns, vim.o.lines, vim.go.showbreak = diffopt, columns, lines, showbreak
 			assert(ok, err)
 		end
 	end
@@ -121,6 +121,12 @@ return function(ctx)
 				end
 				vim.cmd("setlocal wrap! linebreak! breakindent!")
 				assert(calls == 0, "unrelated window scheduled owned alignment")
+				vim.cmd("setlocal showbreak=local")
+				assert(calls == 0, "local showbreak in unrelated window scheduled alignment")
+				vim.cmd("setglobal showbreak=>>")
+				assert(calls == 1, "global showbreak did not schedule owned alignment")
+				vim.cmd("set showbreak=>>>")
+				assert(calls == 2, "set showbreak did not schedule owned alignment")
 				align.schedule = schedule
 			end,
 		},

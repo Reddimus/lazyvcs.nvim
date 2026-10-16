@@ -20,6 +20,11 @@ and this project adheres to
 - Store sidebar Git commit messages as UTF-8 when repository settings declare a
   legacy encoding.
 - Transfer and clean up live diffs after buffer unload, deletion, and wipeout.
+- Preserve ownership after failed live diff cleanup and report blocked opens or
+  repeated close failures.
+- Refresh live diffs after file reloads and alignment after global showbreak
+  changes.
+- Preserve user diff windows in other tabs during Resession saves.
 - Keep delayed live diff opens in their originating window and preserve focus.
 - Update wrapped diff padding after option changes and clear it when wrapping
   stops.

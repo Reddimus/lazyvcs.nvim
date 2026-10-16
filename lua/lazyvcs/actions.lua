@@ -104,7 +104,8 @@ end
 -- prompt.
 local function open_session(session)
 	local owner = state.for_window(session.editable_win or vim.api.nvim_get_current_win())
-	if owner and owner.closing then
+	local prior = state.get(session.editable_bufnr)
+	if (owner and owner.closing) or (prior and prior.closing) then
 		return nil, "Previous live diff cleanup is unfinished"
 	end
 	session_sequence = session_sequence + 1
@@ -152,7 +153,7 @@ local function open_session(session)
 end
 
 local close_session
-close_session = function(session, opts)
+close_session = function(session, opts, automatic_retry)
 	opts = opts or {}
 	if not session or session.close_running or state.get(session.editable_bufnr) ~= session then
 		return
@@ -210,15 +211,14 @@ close_session = function(session, opts)
 	end
 	session.close_running = false
 	if cleanup_error then
-		if not session.close_error_reported then
-			session.close_error_reported = true
+		if not automatic_retry then
 			util.notify("lazyvcs: cleanup failed: " .. one_line(cleanup_error), vim.log.levels.ERROR)
 		end
 		if not session.close_retry_used then
 			session.close_retry_used = true
 			vim.schedule(util.safe_callback(function()
 				if state.get(session.editable_bufnr) == session then
-					close_session(session, opts)
+					close_session(session, opts, true)
 				end
 			end))
 		end
@@ -597,6 +597,7 @@ attach_source = function(session)
 				end
 			end),
 		})
+		schedule_refresh(session.editable_bufnr)
 	end
 end
 
@@ -636,7 +637,12 @@ attach_session = function(session)
 				end
 			end
 			local win = vim.api.nvim_get_current_win()
-			if args.match == "diffopt" or win == session.editable_win or win == session.base_win then
+			if
+				args.match == "diffopt"
+				or (args.match == "showbreak" and vim.v.option_type == "global")
+				or win == session.editable_win
+				or win == session.base_win
+			then
 				require("lazyvcs.align").schedule(session)
 			end
 		end),
@@ -763,11 +769,13 @@ function M.open(opts)
 	local invoking_tab = util.win_is_valid(invoking_win) and vim.api.nvim_win_get_tabpage(invoking_win)
 	local owner = state.for_window(invoking_win)
 	if owner and owner.closing then
+		util.notify("Previous live diff cleanup is unfinished", vim.log.levels.WARN)
 		return owner
 	end
 	local existing = state.get(bufnr)
 	if existing then
 		if existing.closing then
+			util.notify("Previous live diff cleanup is unfinished", vim.log.levels.WARN)
 			return existing
 		end
 		if util.win_is_valid(existing.editable_win) then

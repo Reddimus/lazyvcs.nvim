@@ -367,7 +367,9 @@ function M.prepare_sessions_save(sessions, transaction)
 				transaction.windows[win] = record
 				local token = by_buffer[buf]
 				if
-					token and (win == token.win or (diff and not (token.session.preexisting_diff_windows or {})[win]))
+					token
+					and tab == token.session.tabpage
+					and (win == token.win or (diff and not (token.session.preexisting_diff_windows or {})[win]))
 				then
 					record.token = token
 					record.options = capture_window_options(win)
