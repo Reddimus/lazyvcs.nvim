@@ -5,23 +5,53 @@ local M = {}
 local requests = {}
 local ns = vim.api.nvim_create_namespace("lazyvcs_blame_selection")
 
-local function close(request)
+local function owns_report(request)
+	return requests[request.source] == request
+		and not request.closed
+		and util.buf_is_valid(request.buf)
+		and util.win_is_valid(request.win)
+		and vim.api.nvim_win_get_buf(request.win) == request.buf
+end
+
+local function retire_request(request, close_owned_window)
 	if request.closed then
 		return
 	end
 	request.closed = true
-	if request.handle then
-		request.handle:kill()
-	end
-	if request.group then
-		vim.api.nvim_del_augroup_by_id(request.group)
-	end
-	if request.win and vim.api.nvim_win_is_valid(request.win) then
-		vim.api.nvim_win_close(request.win, true)
-	end
 	if requests[request.source] == request then
 		requests[request.source] = nil
 	end
+	if request.group then
+		pcall(vim.api.nvim_del_augroup_by_id, request.group)
+		request.group = nil
+	end
+	if request.handle then
+		local handle = request.handle
+		request.handle = nil
+		pcall(handle.kill, handle)
+	end
+	local win = request.win
+	request.win = nil
+	if close_owned_window and util.win_is_valid(win) and vim.api.nvim_win_get_buf(win) == request.buf then
+		pcall(vim.api.nvim_win_close, win, true)
+	end
+	if util.buf_is_valid(request.buf) and #vim.fn.win_findbuf(request.buf) == 0 then
+		pcall(vim.api.nvim_buf_delete, request.buf, { force = true })
+	end
+end
+
+local function protect(request, callback)
+	return function(...)
+		local ok, err = pcall(callback, ...)
+		if not ok then
+			retire_request(request, true)
+			util.notify("Selection blame failed: " .. tostring(err):gsub("[\r\n]+", " "), vim.log.levels.ERROR)
+		end
+	end
+end
+
+local function close(request)
+	retire_request(request, true)
 end
 
 local function write(request, lines)
@@ -113,63 +143,99 @@ function M.open(first, last)
 	vim.api.nvim_create_autocmd("BufWipeout", {
 		group = request.group,
 		buffer = source,
-		callback = function()
+		callback = protect(request, function()
 			close(request)
-		end,
+		end),
 	})
 	vim.api.nvim_create_autocmd("WinClosed", {
 		group = request.group,
 		pattern = tostring(request.win),
-		callback = function()
+		callback = protect(request, function()
 			close(request)
-		end,
+		end),
 	})
-	request.handle = loader.load(target, util.join_lines(lines), function(entries, blame_err)
-		if request.closed then
-			return
-		end
-		request.handle = nil
-		if
-			not vim.api.nvim_buf_is_valid(source)
-			or vim.api.nvim_buf_get_changedtick(source) ~= request.tick
-			or (target.valid and not target.valid())
-			or (not target.snapshot and util.buf_path(source) ~= path)
-		then
-			write(request, { "Source changed while loading. Select the lines again." })
-			return
-		end
-		if not entries then
-			write(request, { blame_err or "No blame information is available for this path." })
-			return
-		end
-		local label = target.snapshot
-				and (target.side == "base" and "Base @ " .. target.snapshot.revision or "Saved worktree")
-			or "Buffer at request time"
-		local out = { label .. "  |  q close", "" }
-		request.entries = {}
-		for number = first, last do
-			local entry = entries[number]
-			request.entries[number] = entry
-			local metadata = "No attribution"
-			if entry then
-				metadata = entry.uncommitted and config.get().blame.uncommitted_text
-					or table.concat({ display(entry.revision), display(entry.author), display(entry.date) }, "  ")
-			end
-			out[#out + 1] = string.format("%d  %s | %s", number, metadata, display(lines[number]))
-		end
-		write(request, out)
-		for i = 3, #out do
-			local ending = out[i]:find(" | ", 1, true)
-			vim.api.nvim_buf_set_extmark(
-				request.buf,
-				ns,
-				i - 1,
-				0,
-				{ end_col = ending and ending - 1 or #out[i], hl_group = "Comment" }
-			)
+	vim.api.nvim_create_autocmd({ "BufUnload", "BufWipeout" }, {
+		group = request.group,
+		buffer = request.buf,
+		callback = protect(request, function()
+			retire_request(request, false)
+		end),
+	})
+	local check = protect(request, function()
+		if not request.closed and not owns_report(request) then
+			retire_request(request, false)
 		end
 	end)
+	vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter" }, {
+		group = request.group,
+		callback = check,
+	})
+	vim.api.nvim_create_autocmd("BufWinLeave", {
+		group = request.group,
+		buffer = request.buf,
+		callback = protect(request, function()
+			vim.schedule(check)
+		end),
+	})
+	protect(request, function()
+		request.handle = loader.load(
+			target,
+			util.join_lines(lines),
+			protect(request, function(entries, blame_err)
+				if not owns_report(request) then
+					retire_request(request, false)
+					return
+				end
+				request.handle = nil
+				if
+					not vim.api.nvim_buf_is_valid(source)
+					or vim.api.nvim_buf_get_changedtick(source) ~= request.tick
+					or (target.valid and not target.valid())
+					or (not target.snapshot and util.buf_path(source) ~= path)
+				then
+					write(request, { "Source changed while loading. Select the lines again." })
+					return
+				end
+				if not entries then
+					write(request, { blame_err or "No blame information is available for this path." })
+					return
+				end
+				local label = target.snapshot
+						and (target.side == "base" and "Base @ " .. target.snapshot.revision or "Saved worktree")
+					or "Buffer at request time"
+				local out = { label .. "  |  q close", "" }
+				request.entries = {}
+				for number = first, last do
+					local entry = entries[number]
+					request.entries[number] = entry
+					local metadata = "No attribution"
+					if entry then
+						metadata = entry.uncommitted and config.get().blame.uncommitted_text
+							or table.concat(
+								{ display(entry.revision), display(entry.author), display(entry.date) },
+								"  "
+							)
+					end
+					out[#out + 1] = string.format("%d  %s | %s", number, metadata, display(lines[number]))
+				end
+				write(request, out)
+				for i = 3, #out do
+					local ending = out[i]:find(" | ", 1, true)
+					vim.api.nvim_buf_set_extmark(
+						request.buf,
+						ns,
+						i - 1,
+						0,
+						{ end_col = ending and ending - 1 or #out[i], hl_group = "Comment" }
+					)
+				end
+			end)
+		)
+	end)()
 	request.origin_win = source_win
 	return request
+end
+function M._test_requests()
+	return requests
 end
 return M

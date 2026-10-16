@@ -842,8 +842,13 @@ end
 function M.parse_blame_entries(lines)
 	local out = {}
 	for _, line in ipairs(lines or {}) do
-		local revision, author, date = line:match("^%s*(%S+)%s+(%S+)%s+(%S+)")
-		local uncommitted = revision == "-" and author == "-" and date == "-"
+		local uncommitted = line:match("^%s*%-%s+%-%s+%-") ~= nil
+		local revision, author, date
+		if not uncommitted then
+			revision, author, date =
+				line:match("^%s*(%d+)%s+(.-)%s+(%d%d%d%d%-%d%d%-%d%d)%s+%d%d:%d%d:%d%d%s+[+-]%d%d%d%d%s+%b()%s")
+			author = author and util.trim(author)
+		end
 		out[#out + 1] = {
 			revision = revision or "-",
 			full_revision = revision or "-",

@@ -1125,7 +1125,7 @@ local function test_svn_async_blame_cancels_active_child_process()
 		eq(#handles, 2)
 		job:kill()
 		assert(handles[2].killed, "active svn blame child process should be killed")
-		callbacks[2]({ stdout = "     1 alice        2026-04-01 line\n", code = 0 })
+		callbacks[2]({ stdout = "     1 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line\n", code = 0 })
 		eq(completed, false)
 	end)
 
@@ -3359,8 +3359,8 @@ local function test_svn_status_and_blame_parsers()
 	eq(items[3].label, "untracked")
 
 	local blame = backend.parse_blame_metadata({
-		"     7 alice        2026-04-01 line one",
-		"    12 bob          2026-04-02 line two",
+		"     7 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line one",
+		"    12 bob          2026-04-02 12:34:56 +0000 (Wed, 01 Apr 2026) line two",
 		"      -          -                                            -     local line",
 	})
 	eq(blame, {
@@ -3369,8 +3369,8 @@ local function test_svn_status_and_blame_parsers()
 		"Uncommitted line",
 	})
 	local entries = backend.parse_blame_entries({
-		"     7 alice        2026-04-01 line one",
-		"    12 bob          2026-04-02 line two",
+		"     7 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line one",
+		"    12 bob          2026-04-02 12:34:56 +0000 (Wed, 01 Apr 2026) line two",
 		"      -          -                                            -     local line",
 	})
 	eq(entries, {
@@ -3512,7 +3512,7 @@ local function test_svn_blame_inline_delays_loading_indicator()
 	end, "inline blame should start loading", ASYNC_TIMEOUT_MS)
 	eq(inline_blame_text(source_buf), nil, "inline blame should stay quiet before loading delay")
 
-	callback({ "     7 alice        2026-04-01 line one" })
+	callback({ "     7 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line one" })
 	wait_for(function()
 		return inline_blame_text(source_buf) ~= nil
 	end, "inline blame result should render", ASYNC_TIMEOUT_MS)
@@ -3555,7 +3555,7 @@ local function test_svn_blame_inline_loading_indicator_and_uncommitted_line()
 	end, "inline blame loading indicator should render after delay", ASYNC_TIMEOUT_MS)
 
 	callback({
-		"     7 alice        2026-04-01 line one",
+		"     7 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line one",
 		"      -          -                                            -     local line",
 	})
 	wait_for(function()
@@ -7133,6 +7133,10 @@ vim.list_extend(
 vim.list_extend(cases, require("spec_window_options")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_paths")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_literal_paths")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_blame_inline")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_blame_lifecycle")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_blame_history")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_blame_metadata")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_highlighting")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {

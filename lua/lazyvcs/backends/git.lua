@@ -684,7 +684,7 @@ function M.blame_lines(path)
 		return nil, "File is not tracked by Git"
 	end
 
-	return util.system_lines({ "git", "blame", "--line-porcelain", "--", relpath }, { cwd = root })
+	return util.system_lines({ "git", "blame", "--encoding=UTF-8", "--line-porcelain", "--", relpath }, { cwd = root })
 end
 
 function M.blame_lines_async(path, on_done, opts)
@@ -729,7 +729,7 @@ function M.blame_lines_async(path, on_done, opts)
 						end
 						return task:finish(nil, tracked_err)
 					end
-					local blame_args = { "git", "blame", "--line-porcelain" }
+					local blame_args = { "git", "blame", "--encoding=UTF-8", "--line-porcelain" }
 					if opts.line_start and opts.line_end then
 						vim.list_extend(blame_args, { "-L", opts.line_start .. "," .. opts.line_end })
 					end
@@ -755,9 +755,19 @@ function M.blame_lines_async(path, on_done, opts)
 									end
 									local rows = {}
 									for number, line in ipairs(util.split_lines(data)) do
-										rows[#rows + 1] = string.rep("0", 40) .. " " .. number .. " " .. number .. " 1"
-										rows[#rows + 1] = "author Not Committed Yet"
-										rows[#rows + 1] = "\t" .. line
+										if
+											not (opts.line_start and opts.line_end)
+											or (number >= opts.line_start and number <= opts.line_end)
+										then
+											rows[#rows + 1] = string.rep("0", 40)
+												.. " "
+												.. number
+												.. " "
+												.. number
+												.. " 1"
+											rows[#rows + 1] = "author Not Committed Yet"
+											rows[#rows + 1] = "\t" .. line
+										end
 									end
 									task:finish(rows, nil, root)
 								end
@@ -846,13 +856,13 @@ function M.line_revision(path, line_number)
 end
 
 function M.line_revision_async(path, line_number, on_done, opts)
-	opts = opts or {}
+	opts = vim.tbl_extend("force", {}, opts or {}, { line_start = line_number, line_end = line_number })
 	local task = Task.new(on_done)
 	task:add(M.blame_lines_async(path, function(lines, err)
 		if not lines then
 			return task:finish(nil, err)
 		end
-		local entry = M.parse_blame_entries(lines)[line_number]
+		local entry = M.parse_blame_entries(lines)[1]
 		if not entry then
 			return task:finish(nil, "No blame information for this line")
 		end

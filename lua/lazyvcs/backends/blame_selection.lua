@@ -107,7 +107,7 @@ function M.load(target, contents, callback)
 								if next_range > #ranges then
 									return task:finish(entries)
 								end
-								local args = { "git", "blame", "--line-porcelain" }
+								local args = { "git", "blame", "--encoding=UTF-8", "--line-porcelain" }
 								-- Bound argv size on Windows when deletions split the selected history.
 								local ending = math.min(#ranges, next_range + 127)
 								for i = next_range, ending do
@@ -139,7 +139,8 @@ function M.load(target, contents, callback)
 				if not base and legacy_git[executable] then
 					return historical(relpath, retry)
 				end
-				local args = { "git", "blame", "--line-porcelain", "-L", target.first .. "," .. target.last }
+				local args =
+					{ "git", "blame", "--encoding=UTF-8", "--line-porcelain", "-L", target.first .. "," .. target.last }
 				if not base then
 					vim.list_extend(args, { "--contents", "-" })
 				end
