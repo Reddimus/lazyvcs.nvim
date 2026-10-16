@@ -1100,20 +1100,26 @@ local function construct_session(s)
 	end
 	s.sidebar = buffers.scratch(s)
 	buffers.init(s)
-	local previous_tab = vim.api.nvim_get_current_tabpage()
+	local previous_tabs = {}
+	for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
+		previous_tabs[tab] = true
+	end
 	local opened, open_err = pcall(function()
 		vim.cmd("tab split")
 	end)
-	local tab = vim.api.nvim_get_current_tabpage()
-	if tab ~= previous_tab then
-		s.tab, s.sidewin = tab, vim.api.nvim_get_current_win()
+	for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
+		if not previous_tabs[tab] then
+			s.tab = tab
+			break
+		end
 	end
 	if not opened then
 		error(open_err)
 	end
-	if not s.tab then
+	if not s.tab or vim.api.nvim_get_current_tabpage() ~= s.tab then
 		error("Comparison tab changed while opening")
 	end
+	s.sidewin = vim.api.nvim_get_current_win()
 	util.show_win_buffer(s.sidewin, s.sidebar)
 	for label, buf in pairs({ files = s.sidebar, base = s.left, saved = s.right }) do
 		vim.api.nvim_buf_set_name(buf, "lazyvcs://compare/" .. s.buffer_id .. "/" .. label)

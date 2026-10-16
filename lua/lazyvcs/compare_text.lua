@@ -71,7 +71,9 @@ function M.profile(bufnr)
 	}
 end
 
-local function valid_utf8(bytes)
+---@param bytes string
+---@return boolean
+function M.valid_utf8(bytes)
 	local i = 1
 	while i <= #bytes do
 		local c = bytes:byte(i)
@@ -190,7 +192,7 @@ function M.decode(bytes, profile, limit_bytes)
 	if not utf8 then
 		ok, decoded = pcall(vim.iconv, conversion_bytes, conversion_source, "utf-8")
 	end
-	if not ok or type(decoded) ~= "string" or not valid_utf8(decoded) then
+	if not ok or type(decoded) ~= "string" or not M.valid_utf8(decoded) then
 		return nil, "Unable to decode the VCS base as valid UTF-8"
 	end
 	local roundtrip_ok = true
@@ -263,7 +265,7 @@ function M.capture(bufnr, limit_bytes)
 		profile_key = profile.key,
 	}
 	local bytes = M.serialize(result)
-	if #bytes > limit_bytes or bytes:find("\0", 1, true) or not valid_utf8(bytes) then
+	if #bytes > limit_bytes or bytes:find("\0", 1, true) or not M.valid_utf8(bytes) then
 		return nil, "Buffer is oversized or contains unsupported text"
 	end
 	return result
@@ -316,7 +318,7 @@ function M.encode_file(text, profile, limit_bytes)
 	end
 	local separator = profile.fileformat == "dos" and "\r\n" or profile.fileformat == "mac" and "\r" or "\n"
 	local decoded = text.empty and "" or table.concat(text.lines, separator) .. (text.eol and separator or "")
-	if not valid_utf8(decoded) or decoded:find("\0", 1, true) then
+	if not M.valid_utf8(decoded) or decoded:find("\0", 1, true) then
 		return nil, "Buffer contains unsupported text"
 	end
 	local encoding, width = codec(profile.fileencoding)

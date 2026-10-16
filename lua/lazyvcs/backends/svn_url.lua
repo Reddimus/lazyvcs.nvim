@@ -11,7 +11,9 @@ function M.append_path(root_url, relpath)
 	if relpath == "." or relpath == "" then
 		return root_url
 	end
-	local encoded = relpath:gsub("[^A-Za-z0-9%-%._~/]", function(char)
+	-- Match SVN's URI spelling so XML targets can be checked exactly. SVN keeps
+	-- these safe punctuation bytes literal, but escapes ';', '%', '#', and '?'.
+	local encoded = relpath:gsub("[^A-Za-z0-9%-%._~/!$&'()*+,=:@]", function(char)
 		return string.format("%%%02X", char:byte())
 	end)
 	return root_url:gsub("/$", "") .. "/" .. encoded

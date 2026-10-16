@@ -114,6 +114,30 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_core_literal_path_helpers_in_fast_context",
+			function()
+				local f = h.make_git_fixture()
+				local timer = assert(vim.uv.new_timer())
+				local done, ok, err
+				local cwd = util.canonical_path(vim.uv.cwd())
+				timer:start(0, 0, function()
+					timer:close()
+					ok, err = pcall(function()
+						assert(vim.in_fast_event(), "probe did not run in a fast context")
+						assert(util.canonical_path(f.root) == f.root)
+						assert(util.canonical_path(".") == cwd)
+						assert(util.canonical_entry_path(f.file, true) == f.file)
+						assert(util.relpath(f.root, f.file) == "sample.txt")
+					end)
+					done = true
+				end)
+				ctx.wait_for(function()
+					return done
+				end, "fast-context path probe did not finish")
+				assert(ok, err)
+			end,
+		},
+		{
 			"test_core_sidebar_symlink_parent_selects_filesystem_repository",
 			function()
 				require("lazyvcs").setup({
@@ -122,45 +146,57 @@ return function(ctx)
 					source_control = { remote_refresh = "manual" },
 				})
 				local first, second = h.make_git_fixture(), h.make_git_fixture()
+				local windows = vim.fn.has("win32") == 1
 				vim.fn.mkdir(second.root .. "/child", "p")
-				assert(vim.uv.fs_symlink(second.root .. "/child", first.root .. "/link", { dir = true }))
+				assert(
+					vim.uv.fs_symlink(
+						second.root .. "/child",
+						first.root .. "/link",
+						windows and { junction = true } or { dir = true }
+					)
+				)
 				local requested = first.root .. "/link/.."
 				local native = require("lazyvcs.source_control.native")
 				local previous, cwd = vim.env.LAZYVCS_CANONICAL_ROOT, vim.fn.getcwd()
 				vim.env.LAZYVCS_CANONICAL_ROOT = first.root
 				local ok, err = xpcall(function()
-					for _, command in ipairs({ false, true }) do
-						local state
-						if command then
-							vim.cmd("LazyVCS sidebar open " .. "$LAZYVCS_CANONICAL_ROOT/link/..")
-							state = native._state()
-						else
-							state = require("lazyvcs").source_control_open({ path = requested })
+					assert(util.canonical_path(first.root .. "/link") == second.root .. "/child")
+					if not windows then
+						for _, command in ipairs({ false, true }) do
+							local state
+							if command then
+								vim.cmd("LazyVCS sidebar open " .. "$LAZYVCS_CANONICAL_ROOT/link/..")
+								state = native._state()
+							else
+								state = require("lazyvcs").source_control_open({ path = requested })
+							end
+							ctx.wait_for(function()
+								return not state.lazyvcs_discovering and state.lazyvcs_repo_specs
+							end, "symlink sidebar discovery did not finish", 15000)
+							assert(
+								state.path == second.root and state.lazyvcs_repo_specs[1].root == second.root,
+								"sidebar selected the lexical repository instead of the filesystem repository"
+							)
+							native.close()
 						end
-						ctx.wait_for(function()
-							return not state.lazyvcs_discovering and state.lazyvcs_repo_specs
-						end, "symlink sidebar discovery did not finish", 15000)
+						assert(util.canonical_path(requested) == second.root)
+						assert(util.canonical_entry_path(requested .. "/sample.txt", true) == second.file)
+						assert(util.relpath(requested, requested .. "/sample.txt") == "sample.txt")
+						assert(util.relpath(first.root, requested .. "/sample.txt") == nil)
+						assert(util.relpath(second.root, requested .. "/missing/..") == nil)
+						assert(util.relpath(second.root, requested .. "/missing/deep/file") == "missing/deep/file")
 						assert(
-							state.path == second.root and state.lazyvcs_repo_specs[1].root == second.root,
-							"sidebar selected the lexical repository instead of the filesystem repository"
+							util.relpath(second.root, requested .. "/missing/../sample.txt") == nil,
+							"unresolved traversal authorized an entry"
 						)
-						native.close()
+						assert(vim.uv.fs_symlink(first.file, second.root .. "/final-link"))
+						assert(
+							util.canonical_entry_path(requested .. "/final-link", true) == second.root .. "/final-link"
+						)
+						assert(util.relpath(second.root, requested .. "/final-link") == "final-link")
+						assert(vim.uv.fs_symlink(second.root .. "/absent", second.root .. "/dangling", { dir = true }))
+						assert(util.relpath(second.root, requested .. "/dangling/file") == nil)
 					end
-					assert(util.canonical_path(requested) == second.root)
-					assert(util.canonical_entry_path(requested .. "/sample.txt", true) == second.file)
-					assert(util.relpath(requested, requested .. "/sample.txt") == "sample.txt")
-					assert(util.relpath(first.root, requested .. "/sample.txt") == nil)
-					assert(util.relpath(second.root, requested .. "/missing/..") == nil)
-					assert(util.relpath(second.root, requested .. "/missing/deep/file") == "missing/deep/file")
-					assert(
-						util.relpath(second.root, requested .. "/missing/../sample.txt") == nil,
-						"unresolved traversal authorized an entry"
-					)
-					assert(vim.uv.fs_symlink(first.file, second.root .. "/final-link"))
-					assert(util.canonical_entry_path(requested .. "/final-link", true) == second.root .. "/final-link")
-					assert(util.relpath(second.root, requested .. "/final-link") == "final-link")
-					assert(vim.uv.fs_symlink(second.root .. "/absent", second.root .. "/dangling", { dir = true }))
-					assert(util.relpath(second.root, requested .. "/dangling/file") == nil)
 					vim.fn.mkdir(second.root .. "/~literal/$LAZYVCS_CANONICAL_ROOT", "p")
 					vim.cmd.cd(vim.fn.fnameescape(second.root))
 					assert(
@@ -171,13 +207,13 @@ return function(ctx)
 					assert(util.expand_user_path("$LAZYVCS_CANONICAL_ROOT/link/..") == requested)
 					assert(util.expand_user_path("~/link/..") == vim.uv.os_homedir() .. "/link/..")
 					assert(util.expand_user_path("%/#/*.txt") == "%/#/*.txt")
-					if vim.fn.has("win32") == 1 then
+					if windows then
 						local drive = second.root:sub(1, 2)
 						assert(
 							util.canonical_path(drive .. "child/..") == second.root,
 							"drive-relative traversal changed roots"
 						)
-						assert(util.canonical_path(requested:gsub("/", "\\")) == second.root)
+						assert(util.canonical_path((second.root .. "/child/.."):gsub("/", "\\")) == second.root)
 					end
 				end, debug.traceback)
 				vim.env.LAZYVCS_CANONICAL_ROOT = previous

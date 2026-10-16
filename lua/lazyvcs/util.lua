@@ -1,5 +1,6 @@
 local runtime = require("lazyvcs.process_runtime")
 local M = {}
+local windows_paths = vim.fn.has("win32") == 1
 
 ---@param winid integer
 ---@param name string
@@ -832,11 +833,10 @@ end
 ---@param path string
 ---@return string? absolute, string? err
 local function absolute_literal_path(path)
-	local windows = vim.fn.has("win32") == 1
-	if windows then
+	if windows_paths then
 		path = path:gsub("\\", "/")
 	end
-	if path:sub(1, 1) == "/" or (windows and path:match("^%a:/")) then
+	if path:sub(1, 1) == "/" or (windows_paths and path:match("^%a:/")) then
 		return path
 	end
 	local ok, absolute = pcall(vim.fs.abspath, path:sub(1, 1) == "~" and ("./" .. path) or path)

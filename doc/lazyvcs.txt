@@ -55,8 +55,9 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
 
 :LazyVCS sidebar {open, close, toggle, refresh, cancel} [path]
                       Control the source-control sidebar. `open` and `toggle`
-                      accept an optional directory to scan. Selection follows
-                      filesystem symlinks before resolving parent traversal.
+                      accept an optional directory to scan. On POSIX, selection
+                      follows symlinks before parent traversal. Windows uses
+                      native path semantics, resolving `..` textually first.
 
 :LazyVCS diff {open, close, toggle, refresh}
                       Control the live diff view for the current file.

@@ -57,7 +57,7 @@ return function(ctx)
 				local util, process = require("lazyvcs.util"), require("lazyvcs.backends.process")
 				local svn = require("lazyvcs.backends.svn")
 				local has, normalize, realpath = vim.fn.has, vim.fs.normalize, vim.uv.fs_realpath
-				local system, bytes = util.system, process.bytes
+				local system, bytes, canonical = util.system, process.bytes, util.canonical_path
 				---@diagnostic disable-next-line: duplicate-set-field
 				vim.fn.has = function(feature)
 					return feature == "win32" and 1 or has(feature)
@@ -83,6 +83,11 @@ return function(ctx)
 					return {}
 				end
 				local ok, err = pcall(function()
+					-- util caches the platform at initialization. Load an isolated copy
+					-- under the Windows mock instead of changing its cached upvalue.
+					local source = vim.api.nvim_get_runtime_file("lua/lazyvcs/util.lua", false)[1]
+					---@diagnostic disable-next-line: duplicate-set-field
+					util.canonical_path = assert(loadfile(source))().canonical_path
 					assert(process.root_output(native) == "C:/wc")
 					assert(svn.root("C:/wc/file.txt") == "C:/wc", "sync SVN root was not normalized")
 					local result, failure, done
@@ -96,6 +101,7 @@ return function(ctx)
 				end)
 				vim.fn.has, vim.fs.normalize, vim.uv.fs_realpath = has, normalize, realpath
 				util.system, process.bytes = system, bytes
+				util.canonical_path = canonical
 				assert(ok, err)
 			end,
 		},

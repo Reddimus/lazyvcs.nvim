@@ -14,7 +14,106 @@ return function(ctx)
 	local function contains(lines, text)
 		return lines and table.concat(lines, "\n"):find(text, 1, true)
 	end
+	local function set_property(f, path, name, value)
+		local propfile = h.tempdir() .. "/property"
+		local file = assert(io.open(propfile, "wb"))
+		file:write(value)
+		file:close()
+		h.exec({ "svn", "propset", name, "--file", propfile, "--", path .. "@" }, f.root)
+	end
+	local function directory_preview(f, path, status)
+		return await(function(done)
+			provider.preview(
+				{ root = f.root, url = h.file_url(f.repo), revision = "2" },
+				{ relpath = path, kind = "dir", status = status or "M", property_only = true },
+				done
+			)
+		end)
+	end
 	return {
+		{
+			"test_svn_compare_directory_property_whitespace_linear",
+			function()
+				local f = h.make_svn_fixture()
+				h.exec({ "svn", "mkdir", "padding" }, f.root)
+				set_property(f, "padding", "custom:padding", string.rep(" ", 300000))
+				local started = vim.uv.hrtime()
+				local result, err = directory_preview(f, "padding", "A")
+				assert(result, err)
+				assert(contains(result.right, "+" .. string.rep(" ", 300000)), "whitespace value was trimmed")
+				assert((vim.uv.hrtime() - started) / 1e9 < 5, "whitespace property parsing took over five seconds")
+			end,
+		},
+		{
+			"test_svn_compare_directory_property_literal_hex_text",
+			function()
+				local f = h.make_svn_fixture()
+				h.exec({ "svn", "mkdir", "text" }, f.root)
+				set_property(f, "text", "custom:text", "see <42> café\n")
+				set_property(f, "text", "custom:invalid", "invalid \255\n")
+				local result, err = directory_preview(f, "text", "A")
+				assert(result, err)
+				assert(contains(result.right, "+see <42> café"), "literal hex text was treated as binary")
+				assert(contains(result.right, "[base64] " .. vim.base64.encode("invalid \255\n")))
+			end,
+		},
+		{
+			"test_svn_compare_root_and_canonical_url_properties",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = h.make_svn_fixture()
+				h.exec({ "svn", "revert", f.file }, f.root)
+				local paths = { ".", "dir &@'()", "dir %23#" }
+				for _, path in ipairs(paths) do
+					if path ~= "." then
+						h.exec({ "svn", "mkdir", "--", path .. "@" }, f.root)
+					end
+					set_property(f, path, "custom:value", "BEFORE\n")
+				end
+				h.exec({ "svn", "commit", "-m", "property targets" }, f.root)
+				h.exec({ "svn", "update" }, f.root)
+				for _, path in ipairs(paths) do
+					set_property(f, path, "custom:value", "AFTER\n")
+					local result, err = directory_preview(f, path)
+					assert(result, path .. ": " .. tostring(err))
+					assert(contains(result.right, "-BEFORE") and contains(result.right, "+AFTER"))
+				end
+				local url = h.file_url(f.repo)
+				assert(require("lazyvcs.backends.svn_url").append_path(url, ".") == url)
+				local s = assert(compare.open({ path = f.root, base = url .. "@2" }))
+				local ok, err = xpcall(function()
+					ctx.wait_for(function()
+						return s.preview_result
+					end, "root property rows did not load", 15000)
+					api.nvim_set_current_win(s.sidewin)
+					api.nvim_win_set_cursor(s.sidewin, { assert(s.row_by_path["."]), 0 })
+					s.actions.preview()
+					ctx.wait_for(function()
+						return s.preview_result and s.shown_item.relpath == "."
+					end, "root property preview did not load", 15000)
+					assert(contains(api.nvim_buf_get_lines(s.right, 0, -1, false), "+AFTER"))
+				end, debug.traceback)
+				compare.close(s)
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_svn_compare_cr_property_and_xml_attributes",
+			function()
+				local f = h.make_svn_fixture()
+				local path = "dir & 'entities'"
+				h.exec({ "svn", "mkdir", path }, f.root)
+				set_property(f, path, "custom:cr", "first\rsecond\r\nthird\n")
+				local raw = h.exec({ "svn", "proplist", "--xml", "--verbose", path }, f.root)
+				assert(raw:find("&#13;", 1, true), "SVN did not emit numeric CR references")
+				local result, err = directory_preview(f, path, "A")
+				assert(result, err)
+				assert(contains(result.right, "first\rsecond"), "numeric CR entity was not decoded")
+				local xml = require("lazyvcs.backends.xml")
+				local attrs = xml.attributes([[path="dir &amp; &apos;entities&apos;" name="custom:&#x63;&#114;"]])
+				assert(attrs.path == path and attrs.name == "custom:cr", "attribute entities were not decoded")
+			end,
+		},
 		{
 			"test_svn_compare_directory_properties_are_pinned_and_shallow",
 			function()

@@ -41,7 +41,8 @@ and this project adheres to
 - Allow sparse Git previews and SVN property patches to use the full 1 MiB
   limit.
 - Open feasible stacked Compare layouts and clean up failed construction.
-- Resolve sidebar directory symlinks before parent traversal.
+- Resolve sidebar directory symlinks before parent traversal on POSIX and use
+  native path semantics on Windows.
 - Preserve BOM-shaped content in legacy encodings and reject invalid UCS-4
   values safely.
 - Terminate editor restore descendants on explicit Windows cancellation while

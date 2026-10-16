@@ -88,25 +88,53 @@ return function(ctx)
 						local status = s.lazyvcs_repo_cache[f.root]
 						return status and not s.lazyvcs_discovering and not s.lazyvcs_hydration_active
 					end, "incoming rows did not load", 15000)
-					local remote
-					for _, section in ipairs(s.lazyvcs_repo_cache[f.root].sections) do
-						if section.id == "remote" then
-							remote = section
+					local model = require("lazyvcs.source_control.model")
+					for line, node in ipairs(s.lazyvcs_line_nodes) do
+						if node.type == "repo_changes" then
+							vim.api.nvim_win_set_cursor(s.winid, { line, 0 })
+							native.dispatch("open")
+							break
 						end
 					end
+					ctx.wait_for(function()
+						return s.lazyvcs_repo_cache[f.root].details_loaded
+					end, "incoming details did not load", 15000)
+					s.lazyvcs_force_expand = { [model.repo_changes_id(f.root)] = true }
+					native.render(s)
 					local additions = 0
-					for _, row in ipairs(assert(remote).items) do
-						if row.extra.repos_item == "added" then
-							additions = additions + 1
-							local target =
-								load(f, row.extra.relpath, vim.tbl_extend("force", row.extra, { section = "remote" }))
-							assert(
-								target.kind == "svn_remote" and not target.editable_side,
-								"incoming collision opened as editable local content"
-							)
-							assert(#target.left.lines == 0 and table.concat(target.right.lines, "\n") == "REMOTE ONLY")
-							assert(rendered(target) == "REMOTE ONLY")
+					for _, name in ipairs({ "collision", "incoming" }) do
+						local line, row
+						for lnum, node in ipairs(s.lazyvcs_line_nodes) do
+							if
+								node.type == "file"
+								and node.extra.section == "remote"
+								and node.extra.relpath == name
+							then
+								line, row = lnum, node
+								break
+							end
 						end
+						assert(row and row.extra.repos_item == "added", "incoming sidebar row is missing")
+						additions = additions + 1
+						vim.api.nvim_set_current_win(s.winid)
+						vim.api.nvim_win_set_cursor(s.winid, { line, 0 })
+						vim.fn.maparg("<CR>", "n", false, true).callback()
+						ctx.wait_for(function()
+							return require("lazyvcs.state").current()
+						end, "incoming sidebar comparison did not open", 15000)
+						local session = assert(require("lazyvcs.state").current())
+						local target = session.comparison
+						assert(
+							target.kind == "svn_remote" and not target.editable_side,
+							"incoming collision opened as editable local content"
+						)
+						assert(#target.left.lines == 0 and table.concat(target.right.lines, "\n") == "REMOTE ONLY")
+						assert(
+							table.concat(vim.api.nvim_buf_get_lines(session.editable_bufnr, 0, -1, false), "\n")
+								== "REMOTE ONLY"
+						)
+						assert(not vim.bo[session.editable_bufnr].modifiable, "incoming preview is editable")
+						require("lazyvcs.actions").close(session.editable_bufnr)
 					end
 					assert(additions == 2)
 					local local_target = load(f, "collision", { section = "untracked", wc_item = "unversioned" })

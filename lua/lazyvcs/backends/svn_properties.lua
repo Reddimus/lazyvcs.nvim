@@ -30,17 +30,43 @@ local function decode(value)
 end
 
 local function parse(raw, expected)
-	local body = raw:gsub("^%s*<%?xml.-%?>", ""):match("^%s*<properties>%s*(.-)%s*</properties>%s*$")
+	local function trim(value)
+		local first, last = 1, #value
+		while first <= last and value:sub(first, first):match("%s") do
+			first = first + 1
+		end
+		while last >= first and value:sub(last, last):match("%s") do
+			last = last - 1
+		end
+		return value:sub(first, last)
+	end
+	local function unwrap(value, tag, opening)
+		local _, start, attrs = value:find(opening)
+		local close, finish, cursor = nil, nil, 1
+		while true do
+			local first, last = value:find("</" .. tag .. ">", cursor, true)
+			if not first then
+				break
+			end
+			close, finish, cursor = first, last, last + 1
+		end
+		if not start or not close or close <= start or finish ~= #value then
+			return nil
+		end
+		return trim(value:sub(start + 1, close - 1)), attrs
+	end
+	local body = unwrap(trim(raw:gsub("^%s*<%?xml.-%?>", "", 1)), "properties", "^<properties>")
 	if not body then
 		return nil, "Malformed SVN property XML"
 	end
 	if body == "" then
 		return {}
 	end
-	local attrs, content = body:match("^<target%s+([^>]+)>%s*(.-)%s*</target>$")
+	local content, attrs = unwrap(body, "target", "^<target%s+([^>]+)>")
 	local path = attrs and xml.attributes(attrs).path
 	if
-		not path
+		not content
+		or not path
 		or (
 			path ~= expected
 			and (
@@ -92,7 +118,7 @@ local function parse(raw, expected)
 end
 
 local function printable(value)
-	if value:find("[%z\1-\8\11\12\14-\31]") or vim.fn.strtrans(value):find("<[%x][%x]>") then
+	if value:find("[%z\1-\8\11\12\14-\31]") or not require("lazyvcs.compare_text").valid_utf8(value) then
 		return "[base64] " .. vim.base64.encode(value) .. "\n"
 	end
 	return value

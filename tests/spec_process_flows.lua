@@ -79,6 +79,60 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_source_control_cancel_matches_literal_root_aliases",
+			function()
+				setup()
+				local f = h.make_git_fixture()
+				vim.fn.mkdir(f.root .. "/a", "p")
+				local paths = { f.root .. "/", f.root .. "/a/.." }
+				if vim.fn.has("win32") ~= 1 then
+					local other = h.make_git_fixture()
+					assert(vim.uv.fs_symlink(f.root .. "/a", other.root .. "/link", { dir = true }))
+					paths[#paths + 1] = other.root .. "/link/.."
+				end
+				local ok, err = xpcall(function()
+					for _, path in ipairs(paths) do
+						local s = native.open({ path = path })
+						ctx.wait_for(function()
+							return not s.lazyvcs_discovering and not s.lazyvcs_hydration_active
+						end, "alias sidebar discovery did not finish", 15000)
+						assert(s.path == f.root and s.lazyvcs_repo_specs[1].root == f.root)
+						for _, route in ipairs({ "api", "command", "ops", "jobs" }) do
+							local started, cancelled, exit
+							jobs.command({ root = path, vcs = "git" }, "alias_probe", { "held" }, {
+								owner = s,
+								start = function(_, _, done)
+									started, exit = true, done
+									return {
+										cancel = function()
+											cancelled = true
+										end,
+									}
+								end,
+							}, function() end)
+							ctx.wait_for(function()
+								return started
+							end, "alias job did not start")
+							if route == "api" then
+								assert(require("lazyvcs").source_control_cancel(path) == 1)
+							elseif route == "command" then
+								vim.cmd("LazyVCS sidebar cancel " .. vim.fn.fnameescape(path))
+							elseif route == "ops" then
+								assert(ops.cancel(path, { owner = s }) == 1)
+							else
+								assert(jobs.cancel_repo(path) == 1)
+							end
+							assert(cancelled, route .. " did not cancel the canonical root for " .. path)
+							exit({ code = 130, stdout = "", stderr = "cancelled" })
+						end
+						native.close()
+					end
+				end, debug.traceback)
+				native.close()
+				assert(ok, err)
+			end,
+		},
+		{
 			"test_core_editor_restore_cancel_terminates_filter_tree",
 			function()
 				local p = require("process_helpers")
@@ -115,7 +169,7 @@ return function(ctx)
 							.. '"',
 					}, f.root)
 					local start, system, has = util.system_start, vim.system, vim.fn.has
-					local captured, handle, owner, tree_kills
+					local captured, handle, owner, tree_kills, restore_completed
 					tree_kills = 0
 					local ok, err = xpcall(function()
 						---@diagnostic disable-next-line: duplicate-set-field
@@ -152,7 +206,10 @@ return function(ctx)
 									return feature == "win32" and 1 or has(feature)
 								end
 							end
-							local started, result = pcall(start, args, opts, done)
+							local started, result = pcall(start, args, opts, function(...)
+								done(...)
+								restore_completed = true
+							end)
 							vim.fn.has = has
 							assert(started, result)
 							handle = result
@@ -184,6 +241,9 @@ return function(ctx)
 						ctx.wait_for(function()
 							return p.dead(dir)
 						end, "cancelled restore left filter descendants alive", 5000)
+						ctx.wait_for(function()
+							return owner.active == false and restore_completed
+						end, "cancelled restore owner or git wrapper did not complete", 5000)
 						assert(
 							not (windows or emulate) or tree_kills > 0,
 							"Windows cancellation did not request taskkill /T"
@@ -201,7 +261,11 @@ return function(ctx)
 					if handle then
 						handle:force()
 					end
-					vim.wait(50)
+					if handle then
+						ctx.wait_for(function()
+							return owner.active == false and restore_completed
+						end, "restore cleanup did not complete", 5000)
+					end
 					assert(ok, err)
 				end
 			end,

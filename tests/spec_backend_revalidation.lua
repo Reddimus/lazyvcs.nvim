@@ -35,10 +35,11 @@ return function(ctx)
 		end
 		return results[1]
 	end
-	local function confirmation(live)
+	local function confirmation(live, change_base)
 		local f = fixture()
 		vim.cmd.edit(vim.fn.fnameescape(f.file))
 		local buf = api.nvim_get_current_buf()
+		local original = api.nvim_buf_get_lines(buf, 0, -1, false)
 		api.nvim_buf_set_lines(buf, 0, 1, false, { "EDIT" })
 		local target = require(live and "lazyvcs.actions" or "lazyvcs.signs")
 		if live then
@@ -63,11 +64,20 @@ return function(ctx)
 			ctx.wait_for(function()
 				return vim.bo.buftype == "nofile"
 			end, "ident hunk confirmation did not open", 15000)
-			h.write_file(f.root .. "/.gitattributes", "sample.txt -ident")
+			if change_base ~= false then
+				h.write_file(f.root .. "/.gitattributes", "sample.txt -ident")
+			end
 			vim.fn.maparg("1", "n", false, true).callback()
 			ctx.wait_for(function()
 				return #messages > 0 or api.nvim_buf_get_lines(buf, 0, 1, false)[1] ~= "EDIT"
 			end, "ident revert did not settle", 15000)
+			if change_base == false then
+				assert(
+					vim.deep_equal(api.nvim_buf_get_lines(buf, 0, -1, false), original),
+					"unchanged base was rejected"
+				)
+				return
+			end
 			assert(
 				api.nvim_buf_get_lines(buf, 0, 1, false)[1] == "EDIT",
 				"changed ident base replaced the edited buffer"
@@ -78,6 +88,18 @@ return function(ctx)
 		assert(ok, err)
 	end
 	return {
+		{
+			"test_live_diff_ident_unchanged_base_revert_confirmation",
+			function()
+				confirmation(true, false)
+			end,
+		},
+		{
+			"test_sign_ident_unchanged_base_revert_confirmation",
+			function()
+				confirmation(false, false)
+			end,
+		},
 		{
 			"test_core_git_ident_effective_base_identity",
 			function()
