@@ -627,6 +627,16 @@ function M.blame_split()
 			vim.api.nvim_win_call(view.winid, function()
 				vim.fn.winrestview(saved)
 			end)
+			-- The source may have grown or shrunk while the reload ran. Align only the
+			-- blame window; :syncbind would also move the source and other bound panes.
+			local source_view = vim.api.nvim_win_call(source_win, vim.fn.winsaveview)
+			vim.api.nvim_win_call(view.winid, function()
+				vim.fn.winrestview({
+					lnum = math.min(source_view.lnum, #lines),
+					col = 0,
+					topline = math.min(source_view.topline, #lines),
+				})
+			end)
 			return
 		end
 		view.bufnr = vim.api.nvim_create_buf(false, true)

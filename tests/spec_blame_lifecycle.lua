@@ -181,6 +181,51 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_blame_split_reload_follows_grown_source",
+			function()
+				local _, buf, win = t.open(false)
+				local v = split(buf)
+				-- An unrelated scrollbound window keeps its own offset through the reload.
+				local other_lines = {}
+				for i = 1, 200 do
+					other_lines[i] = "other " .. i
+				end
+				local other_buf = api.nvim_create_buf(false, true)
+				api.nvim_buf_set_lines(other_buf, 0, -1, false, other_lines)
+				local other = api.nvim_open_win(other_buf, false, { split = "below", win = win })
+				api.nvim_win_call(other, function()
+					vim.fn.winrestview({ lnum = 60, topline = 55 })
+				end)
+				vim.wo[other][0].scrollbind = true
+				api.nvim_win_set_height(win, 5)
+				local appended = {}
+				for i = 1, 20 do
+					appended[i] = "appended " .. i
+				end
+				api.nvim_buf_set_lines(buf, -1, -1, false, appended)
+				local last = api.nvim_buf_line_count(buf)
+				api.nvim_win_set_cursor(win, { last, 0 })
+				api.nvim_exec_autocmds("TextChanged", { buffer = buf })
+				api.nvim_exec_autocmds("CursorMoved", { buffer = buf })
+				local function top(w)
+					return api.nvim_win_call(w, function()
+						return vim.fn.line("w0")
+					end)
+				end
+				local source_top, other_top = top(win), top(other)
+				t.wait(function()
+					return api.nvim_buf_is_valid(v.bufnr) and api.nvim_buf_line_count(v.bufnr) == last
+				end, "split did not reload appended rows", 15000)
+				assert(api.nvim_win_get_cursor(v.winid)[1] == last, "reloaded split did not follow the source cursor")
+				assert(top(v.winid) == top(win), "reloaded split did not follow the source view")
+				assert(
+					top(win) == source_top and api.nvim_win_get_cursor(win)[1] == last,
+					"reload moved the source window"
+				)
+				assert(top(other) == other_top, "reload moved an unrelated scrollbound window")
+			end,
+		},
+		{
 			"test_blame_split_reopen_survives_previous_cleanup",
 			function()
 				local _, buf, win = t.open(false)
