@@ -186,7 +186,12 @@ the GitHub release.
   Projection writes suppress autocmds and preserve close-time snapshots. Save
   hooks and extensions must finish synchronously so scheduled failure recovery
   cannot run during serialization. Projection visits only active sessions in
-  scope and adds no VCS work.
+  scope and adds no VCS work. Capture each affected tab and window once before
+  projecting any session. Restore all owned options and update each diff tab
+  before restoring folds and views. Disabled folds require no line scan. Save
+  bookkeeping costs O(sessions + unique windows + lines with enabled folds),
+  excluding native diff recomputation. Storage is O(sessions + unique windows +
+  closed folds).
 - `highlighting.lua` uses native `winhighlight` overlays for inherited colors
   and strips copied overlays from unowned windows. Only explicit theme
   namespaces use its pool, which grows with concurrently managed custom

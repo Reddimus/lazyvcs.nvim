@@ -11,11 +11,15 @@ local function finish(token)
 		return
 	end
 	active = nil
-	for _, entry in ipairs(token) do
-		local ok, err = pcall(require("lazyvcs.layout").finish_session_save, entry)
+	local resumed, errors = require("lazyvcs.layout").finish_sessions_save(token)
+	for _, session in ipairs(resumed) do
+		local ok, err = pcall(require("lazyvcs.actions").resume_session_save, session)
 		if not ok then
-			report(err)
+			errors[#errors + 1] = tostring(err)
 		end
+	end
+	if #errors > 0 then
+		report(table.concat(errors, "; "))
 	end
 end
 
@@ -29,11 +33,13 @@ local function pre_save(_, _, tab)
 		finish(token)
 	end))
 	local ok, err = pcall(function()
+		local sessions = {}
 		for _, session in ipairs(require("lazyvcs.state").list()) do
 			if not tab or session.tabpage == tab then
-				require("lazyvcs.layout").prepare_session_save(session, token)
+				sessions[#sessions + 1] = session
 			end
 		end
+		require("lazyvcs.layout").prepare_sessions_save(sessions, token)
 	end)
 	if not ok then
 		finish(token)
@@ -46,6 +52,8 @@ local function post_save()
 		finish(active)
 	end
 end
+
+pre_save, post_save = util.safe_callback(pre_save), util.safe_callback(post_save)
 
 function M.setup(load_plugin)
 	if attached then

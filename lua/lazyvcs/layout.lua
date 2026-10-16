@@ -158,6 +158,9 @@ end
 -- close_buffer saves wininfo before BufWinLeave. Clean inherited records on entry,
 -- before a transfer can capture them as the next session's original options.
 function M.remember_departed(session)
+	if not util.buf_is_valid(session.editable_bufnr) then
+		return
+	end
 	departed_buffers[session.editable_bufnr] = {
 		options = session.editable_window_options,
 		applied = session.editable_applied_options,
@@ -235,7 +238,7 @@ function M.release_derived_diff(session)
 end
 
 function M.release_buffer_diff(session, bufnr)
-	if not util.win_is_valid(session.editable_win) or not util.buf_is_valid(bufnr) then
+	if not util.win_is_valid(session.editable_win) or not vim.api.nvim_buf_is_loaded(bufnr) then
 		return
 	end
 	-- A pre-existing user diff window may still keep E in this tab's diff set.
@@ -278,6 +281,9 @@ end
 -- Changing diff/foldmethod can recompute folds in every diff window in the tab.
 -- winsaveview does not include which folds the user opened.
 local function capture_folds(win)
+	if not util.get_win_option(win, "foldenable") then
+		return nil
+	end
 	return vim.api.nvim_win_call(win, function()
 		local closed, line = {}, 1
 		while line <= vim.api.nvim_buf_line_count(0) do
@@ -313,110 +319,162 @@ local function restore_folds(win, closed)
 	end)
 end
 
-function M.prepare_session_save(session, tokens)
-	if session.phase ~= "active" or session.readonly_comparison or not valid_pair(session) then
-		return
-	end
-	local token = {
-		session = session,
-		id = session.id,
-		win = session.editable_win,
-		buf = session.editable_bufnr,
-		base_win = session.base_win,
-		base_buf = session.base_bufnr,
-		windows = {},
-		views = {},
-		changedtick = vim.api.nvim_buf_get_changedtick(session.editable_bufnr),
-	}
-	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(session.tabpage)) do
-		local buf = vim.api.nvim_win_get_buf(win)
-		local diff = util.get_win_option(win, "diff")
-		if win == session.editable_win or win == session.base_win or diff then
-			token.views[win] = {
-				buf = buf,
-				view = vim.api.nvim_win_call(win, vim.fn.winsaveview),
-				folds = capture_folds(win),
+local function save_window_owned(win, record)
+	return util.win_is_valid(win)
+		and vim.api.nvim_win_get_buf(win) == record.buf
+		and require("lazyvcs.state").for_window(win) == record.owner
+		and (not record.owner or (record.owner.id == record.owner_id and not record.owner.closing))
+		and (not record.token or save_owned(record.token))
+end
+
+function M.prepare_sessions_save(sessions, transaction)
+	transaction.sessions, transaction.windows, transaction.tabs = {}, {}, {}
+	local by_buffer, by_window = {}, {}
+	for _, session in ipairs(sessions) do
+		if session.phase == "active" and not session.readonly_comparison and valid_pair(session) then
+			local token = {
+				session = session,
+				id = session.id,
+				win = session.editable_win,
+				buf = session.editable_bufnr,
+				base_win = session.base_win,
+				base_buf = session.base_bufnr,
+				windows = {},
+				changedtick = vim.api.nvim_buf_get_changedtick(session.editable_bufnr),
 			}
-		end
-		if
-			win == session.editable_win
-			or (buf == session.editable_bufnr and diff and not (session.preexisting_diff_windows or {})[win])
-		then
-			token.windows[win] = {
-				options = capture_window_options(win),
-				winbar = util.get_win_option(win, "winbar"),
-			}
+			transaction.sessions[#transaction.sessions + 1] = token
+			transaction.tabs[session.tabpage] = true
+			by_buffer[token.buf] = token
+			by_window[token.win], by_window[token.base_win] = token, token
 		end
 	end
-	tokens[#tokens + 1] = token
-	session.phase = "saving"
-	for win, record in pairs(token.windows) do
-		for name, value in pairs(session.editable_window_options) do
-			if record.options[name] == session.editable_applied_options[name] then
-				util.set_win_option_noautocmd(win, name, value)
+	-- Capture every rollback record before projecting any session.
+	for tab in pairs(transaction.tabs) do
+		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+			local buf = vim.api.nvim_win_get_buf(win)
+			local diff = util.get_win_option(win, "diff")
+			if by_window[win] or diff then
+				local owner = require("lazyvcs.state").for_window(win)
+				local record = {
+					buf = buf,
+					owner = owner,
+					owner_id = owner and owner.id,
+					changedtick = vim.api.nvim_buf_get_changedtick(buf),
+					view = vim.api.nvim_win_call(win, vim.fn.winsaveview),
+					foldenable = util.get_win_option(win, "foldenable"),
+					folds = capture_folds(win),
+				}
+				transaction.windows[win] = record
+				local token = by_buffer[buf]
+				if
+					token and (win == token.win or (diff and not (token.session.preexisting_diff_windows or {})[win]))
+				then
+					record.token = token
+					record.options = capture_window_options(win)
+					record.winbar = util.get_win_option(win, "winbar")
+					local user = highlighting.user_winhighlight(win)
+					local live = util.get_win_option(win, "winhighlight")
+					if user ~= live then
+						record.winhighlight, record.projected = live, user
+					end
+					token.windows[win] = record
+				end
 			end
 		end
-		if session.editable_label and record.winbar == session.editable_label then
-			util.set_win_option_noautocmd(win, "winbar", session.editable_prev_winbar)
-		end
-		local user = highlighting.user_winhighlight(win)
-		local live = util.get_win_option(win, "winhighlight")
-		if user ~= live then
-			record.winhighlight, record.projected = live, user
-			util.set_win_option_noautocmd(win, "winhighlight", user)
+	end
+	transaction.projecting = true
+	for _, token in ipairs(transaction.sessions) do
+		token.session.phase = "saving"
+	end
+	for _, token in ipairs(transaction.sessions) do
+		local session = token.session
+		for win, record in pairs(token.windows) do
+			for name, value in pairs(session.editable_window_options) do
+				if record.options[name] == session.editable_applied_options[name] then
+					util.set_win_option_noautocmd(win, name, value)
+				end
+			end
+			if session.editable_label and record.winbar == session.editable_label then
+				util.set_win_option_noautocmd(win, "winbar", session.editable_prev_winbar)
+			end
+			if record.winhighlight ~= nil then
+				util.set_win_option_noautocmd(win, "winhighlight", record.projected)
+			end
 		end
 	end
 end
 
-function M.finish_session_save(token)
-	local session = token.session
-	if not save_owned(token) then
-		if session.phase == "saving" then
-			session.phase = "active"
-			require("lazyvcs.actions").resume_session_save(session)
-		end
-		return
+function M.finish_sessions_save(transaction)
+	local resume, errors = {}, {}
+	if transaction.finished or transaction.finishing then
+		return resume, errors
 	end
-	local failure
+	transaction.finishing = true
 	local function restore(fn, ...)
 		local ok, err = pcall(fn, ...)
 		if not ok then
-			failure = failure or err
+			errors[#errors + 1] = tostring(err)
 		end
 	end
-	for win, record in pairs(token.windows) do
-		if util.win_is_valid(win) and vim.api.nvim_win_get_buf(win) == token.buf then
-			for name, value in pairs(record.options) do
-				restore(util.set_win_option_noautocmd, win, name, value)
+	if transaction.projecting then
+		for _, token in ipairs(transaction.sessions) do
+			if save_owned(token) then
+				for win, record in pairs(token.windows) do
+					if save_window_owned(win, record) then
+						for name, value in pairs(record.options) do
+							restore(util.set_win_option_noautocmd, win, name, value)
+						end
+						restore(util.set_win_option_noautocmd, win, "winbar", record.winbar)
+						restore(function()
+							if
+								record.winhighlight ~= nil
+								and util.get_win_option(win, "winhighlight") == record.projected
+							then
+								util.set_win_option_noautocmd(win, "winhighlight", record.winhighlight)
+							end
+						end)
+					end
+				end
 			end
-			restore(util.set_win_option_noautocmd, win, "winbar", record.winbar)
-			if record.winhighlight ~= nil and util.get_win_option(win, "winhighlight") == record.projected then
-				restore(util.set_win_option_noautocmd, win, "winhighlight", record.winhighlight)
+		end
+		for tab in pairs(transaction.tabs) do
+			if vim.api.nvim_tabpage_is_valid(tab) then
+				restore(vim.api.nvim_win_call, vim.api.nvim_tabpage_get_win(tab), function()
+					vim.cmd("silent! noautocmd diffupdate")
+				end)
+			end
+		end
+		for win, record in pairs(transaction.windows) do
+			if save_window_owned(win, record) then
+				restore(util.set_win_option_noautocmd, win, "foldenable", record.foldenable)
+				if record.folds and vim.api.nvim_buf_get_changedtick(record.buf) == record.changedtick then
+					restore(restore_folds, win, record.folds)
+				end
+			end
+		end
+		for win, record in pairs(transaction.windows) do
+			if save_window_owned(win, record) then
+				restore(vim.api.nvim_win_call, win, function()
+					vim.fn.winrestview(record.view)
+				end)
+			end
+		end
+		for _, token in ipairs(transaction.sessions) do
+			local session = token.session
+			if session.phase == "saving" then
+				session.phase = "active"
+				if
+					not save_owned(token)
+					or session.source_detached
+					or vim.api.nvim_buf_get_changedtick(token.buf) ~= token.changedtick
+				then
+					resume[#resume + 1] = session
+				end
 			end
 		end
 	end
-	restore(vim.api.nvim_win_call, token.win, function()
-		vim.cmd("silent! noautocmd diffupdate")
-	end)
-	for win, record in pairs(token.views) do
-		if util.win_is_valid(win) and vim.api.nvim_win_get_buf(win) == record.buf then
-			restore(restore_folds, win, record.folds)
-		end
-	end
-	for win, record in pairs(token.views) do
-		if util.win_is_valid(win) and vim.api.nvim_win_get_buf(win) == record.buf then
-			restore(vim.api.nvim_win_call, win, function()
-				vim.fn.winrestview(record.view)
-			end)
-		end
-	end
-	session.phase = "active"
-	if vim.api.nvim_buf_get_changedtick(session.editable_bufnr) ~= token.changedtick then
-		require("lazyvcs.actions").resume_session_save(session)
-	end
-	if failure then
-		error(failure)
-	end
+	transaction.finished, transaction.finishing = true, false
+	return resume, errors
 end
 
 function M.bind_pair(session, source_win)
