@@ -201,8 +201,10 @@ end
 local function install_aerial_stubs()
 	local previous_aerial = package.loaded["aerial"]
 	local previous_aerial_util = package.loaded["aerial.util"]
+	local previous_backends = package.loaded["aerial.backends"]
 	local refetch_calls = {}
 	local util_stub = {
+		detach_calls = 0,
 		is_ignored_win = function(_)
 			return false
 		end,
@@ -213,14 +215,40 @@ local function install_aerial_stubs()
 		end,
 	}
 	package.loaded["aerial.util"] = util_stub
+	package.loaded["aerial.backends"] = {
+		get_attached_backend = function()
+			return "test"
+		end,
+		get_backend_by_name = function()
+			return {
+				detach = function()
+					util_stub.detach_calls = util_stub.detach_calls + 1
+				end,
+			}
+		end,
+	}
 	package.loaded["lazyvcs.integrations.aerial"] = nil
 	package.loaded["lazyvcs.layout"] = nil
 	package.loaded["lazyvcs.actions"] = nil
+	local integration = require("lazyvcs.integrations.aerial")
+	local suspend, resume = integration.suspend_win, integration.resume_win
+	util_stub.suspends, util_stub.resumes = 0, 0
+	---@diagnostic disable-next-line: duplicate-set-field
+	integration.suspend_win = function(win)
+		util_stub.suspends = util_stub.suspends + 1
+		return suspend(win)
+	end
+	---@diagnostic disable-next-line: duplicate-set-field
+	integration.resume_win = function(win)
+		util_stub.resumes = util_stub.resumes + 1
+		return resume(win)
+	end
 	return refetch_calls,
 		util_stub,
 		function()
 			package.loaded["aerial"] = previous_aerial
 			package.loaded["aerial.util"] = previous_aerial_util
+			package.loaded["aerial.backends"] = previous_backends
 			package.loaded["lazyvcs.integrations.aerial"] = nil
 			package.loaded["lazyvcs.layout"] = nil
 			package.loaded["lazyvcs.actions"] = nil
@@ -4814,9 +4842,13 @@ local function test_live_diff_rapid_transfer_late_exit_resets_preexisting_diff_s
 		wait_for(function()
 			return pending ~= nil
 		end, "rapid transfer should start an async backend request")
+		local stale = pending
 		vim.cmd.badd(vim.fn.fnameescape(third))
 		vim.cmd.buffer(vim.fn.fnameescape(third))
-		pending.on_done({
+		wait_for(function()
+			return pending ~= stale
+		end, "latest target should start another load")
+		stale.on_done({
 			name = "git",
 			impl = require("lazyvcs.backends.git"),
 			root = root,
@@ -4825,10 +4857,23 @@ local function test_live_diff_rapid_transfer_late_exit_resets_preexisting_diff_s
 			base_label = "BASE",
 			base_lines = { "base" },
 		})
+		assert(state.get(session.editable_bufnr) == session, "stale result must not retire current owner")
+		pending.on_done({
+			name = "git",
+			impl = require("lazyvcs.backends.git"),
+			root = root,
+			relpath = "third.txt",
+			tracked = true,
+			base_label = "BASE",
+			base_lines = { "base" },
+		})
 		wait_for(function()
-			return state.get(session.editable_bufnr) == nil
-		end, "a late transfer result should close the stale session after rapid navigation", ASYNC_TIMEOUT_MS)
-		eq(diff_window_count(), 0, "rapid transfer should clear captured diff state")
+			local live = state.current()
+			return live and live.source_path == third
+		end, "latest target should win", ASYNC_TIMEOUT_MS)
+		eq(state.current().base_win, session.base_win, "transfer should reuse base pane")
+		eq(diff_window_count(), 2, "latest target should preserve diff binding")
+		actions.close()
 	end, debug.traceback)
 	backends.load_async = previous_load_async
 	if session and state.get(session.editable_bufnr) then
@@ -5023,6 +5068,13 @@ local function test_git_buffer_transfer_refetches_aerial_after_reopen()
 	local state = require("lazyvcs.state")
 	local first_session = open_diff()
 	eq(select(1, util_stub.is_ignored_win(first_session.editable_win)), false)
+	local detach_before = util_stub.detach_calls
+	local suspend_before, resume_before = util_stub.suspends, util_stub.resumes
+	vim.api.nvim_set_current_win(first_session.base_win)
+	vim.api.nvim_set_current_win(first_session.editable_win)
+	eq(util_stub.detach_calls, detach_before, "focus must not detach Aerial")
+	eq(util_stub.suspends, suspend_before, "focus must not suspend Aerial")
+	eq(util_stub.resumes, resume_before, "focus must not resume Aerial")
 
 	vim.cmd.badd(vim.fn.fnameescape(fixture.file2))
 	vim.cmd.buffer(vim.fn.fnameescape(fixture.file2))
@@ -5032,6 +5084,9 @@ local function test_git_buffer_transfer_refetches_aerial_after_reopen()
 	end)
 
 	local second_session = assert(state.current())
+	eq(util_stub.detach_calls, detach_before + 1, "transfer must detach Aerial once")
+	eq(util_stub.suspends, suspend_before + 1, "transfer must suspend Aerial once")
+	eq(util_stub.resumes, resume_before + 1, "transfer must resume Aerial once")
 	eq(second_session.source_path, fixture.file2)
 	eq(refetch_calls[#refetch_calls], second_session.editable_bufnr)
 	eq(select(1, util_stub.is_ignored_win(second_session.editable_win)), false)
@@ -5041,7 +5096,7 @@ local function test_git_buffer_transfer_refetches_aerial_after_reopen()
 	cleanup()
 end
 
-local function test_git_rebalance_evenly_splits_active_diff_pair()
+local function test_git_rebalance_restores_configured_width()
 	require("lazyvcs").setup({ debounce_ms = 10 })
 
 	local fixture = helpers.make_git_fixture()
@@ -5057,7 +5112,7 @@ local function test_git_rebalance_evenly_splits_active_diff_pair()
 	local live = assert(state.current())
 	local editable_width = vim.api.nvim_win_get_width(live.editable_win)
 	local base_width = vim.api.nvim_win_get_width(live.base_win)
-	assert(math.abs(editable_width - base_width) <= 1, "rebalance should restore an even split")
+	assert(math.abs(editable_width - base_width) <= 1, "rebalance should restore the configured width")
 
 	actions.close()
 end
@@ -5087,7 +5142,7 @@ local function test_git_win_resized_rebalances_active_diff_pair()
 	local live = assert(state.current())
 	assert(
 		math.abs(vim.api.nvim_win_get_width(live.editable_win) - vim.api.nvim_win_get_width(live.base_win)) <= 1,
-		"WinResized should rebalance the active diff pair"
+		"WinResized should restore the configured width"
 	)
 
 	actions.close()
@@ -6967,7 +7022,7 @@ local cases = {
 		"test_git_buffer_transfer_refetches_aerial_after_reopen",
 		test_git_buffer_transfer_refetches_aerial_after_reopen,
 	},
-	{ "test_git_rebalance_evenly_splits_active_diff_pair", test_git_rebalance_evenly_splits_active_diff_pair },
+	{ "test_git_rebalance_restores_configured_width", test_git_rebalance_restores_configured_width },
 	{ "test_git_win_resized_rebalances_active_diff_pair", test_git_win_resized_rebalances_active_diff_pair },
 	{ "test_git_base_window_leader_q_closes_session", test_git_base_window_leader_q_closes_session },
 	{
@@ -7067,6 +7122,15 @@ vim.list_extend(cases, require("spec_compare")({ helpers = helpers, wait_for = w
 vim.list_extend(cases, require("spec_compare_navigation")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_compare_files")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_compare_native")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(
+	cases,
+	require("spec_live_diff")({
+		helpers = helpers,
+		wait_for = wait_for,
+		async_timeout_ms = ASYNC_TIMEOUT_MS,
+		open_diff = open_diff,
+	})
+)
 vim.list_extend(cases, require("spec_window_options")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_highlighting")({ helpers = helpers, wait_for = wait_for }))
 
@@ -7085,6 +7149,9 @@ local live_diff_prefixes = {
 }
 
 local function group_for(name)
+	if vim.startswith(name, "test_live_diff_") then
+		return "live_diff"
+	end
 	if svn_group_overrides[name] or name:find("svn", 1, true) then
 		return "svn"
 	end

@@ -160,7 +160,7 @@ end
 
 ---@return boolean applied
 function M.apply(session)
-	if not session or session.closing then
+	if not session or session.closing or session.phase ~= "active" then
 		return false
 	end
 	if (session.opts.base_window.align_wrapped or "off") ~= "auto" then
@@ -170,6 +170,9 @@ function M.apply(session)
 	local base_win, edit_win = session.base_win, session.editable_win
 	local base_buf, edit_buf = session.base_bufnr, session.editable_bufnr
 	if not (util.win_is_valid(base_win) and util.win_is_valid(edit_win)) then
+		return false
+	end
+	if vim.api.nvim_win_get_buf(base_win) ~= base_buf or vim.api.nvim_win_get_buf(edit_win) ~= edit_buf then
 		return false
 	end
 	if not (util.buf_is_valid(base_buf) and util.buf_is_valid(edit_buf)) then
@@ -263,7 +266,7 @@ end
 ---bursts, and the whole point is that the result is idempotent, so running once
 ---after the burst is both cheaper and identical.
 function M.schedule(session)
-	if not session or session.closing then
+	if not session or session.closing or session.phase ~= "active" then
 		return
 	end
 	if (session.opts.base_window.align_wrapped or "off") ~= "auto" then
@@ -275,13 +278,19 @@ function M.schedule(session)
 
 	session.align_pending = true
 	vim.schedule(function()
+		if require("lazyvcs.state").get(session.editable_bufnr) ~= session then
+			return
+		end
 		session.align_pending = false
 		local ok, changed = pcall(M.apply, session)
 		if not ok then
 			-- Alignment is cosmetic. An error here must never escape into an
 			-- autocmd callback, where it would block interactive Neovim on the
 			-- hit-enter prompt over a purely visual concern.
-			vim.notify_once("lazyvcs: diff alignment failed: " .. tostring(changed), vim.log.levels.DEBUG)
+			util.notify(
+				"lazyvcs: diff alignment failed: " .. tostring(changed):gsub("%s*\n%s*", " "),
+				vim.log.levels.DEBUG
+			)
 			return
 		end
 		if changed then
@@ -299,7 +308,7 @@ end
 ---panes wrap, and the layout is one it can act on. Callers use this to decide
 ---whether Neovim's own binding has already produced the correct result.
 function M.is_active(session)
-	if not session or session.closing then
+	if not session or session.closing or session.phase ~= "active" then
 		return false
 	end
 	if (session.opts.base_window.align_wrapped or "off") ~= "auto" then

@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.1] - 2026-10-16
 
 ### Fixed
 
@@ -16,6 +16,23 @@ and this project adheres to
   preventing incorrect highlighting and E96 after reviewing several files.
 - Stop the blame split from leaving an empty listed buffer behind each time it
   opens.
+- Preserve live-diff bindings, folds, and views when focus moves between panes,
+  floats, or tabs. Follow buffer changes in the editable window in place,
+  including programmatic swaps and rapid selections.
+- Restore split windows from diff mode when a live diff closes or moves to
+  another buffer.
+- Keep configured base-pane widths after resize, using the combined pane width
+  for ratios and column counts for absolute values.
+- Restore Markdown editor guards after transfers and release closed sessions
+  without waiting for another buffer edit.
+- Avoid retaining previous base contents in undo history or leaving extra
+  scratch buffers behind during live-diff transfers.
+- Reject hunk reverts during live-diff transfers to protect unsaved edits in the
+  previous file.
+- Restore a file's own window options and winbar when you return to it after a
+  live-diff transfer, or when a transfer ends on an unsupported file.
+- Restore Aerial symbol updates for outgoing files still visible in other
+  splits.
 
 ## [0.11.0] - 2026-10-09
 
@@ -520,3 +537,4 @@ First tagged release.
 [0.7.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.7.0...v0.7.1
 [0.8.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.8.0...v0.8.1
 [0.11.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.10.0...v0.11.0
+[0.11.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.0...v0.11.1
