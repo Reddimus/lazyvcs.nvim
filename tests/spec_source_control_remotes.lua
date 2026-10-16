@@ -6,6 +6,17 @@ return function(ctx)
 	local function git(root, ...)
 		return util.trim(h.exec(vim.list_extend({ "git" }, { ... }), root))
 	end
+	-- Git 2.34 rejects "git remote rename --", so rename a leading-dash remote through config.
+	local function rename_remote(root, old, new)
+		local url = git(root, "config", "remote." .. old .. ".url")
+		git(root, "config", "remote." .. new .. ".url", url)
+		git(root, "config", "remote." .. new .. ".fetch", "+refs/heads/*:refs/remotes/" .. new .. "/*")
+		git(root, "config", "--remove-section", "remote." .. old)
+		git(root, "fetch", "--quiet", "--", new)
+		if git(root, "config", "--default", "", "branch.main.remote") == old then
+			git(root, "config", "branch.main.remote", new)
+		end
+	end
 	local function action(f, name)
 		local repo = { root = f.root, vcs = "git", name = "repo", counts = {}, sync = {} }
 		local state = { path = f.root, lazyvcs_repo_cache = { [f.root] = repo }, lazyvcs_render = function() end }
@@ -36,7 +47,7 @@ return function(ctx)
 					for _, remote in ipairs({ "origin", "-origin" }) do
 						local f = h.make_git_remote_fixture()
 						if remote ~= "origin" then
-							git(f.root, "remote", "rename", "--", "origin", remote)
+							rename_remote(f.root, "origin", remote)
 						end
 						if operation == "publish" then
 							git(f.root, "branch", "--unset-upstream")
