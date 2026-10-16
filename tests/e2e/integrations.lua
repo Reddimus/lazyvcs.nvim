@@ -101,7 +101,7 @@ local function run()
 		end
 	end
 	assert(neo, "Neo-tree did not open")
-	api.nvim_set_current_win(editor)
+	api.nvim_set_current_win(neo)
 	local native = require("lazyvcs.source_control.native")
 	local sidebar = native.open({ path = f.root })
 	wait(function()
@@ -141,7 +141,7 @@ local function run()
 		return false
 	end)
 	local s = state.list()[1]
-	assert(s.editable_win == editor, "sidebar selected Neo-tree instead of recorded editor")
+	assert(s.editable_win == editor, "sidebar selected Neo-tree instead of eligible editor")
 	assert(
 		api.nvim_win_get_buf(neo) == neo_buf and api.nvim_win_get_buf(sidebar.winid) == sidebar.bufnr,
 		"sidebar buffers changed"

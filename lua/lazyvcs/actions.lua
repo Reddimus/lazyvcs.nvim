@@ -119,6 +119,7 @@ local function open_session(session)
 		)
 		state.register(session)
 		registered = true
+		require("lazyvcs.integrations.resession").setup()
 		set_session_maps(session)
 		attach_session(session)
 		aerial.resume_win(session.editable_win)
@@ -176,7 +177,7 @@ local function close_session(session, opts)
 	if session.owned_editor_win and not opts.keep_editor_win and util.win_is_valid(session.editable_win) then
 		pcall(vim.api.nvim_win_close, session.editable_win, true)
 	end
-	if session.owned_editable_buf then
+	if session.owned_editable_buf and not session.editable_wiping then
 		if
 			not session.owned_editor_win
 			and util.win_is_valid(session.editable_win)
@@ -607,6 +608,7 @@ attach_session = function(session)
 		group = session.augroup,
 		buffer = session.editable_bufnr,
 		callback = safe_callback(function()
+			session.editable_wiping = true
 			if state.get(session.editable_bufnr) then
 				M.close(session.editable_bufnr)
 			end
@@ -915,6 +917,7 @@ function M.open_target(comparison, opts)
 	local previous_win = vim.api.nvim_get_current_win()
 	if opts then
 		if not require("lazyvcs.editor_target").valid(opts) then
+			util.notify("Comparison destination changed before opening", vim.log.levels.WARN)
 			return nil
 		end
 		vim.api.nvim_set_current_win(opts.winid)

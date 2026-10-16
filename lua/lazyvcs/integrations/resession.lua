@@ -51,15 +51,19 @@ function M.setup()
 	if attached then
 		return true
 	end
-	local ok, resession = pcall(require, "resession")
-	if not ok or type(resession.add_hook) ~= "function" or type(resession.remove_hook) ~= "function" then
+	local resession = package.loaded.resession
+	if
+		type(resession) ~= "table"
+		or type(resession.add_hook) ~= "function"
+		or type(resession.remove_hook) ~= "function"
+	then
 		if not group then
 			group = vim.api.nvim_create_augroup("LazyVCSResession", { clear = true })
 			vim.api.nvim_create_autocmd("User", {
 				group = group,
 				pattern = "LazyLoad",
-				callback = util.safe_callback(function()
-					if package.loaded.resession then
+				callback = util.safe_callback(function(event)
+					if event.data == "resession.nvim" and package.loaded.resession then
 						M.setup()
 					end
 				end),

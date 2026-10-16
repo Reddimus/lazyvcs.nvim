@@ -62,6 +62,146 @@ return function(ctx)
 	end
 	local cases = {
 		{
+			"test_live_diff_resession_setup_does_not_load_plugin",
+			function()
+				local integration = require("lazyvcs.integrations.resession")
+				integration.teardown()
+				local stub, preload = package.loaded.resession, package.preload.resession
+				package.loaded.resession = nil
+				local loads = 0
+				package.preload.resession = function()
+					loads = loads + 1
+					return stub
+				end
+				local ok, err = xpcall(function()
+					require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+					assert(loads == 0 and package.loaded.resession == nil, "setup loaded lazy Resession")
+					package.loaded.resession = stub
+					api.nvim_exec_autocmds("User", { pattern = "LazyLoad", data = "neo-tree.nvim" })
+					assert(#hooks.pre_save == 0, "unrelated LazyLoad attached Resession")
+					api.nvim_exec_autocmds("User", { pattern = "LazyLoad", data = "resession.nvim" })
+					assert(#hooks.pre_save == 1, "Resession LazyLoad did not attach")
+					integration.teardown()
+					open(false)
+					assert(#hooks.pre_save == 1, "live diff open did not attach loaded Resession")
+				end, debug.traceback)
+				package.preload.resession, package.loaded.resession = preload, stub
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_live_diff_resession_projects_derived_editable_splits",
+			function()
+				local s, before = open(false)
+				api.nvim_set_current_win(s.editable_win)
+				vim.cmd("split")
+				local derived = api.nvim_get_current_win()
+				local live = get(derived)
+				local view = api.nvim_win_call(derived, vim.fn.winsaveview)
+				dispatch("pre_save")
+				equal(get(derived), before, "derived editor serialized transient diff options")
+				dispatch("post_save")
+				equal(get(derived), live, "derived editor did not resume live options")
+				equal(api.nvim_win_call(derived, vim.fn.winsaveview), view, "derived view changed")
+			end,
+		},
+		{
+			"test_live_diff_resession_preserves_fold_state",
+			function()
+				local f = h.make_git_fixture()
+				local left, right = {}, {}
+				for i = 1, 180 do
+					left[i] = "line " .. i
+					right[i] = left[i]
+				end
+				right[40], right[140] = "change one", "change two"
+				h.write_file(f.file, table.concat(right, "\n") .. "\n")
+				local s = assert(require("lazyvcs.actions").open_target({
+					backend = "git",
+					root = f.root,
+					path = f.file,
+					relpath = "sample.txt",
+					kind = "git_worktree",
+					editable_side = "right",
+					left = { label = "HEAD", lines = left },
+					right = { label = "WORKTREE", path = f.file, modifiable = true },
+				}))
+				api.nvim_set_current_win(s.editable_win)
+				vim.cmd("split")
+				local wins = { s.editable_win, s.base_win, api.nvim_get_current_win() }
+				vim.cmd("diffupdate")
+				for _, win in ipairs(wins) do
+					api.nvim_win_call(win, function()
+						vim.cmd("normal! zM")
+						assert(vim.fn.foldclosed(80) > 0, "fixture has no middle fold")
+						api.nvim_win_set_cursor(win, { 80, 0 })
+						vim.cmd("normal! zo")
+					end)
+				end
+				local function folds(win)
+					return api.nvim_win_call(win, function()
+						local result = {}
+						for i = 1, 180 do
+							result[i] = vim.fn.foldclosed(i)
+						end
+						return result
+					end)
+				end
+				local expected = {}
+				for _, win in ipairs(wins) do
+					expected[win] = folds(win)
+				end
+				dispatch("pre_save")
+				dispatch("post_save")
+				vim.wait(30, function()
+					return false
+				end)
+				for _, win in ipairs(wins) do
+					equal(folds(win), expected[win], "save changed open/closed folds")
+				end
+			end,
+		},
+		{
+			"test_live_diff_close_cleans_replaced_base_buffer",
+			function()
+				for _, custom_bar in ipairs({ false, true }) do
+					local s = open(false)
+					local base = s.base_win
+					api.nvim_set_current_win(base)
+					vim.cmd("split")
+					local replacement = api.nvim_create_buf(true, false)
+					api.nvim_win_set_buf(base, replacement)
+					util.set_win_options(base, {
+						diff = true,
+						scrollbind = true,
+						cursorbind = true,
+						winfixwidth = true,
+						winbar = custom_bar and "user bar" or s.base_label_winbar,
+					})
+					require("lazyvcs.actions").close(s.editable_bufnr)
+					assert(
+						api.nvim_win_is_valid(base) and api.nvim_win_get_buf(base) == replacement,
+						"replaced base closed"
+					)
+					for _, option in ipairs({ "diff", "scrollbind", "cursorbind", "winfixwidth" }) do
+						assert(not util.get_win_option(base, option), "replaced base kept " .. option)
+					end
+					assert(
+						util.get_win_option(base, "winbar") == (custom_bar and "user bar" or s.base_prev_winbar),
+						"replaced base winbar not restored: "
+							.. vim.inspect({
+								custom_bar,
+								util.get_win_option(base, "winbar"),
+								s.base_prev_winbar,
+								s.base_label_winbar,
+							})
+					)
+					vim.cmd("silent! only!")
+				end
+			end,
+		},
+
+		{
 			"test_live_diff_resession_serializes_original_window_options",
 			function()
 				for _, user_diff in ipairs({ false, true }) do

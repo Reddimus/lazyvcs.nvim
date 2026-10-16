@@ -8,8 +8,10 @@ function M.eligible(win, tab)
 		return false
 	end
 	local session = state.for_window(win)
+	local buf = api.nvim_win_get_buf(win)
+	local editable = session and session.editable_win == win and session.editable_bufnr == buf
 	return api.nvim_win_get_config(win).relative == ""
-		and vim.bo[api.nvim_win_get_buf(win)].buftype == ""
+		and (editable or vim.bo[buf].buftype == "")
 		and vim.bo[api.nvim_win_get_buf(win)].filetype ~= "lazyvcs-source-control"
 		and not util.get_win_option(win, "winfixbuf")
 		and not util.get_win_option(win, "previewwindow")
