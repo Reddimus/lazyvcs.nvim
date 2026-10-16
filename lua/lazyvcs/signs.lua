@@ -202,10 +202,14 @@ local function diff_worker(left, right)
 	return true, vim.mpack.encode(raw)
 end
 
+local delegate_to_gitsigns
 local threaded_diff
 local function render(bufnr, on_ready)
 	local state = buffers[bufnr]
 	if not state or not vim.api.nvim_buf_is_loaded(bufnr) then
+		return false
+	end
+	if not state.native and delegate_to_gitsigns(bufnr, state, on_ready) then
 		return false
 	end
 	local function complete(loaded, err)
@@ -243,6 +247,9 @@ local function render(bufnr, on_ready)
 	end
 	local base, generation = state.base_text, state.base_generation
 	local function apply(hunks)
+		if not state.native and delegate_to_gitsigns(bufnr, state) then
+			return
+		end
 		state.rendered_identity, state.rendered_base = identity, base
 		state.current_text, state.hunks = current, hunks
 		render_signs(bufnr, state)
@@ -317,11 +324,19 @@ local function ensure_state(bufnr, path)
 	return state
 end
 
+local function path_identity(path, entry)
+	local canonical = entry and util.canonical_entry_path(path) or util.canonical_path(path)
+	return vim.o.fileignorecase and canonical:lower() or canonical
+end
+
 local function matches_change(change, state)
 	local _, cached_root = backends.resolve_cached(state.path)
 	local root = state.root or cached_root
-	return (root == change.root or (not root and util.relative_literal_path(change.root, state.path) ~= nil))
-		and (not change.paths or change.paths[state.path] == true)
+	local path = path_identity(state.path, true)
+	return (
+		root and path_identity(root) == change.root
+		or (not root and util.relative_literal_path(change.root, path) ~= nil)
+	) and (not change.paths or change.paths[path] == true)
 end
 
 local function changing_base(state)
@@ -350,12 +365,35 @@ local function invalidate_base(bufnr, state)
 	end
 end
 
+-- Release every continuation before abandoning a native load or diff worker.
+delegate_to_gitsigns = function(bufnr, state, on_ready)
+	local backend = backends.resolve_cached(state.path)
+	if not defers_to_gitsigns(state.backend or (backend and backend.name), bufnr) then
+		return false
+	end
+	state.delegated, state.native = true, nil
+	local waiters = {}
+	for _, key in ipairs({ "load_waiters", "compute_waiters", "base_waiters" }) do
+		vim.list_extend(waiters, state[key] or {})
+		state[key] = nil
+	end
+	state.computing = nil
+	invalidate_base(bufnr, state)
+	for _, waiter in ipairs(waiters) do
+		util.safe_callback(waiter)(nil, "Git signs are delegated to gitsigns.nvim")
+	end
+	if on_ready then
+		util.safe_callback(on_ready)(nil, "Git signs are delegated to gitsigns.nvim")
+	end
+	return true
+end
+
 function M.begin_base_change(root, paths)
-	local change = { root = root }
+	local change = { root = path_identity(root) }
 	if paths then
 		change.paths = {}
 		for _, path in ipairs(paths) do
-			change.paths[path] = true
+			change.paths[path_identity(path, true)] = true
 		end
 	end
 	base_changes[change] = true
@@ -420,14 +458,10 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 		end
 		return
 	end
-	local cached_backend = backends.resolve_cached(path)
-	if not native and cached_backend and defers_to_gitsigns(cached_backend.name, bufnr) then
-		invalidate_base(bufnr, state)
-		if on_ready then
-			on_ready(nil, "Git signs are delegated to gitsigns.nvim")
-		end
+	if not native and delegate_to_gitsigns(bufnr, state, on_ready) then
 		return
 	end
+	state.native, state.delegated = native, nil
 	local profile, profile_err = compare_text.profile(bufnr)
 	if not profile then
 		clear(bufnr)
@@ -467,6 +501,9 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 	local function loaded_impl(result, err)
 		local live = buffers[bufnr]
 		if not live or live ~= state or live.generation ~= generation then
+			return
+		end
+		if not native and delegate_to_gitsigns(bufnr, live) then
 			return
 		end
 		job:finish()
@@ -530,11 +567,8 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 			if not backend then
 				return loaded(nil, err)
 			end
-			if not native and defers_to_gitsigns(backend.name, bufnr) then
-				invalidate_base(bufnr, state)
-				if on_ready then
-					on_ready(nil, "Git signs are delegated to gitsigns.nvim")
-				end
+			state.backend = backend.name
+			if not native and delegate_to_gitsigns(bufnr, state) then
 				return
 			end
 			state.root = root
@@ -556,7 +590,7 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 end
 
 local function schedule(bufnr)
-	if not opts().enabled then
+	if not opts().enabled or (buffers[bufnr] and buffers[bufnr].delegated) then
 		return
 	end
 	stop_timer(bufnr)
@@ -591,6 +625,7 @@ local function with_current_state(context, on_ready)
 		and state.base_text
 		and state.base_text.profile_key == profile.key
 	then
+		state.native, state.delegated = true, nil
 		local result = false
 		local completed = render(bufnr, function(loaded, err)
 			if
@@ -737,6 +772,10 @@ local function revert_hunk(context)
 				state.base_identity,
 				util.safe_callback(function(valid, err)
 					if buffers[bufnr] ~= state or state.base_generation ~= confirmed_generation then
+						util.notify(
+							"Hunk base changed while confirmation was open; nothing was reverted",
+							vim.log.levels.WARN
+						)
 						return
 					end
 					if not valid then
@@ -829,11 +868,17 @@ end
 
 local function dispatch_command(operation)
 	local context = util.capture_buffer_context()
-	if not context or not supported_buffer(context.bufnr) then
+	if
+		not context
+		or not context.path
+		or not vim.api.nvim_buf_is_loaded(context.bufnr)
+		or not util.is_real_file_buffer(context.bufnr)
+	then
 		util.notify("No supported VCS buffer", vim.log.levels.WARN)
 		return false
 	end
-	local state = ensure_state(context.bufnr, context.path)
+	local state = supported_buffer(context.bufnr) and ensure_state(context.bufnr, context.path)
+		or buffers[context.bufnr]
 	local function dispatch(backend, _, err)
 		if
 			buffers[context.bufnr] ~= state
@@ -857,7 +902,10 @@ local function dispatch_command(operation)
 	if backend then
 		return dispatch(backend)
 	end
-	state.command = backends.resolve_async(context.path, util.safe_callback(dispatch))
+	local command = backends.resolve_async(context.path, util.safe_callback(dispatch))
+	if state then
+		state.command = command
+	end
 	return true
 end
 
@@ -896,6 +944,18 @@ function M.setup()
 	})
 
 	augroup = vim.api.nvim_create_augroup("lazyvcs_signs", { clear = true })
+	-- GitSignsUpdate also fires after attach; its target can be a background buffer.
+	vim.api.nvim_create_autocmd("User", {
+		group = augroup,
+		pattern = "GitSignsUpdate",
+		callback = util.safe_callback(function(args)
+			local buf = args.data and args.data.buffer or args.buf
+			local state = buffers[buf]
+			if state and not state.skipped then
+				delegate_to_gitsigns(buf, state)
+			end
+		end),
+	})
 	vim.api.nvim_create_autocmd({ "BufReadPost", "BufFilePost" }, {
 		group = augroup,
 		callback = util.safe_callback(function(args)
@@ -929,7 +989,7 @@ function M.setup()
 	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
 		group = augroup,
 		callback = util.safe_callback(function(args)
-			if opts().enabled and buffers[args.buf] then
+			if opts().enabled and buffers[args.buf] and not buffers[args.buf].delegated then
 				schedule(args.buf)
 			end
 		end),

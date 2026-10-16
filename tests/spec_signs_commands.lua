@@ -143,5 +143,144 @@ return function(ctx)
 			s.api.nvim_win_close(0, true)
 		end),
 	}
+	cases[#cases + 1] = {
+		"test_signs_late_gitsigns_attach_cancels_native_load",
+		s.guard(function()
+			local f, buf = s.fixture(false, { use_gitsigns = true })
+			s.refresh(buf, true)
+			local attached, held, loads, completed = false, nil, 0, 0
+			package.loaded.gitsigns = {
+				get_hunks = function()
+					return attached and {} or nil
+				end,
+			}
+			local backends = require("lazyvcs.backends")
+			---@diagnostic disable-next-line: duplicate-set-field
+			backends.load_base_async = function(_, cb)
+				loads, held = loads + 1, cb
+				return { kill = function() end }
+			end
+			s.signs.refresh(buf, true, function(state, err)
+				assert(not state and err:find("delegated", 1, true))
+				completed = completed + 1
+			end)
+			s.wait(function()
+				return held ~= nil
+			end, "native load did not start", 15000)
+			attached = true
+			assert(held)({ root = f.root, relpath = "sample.txt", base_lines = { "one", "two", "three" } })
+			assert(#s.marks(buf) == 0, "late gitsigns attach left native signs")
+			assert(completed == 1, "delegation did not release the native load waiter")
+			s.signs.refresh(buf, true)
+			vim.wait(30)
+			assert(loads == 1, "delegated buffer started another native load")
+		end),
+	}
+	cases[#cases + 1] = {
+		"test_signs_gitsigns_update_invalidates_target_and_releases_waiters",
+		s.guard(function()
+			local _, buf = s.fixture(false, { use_gitsigns = true })
+			s.refresh(buf, true)
+			local attached, held, completed = false, nil, 0
+			package.loaded.gitsigns = {
+				get_hunks = function(target)
+					return target == buf and attached and {} or nil
+				end,
+			}
+			local backends = require("lazyvcs.backends")
+			---@diagnostic disable-next-line: duplicate-set-field
+			backends.load_base_async = function(_, cb)
+				held = cb
+				return { kill = function() end }
+			end
+			s.signs.refresh(buf, true, function(state, err)
+				assert(not state and err:find("delegated", 1, true))
+				completed = completed + 1
+			end, true)
+			s.wait(function()
+				return held ~= nil
+			end, "native command load did not start", 15000)
+			vim.o.hidden = true
+			vim.cmd("enew!")
+			attached = true
+			s.api.nvim_exec_autocmds("User", { pattern = "GitSignsUpdate", data = { buffer = buf } })
+			assert(#s.marks(buf) == 0, "gitsigns update left native signs in background buffer")
+			assert(completed == 1, "gitsigns update stranded load waiter")
+			assert(s.signs.current_state(buf).delegated and not s.signs.current_state(buf).base_lines)
+		end),
+	}
+	cases[#cases + 1] = {
+		"test_signs_delegated_edits_do_not_refresh",
+		s.guard(function()
+			local _, buf = s.fixture(false, { use_gitsigns = true })
+			s.refresh(buf, true)
+			package.loaded.gitsigns = {
+				get_hunks = function()
+					return {}
+				end,
+			}
+			s.signs.refresh(buf, false)
+			local refresh, count = s.signs.refresh, 0
+			---@diagnostic disable-next-line: duplicate-set-field
+			s.signs.refresh = function(...)
+				count = count + 1
+				return refresh(...)
+			end
+			local ok, err = pcall(function()
+				for i = 1, 3 do
+					s.edit(buf, { "edit " .. i })
+					vim.wait(30)
+				end
+				assert(count == 0, "delegated edits scheduled " .. count .. " native refreshes")
+			end)
+			s.signs.refresh = refresh
+			assert(ok, err)
+			package.loaded.gitsigns.get_hunks = function()
+				return nil
+			end
+			s.refresh(buf, true)
+			assert(not s.signs.current_state(buf).delegated, "native load retained delegation mark")
+		end),
+	}
+	cases[#cases + 1] = {
+		"test_signs_oversized_gitsigns_commands_do_not_create_native_state",
+		s.guard(function()
+			local _, buf = s.fixture(false, { use_gitsigns = true, signs = { enabled = false, max_file_bytes = 1 } })
+			local calls = {}
+			package.loaded.gitsigns = {
+				get_hunks = function()
+					return {}
+				end,
+				nav_hunk = function(direction)
+					calls[#calls + 1] = direction
+				end,
+				preview_hunk = function()
+					calls[#calls + 1] = "preview"
+				end,
+				reset_hunk = function()
+					calls[#calls + 1] = "revert"
+				end,
+			}
+			local backends = require("lazyvcs.backends")
+			for _, cold in ipairs({ true, false }) do
+				if cold then
+					backends.invalidate()
+				end
+				for _, operation in ipairs({ "next", "prev", "preview", "revert" }) do
+					local n = #calls
+					vim.cmd(operation == "preview" and "LazyVCS preview" or "LazyVCS hunk " .. operation)
+					s.wait(function()
+						return #calls > n
+					end, "oversized buffer dropped " .. operation, 15000)
+					assert(calls[n + 1] == operation)
+					assert(s.signs.current_state(buf) == nil, "oversized delegated command created native state")
+				end
+			end
+			package.loaded.gitsigns.preview_hunk = nil
+			vim.cmd("LazyVCS preview")
+			local state = s.signs.current_state(buf)
+			assert(state and state.skipped and not state.base_generation, "oversized native fallback allocated a base")
+		end),
+	}
 	return cases
 end

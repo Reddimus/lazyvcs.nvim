@@ -194,5 +194,108 @@ return function(ctx)
 			end),
 		},
 	}
+	cases[#cases + 1] = {
+		"test_signs_confirmed_revert_warns_when_validation_base_changes",
+		s.guard(function()
+			local f, buf = s.fixture(false, { source_control = { confirm_mutations = true } })
+			s.refresh(buf, true)
+			local backends = require("lazyvcs.backends")
+			local validate, held = backends.validate_editable_base_async, nil
+			---@diagnostic disable-next-line: duplicate-set-field
+			backends.validate_editable_base_async = function(_, _, cb)
+				held = cb
+			end
+			local ok, err = pcall(function()
+				s.api.nvim_win_set_cursor(0, { 2, 0 })
+				vim.cmd("LazyVCS hunk revert")
+				local accept = vim.fn.maparg("1", "n", false, true).callback
+				assert(type(accept) == "function")
+				accept()
+				assert(held, "confirmed revert did not validate base")
+				local messages = {}
+				vim.notify = function(message, level)
+					messages[#messages + 1] = { message, level }
+				end
+				local change = s.signs.begin_base_change(f.root)
+				held(true)
+				assert(s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "changed")
+				assert(#messages == 1, "stale confirmed revert returned silently")
+				assert(messages[1][1] == "Hunk base changed while confirmation was open; nothing was reverted")
+				assert(messages[1][2] == vim.log.levels.WARN)
+				s.signs.finish_base_change(change)
+			end)
+			backends.validate_editable_base_async = validate
+			assert(ok, err)
+		end),
+	}
+	cases[#cases + 1] = {
+		"test_signs_spawn_failure_releases_base_change_and_waiting_command",
+		s.guard(function()
+			local f, buf = s.fixture(false)
+			s.refresh(buf, true)
+			local system, source, attempted = vim.system, s.api.nvim_get_current_win(), false
+			vim.system = function(args, ...)
+				if args[1] == "git" and args[2] == "add" then
+					attempted = true
+					assert(not s.signs.current_state(buf).loaded)
+					vim.cmd("LazyVCS preview")
+					error("injected spawn failure")
+				end
+				return system(args, ...)
+			end
+			local ok, err = pcall(function()
+				local state, node = sidebar(f)
+				ops.stage_file(state, node)
+				finished(f)
+				assert(attempted, "mutation spawn was not attempted")
+				s.wait(function()
+					return s.api.nvim_get_current_win() ~= source
+				end, "spawn failure stranded waiting preview", 15000)
+				s.api.nvim_win_close(0, true)
+				hunk_count(buf, 1, "spawn failure stranded sign base")
+			end)
+			vim.system = system
+			assert(ok, err)
+		end),
+	}
+	for _, svn in ipairs({ false, true }) do
+		cases[#cases + 1] = {
+			(svn and "test_svn_" or "test_") .. "signs_base_change_matches_symlinked_directory",
+			s.guard(function()
+				local f, buf = s.fixture(svn)
+				s.refresh(buf, true)
+				local alias = s.h.tempdir() .. "/alias"
+				assert(vim.uv.fs_symlink(f.root, alias, { dir = true }))
+				local util = require("lazyvcs.util")
+				assert(
+					util.canonical_entry_path(alias .. "/sample.txt") == util.canonical_entry_path(util.buf_path(buf))
+				)
+				local change = s.signs.begin_base_change(alias, { alias .. "/sample.txt" })
+				local invalidated = not s.signs.current_state(buf).loaded
+				s.signs.finish_base_change(change)
+				assert(invalidated, "symlinked mutation path did not invalidate sign base")
+			end),
+		}
+	end
+	cases[#cases + 1] = {
+		"test_signs_base_change_matches_windows_drive_case",
+		s.guard(function()
+			local _, buf = s.fixture(false)
+			s.refresh(buf, true)
+			local state = s.signs.current_state(buf)
+			local path, root, ignorecase = state.path, state.root, vim.o.fileignorecase
+			local ok, err = pcall(function()
+				vim.o.fileignorecase = true
+				state.path, state.root = "C:/repo/sample.txt", "C:/repo"
+				local change = s.signs.begin_base_change("c:/repo", { "c:/repo/sample.txt" })
+				local invalidated = not state.loaded
+				state.path, state.root = path, root
+				s.signs.finish_base_change(change)
+				assert(invalidated, "Windows drive case prevented per-file invalidation")
+			end)
+			state.path, state.root, vim.o.fileignorecase = path, root, ignorecase
+			assert(ok, err)
+		end),
+	}
 	return cases
 end

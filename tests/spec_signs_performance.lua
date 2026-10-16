@@ -19,6 +19,33 @@ return function(ctx)
 			"test_signs_costly_refresh_keeps_main_loop_responsive",
 			s.guard(function()
 				local _, buf, _, changed = fixture(50000)
+				local text, diff = require("lazyvcs.compare_text"), require("lazyvcs.diff")
+				local base = s.signs.current_state(buf).base_text
+				s.api.nvim_buf_set_lines(buf, 0, -1, false, changed)
+				local current = assert(text.capture(buf, require("lazyvcs.config").get().signs.max_file_bytes))
+				local started = vim.uv.hrtime()
+				local expected = diff.compute_text_hunks(base, current)
+				local synchronous_ms = (vim.uv.hrtime() - started) / 1e6
+				local original, queued, completed, applied = vim.uv.new_work, 0, 0, 0
+				vim.uv.new_work = function(worker, done)
+					local work = original(worker, function(supported, ...)
+						assert(supported, "vim.diff unavailable in worker")
+						completed = completed + 1
+						done(supported, ...)
+						vim.schedule(function()
+							local state = s.signs.current_state(buf)
+							if state and vim.deep_equal(state.hunks, expected) then
+								applied = applied + 1
+							end
+						end)
+					end)
+					return {
+						queue = function(_, ...)
+							queued = queued + 1
+							return work:queue(...)
+						end,
+					}
+				end
 				local timer = assert(vim.uv.new_timer())
 				local last, gap, beats = vim.uv.hrtime(), 0, 0
 				timer:start(
@@ -30,7 +57,7 @@ return function(ctx)
 					end)
 				)
 				local ok, err = pcall(function()
-					s.edit(buf, changed)
+					s.api.nvim_exec_autocmds("TextChanged", { buffer = buf })
 					s.wait(function()
 						local state = s.signs.current_state(buf)
 						return state
@@ -38,14 +65,77 @@ return function(ctx)
 							and state.rendered_identity.changedtick == s.api.nvim_buf_get_changedtick(buf)
 					end, "costly refresh did not finish", 20000)
 					vim.wait(40)
-					assert(gap < 500, string.format("sign refresh blocked main loop for %.0f ms", gap))
+					assert(
+						queued > 0 and completed == queued and applied == completed,
+						"worker work was not queued and applied"
+					)
+					local limit_ms = synchronous_ms * 0.5 + 30
+					assert(
+						gap < limit_ms,
+						string.format("sign refresh gap %.1f ms exceeded measured budget %.1f ms", gap, limit_ms)
+					)
 					assert(beats >= 10, "heartbeat did not run during costly refresh")
 					local state = s.signs.current_state(buf)
 					assert(#state.hunks == 5000, "worker changed histogram hunk boundaries")
-					print(string.format("sign heartbeat: %d beats, maximum gap %.1f ms", beats, gap))
+					print(
+						string.format(
+							"sign heartbeat: %d beats, maximum gap %.1f ms, synchronous %.1f ms, workers %d queued/%d applied",
+							beats,
+							gap,
+							synchronous_ms,
+							queued,
+							applied
+						)
+					)
 				end)
 				timer:stop()
 				timer:close()
+				vim.uv.new_work = original
+				assert(ok, err)
+			end),
+		},
+		{
+			"test_signs_gitsigns_attach_before_worker_result_releases_compute_waiters",
+			s.guard(function()
+				local _, buf, _, changed = fixture(4000)
+				require("lazyvcs.config").get().use_gitsigns = true
+				local attached, work, completed, loaded, failure = false, nil, 0, nil, nil
+				package.loaded.gitsigns = {
+					get_hunks = function()
+						return attached and {} or nil
+					end,
+				}
+				local original = vim.uv.new_work
+				vim.uv.new_work = function(_, done)
+					work = {
+						done = done,
+						queue = function()
+							return true
+						end,
+					}
+					return work
+				end
+				local ok, err = pcall(function()
+					s.edit(buf, changed)
+					s.signs.refresh(buf, false, function(state, why)
+						completed, loaded, failure = completed + 1, state, why
+					end)
+					assert(work, "diff worker did not start")
+					attached = true
+					work.done(true, vim.mpack.encode({ { 10, 1, 10, 1 } }))
+					s.wait(function()
+						return completed > 0
+					end, "delegation stranded compute waiter")
+					assert(
+						completed == 1
+							and not loaded
+							and type(failure) == "string"
+							and failure:find("delegated", 1, true),
+						"worker result ignored gitsigns attachment"
+					)
+					assert(#s.marks(buf) == 0 and s.signs.current_state(buf).delegated)
+				end)
+				vim.uv.new_work = original
 				assert(ok, err)
 			end),
 		},
