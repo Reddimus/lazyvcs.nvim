@@ -385,7 +385,10 @@ function M.system_start(args, opts, on_exit)
 					timeout = 2000,
 				}, function()
 					taskkill_running = false
-					if not done then
+					local ok, closing = pcall(function()
+						return process:is_closing()
+					end)
+					if not done and ok and not closing then
 						pcall(process.kill, process, force_sent and 9 or signal)
 					end
 				end)
@@ -396,7 +399,12 @@ function M.system_start(args, opts, on_exit)
 			-- Shutdown has a shorter global deadline than taskkill. Otherwise its
 			-- own deadline bounds the wait without cutting off the tree walk.
 			if not taskkill_running or (signal == 9 and runtime.is_shutting_down()) then
-				pcall(process.kill, process, signal)
+				local ok, closing = pcall(function()
+					return process:is_closing()
+				end)
+				if not done and ok and not closing then
+					pcall(process.kill, process, signal)
+				end
 			end
 		end
 		if signal == 9 then

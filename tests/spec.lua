@@ -5283,11 +5283,11 @@ local function test_source_control_git_file_actions_commit_and_sync()
 	wait_for(function()
 		-- Git checkout briefly removes the file. Retry missing-file reads instead of throwing
 		-- from the wait predicate.
-		if vim.fn.filereadable(fixture.file) ~= 1 then
+		local ok, lines = pcall(vim.fn.readfile, fixture.file)
+		if not ok then
 			return false
 		end
-		return vim.deep_equal(vim.fn.readfile(fixture.file), { "one", "two", "three" })
-			and session_state.get_repo_job(fixture.root) == nil
+		return vim.deep_equal(lines, { "one", "two", "three" }) and session_state.get_repo_job(fixture.root) == nil
 	end, "git discard should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(vim.fn.readfile(fixture.file), { "one", "two", "three" })
 
@@ -6157,7 +6157,8 @@ local function test_source_control_svn_commit_and_update()
 	}
 	ops.sync_repo(update_state, update_node)
 	wait_for(function()
-		return vim.deep_equal(vim.fn.readfile(update_fixture.file), { "one", "updated", "three" })
+		local ok, lines = pcall(vim.fn.readfile, update_fixture.file)
+		return ok and vim.deep_equal(lines, { "one", "updated", "three" })
 	end, "svn update should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(vim.fn.readfile(update_fixture.file), { "one", "updated", "three" })
 end

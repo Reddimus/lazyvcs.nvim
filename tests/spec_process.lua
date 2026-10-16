@@ -81,6 +81,9 @@ return function(ctx)
 			end
 		end, debug.traceback)
 		vim.system, vim.fn.has = original, has
+		if exit then
+			exit({ code = 1, stdout = "", stderr = "" })
+		end
 		assert(ok, err)
 		assert(#failures == 0, table.concat(failures, "\n"))
 	end
@@ -622,6 +625,7 @@ vim.cmd("qa!")
 		{
 			"test_core_process_windows_timeout_still_uses_taskkill",
 			function()
+				-- Guard the timeout upgrade of tree_termination for an otherwise direct read.
 				local original, has = vim.system, vim.fn.has
 				local exit, taskkill, raw
 				---@diagnostic disable-next-line: duplicate-set-field
@@ -665,6 +669,9 @@ vim.cmd("qa!")
 					)
 				end, debug.traceback)
 				vim.system, vim.fn.has = original, has
+				if exit then
+					exit({ code = 1, stdout = "", stderr = "" })
+				end
 				assert(ok, err)
 			end,
 		},
@@ -730,6 +737,9 @@ vim.cmd("qa!")
 					end, "Windows cancellation held worker after process exit")
 				end, debug.traceback)
 				vim.system, vim.fn.has = original, has
+				if process_exit then
+					process_exit({ code = 1, stdout = "", stderr = "" })
+				end
 				if helper_timer and not helper_timer:is_closing() then
 					helper_timer:stop()
 					helper_timer:close()
@@ -783,8 +793,9 @@ vim.cmd("qa!")
 						{ { "svn", "--non-interactive", "commit" } },
 						{ { "svn", "cat", "https://example.invalid/repo/file" }, direct = true },
 					}
-					for mode, command in ipairs(commands) do
+					for _, command in ipairs(commands) do
 						taskkill, fail, closing = nil, command.fail, command.closing
+						local expected_kills = killed + (closing and 0 or 1)
 						local calls = 0
 						local handle = assert(util.system_start(command[1], command[2], function()
 							calls = calls + 1
@@ -799,7 +810,7 @@ vim.cmd("qa!")
 							)
 						end
 						ctx.wait_for(function()
-							return killed == mode
+							return killed == expected_kills
 						end, "parent termination fallback missing")
 						process_exit({ code = 1, stdout = "", stderr = "" })
 						ctx.wait_for(function()
@@ -808,6 +819,9 @@ vim.cmd("qa!")
 					end
 				end)
 				vim.system, vim.fn.has = original, has
+				if process_exit then
+					process_exit({ code = 1, stdout = "", stderr = "" })
+				end
 				assert(ok, err)
 			end,
 		},
