@@ -376,10 +376,33 @@ return function(ctx)
 				assert(#patch > 512 * 1024 and #patch < 1024 * 1024, "fixture patch outside supported budget")
 				local result, err = preview()
 				assert(result, "supported property patch rejected: " .. tostring(err))
-				assert(
-					vim.deep_equal(result.right, require("lazyvcs.util").split_lines(patch)),
-					"property patch bytes changed"
-				)
+				-- Header lines name the target, and Windows spells the test's path differently.
+				local function body(lines)
+					local kept = {}
+					for _, line in ipairs(lines) do
+						if not line:find("sample.txt", 1, true) then
+							kept[#kept + 1] = line
+						end
+					end
+					return kept
+				end
+				local expected = body(require("lazyvcs.util").split_lines(patch))
+				for index, line in ipairs(result.right) do
+					assert(not line:find("\r$"), "property patch line " .. index .. " kept a carriage return")
+				end
+				local actual = body(result.right)
+				assert(#expected > 0 and #table.concat(expected) > 512 * 1024, "fixture patch body is empty")
+				for index = 1, math.max(#expected, #actual) do
+					assert(
+						expected[index] == actual[index],
+						string.format(
+							"property patch bytes changed at body line %d: expected %q, got %q",
+							index,
+							(expected[index] or "<none>"):sub(1, 80),
+							(actual[index] or "<none>"):sub(1, 80)
+						)
+					)
+				end
 				h.write_file(property, string.rep("x", 1024 * 1024))
 				h.exec({ "svn", "propset", "custom:large", "--file", property, "sample.txt" }, f.root)
 				result, err = preview()
