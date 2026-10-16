@@ -314,7 +314,7 @@ function M.preview(snapshot, item, callback)
 			if not lines then
 				return task:finish(nil, line_err)
 			end
-			result.right = lines
+			result.right, result.right_bytes = lines, data
 			finish()
 		end)
 	end
@@ -334,7 +334,7 @@ function M.preview(snapshot, item, callback)
 				if not lines then
 					return task:finish(nil, line_err)
 				end
-				result.left = lines
+				result.left, result.left_bytes = lines, data
 				right()
 			end
 		)

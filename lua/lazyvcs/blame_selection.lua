@@ -1,6 +1,7 @@
 local loader = require("lazyvcs.backends.blame_selection")
 local util = require("lazyvcs.util")
 local config = require("lazyvcs.config")
+local context = require("lazyvcs.blame_context")
 local M = {}
 local requests = {}
 local ns = vim.api.nvim_create_namespace("lazyvcs_blame_selection")
@@ -54,13 +55,32 @@ local function close(request)
 	retire_request(request, true)
 end
 
+local function update(request, lines)
+	local ok, err = pcall(function()
+		vim.bo[request.buf].modifiable, vim.bo[request.buf].readonly = true, false
+		vim.api.nvim_buf_set_lines(request.buf, 0, -1, false, lines)
+	end)
+	if vim.api.nvim_buf_is_valid(request.buf) then
+		pcall(function()
+			vim.bo[request.buf].modifiable, vim.bo[request.buf].readonly = false, true
+		end)
+	end
+	return ok, err
+end
+
 local function write(request, lines)
 	if request.closed or not vim.api.nvim_buf_is_valid(request.buf) then
-		return
+		return false
 	end
-	vim.bo[request.buf].modifiable, vim.bo[request.buf].readonly = true, false
-	vim.api.nvim_buf_set_lines(request.buf, 0, -1, false, lines)
-	vim.bo[request.buf].modifiable, vim.bo[request.buf].readonly = false, true
+	local ok, err = update(request, lines)
+	if ok then
+		return true
+	end
+	if not update(request, { "Could not update selection blame report. Select the lines again." }) then
+		retire_request(request, true)
+		util.notify("Selection blame failed: " .. tostring(err):gsub("[\r\n]+", " "), vim.log.levels.ERROR)
+	end
+	return false
 end
 
 local function display(text)
@@ -100,12 +120,23 @@ function M.open(first, last)
 		target = { path = util.buf_path(source) }
 	end
 	target.first, target.last = first, last
-	target.fileformat = vim.bo[source].fileformat
 	local path = target.path
 	local bytes = target.snapshot and util.buffer_size(source)
 		or math.max(util.file_size(path), util.buffer_size(source))
 	if bytes > math.min(config.get().signs.max_file_bytes, 1024 * 1024) then
 		return util.notify("Selection blame is limited to files of 1 MiB", vim.log.levels.INFO)
+	end
+	local captured, capture, contents
+	if not target.snapshot then
+		captured = context.capture(source, source_win)
+		if not captured then
+			return util.notify("Blame source changed", vim.log.levels.INFO)
+		end
+		local err
+		contents, err, capture = context.contents(captured, math.min(config.get().signs.max_file_bytes, 1024 * 1024))
+		if not contents then
+			return util.notify(err, vim.log.levels.INFO)
+		end
 	end
 	if requests[source] then
 		close(requests[source])
@@ -118,6 +149,9 @@ function M.open(first, last)
 	vim.bo[request.buf].bufhidden, vim.bo[request.buf].swapfile = "wipe", false
 	vim.bo[request.buf].filetype = "lazyvcs-blame-selection"
 	write(request, { "Loading blame for lines " .. first .. "-" .. last .. "..." })
+	if request.closed then
+		return nil
+	end
 	vim.bo[request.buf].readonly = true
 	request.win = vim.api.nvim_open_win(request.buf, true, {
 		relative = "editor",
@@ -162,6 +196,20 @@ function M.open(first, last)
 			retire_request(request, false)
 		end),
 	})
+	if captured then
+		local changed = protect(request, function()
+			if request.handle and not context.valid(captured) then
+				pcall(request.handle.kill, request.handle)
+				request.handle = nil
+				write(request, { "Source changed while loading. Select the lines again." })
+			end
+		end)
+		vim.api.nvim_create_autocmd(
+			"OptionSet",
+			{ group = request.group, pattern = context.options, callback = changed }
+		)
+		vim.api.nvim_create_autocmd("BufModifiedSet", { group = request.group, buffer = source, callback = changed })
+	end
 	local check = protect(request, function()
 		if not request.closed and not owns_report(request) then
 			retire_request(request, false)
@@ -181,7 +229,7 @@ function M.open(first, last)
 	protect(request, function()
 		request.handle = loader.load(
 			target,
-			util.join_lines(lines),
+			contents or target.bytes or util.join_lines(lines),
 			protect(request, function(entries, blame_err)
 				if not owns_report(request) then
 					retire_request(request, false)
@@ -191,7 +239,7 @@ function M.open(first, last)
 				if
 					not vim.api.nvim_buf_is_valid(source)
 					or vim.api.nvim_buf_get_changedtick(source) ~= request.tick
-					or vim.bo[source].fileformat ~= target.fileformat
+					or (captured and not context.valid(captured))
 					or (target.valid and not target.valid())
 					or (not target.snapshot and util.buf_path(source) ~= path)
 				then
@@ -199,7 +247,12 @@ function M.open(first, last)
 					return
 				end
 				if not entries then
-					write(request, { blame_err or "No blame information is available for this path." })
+					local diagnostics = vim.split(
+						(blame_err or "No blame information is available for this path."):gsub("\r\n", "\n"),
+						"\n",
+						{ plain = true }
+					)
+					write(request, vim.tbl_map(display, diagnostics))
 					return
 				end
 				local label = target.snapshot
@@ -220,7 +273,9 @@ function M.open(first, last)
 					end
 					out[#out + 1] = string.format("%d  %s | %s", number, metadata, display(lines[number]))
 				end
-				write(request, out)
+				if not write(request, out) then
+					return
+				end
 				for i = 3, #out do
 					local ending = out[i]:find(" | ", 1, true)
 					vim.api.nvim_buf_set_extmark(
@@ -231,7 +286,8 @@ function M.open(first, last)
 						{ end_col = ending and ending - 1 or #out[i], hl_group = "Comment" }
 					)
 				end
-			end)
+			end),
+			capture
 		)
 	end)()
 	request.origin_win = source_win

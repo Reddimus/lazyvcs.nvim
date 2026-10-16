@@ -961,7 +961,8 @@ function M.blame_lines_async(path, on_done, opts)
 						return task:finish(nil, tracked_err)
 					end
 					local blame_args = { "git", "blame", "--encoding=UTF-8", "--line-porcelain" }
-					if opts.line_start and opts.line_end then
+					local format = require("lazyvcs.backends.blame_format")
+					if opts.line_start and opts.line_end and not format.full_file(opts) then
 						vim.list_extend(blame_args, { "-L", opts.line_start .. "," .. opts.line_end })
 					end
 					local blame_opts = {
@@ -972,11 +973,6 @@ function M.blame_lines_async(path, on_done, opts)
 						vim.list_extend(blame_args, { "--contents", "-" })
 						blame_opts.stdin = type(opts.contents) == "table" and util.join_lines(opts.contents)
 							or tostring(opts.contents)
-						-- Buffer lines omit DOS separators. Restore them for Git's byte-based
-						-- --contents comparison so unchanged CRLF lines retain their history.
-						if opts.fileformat == "dos" then
-							blame_opts.stdin = blame_opts.stdin:gsub("\n", "\r\n")
-						end
 					end
 					vim.list_extend(blame_args, { "--", relpath })
 					task:add(process.lines(blame_args, blame_opts, function(lines, blame_err)
@@ -990,7 +986,7 @@ function M.blame_lines_async(path, on_done, opts)
 										return task:finish(nil, read_err)
 									end
 									local rows = {}
-									for number, line in ipairs(util.split_lines(data)) do
+									for number, line in ipairs(opts.text and opts.text.lines or util.split_lines(data)) do
 										if
 											not (opts.line_start and opts.line_end)
 											or (number >= opts.line_start and number <= opts.line_end)
@@ -1014,7 +1010,8 @@ function M.blame_lines_async(path, on_done, opts)
 							end
 							return task:finish(nil, blame_err)
 						end
-						task:finish(lines, nil, root)
+						local selected, format_err = format.select(lines, opts)
+						task:finish(selected, format_err, root)
 					end))
 				end
 			)

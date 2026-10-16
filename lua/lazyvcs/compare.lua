@@ -1228,6 +1228,7 @@ function M.blame_target(buf)
 		snapshot = snapshot,
 		item = item,
 		side = side,
+		bytes = side == "base" and result.left_bytes or result.right_bytes,
 		valid = function()
 			return alive(s) and s.snapshot == snapshot and s.preview_result == result and s.mode == "text"
 		end,

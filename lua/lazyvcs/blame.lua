@@ -4,6 +4,7 @@ local compat = require("lazyvcs.compat")
 local config = require("lazyvcs.config")
 local store = require("lazyvcs.store")
 local util = require("lazyvcs.util")
+local text = require("lazyvcs.compare_text")
 
 local M = {}
 
@@ -55,6 +56,53 @@ local function supported_blame_buffer(bufnr)
 	return path, backend
 end
 
+-- Window-local values are saved per buffer. If the source has left this window,
+-- wait for it to return rather than changing the replacement buffer's options.
+local function restore_source_options(source_bufnr, view)
+	local win = view.source_winid
+	if not view.source_options or not util.win_is_valid(win) then
+		return
+	end
+	if vim.api.nvim_win_get_buf(win) == source_bufnr then
+		apply_win_options(win, view.source_options)
+		return
+	end
+	if not util.buf_is_valid(source_bufnr) then
+		return
+	end
+	local group = vim.api.nvim_create_augroup("lazyvcs_blame_restore_" .. source_bufnr .. "_" .. win, { clear = true })
+	local function clear()
+		pcall(vim.api.nvim_del_augroup_by_id, group)
+	end
+	vim.api.nvim_create_autocmd("BufWinEnter", {
+		group = group,
+		buffer = source_bufnr,
+		callback = protect(function()
+			if util.win_is_valid(win) and vim.api.nvim_win_get_buf(win) == source_bufnr then
+				clear()
+				apply_win_options(win, view.source_options)
+			else
+				local entered = vim.api.nvim_get_current_win()
+				local temporary = { wrap = false, foldenable = false, scrollbind = true, cursorbind = true }
+				local live = blame_views[source_bufnr]
+				if
+					entered ~= win
+					-- A newer split on this window owns its temporary values.
+					and not (live and live.source_winid == entered)
+					and vim.api.nvim_win_get_buf(entered) == source_bufnr
+					and vim.deep_equal(capture_win_options(entered, vim.tbl_keys(temporary)), temporary)
+				then
+					-- New windows can inherit the source's last saved temporary values.
+					-- The original window still needs its own pending restore.
+					apply_win_options(entered, view.source_options)
+				end
+			end
+		end, clear),
+	})
+	vim.api.nvim_create_autocmd("BufWipeout", { group = group, buffer = source_bufnr, callback = clear })
+	vim.api.nvim_create_autocmd("WinClosed", { group = group, pattern = tostring(win), callback = clear })
+end
+
 local function close_blame(source_bufnr, expected, deferred)
 	local view = blame_views[source_bufnr]
 	if not view or (expected and view ~= expected) then
@@ -75,9 +123,7 @@ local function close_blame(source_bufnr, expected, deferred)
 		view.handle = nil
 		pcall(handle.kill, handle, 15)
 	end
-	if view.source_options and util.win_is_valid(view.source_winid) then
-		apply_win_options(view.source_winid, view.source_options)
-	end
+	restore_source_options(source_bufnr, view)
 	local function dispose()
 		if util.win_is_valid(view.winid) and vim.api.nvim_win_get_buf(view.winid) == view.bufnr then
 			pcall(vim.api.nvim_win_close, view.winid, true)
@@ -258,6 +304,14 @@ local function load_inline(bufnr, path, backend)
 		return
 	end
 
+	local capture, capture_err = text.capture_file(bufnr, config.get().signs.max_file_bytes)
+	if not capture then
+		view.error = capture_err
+		notify(capture_err, vim.log.levels.DEBUG)
+		return
+	end
+	view.identity = capture.identity
+
 	view.loading = true
 	view.loading_visible = false
 	view.generation = (view.generation or 0) + 1
@@ -300,6 +354,10 @@ local function load_inline(bufnr, path, backend)
 				if live ~= view or live.generation ~= generation or not util.buf_is_valid(bufnr) then
 					return
 				end
+				if not vim.deep_equal(text.identity(bufnr), view.identity) then
+					clear_inline(bufnr)
+					return
+				end
 				if live.loading_timer then
 					live.loading_timer:stop()
 					live.loading_timer:close()
@@ -322,8 +380,9 @@ local function load_inline(bufnr, path, backend)
 				render_inline(bufnr)
 			end, failed),
 			{
-				contents = util.join_lines(util.get_buf_lines(bufnr)),
-				fileformat = vim.bo[bufnr].fileformat,
+				contents = capture.bytes,
+				text = capture.text,
+				profile = capture.profile,
 				root = select(2, backends.resolve_cached(path)),
 			}
 		)
@@ -390,6 +449,10 @@ local function update_inline(bufnr)
 		return
 	end
 
+	if view.identity and not vim.deep_equal(text.identity(bufnr), view.identity) then
+		invalidate_inline(bufnr)
+		return
+	end
 	if view.entries then
 		render_inline(bufnr)
 		return
@@ -458,6 +521,7 @@ function invalidate_inline(bufnr)
 		view.timer = nil
 	end
 	view.entries = nil
+	view.identity = nil
 	view.last_line = nil
 	view.error = nil
 	view.loading = false
@@ -527,6 +591,26 @@ local function source_present(bufnr, winid)
 		and vim.api.nvim_win_get_buf(winid) == bufnr
 end
 
+local function align_split_view(view)
+	local source, blame = view.source_winid, view.winid
+	apply_win_options(source, { scrollbind = false, cursorbind = false })
+	apply_win_options(blame, { scrollbind = false, cursorbind = false })
+	local saved = vim.api.nvim_win_call(source, vim.fn.winsaveview)
+	local count = vim.api.nvim_buf_line_count(view.bufnr)
+	vim.api.nvim_win_call(blame, function()
+		vim.fn.winrestview({
+			lnum = math.min(saved.lnum, count),
+			col = 0,
+			topline = math.min(saved.topline, count),
+			topfill = 0,
+			leftcol = 0,
+			skipcol = 0,
+		})
+	end)
+	apply_win_options(source, { scrollbind = true, cursorbind = true })
+	apply_win_options(blame, { scrollbind = true, cursorbind = true })
+end
+
 local function observe_source(view, bufnr, close, changed)
 	vim.api.nvim_create_autocmd({ "BufUnload", "BufDelete", "BufWipeout" }, {
 		group = view.augroup,
@@ -553,14 +637,17 @@ local function observe_source(view, bufnr, close, changed)
 			vim.schedule(check)
 		end, close),
 	})
-	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "BufWritePost", "BufReadPost", "BufFilePost" }, {
-		group = view.augroup,
-		buffer = bufnr,
-		callback = protect(changed, close),
-	})
+	vim.api.nvim_create_autocmd(
+		{ "TextChanged", "TextChangedI", "BufWritePost", "BufReadPost", "BufFilePost", "BufModifiedSet" },
+		{
+			group = view.augroup,
+			buffer = bufnr,
+			callback = protect(changed, close),
+		}
+	)
 	vim.api.nvim_create_autocmd("OptionSet", {
 		group = view.augroup,
-		pattern = "fileformat",
+		pattern = context.options,
 		callback = protect(function()
 			if vim.api.nvim_get_current_buf() == bufnr then
 				changed()
@@ -631,25 +718,12 @@ function M.blame_split()
 	end)
 	local function render(lines)
 		if view.winid then
-			local saved = vim.api.nvim_win_call(view.winid, vim.fn.winsaveview)
 			vim.bo[view.bufnr].modifiable = true
 			vim.api.nvim_buf_set_lines(view.bufnr, 0, -1, false, lines)
 			vim.bo[view.bufnr].modifiable = false
 			vim.api.nvim_buf_clear_namespace(view.bufnr, split_ns_id, 0, -1)
 			highlight_blame(view.bufnr, lines)
-			vim.api.nvim_win_call(view.winid, function()
-				vim.fn.winrestview(saved)
-			end)
-			-- The source may have grown or shrunk while the reload ran. Align only the
-			-- blame window; :syncbind would also move the source and other bound panes.
-			local source_view = vim.api.nvim_win_call(source_win, vim.fn.winsaveview)
-			vim.api.nvim_win_call(view.winid, function()
-				vim.fn.winrestview({
-					lnum = math.min(source_view.lnum, #lines),
-					col = 0,
-					topline = math.min(source_view.topline, #lines),
-				})
-			end)
+			align_split_view(view)
 			return
 		end
 		view.bufnr = vim.api.nvim_create_buf(false, true)
@@ -677,6 +751,7 @@ function M.blame_split()
 		util.set_win_option(view.winid, "relativenumber", false)
 		util.set_win_option(view.winid, "signcolumn", "no")
 		util.set_win_option(view.winid, "foldcolumn", "0")
+		util.set_win_option(view.winid, "foldenable", false)
 		util.set_win_option(view.winid, "wrap", false)
 		util.set_win_option(view.winid, "linebreak", false)
 		util.set_win_option(view.winid, "list", false)
@@ -694,8 +769,8 @@ function M.blame_split()
 			"Normal:LazyVcsBlame,NormalNC:LazyVcsBlame,EndOfBuffer:LazyVcsBlame"
 		)
 		pcall(vim.api.nvim_win_set_width, view.winid, width)
-		view.source_options = capture_win_options(source_win, { "scrollbind", "cursorbind" })
-		apply_win_options(source_win, { scrollbind = true, cursorbind = true })
+		view.source_options = capture_win_options(source_win, { "scrollbind", "cursorbind", "wrap", "foldenable" })
+		apply_win_options(source_win, { scrollbind = false, cursorbind = false, wrap = false, foldenable = false })
 
 		if util.win_is_valid(callback_win) then
 			vim.api.nvim_set_current_win(callback_win)
@@ -738,7 +813,7 @@ function M.blame_split()
 				{ buffer = view.bufnr, silent = true, nowait = true, desc = "Close VCS blame" }
 			)
 		end
-		sync_cursor(source_win, view.winid)
+		align_split_view(view)
 	end
 	reload = safe(function()
 		if blame_views[source_bufnr] ~= view then
@@ -748,8 +823,8 @@ function M.blame_split()
 		if not captured then
 			return close()
 		end
-		local contents, capture_err = context.contents(captured, config.get().signs.max_file_bytes)
-		if not contents then
+		local contents, capture_err, capture = context.contents(captured, config.get().signs.max_file_bytes)
+		if not contents or not capture then
 			close()
 			notify(capture_err, vim.log.levels.WARN)
 			return
@@ -800,7 +875,7 @@ function M.blame_split()
 						debounce()
 					end
 				end),
-				{ contents = contents, fileformat = captured.fileformat, root = root }
+				{ contents = contents, text = capture.text, profile = capture.profile, root = root }
 			)
 		end
 		local backend, root = backends.resolve_cached(captured.name)
@@ -823,8 +898,8 @@ function M.line_log()
 		notify("Current buffer is not a Git or SVN file", vim.log.levels.WARN)
 		return false
 	end
-	local contents, capture_err = context.contents(captured, config.get().signs.max_file_bytes)
-	if not contents then
+	local contents, capture_err, capture = context.contents(captured, config.get().signs.max_file_bytes)
+	if not contents or not capture then
 		notify(capture_err, vim.log.levels.WARN)
 		return false
 	end
@@ -961,7 +1036,7 @@ function M.line_log()
 					{ root = root }
 				)
 			end),
-			{ contents = contents, fileformat = captured.fileformat, root = root }
+			{ contents = contents, text = capture.text, profile = capture.profile, root = root }
 		)
 	end)
 	safe(function()
@@ -976,6 +1051,16 @@ end
 
 function M.refresh(bufnr)
 	invalidate_inline(bufnr or vim.api.nvim_get_current_buf())
+end
+
+local function shown_in_window(bufnr)
+	-- bufload() uses a temporary autocommand window and fires BufWinEnter too.
+	for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
+		if vim.fn.win_gettype(win) ~= "autocmd" then
+			return true
+		end
+	end
+	return false
 end
 
 function M.setup()
@@ -1004,27 +1089,35 @@ function M.setup()
 	vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "WinEnter", "BufWinEnter" }, {
 		group = augroup,
 		callback = protect(function(args)
-			update_inline(args.buf)
-		end),
-	})
-	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "BufWritePost", "BufFilePost" }, {
-		group = augroup,
-		callback = protect(function(args)
-			if inline_enabled then
-				invalidate_inline(args.buf)
+			if inline_views[args.buf] or shown_in_window(args.buf) then
+				update_inline(args.buf)
 			end
 		end),
 	})
+	vim.api.nvim_create_autocmd(
+		{ "TextChanged", "TextChangedI", "BufWritePost", "BufReadPost", "BufFilePost", "BufModifiedSet" },
+		{
+			group = augroup,
+			callback = protect(function(args)
+				local hidden_load = (args.event == "BufReadPost" or args.event == "BufModifiedSet")
+					and not inline_views[args.buf]
+					and not shown_in_window(args.buf)
+				if inline_enabled and not hidden_load then
+					invalidate_inline(args.buf)
+				end
+			end),
+		}
+	)
 	vim.api.nvim_create_autocmd("OptionSet", {
 		group = augroup,
-		pattern = "fileformat",
+		pattern = context.options,
 		callback = protect(function()
 			if inline_enabled and inline_views[vim.api.nvim_get_current_buf()] then
 				invalidate_inline(vim.api.nvim_get_current_buf())
 			end
 		end),
 	})
-	vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+	vim.api.nvim_create_autocmd({ "BufUnload", "BufDelete", "BufWipeout" }, {
 		group = augroup,
 		callback = protect(function(args)
 			clear_inline(args.buf)

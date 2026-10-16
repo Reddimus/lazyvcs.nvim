@@ -101,6 +101,9 @@ function M.read_file(task, path, callback)
 end
 
 function M.lines(data)
+	if type(data) ~= "string" then
+		return nil, "File contents unavailable"
+	end
 	if data:find("\0", 1, true) then
 		return nil, "Binary file; text preview unavailable"
 	end

@@ -122,6 +122,29 @@ local signatures = {
 	{ "\254\255", "utf-16be" },
 }
 
+local function codec(encoding)
+	encoding = encoding:lower()
+	if encoding == "utf8" then
+		return "utf-8"
+	elseif encoding == "utf-16" or encoding == "utf-16be" or encoding == "ucs-2" or encoding == "ucs-2be" then
+		return "utf-16le", 2
+	elseif encoding == "ucs-4" or encoding == "ucs-4be" then
+		return "ucs-4le", 4
+	elseif encoding == "ucs-2le" then
+		return "utf-16le"
+	end
+	return encoding
+end
+
+local function swap(bytes, width)
+	if width == 2 then
+		return (bytes:gsub("(.)(.)", "%2%1"))
+	elseif width == 4 then
+		return (bytes:gsub("(.)(.)(.)(.)", "%4%3%2%1"))
+	end
+	return bytes
+end
+
 ---@param bytes string
 ---@param profile LazyVcsDecodeProfile
 ---@param limit_bytes integer
@@ -140,17 +163,8 @@ function M.decode(bytes, profile, limit_bytes)
 			break
 		end
 	end
-	local conversion_source, conversion_bytes = source:lower(), bytes
-	if
-		conversion_source == "utf-16"
-		or conversion_source == "utf-16be"
-		or conversion_source == "ucs-2"
-		or conversion_source == "ucs-2be"
-	then
-		conversion_source, conversion_bytes = "utf-16le", bytes:gsub("(.)(.)", "%2%1")
-	elseif conversion_source == "ucs-4" or conversion_source == "ucs-4be" then
-		conversion_source, conversion_bytes = "ucs-4le", bytes:gsub("(.)(.)(.)(.)", "%4%3%2%1")
-	end
+	local conversion_source, width = codec(source)
+	local conversion_bytes = swap(bytes, width)
 	local utf8 = conversion_source == "utf-8" or conversion_source == "utf8"
 	local ok = true
 	---@type string?
@@ -266,6 +280,83 @@ function M.serialize(text)
 		return ""
 	end
 	return table.concat(text.lines, "\n") .. (text.eol and "\n" or "")
+end
+
+---@class LazyVcsBufferCapture
+---@field text LazyVcsText
+---@field profile LazyVcsDecodeProfile
+---@field identity LazyVcsTextIdentity
+---@field bytes string
+
+---@param text LazyVcsText
+---@param profile LazyVcsDecodeProfile
+---@param limit_bytes integer
+---@return string? bytes, string? err
+function M.encode_file(text, profile, limit_bytes)
+	if profile.binary then
+		return nil, "Binary buffers do not support file-byte capture"
+	end
+	local separator = profile.fileformat == "dos" and "\r\n" or profile.fileformat == "mac" and "\r" or "\n"
+	local decoded = text.empty and "" or table.concat(text.lines, separator) .. (text.eol and separator or "")
+	if not valid_utf8(decoded) or decoded:find("\0", 1, true) then
+		return nil, "Buffer contains unsupported text"
+	end
+	local encoding, width = codec(profile.fileencoding)
+	local bytes = decoded
+	if encoding ~= "utf-8" then
+		local input = decoded == "" and "a" or decoded
+		local ok, converted = pcall(vim.iconv, input, "utf-8", encoding)
+		local reverse_ok, reversed = false, nil
+		if ok and type(converted) == "string" then
+			reverse_ok, reversed = pcall(vim.iconv, converted, encoding, "utf-8")
+		end
+		if not reverse_ok or reversed ~= input then
+			return nil, "Buffer encoding cannot be converted without loss"
+		end
+		bytes = decoded == "" and "" or swap(converted, width)
+	end
+	if profile.bomb then
+		local signature
+		for _, candidate in ipairs(signatures) do
+			local candidate_codec, candidate_width = codec(candidate[2])
+			if candidate_codec == encoding and candidate_width == width then
+				signature = candidate[1]
+				break
+			end
+		end
+		-- Like Neovim's writer, ignore 'bomb' for encodings without a BOM.
+		bytes = (signature or "") .. bytes
+	end
+	if #bytes > limit_bytes then
+		return nil, "Encoded text exceeds the file size limit"
+	end
+	return bytes
+end
+
+---@param bufnr integer
+---@param limit_bytes integer
+---@return LazyVcsBufferCapture? capture, string? err
+function M.capture_file(bufnr, limit_bytes)
+	local identity, err = M.identity(bufnr)
+	if not identity then
+		return nil, err
+	end
+	local profile, profile_err = M.profile(bufnr)
+	if not profile then
+		return nil, profile_err
+	end
+	local text, capture_err = M.capture(bufnr, limit_bytes)
+	if not text then
+		return nil, capture_err
+	end
+	local bytes, encode_err = M.encode_file(text, profile, limit_bytes)
+	if not bytes then
+		return nil, encode_err
+	end
+	if not vim.deep_equal(identity, M.identity(bufnr)) then
+		return nil, "Buffer changed while capturing file bytes"
+	end
+	return { text = text, profile = profile, identity = identity, bytes = bytes }
 end
 
 return M

@@ -7164,6 +7164,10 @@ vim.list_extend(cases, require("spec_blame_lifecycle")({ helpers = helpers, wait
 vim.list_extend(cases, require("spec_blame_history")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_metadata")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_highlighting")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_blame_bytes")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_blame_reload")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_blame_viewport")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_blame_errors")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,

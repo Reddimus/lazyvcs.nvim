@@ -40,6 +40,13 @@ and this project adheres to
 - Open changed Git submodules as read-only commit patches.
 - Attribute SVN directory-external changes to their own working copies and
   preserve commit drafts after SVN no-op commits.
+- Preserve committed blame for encoded files, BOMs, and missing final newlines,
+  including unsaved edits and saved Compare snapshots.
+- Refresh inline blame after unloading or rereading a file and reject stale
+  results after file-format changes.
+- Align blame splits when they open and reload. Temporarily disable source
+  wrapping and folding, then restore their previous settings on close.
+- Keep multiline selection-blame errors readable in a protected report.
 
 ## [0.11.2] - 2026-10-16
 

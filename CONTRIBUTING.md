@@ -118,11 +118,15 @@ the GitHub release.
   available. Legacy `base_lines` payloads remain decoded UTF-8 with a final
   newline.
 - `compare_text.lua` owns lossless byte conversion, decoded documents, and
-  buffer text identities. It depends only on Neovim APIs. Native editable hunks
-  use full documents, including empty-content and EOF state. Live diff bounds
-  both raw and decoded content to 1 MiB per side; signs also honor
-  `signs.max_file_bytes`. Profile changes invalidate decoded bases. Revalidate
-  entry eligibility and the captured context before native replacement.
+  buffer text identities. `serialize()` produces normalized UTF-8 for diffing;
+  `encode_file()` and `capture_file()` preserve file bytes for blame. Encoding
+  requires an exact reverse conversion. Clean captures preserve read EOF state,
+  while modified nonempty captures honor `fixendofline`. The module depends only
+  on Neovim APIs. Native editable hunks use full documents, including
+  empty-content and EOF state. Live diff bounds both raw and decoded content to
+  1 MiB per side; signs also honor `signs.max_file_bytes`. Profile changes
+  invalidate decoded bases. Revalidate entry eligibility and the captured
+  context before native replacement.
 - `source_control/jobs.lua` bounds and profiles repository/comparison commands.
 - Source-control summaries own branch, upstream, and remote status. Details own
   local rows and counts. Merge each completion into the current repository
@@ -188,7 +192,11 @@ Comparison rows take O(displayed bytes) time and space per snapshot. Width
 changes use cached measurements; cursor movement does not load previews.
 Selection blame sends one bounded request chain, never a command per line. Git
 maps selections to historical ranges on older Git; SVN maps historical blame
-through the captured contents. CI also runs native E2E with Ubuntu 22.04 Git.
+through decoded captured contents. Git receives file bytes with its attributes
+and filters active. Representations that may use a different Git line model
+require bounded full-file blame and record-count validation before selecting
+editor lines. Ordinary selections and line history keep bounded `-L` requests.
+CI also runs native E2E with Ubuntu 22.04 Git.
 
 Compare file navigation selects its destination in O(1) and loads only that
 preview. Review history stores O(visited paths) view metadata, prunes removed
