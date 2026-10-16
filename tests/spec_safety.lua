@@ -583,7 +583,12 @@ return function(ctx)
 		local previous_gitsigns = package.loaded["gitsigns"]
 		local previous_resolve_cached = backends.resolve_cached
 		local reset_count = 0
-		local hunks = { { added = { start = 2, count = 1 }, removed = { start = 2, count = 1 } } }
+		local hunks = {
+			{
+				added = { start = 2, count = 1, lines = { "changed" } },
+				removed = { start = 2, count = 1, lines = { "two" } },
+			},
+		}
 		package.loaded["gitsigns"] = {
 			get_hunks = function()
 				return hunks
@@ -607,7 +612,11 @@ return function(ctx)
 		end
 
 		local ok, err = xpcall(function()
+			vim.api.nvim_win_set_cursor(0, { 2, 0 })
 			signs.revert_hunk()
+			wait_for(function()
+				return type(confirm_choice) == "function"
+			end, "confirmation absent", 15000)
 			assert(type(confirm_choice) == "function", "gitsigns revert should wait for confirmation")
 			vim.cmd.enew()
 			confirm_choice("confirm")
@@ -627,6 +636,7 @@ return function(ctx)
 	local function test_gitsigns_hunk_revert_refuses_changed_hunk_state()
 		require("lazyvcs").setup({
 			use_gitsigns = true,
+			signs = { max_file_bytes = 1 },
 			source_control = { confirm_mutations = true },
 		})
 
@@ -636,7 +646,12 @@ return function(ctx)
 		local signs = require("lazyvcs.signs")
 		local previous_gitsigns = package.loaded["gitsigns"]
 		local previous_resolve_cached = backends.resolve_cached
-		local hunks = { { added = { start = 2, count = 1 }, removed = { start = 2, count = 1 } } }
+		local hunks = {
+			{
+				added = { start = 2, count = 1, lines = { "changed" } },
+				removed = { start = 2, count = 1, lines = { "two" } },
+			},
+		}
 		local reset_count = 0
 		package.loaded["gitsigns"] = {
 			get_hunks = function()
@@ -662,11 +677,21 @@ return function(ctx)
 		end
 
 		local ok, err = xpcall(function()
+			vim.api.nvim_win_set_cursor(0, { 2, 0 })
 			signs.revert_hunk()
+			wait_for(function()
+				return type(confirm_choice) == "function"
+			end, "confirmation absent", 15000)
 			assert(type(confirm_choice) == "function", "gitsigns revert should wait for confirmation")
 			hunks = { { added = { start = 4, count = 1 }, removed = { start = 4, count = 1 } } }
+			local before = vim.api.nvim_buf_get_lines(0, 0, -1, false)
 			confirm_choice("confirm")
+			vim.wait(50)
 			assert(reset_count == 0, "confirmation must not invoke gitsigns after its hunk state changes")
+			assert(
+				vim.deep_equal(before, vim.api.nvim_buf_get_lines(0, 0, -1, false)),
+				"native fallback must not revert the buffer"
+			)
 		end, debug.traceback)
 		confirm.open = previous_confirm_open
 		package.loaded["gitsigns"] = previous_gitsigns

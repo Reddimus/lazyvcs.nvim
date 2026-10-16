@@ -261,7 +261,9 @@ maps selections to historical ranges on older Git; SVN maps historical blame
 through decoded captured contents. Git receives file bytes with its attributes
 and filters active. Representations that may use a different Git line model
 require bounded full-file blame and record-count validation before selecting
-editor lines. Ordinary selections and line history keep bounded `-L` requests.
+editor lines. Active Git clean filters also require ordered source-row
+validation, allowing only trailing horizontal whitespace and ident collapse as
+normalization. Ordinary selections and line history keep bounded `-L` requests.
 CI also runs native E2E with Ubuntu 22.04 Git.
 
 Compare file navigation selects its destination in O(1) and loads only that

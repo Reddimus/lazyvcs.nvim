@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.4] - 2026-10-16
 
 ### Fixed
 
@@ -49,6 +49,18 @@ and this project adheres to
   values safely.
 - Terminate editor restore descendants on explicit Windows cancellation while
   preserving shutdown behavior.
+- Reject Git clean filters that remove or reorder blame rows while preserving
+  whitespace cleaners and ident expansion.
+- Keep blame splits open with short or empty uncommitted labels.
+- Cancel pending line history when the source cursor moves.
+- Reject SVN blame encodings with incompatible line boundaries or undecodable
+  BASE.
+- Revert gitsigns hunks against the settled index: wait for pending LazyVCS
+  index changes and refreshed gitsigns hunks, and reject confirmations whose
+  base changed. Large files keep reverting through gitsigns.
+- Resume native gutter signs after gitsigns detaches.
+- Refresh custom theme colors when highlight namespaces are reused or
+  colorschemes change.
 
 ## [0.11.3] - 2026-10-16
 
@@ -718,3 +730,4 @@ First tagged release.
 [0.11.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.0...v0.11.1
 [0.11.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.1...v0.11.2
 [0.11.3]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.2...v0.11.3
+[0.11.4]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.3...v0.11.4

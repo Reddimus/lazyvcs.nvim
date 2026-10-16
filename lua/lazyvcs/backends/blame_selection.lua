@@ -62,6 +62,7 @@ function M.load(target, contents, callback, capture)
 				line_end = target.last,
 			}
 			local full_file = format.full_file(opts)
+			local policy
 			local base = target.side == "base"
 			local revision = base and snapshot.revision or snapshot.head
 			local path = base and (item.old_path or item.relpath) or item.relpath
@@ -74,6 +75,34 @@ function M.load(target, contents, callback, capture)
 				task:finish(entries)
 			end
 			local function historical(relpath, retry)
+				if policy and policy.validate and not policy.validated then
+					return task:add(
+						process.lines(
+							{ "git", "blame", "--encoding=UTF-8", "--line-porcelain", "--contents", "-", "--", relpath },
+							{ cwd = root, stdin = contents },
+							function(raw, err)
+								if not task:is_active() then
+									return
+								end
+								if not raw and type(err) == "string" and err:find("no such path", 1, true) then
+									if item.old_path and not retry then
+										return historical(item.old_path, true)
+									end
+									return uncommitted()
+								end
+								local selected, format_err
+								if raw then
+									selected, format_err = format.select(raw, opts, policy)
+								end
+								if not selected then
+									return task:finish(nil, format_err or err)
+								end
+								policy.validated = true
+								historical(relpath, retry)
+							end
+						)
+					)
+				end
 				task:add(
 					process.lines(
 						{ "git", "show", revision .. ":" .. relpath },
@@ -96,6 +125,14 @@ function M.load(target, contents, callback, capture)
 									return uncommitted()
 								end
 								return task:finish(nil, err)
+							end
+							if policy and policy.validate then
+								base_lines = vim.tbl_map(function(line)
+									return format.normalize(line, policy)
+								end, base_lines)
+								snapshot_lines = vim.tbl_map(function(line)
+									return format.normalize(line, policy)
+								end, snapshot_lines)
 							end
 							local indices = {}
 							for i = 1, #base_lines do
@@ -205,11 +242,25 @@ function M.load(target, contents, callback, capture)
 					if not raw then
 						return finish(nil, err)
 					end
-					local selected, format_err = format.select(raw, opts)
+					local selected, format_err = format.select(raw, opts, policy)
 					finish(selected, format_err)
 				end))
 			end
-			blame(path, false)
+			if base then
+				blame(path, false)
+			else
+				task:add(require("lazyvcs.backends.git_blame_policy").load(root, path, opts, function(value, err)
+					if not task:is_active() then
+						return
+					end
+					if not value then
+						return task:finish(nil, err)
+					end
+					policy = value
+					full_file = full_file or policy.validate
+					blame(path, false)
+				end))
+			end
 		elseif target.side == "base" then
 			local path = item.relpath:gsub("[^%w%-%._~/]", function(char)
 				return string.format("%%%02X", char:byte())

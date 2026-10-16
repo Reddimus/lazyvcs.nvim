@@ -65,7 +65,7 @@ return function(ctx)
 
 	return t.cases({
 		{
-			"test_svn_blame_undecodable_base_keeps_unchanged_attribution",
+			"test_svn_blame_rejects_undecodable_base",
 			function()
 				for _, format in ipairs({
 					formats[1],
@@ -75,11 +75,7 @@ return function(ctx)
 					vim.bo[buf].fileencoding = "utf-8"
 					vim.cmd.write()
 					local entries, err = backend_entries(f, backend, source_capture(buf))
-					assert(entries, err)
-					assert(
-						entries[1].uncommitted and not entries[2].uncommitted and not entries[3].uncommitted,
-						format[1] .. ": undecodable SVN BASE lost unchanged ASCII attribution"
-					)
+					assert(not entries and err, format[1] .. ": undecodable SVN BASE was accepted")
 				end
 			end,
 		},

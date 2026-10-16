@@ -929,7 +929,7 @@ function M.blame_lines(path)
 end
 
 function M.blame_lines_async(path, on_done, opts)
-	opts = opts or {}
+	opts = vim.tbl_extend("force", {}, opts or {})
 	local cwd = util.dir_of(path)
 	local task = Task.new(on_done)
 	if not git_available() then
@@ -970,59 +970,119 @@ function M.blame_lines_async(path, on_done, opts)
 						end
 						return task:finish(nil, tracked_err)
 					end
-					local blame_args = { "git", "blame", "--encoding=UTF-8", "--line-porcelain" }
-					local format = require("lazyvcs.backends.blame_format")
-					if opts.line_start and opts.line_end and not format.full_file(opts) then
-						vim.list_extend(blame_args, { "-L", opts.line_start .. "," .. opts.line_end })
-					end
-					local blame_opts = {
-						cwd = root,
-						timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-					}
-					if opts.contents ~= nil then
-						vim.list_extend(blame_args, { "--contents", "-" })
-						blame_opts.stdin = type(opts.contents) == "table" and util.join_lines(opts.contents)
-							or tostring(opts.contents)
-					end
-					vim.list_extend(blame_args, { "--", relpath })
-					task:add(process.lines(blame_args, blame_opts, function(lines, blame_err)
-						if not lines then
-							if
-								type(blame_err) == "string"
-								and (blame_err:match("no such path .- in HEAD") or blame_err:match("no such ref: HEAD"))
-							then
-								local function uncommitted(data, read_err)
-									if not data then
-										return task:finish(nil, read_err)
+					task:add(
+						require("lazyvcs.backends.git_blame_policy").load(
+							root,
+							relpath,
+							opts,
+							function(policy, policy_err)
+								if not task:is_active() then
+									return
+								end
+								if not policy then
+									return task:finish(nil, policy_err)
+								end
+								local function blame()
+									local blame_args = { "git", "blame", "--encoding=UTF-8", "--line-porcelain" }
+									local format = require("lazyvcs.backends.blame_format")
+									if
+										opts.line_start
+										and opts.line_end
+										and not format.full_file(opts)
+										and not policy.validate
+									then
+										vim.list_extend(blame_args, { "-L", opts.line_start .. "," .. opts.line_end })
 									end
-									local rows = {}
-									for number, line in ipairs(opts.text and opts.text.lines or util.split_lines(data)) do
-										if
-											not (opts.line_start and opts.line_end)
-											or (number >= opts.line_start and number <= opts.line_end)
-										then
-											rows[#rows + 1] = string.rep("0", 40)
-												.. " "
-												.. number
-												.. " "
-												.. number
-												.. " 1"
-											rows[#rows + 1] = "author Not Committed Yet"
-											rows[#rows + 1] = "\t" .. line
+									local blame_opts = {
+										cwd = root,
+										timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+									}
+									if opts.contents ~= nil then
+										vim.list_extend(blame_args, { "--contents", "-" })
+										blame_opts.stdin = type(opts.contents) == "table"
+												and util.join_lines(opts.contents)
+											or tostring(opts.contents)
+									end
+									vim.list_extend(blame_args, { "--", relpath })
+									task:add(process.lines(blame_args, blame_opts, function(lines, blame_err)
+										if not lines then
+											if
+												type(blame_err) == "string"
+												and (
+													blame_err:match("no such path .- in HEAD")
+													or blame_err:match("no such ref: HEAD")
+												)
+											then
+												local function uncommitted(data, read_err)
+													if not data then
+														return task:finish(nil, read_err)
+													end
+													local rows = {}
+													for number, line in
+														ipairs(opts.text and opts.text.lines or util.split_lines(data))
+													do
+														if
+															not (opts.line_start and opts.line_end)
+															or (number >= opts.line_start and number <= opts.line_end)
+														then
+															rows[#rows + 1] = string.rep("0", 40)
+																.. " "
+																.. number
+																.. " "
+																.. number
+																.. " 1"
+															rows[#rows + 1] = "author Not Committed Yet"
+															rows[#rows + 1] = "\t" .. line
+														end
+													end
+													task:finish(rows, nil, root)
+												end
+												if opts.contents ~= nil then
+													return uncommitted(blame_opts.stdin)
+												end
+												return require("lazyvcs.backends.comparison").read_file(
+													task,
+													path,
+													uncommitted
+												)
+											end
+											return task:finish(nil, blame_err)
 										end
+										local selected, format_err = format.select(lines, opts, policy)
+										task:finish(selected, format_err, root)
+									end))
+								end
+								if policy.validate and not opts.text then
+									local function captured(bytes, read_err)
+										if not task:is_active() then
+											return
+										end
+										if not bytes then
+											return task:finish(nil, read_err)
+										end
+										local profile = opts.profile or { fileencoding = "utf-8", fileformat = "unix" }
+										local decoded, decode_err =
+											require("lazyvcs.compare_text").decode(bytes, profile, 1024 * 1024)
+										if not decoded then
+											return task:finish(nil, decode_err)
+										end
+										opts.text, opts.contents = decoded, bytes
+										blame()
 									end
-									task:finish(rows, nil, root)
+									if opts.contents ~= nil then
+										captured(
+											type(opts.contents) == "table" and util.join_lines(opts.contents)
+												or opts.contents
+										)
+									else
+										require("lazyvcs.backends.comparison").read_file(task, path, captured)
+									end
+								else
+									blame()
 								end
-								if opts.contents ~= nil then
-									return uncommitted(blame_opts.stdin)
-								end
-								return require("lazyvcs.backends.comparison").read_file(task, path, uncommitted)
 							end
-							return task:finish(nil, blame_err)
-						end
-						local selected, format_err = format.select(lines, opts)
-						task:finish(selected, format_err, root)
-					end))
+						)
+					)
 				end
 			)
 		)

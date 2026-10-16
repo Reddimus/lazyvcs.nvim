@@ -987,17 +987,13 @@ function M.blame_lines_async(path, on_done, opts)
 												return task:finish(nil, base_err)
 											end
 											if opts.profile then
-												local decoded = require("lazyvcs.compare_text").decode(
-													base,
-													opts.profile,
-													1024 * 1024
-												)
-												base = decoded and decoded.lines or util.split_lines(base)
-												if not decoded and opts.profile.fileformat == "dos" then
-													for i, line in ipairs(base) do
-														base[i] = line:gsub("\r$", "")
-													end
+												local format = require("lazyvcs.backends.blame_format")
+												local decoded, decode_err =
+													format.svn_base(base, opts.profile, lines, format.decode_limit())
+												if not decoded then
+													return task:finish(nil, decode_err)
 												end
+												base = decoded.lines
 											end
 											local ok, current =
 												true,

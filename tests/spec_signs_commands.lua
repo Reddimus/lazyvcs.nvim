@@ -43,7 +43,12 @@ return function(ctx)
 			local calls = {}
 			package.loaded.gitsigns = {
 				get_hunks = function()
-					return {}
+					return {
+						{
+							removed = { start = 2, count = 1, lines = { "two" } },
+							added = { start = 2, count = 1, lines = { "changed" } },
+						},
+					}
 				end,
 				nav_hunk = function(direction)
 					calls[#calls + 1] = direction
@@ -58,6 +63,9 @@ return function(ctx)
 			local backends = require("lazyvcs.backends")
 			for i, operation in ipairs({ "next", "prev", "preview", "revert" }) do
 				backends.invalidate()
+				if operation == "revert" then
+					s.api.nvim_win_set_cursor(0, { 2, 0 })
+				end
 				vim.cmd(operation == "preview" and "LazyVCS preview" or "LazyVCS hunk " .. operation)
 				s.wait(function()
 					return #calls == i
@@ -126,6 +134,7 @@ return function(ctx)
 				return s.api.nvim_buf_get_lines(buf, 0, -1, false)[1] == ""
 			end, "untracked revert did not use empty base", 15000)
 			assert(delegated == 0, "unattached gitsigns received a command")
+			---@diagnostic disable-next-line: duplicate-set-field
 			package.loaded.gitsigns.get_hunks = function()
 				return {}
 			end
@@ -498,6 +507,7 @@ return function(ctx)
 			end)
 			s.signs.refresh = refresh
 			assert(ok, err)
+			---@diagnostic disable-next-line: duplicate-set-field
 			package.loaded.gitsigns.get_hunks = function()
 				return nil
 			end
@@ -506,13 +516,18 @@ return function(ctx)
 		end),
 	}
 	cases[#cases + 1] = {
-		"test_signs_oversized_gitsigns_commands_do_not_create_native_state",
+		"test_signs_oversized_gitsigns_commands_do_not_load_native_base",
 		s.guard(function()
 			local _, buf = s.fixture(false, { use_gitsigns = true, signs = { enabled = false, max_file_bytes = 1 } })
 			local calls = {}
 			package.loaded.gitsigns = {
 				get_hunks = function()
-					return {}
+					return {
+						{
+							removed = { start = 2, count = 1, lines = { "two" } },
+							added = { start = 2, count = 1, lines = { "changed" } },
+						},
+					}
 				end,
 				nav_hunk = function(direction)
 					calls[#calls + 1] = direction
@@ -525,6 +540,13 @@ return function(ctx)
 				end,
 			}
 			local backends = require("lazyvcs.backends")
+			local load, loads = backends.load_base_async, 0
+			---@diagnostic disable-next-line: duplicate-set-field
+			backends.load_base_async = function(...)
+				loads = loads + 1
+				return load(...)
+			end
+			s.api.nvim_win_set_cursor(0, { 2, 0 })
 			for _, cold in ipairs({ true, false }) do
 				if cold then
 					backends.invalidate()
@@ -536,13 +558,20 @@ return function(ctx)
 						return #calls > n
 					end, "oversized buffer dropped " .. operation, 15000)
 					assert(calls[n + 1] == operation)
-					assert(s.signs.current_state(buf) == nil, "oversized delegated command created native state")
+					local state = s.signs.current_state(buf)
+					assert(not state or (state.skipped and not state.loaded and not state.base_text))
+					assert(not state or (state.native_holds or 0) == 0, "delegated command retained a hold")
+					assert(loads == 0, "oversized delegated command loaded a native base")
 				end
 			end
 			package.loaded.gitsigns.preview_hunk = nil
 			vim.cmd("LazyVCS preview")
 			local state = s.signs.current_state(buf)
-			assert(state and state.skipped and not state.base_generation, "oversized native fallback allocated a base")
+			assert(
+				state and state.skipped and not state.loaded and not state.base_text and not state.base_identity,
+				"oversized native fallback allocated a base"
+			)
+			assert(loads == 0, "oversized native fallback loaded a base")
 		end),
 	}
 	return cases

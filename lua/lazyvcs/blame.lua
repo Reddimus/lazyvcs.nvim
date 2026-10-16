@@ -194,23 +194,18 @@ end
 -- be deleted.
 local split_ns_id = vim.api.nvim_create_namespace("lazyvcs_blame_split")
 
+local function bounded_span(bufnr, row, first, last, line, group)
+	if first and last and first >= 0 and first < last and last <= #line then
+		vim.api.nvim_buf_set_extmark(bufnr, split_ns_id, row, first, { end_col = last, hl_group = group })
+	end
+end
+
 local function highlight_blame(bufnr, lines)
-	local highlight_ns = split_ns_id
 	for idx, line in ipairs(lines) do
-		local revision = line:match("^%s*(%S+)")
-		if revision then
-			vim.api.nvim_buf_set_extmark(bufnr, highlight_ns, idx - 1, 0, {
-				end_col = #revision + 1,
-				hl_group = "LazyVcsBlameRevision",
-			})
-		end
-		local author_start, author_end = line:find("%S+", 10)
-		if author_start and author_end then
-			vim.api.nvim_buf_set_extmark(bufnr, highlight_ns, idx - 1, author_start - 1, {
-				end_col = author_end,
-				hl_group = "LazyVcsBlameAuthor",
-			})
-		end
+		local first, last = line:find("%S+")
+		bounded_span(bufnr, idx - 1, first and first - 1, last, line, "LazyVcsBlameRevision")
+		first, last = line:find("%S+", 10)
+		bounded_span(bufnr, idx - 1, first and first - 1, last, line, "LazyVcsBlameAuthor")
 	end
 end
 
@@ -903,7 +898,8 @@ function M.line_log()
 		notify(capture_err, vim.log.levels.WARN)
 		return false
 	end
-	local line_number = vim.api.nvim_win_get_cursor(source_win)[1]
+	local cursor = vim.api.nvim_win_get_cursor(source_win)
+	local line_number = cursor[1]
 	local view = { source_winid = source_win, loading = true }
 	line_log_views[source_bufnr] = view
 	local function close(deferred)
@@ -920,12 +916,21 @@ function M.line_log()
 		if line_log_views[source_bufnr] ~= view then
 			return false
 		end
-		if not context.valid(captured, true) then
+		if not context.valid(captured, true) or not vim.deep_equal(vim.api.nvim_win_get_cursor(source_win), cursor) then
 			close()
 			return false
 		end
 		return true
 	end
+	vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+		group = view.augroup,
+		buffer = source_bufnr,
+		callback = safe(function()
+			if vim.api.nvim_get_current_win() == source_win then
+				close()
+			end
+		end),
+	})
 	local function fail(message)
 		if not valid() then
 			return
@@ -968,14 +973,7 @@ function M.line_log()
 		util.unbind_window(win)
 		view.loading = false
 		view.handle = nil
-		vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
-			group = view.augroup,
-			buffer = source_bufnr,
-			once = true,
-			callback = safe(function()
-				close()
-			end),
-		})
+
 		vim.api.nvim_create_autocmd("WinClosed", {
 			group = view.augroup,
 			pattern = tostring(win),
