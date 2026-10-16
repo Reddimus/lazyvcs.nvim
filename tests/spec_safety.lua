@@ -1204,7 +1204,8 @@ return function(ctx)
 		}
 		local responses = {
 			["git branch --show-current"] = "main\n",
-			["git for-each-ref --format=%(upstream:short) refs/heads/main"] = "origin/main\n",
+			["git symbolic-ref --quiet HEAD"] = "refs/heads/main\n",
+			["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/main"] = "refs/heads/main\0refs/remotes/origin/main\0origin\0refs/heads/main\n",
 			["git fetch --prune --quiet origin"] = "",
 			["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## main...origin/main [behind 1]\n M sample.txt\n",
 		}
@@ -1225,7 +1226,10 @@ return function(ctx)
 
 		local ok, err = xpcall(function()
 			ops.sync_repo(state, node)
-			assert(not vim.tbl_contains(calls, "git merge --ff-only origin/main"), "sync must guard its merge")
+			assert(
+				not vim.tbl_contains(calls, "git merge --ff-only refs/remotes/origin/main"),
+				"sync must guard its merge"
+			)
 			local job = assert(session_state.get_repo_job(fixture.root), "refused sync should report its failure")
 			assert(job.status == "error", "refused sync should finish as an error")
 		end, debug.traceback)
@@ -1268,10 +1272,11 @@ return function(ctx)
 		}
 		local responses = {
 			["git branch --show-current"] = "main\n",
-			["git for-each-ref --format=%(upstream:short) refs/heads/main"] = "origin/main\n",
+			["git symbolic-ref --quiet HEAD"] = "refs/heads/main\n",
+			["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/main"] = "refs/heads/main\0refs/remotes/origin/main\0origin\0refs/heads/main\n",
 			["git fetch --prune --quiet origin"] = "",
 			["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## main...origin/main [ahead 1]\n M sample.txt\n",
-			["git push origin main:main"] = "",
+			["git push origin refs/heads/main:refs/heads/main"] = "",
 		}
 		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
 		vim.api.nvim_buf_set_lines(0, 0, -1, false, { "unsaved editor text" })
@@ -1290,7 +1295,10 @@ return function(ctx)
 
 		local ok, err = xpcall(function()
 			ops.sync_repo(state, node)
-			assert(vim.tbl_contains(calls, "git push origin main:main"), "push-only sync must remain available")
+			assert(
+				vim.tbl_contains(calls, "git push origin refs/heads/main:refs/heads/main"),
+				"push-only sync must remain available"
+			)
 		end, debug.traceback)
 		util.system_start = previous_system_start
 		session_state.clear_repo_job(fixture.root)
@@ -1396,10 +1404,11 @@ return function(ctx)
 		local calls = {}
 		local responses = {
 			["git branch --show-current"] = "main\n",
-			["git for-each-ref --format=%(upstream:short) refs/heads/main"] = "origin/main\n",
+			["git symbolic-ref --quiet HEAD"] = "refs/heads/main\n",
+			["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/main"] = "refs/heads/main\0refs/remotes/origin/main\0origin\0refs/heads/main\n",
 			["git fetch --prune --quiet origin"] = "",
 			["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## main...origin/main [behind 1]\n",
-			["git merge --ff-only origin/main"] = "",
+			["git merge --ff-only refs/remotes/origin/main"] = "",
 		}
 		---@diagnostic disable-next-line: duplicate-set-field
 		util.system_start = function(args, _, on_exit)
@@ -1418,7 +1427,7 @@ return function(ctx)
 			ops.run_primary_action(state, node)
 			assert(vim.bo.modified, "test buffer should become modified during pull preparation")
 			assert(
-				not vim.tbl_contains(calls, "git merge --ff-only origin/main"),
+				not vim.tbl_contains(calls, "git merge --ff-only refs/remotes/origin/main"),
 				"pull must recheck loaded buffers before changing the worktree"
 			)
 			local job = assert(session_state.get_repo_job(fixture.root), "refused pull should report its failure")

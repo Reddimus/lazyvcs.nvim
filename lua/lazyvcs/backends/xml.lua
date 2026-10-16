@@ -101,6 +101,7 @@ function M.parse_info(raw)
 		revision = entry.revision,
 		path = entry.path,
 		kind = entry.kind,
+		schedule = child_text(block, "schedule"),
 	}
 end
 

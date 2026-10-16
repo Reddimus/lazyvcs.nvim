@@ -9,7 +9,7 @@ local function path_is_in_root(root, path)
 	return util.relative_literal_path(root, path) ~= nil
 end
 
-function M.modified(repo_root, paths)
+function M.modified(repo_root, paths, subtrees)
 	local root = util.canonical_path(repo_root)
 	local selected_entries
 	local selected_files
@@ -22,6 +22,14 @@ function M.modified(repo_root, paths)
 		end
 	end
 
+	local selected_subtrees = {}
+	for _, path in ipairs(subtrees or {}) do
+		selected_subtrees[#selected_subtrees + 1] = {
+			entry = util.canonical_entry_path(path),
+			file = util.canonical_path(path),
+		}
+	end
+
 	local found = {}
 	for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
 		if vim.api.nvim_buf_is_loaded(bufnr) and vim.bo[bufnr].modified and util.is_real_file_buffer(bufnr) then
@@ -30,7 +38,13 @@ function M.modified(repo_root, paths)
 			local file_path = util.canonical_path(buffer_path)
 			local entry_in_root = path_is_in_root(root, entry_path)
 			local file_in_root = path_is_in_root(root, file_path)
-			local is_selected = not selected_entries or selected_entries[entry_path] or selected_files[file_path]
+			local is_selected = not paths and not subtrees
+				or selected_entries and (selected_entries[entry_path] or selected_files[file_path])
+			for _, subtree in ipairs(selected_subtrees) do
+				is_selected = is_selected
+					or path_is_in_root(subtree.entry, entry_path)
+					or path_is_in_root(subtree.file, file_path)
+			end
 			if (entry_in_root or file_in_root) and is_selected then
 				found[#found + 1] = {
 					bufnr = bufnr,
@@ -45,7 +59,7 @@ function M.modified(repo_root, paths)
 	return found
 end
 
-function M.error(repo_root, paths)
+function M.error(repo_root, paths, subtrees)
 	if paths then
 		for _, path in ipairs(paths) do
 			local relative, err = util.relpath(repo_root, path)
@@ -54,7 +68,13 @@ function M.error(repo_root, paths)
 			end
 		end
 	end
-	local modified = M.modified(repo_root, paths)
+	for _, path in ipairs(subtrees or {}) do
+		local relative, err = util.relpath(repo_root, path)
+		if not relative then
+			return err
+		end
+	end
+	local modified = M.modified(repo_root, paths, subtrees)
 	if #modified == 0 then
 		return nil
 	end
@@ -67,8 +87,8 @@ function M.error(repo_root, paths)
 	)
 end
 
-function M.check(repo_root, paths)
-	local err = M.error(repo_root, paths)
+function M.check(repo_root, paths, subtrees)
+	local err = M.error(repo_root, paths, subtrees)
 	if not err then
 		return true
 	end

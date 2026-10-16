@@ -708,7 +708,7 @@ local function git_checkout(repo, item, context, opts)
 				opts.notify("Local branch already exists: " .. name, vim.log.levels.WARN)
 				return
 			end
-			perform(repo, item, opts, { "git", "switch", "--track", "-c", name, item.short })
+			perform(repo, item, opts, { "git", "switch", "--track", "-c", name, "--", item.refname })
 		end
 
 		if context.locals_by_name[tail] then
@@ -717,7 +717,7 @@ local function git_checkout(repo, item, context, opts)
 		return finish(tail)
 	end
 
-	return perform(repo, item, opts, { "git", "switch", "--detach", item.short })
+	return perform(repo, item, opts, { "git", "switch", "--detach", "--", item.refname })
 end
 
 local function git_create_branch(repo, base_ref, context, opts)
@@ -734,8 +734,9 @@ local function git_create_branch(repo, base_ref, context, opts)
 		end
 
 		local args = { "git", "switch", "-c", name }
-		if base_ref and base_ref.short then
-			args[#args + 1] = base_ref.short
+		if base_ref and base_ref.refname then
+			args[#args + 1] = "--"
+			args[#args + 1] = base_ref.refname
 		end
 		perform(repo, {
 			kind = "command",
@@ -791,7 +792,7 @@ local function execute_git(repo, context, choice, opts)
 				prompt = "Checkout detached in " .. repo.name,
 			}, function(ref)
 				if ref then
-					perform(repo, ref, opts, { "git", "switch", "--detach", ref.short })
+					perform(repo, ref, opts, { "git", "switch", "--detach", "--", ref.refname })
 				end
 			end)
 		end
