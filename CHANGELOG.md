@@ -10,6 +10,7 @@ and this project adheres to
 
 ### Fixed
 
+- Remove CRLF line-ending artifacts from Git and SVN previews and comparison metadata.
 - Make untracked-file Discard reject directory replacements and delete only the
   selected file or symlink.
 - Discover SVN switch targets below the repository root, including repositories

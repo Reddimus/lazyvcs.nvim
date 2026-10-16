@@ -166,7 +166,7 @@ local function render(path, before, after)
 			if not append(action .. ": " .. display(name)) then
 				return nil, "Property patch exceeds the 1 MiB preview limit"
 			end
-			for _, line in ipairs(util.split_lines(patch)) do
+			for _, line in ipairs(util.split_text_lines(patch)) do
 				if not append(line) then
 					return nil, "Property patch exceeds the 1 MiB preview limit"
 				end

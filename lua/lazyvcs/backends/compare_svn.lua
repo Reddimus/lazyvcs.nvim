@@ -86,7 +86,7 @@ local function load_property_patch(task, snapshot, item, done)
 		if (result and result.stdout_truncated) or (raw and #raw > common.max_file_bytes) then
 			err = "Property patch exceeds the 1 MiB preview limit"
 		end
-		done(raw and raw ~= "" and require("lazyvcs.util").split_lines(raw) or nil, err)
+		done(raw and raw ~= "" and require("lazyvcs.util").split_text_lines(raw) or nil, err)
 	end, { output_limit_bytes = 2 * common.max_file_bytes })
 end
 
@@ -255,7 +255,7 @@ function M.preview(snapshot, item, callback)
 		load_property_patch(task, snapshot, item, function(lines, err)
 			result.properties = lines
 			if err then
-				result.details = { "Properties unavailable: " .. err }
+				result.details = require("lazyvcs.util").split_text_lines("Properties unavailable: " .. err)
 			end
 			task:finish(result)
 		end)

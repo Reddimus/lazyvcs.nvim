@@ -462,7 +462,7 @@ local function failure(s, err)
 			mode = "message",
 			left_label = "Comparison unavailable",
 			right_label = "Recovery",
-			left = util.split_lines(tostring(err)),
+			left = util.split_text_lines(tostring(err)),
 			right = s.context and {
 				":LazyVCS compare base: choose another base",
 				":LazyVCS compare refresh: retry",
@@ -537,7 +537,7 @@ local function preview(s, item, mode, saved_views, intent, saved_reviewed)
 					item = item,
 					left_label = "Preview unavailable: " .. item.relpath,
 					right_label = "SAVED WORKTREE",
-					left = vim.list_extend({ "Preview unavailable" }, util.split_lines(tostring(err))),
+					left = vim.list_extend({ "Preview unavailable" }, util.split_text_lines(tostring(err))),
 					right = {},
 				})
 			)

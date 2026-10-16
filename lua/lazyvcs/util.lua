@@ -154,6 +154,11 @@ function M.split_lines(text)
 	return lines
 end
 
+-- Normalize display text only; file bytes must reach compare_text unchanged.
+function M.split_text_lines(text)
+	return M.split_lines(((text or ""):gsub("\r\n", "\n")))
+end
+
 function M.join_lines(lines)
 	if #lines == 0 then
 		return ""

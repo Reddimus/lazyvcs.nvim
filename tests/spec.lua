@@ -7222,6 +7222,7 @@ vim.list_extend(cases, require("spec_compare_sparse")({ helpers = helpers, wait_
 vim.list_extend(cases, require("spec_compare_svn_metadata")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_backend_limits")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_backend_crlf")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_backend_status")({ helpers = helpers, wait_for = wait_for }))
 

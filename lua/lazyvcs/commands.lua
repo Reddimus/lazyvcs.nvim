@@ -42,7 +42,7 @@ local function show_profile(args)
 			item.root or ""
 		)
 		if item.error and item.error ~= "" then
-			for _, line in ipairs(require("lazyvcs.util").split_lines(item.error)) do
+			for _, line in ipairs(require("lazyvcs.util").split_text_lines(item.error)) do
 				lines[#lines + 1] = "  " .. line
 			end
 		end
