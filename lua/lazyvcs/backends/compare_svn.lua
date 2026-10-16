@@ -59,15 +59,17 @@ local function decode_url(path)
 	end))
 end
 
-local function encode_path(path)
-	return (path:gsub("[^%w%-%._~/]", function(char)
-		return string.format("%%%02X", char:byte())
-	end))
+local function local_path(path)
+	path = xml.local_path(path)
+	if vim.fn.has("win32") == 1 then
+		path = path:gsub("^%a:", string.lower)
+	end
+	return path
 end
 
 local function load_property_patch(task, snapshot, item, done)
 	local path = snapshot.root .. "/" .. item.relpath
-	local url = snapshot.url .. (item.relpath == "." and "" or "/" .. encode_path(item.relpath))
+	local url = require("lazyvcs.backends.svn_url").append_path(snapshot.url, item.relpath)
 	command(task, snapshot, {
 		"diff",
 		"--properties-only",
@@ -87,6 +89,7 @@ end
 
 function M.list(snapshot, include_untracked, callback)
 	local task = common.task(callback)
+	local root = local_path(snapshot.root)
 	command(task, snapshot, {
 		"diff",
 		"--summarize",
@@ -103,13 +106,16 @@ function M.list(snapshot, include_untracked, callback)
 		for attributes, value in raw:gmatch("<path%s+([^>]+)>(.-)</path>") do
 			local attrs = xml.attributes(attributes)
 			local path = xml.decode(value)
+			if not path:match("^%a[%w+.-]*://") then
+				path = local_path(path)
+			end
 			local relpath
-			if path == snapshot.url or path == snapshot.root then
+			if path == snapshot.url or path == root then
 				relpath = "."
 			elseif path:sub(1, #snapshot.url + 1) == snapshot.url .. "/" then
 				relpath = decode_url(path:sub(#snapshot.url + 2))
-			elseif path:sub(1, #snapshot.root + 1) == snapshot.root .. "/" then
-				relpath = path:sub(#snapshot.root + 2)
+			elseif path:sub(1, #root + 1) == root .. "/" then
+				relpath = path:sub(#root + 2)
 			end
 			if not common.relative(relpath) then
 				return task:finish(nil, "SVN returned a path outside the comparison")
@@ -137,8 +143,11 @@ function M.list(snapshot, include_untracked, callback)
 			if not status then
 				return task:finish(nil, status_err)
 			end
-			local pending = {}
+			local pending, switched = {}, {}
 			for _, entry in ipairs(xml.parse_status(status)) do
+				if entry.switched then
+					switched[#switched + 1] = entry.path
+				end
 				if entry.wc_item == "unversioned" then
 					pending[#pending + 1] = entry.path
 				end
@@ -225,7 +234,7 @@ function M.list(snapshot, include_untracked, callback)
 				end
 				ignored = predicate
 				visit()
-			end)
+			end, switched)
 		end)
 	end)
 	return task
@@ -234,7 +243,7 @@ end
 function M.preview(snapshot, item, callback)
 	local task = common.task(callback)
 	local path = snapshot.root .. "/" .. item.relpath
-	local url = snapshot.url .. (item.relpath == "." and "" or "/" .. encode_path(item.relpath))
+	local url = require("lazyvcs.backends.svn_url").append_path(snapshot.url, item.relpath)
 	local result = { left_label = snapshot.url .. " @ r" .. snapshot.revision, right_label = "SAVED WORKTREE" }
 	local function finish()
 		if not item.properties and not (item.status == "A" and not item.untracked) then

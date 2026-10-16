@@ -26,12 +26,12 @@ local function get_root(path)
 		return nil, "git executable not found"
 	end
 	local cwd = util.dir_of(path)
-	local result, err = util.system({ "git", "rev-parse", "--show-toplevel" }, { cwd = cwd })
+	local result, err = util.system({ "git", "rev-parse", "--show-toplevel" }, { cwd = cwd, text = false })
 	if not result then
 		return nil, err
 	end
 	-- Canonicalize roots to match sidebar identities, including Windows short paths.
-	return util.canonical_path(util.trim(result.stdout))
+	return process.root_output(result.stdout)
 end
 
 local function is_tracked(root, relpath)
@@ -119,7 +119,7 @@ function M.probe_async(path, on_done, opts)
 		if not result then
 			return task:finish(nil, err)
 		end
-		local root = util.canonical_path(util.trim(result.stdout))
+		local root = result
 		if root == "" then
 			return task:finish(nil, "Git returned an empty working-tree root")
 		end
@@ -364,7 +364,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 		if err then
 			return task:finish(nil, err)
 		end
-		local root = util.canonical_path(util.trim(result.stdout))
+		local root = result
 		local relpath, path_err = util.relpath(root, path)
 		if not relpath then
 			return task:finish(nil, path_err)
@@ -608,11 +608,11 @@ function M.resolve_diff_target(target)
 		if change_kind == "deleted" or status:sub(1, 1) == "D" then
 			comparison.right = empty_side()
 		else
-			comparison.right = git_side("INDEX", ":" .. relpath, false)
+			comparison.right = git_side("INDEX", ":0:" .. relpath, false)
 		end
 	elseif section == "changes" then
 		comparison.kind = "git_unstaged"
-		comparison.left = git_side("INDEX", ":" .. relpath, false)
+		comparison.left = git_side("INDEX", ":0:" .. relpath, false)
 		if change_kind == "deleted" or status:sub(2, 2) == "D" then
 			comparison.right = empty_side()
 		else
@@ -753,46 +753,22 @@ function M.load_diff_target_async(target, on_done, opts)
 	return task
 end
 
--- Decode Git C-quoted paths before normalization; literal octal escapes would otherwise
--- become path separators.
-local function unquote_path(path)
-	if not path:match('^".*"$') then
-		return path
+-- Porcelain NUL records retain literal destination and source path bytes.
+function M.parse_status(raw, root)
+	local records, err = require("lazyvcs.backends.git_status").parse(raw)
+	if not records then
+		return nil, err
 	end
-	path = path:sub(2, -2)
-	return (
-		path:gsub("\\(%d%d%d)", function(octal)
-			return string.char(tonumber(octal, 8))
-		end):gsub("\\(.)", function(char)
-			return ({ a = "\a", b = "\b", f = "\f", n = "\n", r = "\r", t = "\t", v = "\v" })[char] or char
-		end)
-	)
-end
-
-function M.parse_status_lines(lines, root)
 	local items = {}
-	for _, line in ipairs(lines or {}) do
-		if #line > 3 then
-			local index_code, worktree_code = line:sub(1, 1), line:sub(2, 2)
-			-- Prefer the worktree column; it is what the user sees on disk.
-			local code = worktree_code ~= " " and worktree_code or index_code
-			local path = util.trim(line:sub(4))
-			-- Only rename/copy entries use `old -> new`; splitting unconditionally
-			-- would truncate a file legitimately named `a -> b.txt`.
-			if index_code == "R" or index_code == "C" then
-				local _, _, renamed = path:find("%s%->%s(.+)$")
-				path = renamed or path
-			end
-			path = unquote_path(path)
-			if code ~= "" and code ~= " " and path ~= "" then
-				items[#items + 1] = {
-					status = code,
-					label = status_label(code),
-					path = path,
-					absolute_path = root and util.normalize_literal_path(root .. "/" .. path) or path,
-				}
-			end
-		end
+	for _, item in ipairs(records) do
+		local index, worktree = item.status:sub(1, 1), item.status:sub(2, 2)
+		local code = worktree ~= " " and worktree or index
+		items[#items + 1] = {
+			status = code,
+			label = status_label(code),
+			path = item.path,
+			absolute_path = root and util.normalize_literal_path(root .. "/" .. item.path) or item.path,
+		}
 	end
 	return items
 end
@@ -801,32 +777,31 @@ function M.changed_files(root)
 	if not git_available() then
 		return nil, "git executable not found"
 	end
-
-	local lines, err = util.system_lines({ "git", "status", "--porcelain", "--untracked-files=normal" }, { cwd = root })
-	if not lines then
+	local result, err = util.system(
+		{ "git", "status", "--porcelain=v1", "-z", "--untracked-files=all" },
+		{ cwd = root, text = false }
+	)
+	if not result then
 		return nil, err
 	end
-	return M.parse_status_lines(lines, root)
+	return M.parse_status(result.stdout, root)
 end
 
 function M.changed_files_async(path, on_done, opts)
 	opts = opts or {}
 	local task = Task.new(on_done)
 	task:add(M.probe_async(path, function(info, err)
-		if not task:is_active() then
-			return
-		end
 		if not info then
 			return task:finish(nil, err or "Not a Git working tree")
 		end
-		task:add(process.lines({ "git", "status", "--porcelain", "--untracked-files=normal" }, {
+		task:add(process.bytes({ "git", "status", "--porcelain=v1", "-z", "--untracked-files=all" }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-		}, function(lines, status_err)
-			if not lines then
+		}, function(raw, status_err)
+			if not raw then
 				return task:finish(nil, status_err)
 			end
-			task:finish(M.parse_status_lines(lines, info.root))
+			task:finish(M.parse_status(raw, info.root))
 		end))
 	end, opts))
 	return task
@@ -966,7 +941,7 @@ function M.blame_lines_async(path, on_done, opts)
 			return task:finish(nil, err)
 		end
 
-		local root = util.canonical_path(util.trim(result.stdout))
+		local root = result
 		local relpath, path_err = util.relpath(root, path)
 		if not relpath then
 			return task:finish(nil, path_err)
@@ -1142,7 +1117,7 @@ function M.revision_log(path, revision)
 		return nil, path_err
 	end
 	local lines, log_err = util.system_lines(
-		{ "git", "show", "--no-ext-diff", "--stat", "--format=medium", tostring(revision), "--", relpath },
+		{ "git", "show", "--no-ext-diff", "--no-color", "--stat", "--format=medium", tostring(revision), "--", relpath },
 		{ cwd = root }
 	)
 	if not lines then
@@ -1169,6 +1144,7 @@ function M.revision_log_async(path, revision, on_done, opts)
 			"git",
 			"show",
 			"--no-ext-diff",
+			"--no-color",
 			"--stat",
 			"--format=medium",
 			tostring(revision),

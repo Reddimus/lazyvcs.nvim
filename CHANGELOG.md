@@ -71,6 +71,21 @@ and this project adheres to
 - Compare clean Git ident files in checkout form without running external
   filters.
 - Run large native sign comparisons off the editor thread.
+- Preserve literal Git index filenames, renamed paths, untracked files in new
+  directories, and whitespace in Git and SVN checkout roots.
+- Redetect repository ownership on explicit refresh and buffer events, and
+  recover from deleted repositories without probes on cursor movement.
+- Include SVN property changes in the file picker, filter clean external
+  markers, and open replacement and directory-property previews correctly.
+- Load incoming SVN previews from the selected entry's escaped URL, including
+  switched subtrees and incoming additions.
+- Match SVN ignore rules within untracked directories and switched subtrees.
+- Reduce SVN XML parsing and Git retained-file discovery overhead, and avoid
+  stalls when truncating blame metadata with long combining-character sequences.
+- Validate native sign glyphs, clamp sign priority, and reject mutation timeouts
+  that round down to zero.
+- Show multiline job errors in the profile, escape directory completion paths,
+  and keep forced Git color codes out of revision logs.
 
 ## [0.11.2] - 2026-10-16
 

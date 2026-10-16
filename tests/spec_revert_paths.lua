@@ -17,6 +17,15 @@ return function(ctx)
 				h.exec({ "git", "add", "." }, old)
 				h.exec({ "git", "commit", "-m", "base" }, old)
 				vim.cmd.edit(vim.fn.fnameescape(old .. "/sub/file.txt"))
+				-- BufEnter starts finite Git/SVN probes. Windows holds their cwd
+				-- until exit, so await that shared resolution before relocating it.
+				local resolved = false
+				require("lazyvcs.backends").resolve_async(old .. "/sub/file.txt", function()
+					resolved = true
+				end, { revalidate = true })
+				ctx.wait_for(function()
+					return resolved
+				end, "BufEnter probes did not finish before relocation", 15000)
 				assert(vim.uv.fs_rename(old, moved))
 				assert(vim.uv.fs_symlink(moved, old, { dir = true }))
 				assert(vim.uv.fs_unlink(moved .. "/sub/file.txt"))

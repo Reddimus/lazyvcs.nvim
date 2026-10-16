@@ -213,11 +213,12 @@ function M.list(snapshot, include_untracked, callback)
 					items[#items + 1] = { status = "?", relpath = path, untracked = true }
 				end
 			end
-			local cursor = 0
+			local cursor = 1
 			local function reconcile()
-				cursor = cursor + 1
-				local item = collisions[cursor]
-				if not item then
+				if not task:is_active() then
+					return
+				end
+				if cursor > #collisions then
 					local filtered = {}
 					for _, value in ipairs(items) do
 						if not value.identical then
@@ -227,35 +228,64 @@ function M.list(snapshot, include_untracked, callback)
 					items = filtered
 					return finish()
 				end
-				command(
-					task,
-					snapshot,
-					{ "ls-tree", "-z", snapshot.revision, "--", item.relpath },
-					function(tree, tree_err)
-						if not tree then
-							return task:finish(nil, tree_err)
-						end
-						local mode, oid = tree:match("^(%d+) blob (%x+)\t")
-						if not oid or mode == "120000" then
-							return reconcile()
-						end
-						command(
-							task,
-							snapshot,
-							{ "hash-object", "--path=" .. item.relpath, "--", item.relpath },
-							function(hash, hash_err)
-								if not hash then
-									return task:finish(nil, hash_err)
-								end
-								local stat = vim.uv.fs_lstat(snapshot.root .. "/" .. item.relpath)
-								local executable = stat and bit.band(stat.mode, 73) ~= 0
-								item.identical = util.trim(hash) == oid
-									and (vim.fn.has("win32") == 1 or executable == (mode == "100755"))
-								reconcile()
-							end
-						)
+				local chunk, budget = {}, 0
+				local tree_args = { "ls-tree", "-z", snapshot.revision, "--" }
+				while cursor <= #collisions and #chunk < 128 do
+					local item = collisions[cursor]
+					local cost = #item.relpath * 2 + 8
+					if #chunk > 0 and budget + cost > 24000 then
+						break
 					end
-				)
+					chunk[#chunk + 1], tree_args[#tree_args + 1] = item, item.relpath
+					budget, cursor = budget + cost, cursor + 1
+				end
+				command(task, snapshot, tree_args, function(tree, tree_err)
+					if not tree then
+						return task:finish(nil, tree_err)
+					end
+					local entries, eligible = {}, {}
+					for record in tree:gmatch("([^%z]+)%z") do
+						local mode, oid, path = record:match("^(%d+) blob (%x+)\t(.*)$")
+						if path then
+							entries[path] = { mode = mode, oid = oid }
+						end
+					end
+					local hash_args = { "hash-object", "--" }
+					for _, item in ipairs(chunk) do
+						local base = entries[item.relpath]
+						local stat = vim.uv.fs_lstat(snapshot.root .. "/" .. item.relpath)
+						if
+							base
+							and (base.mode == "100644" or base.mode == "100755")
+							and stat
+							and stat.type == "file"
+						then
+							eligible[#eligible + 1] = { item = item, base = base }
+							hash_args[#hash_args + 1] = item.relpath
+						end
+					end
+					if #eligible == 0 then
+						return reconcile()
+					end
+					command(task, snapshot, hash_args, function(hashes, hash_err)
+						if not hashes then
+							return task:finish(nil, hash_err)
+						end
+						local values = util.split_lines(hashes)
+						if #values ~= #eligible then
+							return task:finish(nil, "Invalid Git hash output")
+						end
+						for index, value in ipairs(eligible) do
+							local stat = vim.uv.fs_lstat(snapshot.root .. "/" .. value.item.relpath)
+							local executable = stat and bit.band(stat.mode, 73) ~= 0
+							value.item.identical = stat
+								and stat.type == "file"
+								and values[index] == value.base.oid
+								and (vim.fn.has("win32") == 1 or executable == (value.base.mode == "100755"))
+						end
+						reconcile()
+					end)
+				end)
 			end
 			reconcile()
 		end)

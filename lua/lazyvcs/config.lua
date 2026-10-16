@@ -212,6 +212,19 @@ local function normalize(opts)
 	vim.validate("sign_topdelete", opts.signs.text.topdelete, "string")
 	vim.validate("sign_changedelete", opts.signs.text.changedelete, "string")
 
+	for name, glyph in pairs(opts.signs.text) do
+		if
+			glyph ~= ""
+			and (
+				vim.fn.strtrans(glyph) ~= glyph
+				or vim.fn.strdisplaywidth(glyph) < 1
+				or vim.fn.strdisplaywidth(glyph) > 2
+			)
+		then
+			error("lazyvcs signs.text." .. name .. " must be empty or printable text occupying one or two cells")
+		end
+	end
+
 	for name, value in pairs({
 		debounce_ms = opts.debounce_ms,
 		width = opts.base_window.width,
@@ -297,7 +310,7 @@ local function normalize(opts)
 		error("lazyvcs base_window.align_wrapped must be 'auto' or 'off'")
 	end
 	opts.signs.debounce_ms = math.max(0, math.floor(opts.signs.debounce_ms))
-	opts.signs.sign_priority = math.max(1, math.floor(opts.signs.sign_priority))
+	opts.signs.sign_priority = math.min(65535, math.max(1, math.floor(opts.signs.sign_priority)))
 	opts.signs.max_file_bytes = math.max(0, math.floor(opts.signs.max_file_bytes))
 	if not vim.tbl_contains({ "inline", "split", "off" }, opts.blame.mode) then
 		error("lazyvcs blame.mode must be 'inline', 'split', or 'off'")
@@ -379,7 +392,7 @@ local function normalize(opts)
 		math.max(0, math.floor(opts.source_control.background.remote_timeout_ms))
 	opts.source_control.background.switch_timeout_ms =
 		math.max(0, math.floor(opts.source_control.background.switch_timeout_ms))
-	if opts.source_control.background.mutation_timeout_ms <= 0 then
+	if math.floor(opts.source_control.background.mutation_timeout_ms) <= 0 then
 		error("lazyvcs source_control.background.mutation_timeout_ms must be greater than 0")
 	end
 	opts.source_control.background.mutation_timeout_ms = math.floor(opts.source_control.background.mutation_timeout_ms)

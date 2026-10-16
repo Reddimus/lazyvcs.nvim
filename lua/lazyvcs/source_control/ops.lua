@@ -241,6 +241,7 @@ local function clear_repo_details_loading(state, repo_root)
 end
 
 local function refresh_repo(state, repo_root, remote_refresh)
+	require("lazyvcs.backends").resolve_async(repo_root, function() end, { force_resolve = true })
 	invalidate_repo(state, repo_root, remote_refresh)
 	navigate_if_visible(state)
 end
@@ -834,6 +835,7 @@ local function ensure_repo_details(state, repo)
 end
 
 function M.refresh(state, remote_refresh)
+	require("lazyvcs.backends").resolve_async(state.path, function() end, { force_resolve = true })
 	clear_repo_job_errors()
 	restart_source(state, remote_refresh)
 end

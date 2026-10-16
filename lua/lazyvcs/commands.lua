@@ -42,7 +42,9 @@ local function show_profile(args)
 			item.root or ""
 		)
 		if item.error and item.error ~= "" then
-			lines[#lines + 1] = "  " .. item.error
+			for _, line in ipairs(require("lazyvcs.util").split_lines(item.error)) do
+				lines[#lines + 1] = "  " .. line
+			end
 		end
 	end
 	if #lines == 0 then
@@ -361,7 +363,9 @@ local function complete(arg_lead, cmd_line)
 	-- Third token: only directory-taking verbs accept an argument.
 	local action = entry.verbs[typed[2]] or entry.verbs[entry.default]
 	if action and action.complete == "dir" then
-		return vim.fn.getcompletion(arg_lead, "dir")
+		return vim.tbl_map(function(candidate)
+			return vim.fn.escape(candidate, "\\ \t")
+		end, vim.fn.getcompletion(arg_lead, "dir"))
 	end
 	return {}
 end

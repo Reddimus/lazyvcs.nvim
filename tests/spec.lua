@@ -720,7 +720,7 @@ local function test_svn_xml_parses_info_status_list_and_entities()
 	local status = xml.parse_status([[
 		<status><target path=".">
 		  <entry path="src/a&amp;b.txt">
-		    <wc-status item="modified" props="modified" revision="7" tree-conflicted="true"/>
+		    <wc-status item="modified" props="modified" revision="7" tree-conflicted="true" switched="true"/>
 		    <repos-status item="deleted" props="none"/>
 		  </entry>
 		</target></status>
@@ -734,6 +734,7 @@ local function test_svn_xml_parses_info_status_list_and_entities()
 		repos_props = "none",
 		revision = "7",
 		tree_conflicted = true,
+		switched = true,
 	})
 
 	local listed = xml.parse_list([[
@@ -3336,11 +3337,14 @@ end
 
 local function test_svn_status_and_blame_parsers()
 	local backend = require("lazyvcs.backends.svn")
-	local items = backend.parse_status_lines({
-		"M       src/changed.lua",
-		"A       src/added.lua",
-		"?       scratch.txt",
-	}, "/tmp/wc")
+	local items = backend.parse_status(
+		[[<status><target path=".">
+<entry path="src/changed.lua"><wc-status item="modified" props="none"/></entry>
+<entry path="src/added.lua"><wc-status item="added" props="none"/></entry>
+<entry path="scratch.txt"><wc-status item="unversioned" props="none"/></entry>
+</target></status>]],
+		"/tmp/wc"
+	)
 
 	eq(#items, 3)
 	eq(items[1].status, "M")
@@ -4324,24 +4328,11 @@ end
 local function test_git_status_decodes_quoted_paths()
 	local git = require("lazyvcs.backends.git")
 
-	-- Git C-quotes non-ASCII paths with octal escapes; decode them before path
-	-- normalization.
-	local bs = string.char(92)
-	local quoted = '?? "caf' .. bs .. "303" .. bs .. '251.txt"'
-	local items = git.parse_status_lines({ quoted }, "/repo")
-	eq(#items, 1)
-	eq(items[1].path, "caf" .. string.char(195, 169) .. ".txt")
-	assert(not items[1].absolute_path:match("/303/"), "octal escapes must not become path separators")
-
-	-- A file legitimately named `a -> b.txt` must not be truncated: only R/C
-	-- entries use the rename arrow.
-	local plain = git.parse_status_lines({ " M a -> b.txt" }, "/repo")
-	eq(#plain, 1)
-	eq(plain[1].path, "a -> b.txt")
-
-	local renamed = git.parse_status_lines({ "R  old.txt -> new.txt" }, "/repo")
-	eq(#renamed, 1)
-	eq(renamed[1].path, "new.txt")
+	local items = assert(git.parse_status("?? café.txt\0 M a -> b.txt\0R  new.txt\0old.txt\0", "/repo"))
+	eq(#items, 3)
+	eq(items[1].path, "café.txt")
+	eq(items[2].path, "a -> b.txt")
+	eq(items[3].path, "new.txt")
 end
 
 local function test_relpath_rejects_unverified_entries()
@@ -7183,6 +7174,18 @@ vim.list_extend(cases, require("spec_compare_transitions")({ helpers = helpers, 
 vim.list_extend(cases, require("spec_compare_sparse")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_compare_svn_metadata")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_backend_limits")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_backend_status")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_backend_paths")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_backend_resolution")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_svn_ignores")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_commands_config")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,

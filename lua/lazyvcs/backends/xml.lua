@@ -2,6 +2,12 @@
 -- entities.
 local M = {}
 
+-- SVN uses native separators in local XML paths, but URLs always use '/'.
+-- Backslashes remain literal filename bytes on POSIX.
+function M.local_path(path)
+	return vim.fn.has("win32") == 1 and (path:gsub("\\", "/")) or path
+end
+
 local entities = {
 	amp = "&",
 	apos = "'",
@@ -46,13 +52,22 @@ function M.decode(value)
 end
 
 function M.attributes(tag)
-	local attrs = {}
-	for name, value in (tag or ""):gmatch('([%w_:%-]+)%s*=%s*"(.-)"') do
-		attrs[name] = M.decode(value)
-	end
-	for name, value in (tag or ""):gmatch("([%w_:%-]+)%s*=%s*'(.-)'") do
-		if attrs[name] == nil then
-			attrs[name] = M.decode(value)
+	local attrs, cursor = {}, 1
+	tag = tag or ""
+	while cursor <= #tag do
+		local first, last, name = tag:find("([%w_:%-]+)", cursor)
+		if not first then
+			break
+		end
+		cursor = last + 1
+		local _, value_start, quote = tag:find("^%s*=%s*([\"'])", cursor)
+		if value_start then
+			local value_end = tag:find(quote, value_start + 1, true)
+			if not value_end then
+				break
+			end
+			attrs[name] = M.decode(tag:sub(value_start + 1, value_end - 1))
+			cursor = value_end + 1
 		end
 	end
 	return attrs
@@ -99,7 +114,7 @@ function M.parse_info(raw)
 		url = child_text(block, "url"),
 		root = child_text(block, "root"),
 		revision = entry.revision,
-		path = entry.path,
+		path = entry.path and M.local_path(entry.path),
 		kind = entry.kind,
 		schedule = child_text(block, "schedule"),
 	}
@@ -114,13 +129,14 @@ function M.parse_status(raw)
 		local repos = M.attributes(repos_tag)
 		if entry.path and wc.item then
 			entries[#entries + 1] = {
-				path = entry.path,
+				path = M.local_path(entry.path),
 				wc_item = wc.item,
 				wc_props = wc.props or "none",
 				repos_item = repos_tag and (repos.item or "none") or "none",
 				repos_props = repos_tag and (repos.props or "none") or "none",
 				revision = wc.revision,
 				tree_conflicted = wc["tree-conflicted"] == "true",
+				switched = wc.switched == "true",
 			}
 		end
 	end

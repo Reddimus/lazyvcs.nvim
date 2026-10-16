@@ -24,17 +24,63 @@ local function svn_available()
 	return svn_present
 end
 
+local function is_unversioned_error(err, raw)
+	if raw and raw.code ~= 1 then
+		return false
+	end
+	err = tostring(err or "")
+	return err:match("not under version control") ~= nil
+		or err:match("was not found") ~= nil
+		or err:match("E200009") ~= nil
+		or err:match("W155010") ~= nil
+end
+
 local function get_root(path)
 	if not svn_available() then
 		return nil, "svn executable not found"
 	end
 	local cwd = util.dir_of(path)
-	local result, err = util.system({ "svn", "info", "--show-item", "wc-root", literal_target(cwd) }, { cwd = cwd })
-	if not result then
-		return nil, err
+	while cwd do
+		local result, err, raw = util.system(
+			{ "svn", "info", "--show-item", "wc-root", literal_target(cwd) },
+			{ cwd = cwd, text = false }
+		)
+		if result then
+			return process.root_output(result.stdout)
+		end
+		local parent = vim.fs.dirname(cwd)
+		if not is_unversioned_error(err, raw) or parent == cwd then
+			return nil, err
+		end
+		cwd = parent
 	end
-	-- Canonicalize roots to match sidebar identities, including Windows short paths.
-	return util.canonical_path(util.trim(result.stdout))
+end
+
+local function discover_root_async(cwd, opts, callback)
+	local task = Task.new(callback)
+	local deadline = vim.uv.now() + (opts.timeout_ms or ASYNC_TIMEOUT_MS)
+	local function probe(dir)
+		local remaining = deadline - vim.uv.now()
+		if remaining <= 0 then
+			return task:finish(nil, "SVN root discovery timed out")
+		end
+		task:add(process.root({ "svn", "info", "--show-item", "wc-root", literal_target(dir) }, {
+			cwd = dir,
+			root = opts.root,
+			timeout = remaining,
+		}, function(root, err, raw)
+			if root then
+				return task:finish(root)
+			end
+			local parent = vim.fs.dirname(dir)
+			if parent and parent ~= dir and is_unversioned_error(err, raw) then
+				return probe(parent)
+			end
+			task:finish(nil, err)
+		end))
+	end
+	probe(cwd)
+	return task
 end
 
 local function is_versioned(path)
@@ -63,17 +109,6 @@ end
 
 local function is_added_base_error(err)
 	return type(err) == "string" and (err:match("no committed revision") or err:match("no pristine version"))
-end
-
-local function is_unversioned_error(err, raw)
-	if raw and raw.code ~= 1 then
-		return false
-	end
-	err = tostring(err or "")
-	return err:match("not under version control") ~= nil
-		or err:match("was not found") ~= nil
-		or err:match("E200009") ~= nil
-		or err:match("W155010") ~= nil
 end
 
 local function uncommitted_blame_lines(path, contents, text)
@@ -109,6 +144,9 @@ local function load_base_bytes(path, root)
 		{ cwd = root }
 	)
 	if not props then
+		if is_added_base_error(props_err) then
+			return "", "EMPTY"
+		end
 		return nil, nil, props_err
 	end
 	if props.stdout:match('name="svn:special"') then
@@ -157,15 +195,11 @@ function M.probe_async(path, on_done, opts)
 		return task
 	end
 	local cwd = util.dir_of(path)
-	task:add(process.root({ "svn", "info", "--show-item", "wc-root", literal_target(cwd) }, {
-		cwd = cwd,
-		root = opts.root,
-		timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-	}, function(result, err)
+	task:add(discover_root_async(cwd, opts, function(result, err)
 		if not result then
 			return task:finish(nil, err)
 		end
-		local root = util.canonical_path(util.trim(result.stdout))
+		local root = result
 		if root == "" then
 			return task:finish(nil, "Subversion returned an empty working-copy root")
 		end
@@ -308,18 +342,14 @@ local function load_payload_async(path, on_done, opts, base_only)
 		return value
 	end
 
-	task:add(process.root({ "svn", "info", "--show-item", "wc-root", literal_target(cwd) }, {
-		cwd = cwd,
-		root = opts.root,
-		timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-	}, function(result, err)
+	task:add(discover_root_async(cwd, opts, function(result, err)
 		if not task:is_active() then
 			return
 		end
 		if err then
 			return task:finish(nil, err)
 		end
-		local root = util.canonical_path(util.trim(result.stdout))
+		local root = result
 		local relpath, path_err = util.relpath(root, path)
 		if not relpath then
 			return task:finish(nil, path_err)
@@ -372,6 +402,9 @@ local function load_payload_async(path, on_done, opts, base_only)
 									{ cwd = root },
 									function(props, props_err)
 										if not props then
+											if is_added_base_error(props_err) then
+												return task:finish(payload(root, relpath, true, "EMPTY", ""))
+											end
 											return task:finish(nil, props_err)
 										end
 										if props.stdout:match('name="svn:special"') then
@@ -498,13 +531,29 @@ function M.revert_file_async(path, on_done, opts)
 	return task
 end
 
-function M.parse_status_lines(lines, root)
+function M.parse_status(raw, root)
 	local items = {}
-	for _, line in ipairs(lines or {}) do
-		local code = line:sub(1, 1)
-		if code ~= "" and code ~= " " then
-			local path = util.trim(line:sub(9))
-			if path ~= "" then
+	local codes = {
+		modified = "M",
+		added = "A",
+		deleted = "D",
+		replaced = "R",
+		conflicted = "C",
+		unversioned = "?",
+		missing = "!",
+		obstructed = "~",
+		incomplete = "!",
+	}
+	for _, item in ipairs(svn_xml.parse_status(raw)) do
+		local code = codes[item.wc_item]
+		if item.wc_item ~= "external" and item.wc_item ~= "ignored" then
+			if item.tree_conflicted or item.wc_props == "conflicted" then
+				code = "C"
+			elseif not code and item.wc_props == "modified" then
+				code = "M"
+			end
+			if code then
+				local path = item.path
 				items[#items + 1] = {
 					status = code,
 					label = status_label(code),
@@ -522,11 +571,11 @@ function M.changed_files(root)
 		return nil, "svn executable not found"
 	end
 
-	local lines, err = util.system_lines({ "svn", "status" }, { cwd = root })
+	local lines, err = util.system({ "svn", "status", "--xml" }, { cwd = root })
 	if not lines then
 		return nil, err
 	end
-	return M.parse_status_lines(lines, root)
+	return M.parse_status(lines.stdout, root)
 end
 
 function M.changed_files_async(path, on_done, opts)
@@ -539,14 +588,14 @@ function M.changed_files_async(path, on_done, opts)
 		if not info then
 			return task:finish(nil, err or "Not an SVN working copy")
 		end
-		task:add(process.lines({ "svn", "status" }, {
+		task:add(process.bytes({ "svn", "status", "--xml" }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 		}, function(lines, status_err)
 			if not lines then
 				return task:finish(nil, status_err)
 			end
-			task:finish(M.parse_status_lines(lines, info.root))
+			task:finish(M.parse_status(lines, info.root))
 		end))
 	end, opts))
 	return task
@@ -681,7 +730,10 @@ function M.load_diff_target_async(target, on_done, opts)
 
 	local sides = {}
 	for _, key in ipairs({ "left", "right", "property_patch" }) do
-		if comparison[key] then
+		if
+			comparison[key]
+			and (not comparison.property_only or (comparison[key].source or {}).kind == "svn_property_patch")
+		then
 			sides[#sides + 1] = comparison[key]
 		end
 	end
@@ -695,7 +747,7 @@ function M.load_diff_target_async(target, on_done, opts)
 		end
 	end
 
-	local function load_sides(root_url)
+	local function load_sides(entry_url)
 		local pending = 0
 		local failed = false
 		local function complete()
@@ -735,8 +787,7 @@ function M.load_diff_target_async(target, on_done, opts)
 				pending = pending + 1
 				local command_path = source.path
 				if source.remote then
-					local suffix = comparison.relpath:gsub("\\", "/")
-					command_path = (root_url or ""):gsub("/$", "") .. "/" .. suffix
+					command_path = entry_url
 				end
 				local args
 				if source.kind == "svn_property_patch" then
@@ -751,7 +802,7 @@ function M.load_diff_target_async(target, on_done, opts)
 						end
 						vim.list_extend(args, { "-r", tostring(base_revision) .. ":HEAD" })
 					end
-					vim.list_extend(args, { "--", literal_target(command_path) })
+					vim.list_extend(args, { "--", source.remote and literal_target(command_path) or command_path })
 				else
 					args = { "svn", "cat", "-r", source.revision, literal_target(command_path) }
 				end
@@ -768,6 +819,16 @@ function M.load_diff_target_async(target, on_done, opts)
 						return
 					end
 					if not lines then
+						if
+							comparison.kind == "svn_local"
+							and comparison.wc_item == "replaced"
+							and side == comparison.left
+							and is_added_base_error(err)
+						then
+							side.label, side.source, side.bytes, side.lines = "EMPTY", { kind = "empty" }, "", {}
+							comparison.title = "EMPTY ↔ " .. comparison.right.label
+							return complete()
+						end
 						if
 							source.allow_missing
 							and type(err) == "string"
@@ -795,23 +856,37 @@ function M.load_diff_target_async(target, on_done, opts)
 		load_sides(nil)
 		return task
 	end
-	task:add(process.start({ "svn", "info", "--xml", literal_target(comparison.root) }, {
-		cwd = comparison.root,
-		timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-	}, function(result, err)
-		if not task:is_active() then
-			return
+	local deadline = vim.uv.now() + (opts.timeout_ms or ASYNC_TIMEOUT_MS)
+	local function resolve_url(path, suffix)
+		local remaining = deadline - vim.uv.now()
+		if remaining <= 0 then
+			return task:finish(nil, "SVN URL discovery timed out")
 		end
-		if not result then
-			return task:finish(nil, err)
-		end
-		local info = svn_xml.parse_info(result.stdout)
-		if not info or not info.url then
-			return task:finish(nil, "Unable to parse SVN working-copy URL")
-		end
-		comparison.base_revision = comparison.base_revision or info.revision
-		load_sides(info.url)
-	end))
+		task:add(process.start({ "svn", "info", "--xml", literal_target(path) }, {
+			cwd = comparison.root,
+			timeout = remaining,
+		}, function(result, err, raw)
+			if not result then
+				local parent = vim.fs.dirname(path)
+				if
+					parent
+					and parent ~= path
+					and util.relative_literal_path(comparison.root, parent)
+					and is_unversioned_error(err, raw)
+				then
+					return resolve_url(parent, vim.fs.basename(path) .. (suffix == "" and "" or "/" .. suffix))
+				end
+				return task:finish(nil, err)
+			end
+			local info = svn_xml.parse_info(result.stdout)
+			if not info or not info.url then
+				return task:finish(nil, "Unable to parse SVN entry URL")
+			end
+			comparison.base_revision = comparison.base_revision or info.revision
+			load_sides(require("lazyvcs.backends.svn_url").append_path(info.url, suffix))
+		end))
+	end
+	resolve_url(comparison.path, "")
 	return task
 end
 
@@ -852,113 +927,107 @@ function M.blame_lines_async(path, on_done, opts)
 
 	local cwd = util.dir_of(path)
 	local task = Task.new(on_done)
-	task:add(
-		process.root(
-			{ "svn", "info", "--show-item", "wc-root", literal_target(cwd) },
-			{ cwd = cwd, root = opts.root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
-			function(result, err)
-				if not task:is_active() then
-					return
-				end
-				if err then
-					return task:finish(nil, err)
-				end
-				local root = util.canonical_path(util.trim(result.stdout))
-				task:add(
-					process.lines(
-						{ "svn", "status", "--no-ignore", "--depth", "empty", path .. "@" },
-						{ cwd = cwd, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
-						function(status_lines, status_err)
-							if not task:is_active() then
-								return
-							end
-							if not status_lines then
-								return task:finish(nil, status_err)
-							end
+	task:add(discover_root_async(cwd, opts, function(result, err)
+		if not task:is_active() then
+			return
+		end
+		if err then
+			return task:finish(nil, err)
+		end
+		local root = result
+		task:add(
+			process.lines(
+				{ "svn", "status", "--no-ignore", "--depth", "empty", path .. "@" },
+				{ cwd = cwd, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
+				function(status_lines, status_err)
+					if not task:is_active() then
+						return
+					end
+					if not status_lines then
+						return task:finish(nil, status_err)
+					end
 
-							for _, line in ipairs(status_lines) do
-								local code = line:sub(1, 1)
-								if code == "I" or code == "?" or code == "!" or code == "D" then
-									return task:finish(nil, nil, root)
-								end
-								if line ~= "" and line:sub(1, 1) == "A" then
-									local blame, read_err = uncommitted_blame_lines(path, opts.contents, opts.text)
-									return task:finish(blame, read_err, root)
-								end
-							end
-
-							task:add(
-								process.lines(
-									{ "svn", "blame", "-v", literal_target(path) },
-									{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
-									function(lines, blame_err, raw)
-										if not lines then
-											if is_unversioned_error(blame_err, raw) then
-												return task:finish(nil, nil, root)
-											end
-											if is_added_base_error(blame_err) then
-												local blame, read_err =
-													uncommitted_blame_lines(path, opts.contents, opts.text)
-												return task:finish(blame, read_err, root)
-											end
-											return task:finish(nil, blame_err)
-										end
-										task:add(
-											(opts.profile and process.bytes or process.lines)(
-												{ "svn", "cat", "-r", "BASE", literal_target(path) },
-												{
-													cwd = root,
-													timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-												},
-												function(base, base_err)
-													if not base then
-														return task:finish(nil, base_err)
-													end
-													if opts.profile then
-														local decoded = require("lazyvcs.compare_text").decode(
-															base,
-															opts.profile,
-															1024 * 1024
-														)
-														base = decoded and decoded.lines or util.split_lines(base)
-														if not decoded and opts.profile.fileformat == "dos" then
-															for i, line in ipairs(base) do
-																base[i] = line:gsub("\r$", "")
-															end
-														end
-													end
-													local ok, current =
-														true,
-														opts.text and opts.text.lines
-															or opts.contents and util.split_lines(opts.contents)
-													if not current then
-														ok, current = pcall(vim.fn.readfile, path)
-													end
-													if not ok then
-														return task:finish(nil, tostring(current))
-													end
-													task:finish(
-														require("lazyvcs.backends.blame_mapping").map(
-															lines,
-															base,
-															current,
-															"     - - -"
-														),
-														nil,
-														root
-													)
-												end
-											)
-										)
-									end
-								)
-							)
+					for _, line in ipairs(status_lines) do
+						local code = line:sub(1, 1)
+						if code == "I" or code == "?" or code == "!" or code == "D" then
+							return task:finish(nil, nil, root)
 						end
+						if line ~= "" and line:sub(1, 1) == "A" then
+							local blame, read_err = uncommitted_blame_lines(path, opts.contents, opts.text)
+							return task:finish(blame, read_err, root)
+						end
+					end
+
+					task:add(
+						process.lines(
+							{ "svn", "blame", "-v", literal_target(path) },
+							{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
+							function(lines, blame_err, raw)
+								if not lines then
+									if is_unversioned_error(blame_err, raw) then
+										return task:finish(nil, nil, root)
+									end
+									if is_added_base_error(blame_err) then
+										local blame, read_err = uncommitted_blame_lines(path, opts.contents, opts.text)
+										return task:finish(blame, read_err, root)
+									end
+									return task:finish(nil, blame_err)
+								end
+								task:add(
+									(opts.profile and process.bytes or process.lines)(
+										{ "svn", "cat", "-r", "BASE", literal_target(path) },
+										{
+											cwd = root,
+											timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+										},
+										function(base, base_err)
+											if not base then
+												return task:finish(nil, base_err)
+											end
+											if opts.profile then
+												local decoded = require("lazyvcs.compare_text").decode(
+													base,
+													opts.profile,
+													1024 * 1024
+												)
+												base = decoded and decoded.lines or util.split_lines(base)
+												if not decoded and opts.profile.fileformat == "dos" then
+													for i, line in ipairs(base) do
+														base[i] = line:gsub("\r$", "")
+													end
+												end
+											end
+											local ok, current =
+												true,
+												opts.text and opts.text.lines or opts.contents and util.split_lines(
+													opts.contents
+												)
+											if not current then
+												ok, current = pcall(vim.fn.readfile, path)
+											end
+											if not ok then
+												return task:finish(nil, tostring(current))
+											end
+											task:finish(
+												require("lazyvcs.backends.blame_mapping").map(
+													lines,
+													base,
+													current,
+													"     - - -"
+												),
+												nil,
+												root
+											)
+										end
+									)
+								)
+							end
+						)
 					)
-				)
-			end
+				end
+			)
 		)
-	)
+	end))
 	return task
 end
 

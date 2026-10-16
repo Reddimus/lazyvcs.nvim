@@ -631,6 +631,9 @@ local function git_status_entries(raw)
 			entries[index] = "?? " .. entry:sub(3)
 		elseif entry:sub(1, 2) == "! " then
 			entries[index] = "!! " .. entry:sub(3)
+		elseif entry:sub(1, 2) == "# " then
+			table.remove(entries, index)
+			index = index - 1
 		elseif entry:sub(1, 2):find("[RC]") then
 			index = index + 1
 		end
@@ -653,21 +656,16 @@ local function parse_git_entries(root, raw, sort_key)
 	}
 
 	local items, gitlinks = git_status_entries(raw)
+	local records, err = require("lazyvcs.backends.git_status").parse(
+		table.concat(items, "\0") .. (#items > 0 and (raw or ""):sub(-1) == "\0" and "\0" or "")
+	)
+	if not records then
+		return nil, nil, err
+	end
 	local seen = {}
-	local idx = 1
-
-	while idx <= #items do
-		local entry = items[idx]
-		local status = entry:sub(1, 2)
-		local index = status:sub(1, 1)
-		local worktree = status:sub(2, 2)
-		local relpath = entry:sub(4)
-		local renamed_from
-
-		if status:find("R", 1, true) or status:find("C", 1, true) then
-			renamed_from = items[idx + 1]
-			idx = idx + 1
-		end
+	for _, entry in ipairs(records) do
+		local status, relpath, renamed_from = entry.status, entry.path, entry.renamed_from
+		local index, worktree = status:sub(1, 1), status:sub(2, 2)
 
 		if not seen[relpath] then
 			seen[relpath] = true
@@ -731,8 +729,6 @@ local function parse_git_entries(root, raw, sort_key)
 				)
 			end
 		end
-
-		idx = idx + 1
 	end
 
 	local ordered = {}
@@ -755,7 +751,10 @@ local function build_git_detail(repo, opts, status_stdout, raw_stdout)
 	local fetch_error = opts.fetch_error or (previous.sync and previous.sync.fetch_error)
 	local summary = build_git_summary(repo, opts, status_stdout, fetch_error)
 	local sort_key = opts.changes_sort or config.get().source_control.changes_sort
-	local sections, counts = parse_git_entries(repo.root, raw_stdout, sort_key)
+	local sections, counts, err = parse_git_entries(repo.root, raw_stdout, sort_key)
+	if not sections then
+		return nil, err
+	end
 	summary.sections = sections
 	summary.counts = counts
 	summary.sync = vim.tbl_extend(

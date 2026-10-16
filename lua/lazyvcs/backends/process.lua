@@ -3,17 +3,37 @@ local jobs = require("lazyvcs.source_control.jobs")
 local Task = require("lazyvcs.backends.task")
 local M = {}
 
+function M.root_output(stdout)
+	if stdout:sub(-1) ~= "\n" then
+		return nil, "Repository root output has no record terminator"
+	end
+	local root = stdout:sub(1, -2)
+	if vim.fn.has("win32") == 1 and root:sub(-1) == "\r" then
+		root = root:sub(1, -2)
+	end
+	if root == "" then
+		return nil, "Repository returned an empty root"
+	end
+	return util.canonical_path(root)
+end
+
 function M.root(args, opts, callback)
 	local root = opts.root
 	opts = vim.tbl_extend("force", {}, opts)
 	opts.root = nil
 	if not root then
-		return M.start(args, opts, callback)
+		return M.bytes(args, opts, function(bytes, err, raw)
+			if not bytes then
+				return callback(nil, err, raw)
+			end
+			local decoded, decode_err = M.root_output(bytes)
+			callback(decoded, decode_err, raw)
+		end)
 	end
 	local task = Task.new(callback)
-	vim.schedule(function()
-		task:finish({ code = 0, stdout = root, stderr = "" })
-	end)
+	vim.schedule(util.safe_callback(function()
+		task:finish(root)
+	end))
 	return task
 end
 

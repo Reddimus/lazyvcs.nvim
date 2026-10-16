@@ -191,11 +191,20 @@ paths in O(files log files), and loads only the selected preview. Preview reads
 are bounded to 1 MiB. Untracked SVN directory traversal does not follow
 symlinks. Git rename detection has a limit of 1000 candidates. Repository
 resolution uses at most 512 cached directories and shares concurrent probes for
-one directory. Wrapped alignment takes O(log hunks + visible units) time and
-O(visible units) space. The scheduler uses a priority heap with O(log queued)
-enqueue/dequeue and a 4096-job limit per queue. Editor commands have separate
-queues with two Git workers and one SVN worker, so background operations cannot
-consume their capacity. Sidebar cancellation leaves editor requests running.
+one directory. Positive resolutions do not expire on cursor paths. Explicit
+refresh forces discovery. BufEnter and BufWritePost revalidate asynchronously at
+most once per directory every five seconds. Failed repository reads invalidate
+ownership and retry once, excluding cancellation, timeouts, and output limits.
+Root command output loses exactly one record terminator; supplied root hints
+retain every pathname byte. SVN ignore patterns are compiled once per discovery
+and matched in O(pattern tokens times filename bytes) with bounded row storage.
+Git retained-file reconciliation batches at most 128 paths and 24 KB of argument
+budget per command, preserving per-path clean filters. Wrapped alignment takes
+O(log hunks + visible units) time and O(visible units) space. The scheduler uses
+a priority heap with O(log queued) enqueue/dequeue and a 4096-job limit per
+queue. Editor commands have separate queues with two Git workers and one SVN
+worker, so background operations cannot consume their capacity. Sidebar
+cancellation leaves editor requests running.
 
 Use disposable repositories for mutation tests. For live terminal validation,
 exercise keyboard and mouse actions in both vanilla Neovim and AstroNvim; verify

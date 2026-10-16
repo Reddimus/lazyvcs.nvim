@@ -58,6 +58,76 @@ return function(ctx)
 	end
 	local cases = {
 		{
+			"test_source_control_git_details_skip_porcelain_headers",
+			function()
+				local root = h.tempdir()
+				local modified = "1 .M N... 100644 100644 100644 "
+					.. string.rep("0", 40)
+					.. " "
+					.. string.rep("0", 40)
+					.. " sample.txt\0"
+				for _, raw in ipairs({
+					"# stash 1\0" .. modified,
+					"# branch.oid " .. string.rep("0", 40) .. "\0# branch.head main\0# stash 1\0" .. modified,
+					"# stash 1\0",
+				}) do
+					local result, failure
+					model.load_repo_details_async({ root = root, vcs = "git" }, {}, function(args, _, done)
+						done({ stdout = vim.tbl_contains(args, "-z") and raw or "## main\n" })
+					end, function(value, err)
+						result, failure = value, err
+					end)
+					assert(result and result.details_loaded, failure or "details did not load")
+					local count = raw == "# stash 1\0" and 0 or 1
+					assert(result.counts.local_changes == count and result.counts.staged == 0)
+					assert(#result.sections == count, "header became a file section")
+					if count > 0 then
+						local section = result.sections[1]
+						assert(section.id == "changes" and #section.items == 1)
+						assert(section.items[1].extra.relpath == "sample.txt")
+					end
+				end
+			end,
+		},
+		{
+			"test_source_control_sidebar_loads_details_with_show_stash",
+			function()
+				local f = h.make_git_fixture()
+				h.exec({ "git", "config", "status.showStash", "true" }, f.root)
+				h.exec({ "git", "stash", "push", "-m", "sidebar regression" }, f.root)
+				h.write_file(f.file, "one\nmodified after stash\nthree\n")
+				local raw = h.exec({ "git", "status", "--porcelain=v2", "-z" }, f.root)
+				-- Git 2.35 added the porcelain v2 stash header; older Git only checks the load.
+				local major, minor = h.exec({ "git", "--version" }, f.root):match("(%d+)%.(%d+)")
+				local emits_header = tonumber(major) > 2 or (tonumber(major) == 2 and tonumber(minor) >= 35)
+				assert(
+					(raw:find("# stash 1\0", 1, true) ~= nil) == emits_header,
+					"fixture stash header did not match the Git version"
+				)
+				local s = open(f.root)
+				local summary = s.lazyvcs_repo_cache[f.root]
+				assert(summary and not summary.error, "sidebar summary did not load")
+				assert(summary.counts.local_changes == 1 and summary.counts.staged == 0)
+				details(s, f.root)
+				local loaded = s.lazyvcs_repo_cache[f.root]
+				assert(not loaded.error and loaded.counts.local_changes == 1 and loaded.counts.staged == 0)
+				assert(#loaded.sections == 1 and loaded.sections[1].id == "changes")
+				assert(#loaded.sections[1].items == 1)
+				key(s, "l", function(n)
+					return n.type == "section" and n.extra.section_id == "changes"
+				end)
+				local files = {}
+				for _, node in ipairs(s.lazyvcs_line_nodes) do
+					if node.type == "file" then
+						files[#files + 1] = node
+					end
+				end
+				assert(#files == 1 and files[1].path == f.file and files[1].extra.status == " M")
+				local text = table.concat(api.nvim_buf_get_lines(s.bufnr, 0, -1, false), "\n")
+				assert(text:find("sample.txt", 1, true), "sidebar did not display the modified file")
+			end,
+		},
+		{
 			"test_source_control_submodule_rows_open_readonly_patches",
 			function()
 				local f, child = h.make_git_fixture(), h.make_git_fixture()

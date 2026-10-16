@@ -19,13 +19,14 @@ return function(ctx)
 			"test_svn_compare_added_file_metadata_includes_properties",
 			function()
 				local f = h.make_svn_fixture()
-				for _, path in ipairs({ "added.txt", "plain.txt", "untracked.txt" }) do
+				local added = "added #%.txt"
+				for _, path in ipairs({ added, "plain.txt", "untracked.txt" }) do
 					h.write_file(f.root .. "/" .. path, "added text\n")
 				end
-				h.exec({ "svn", "add", "added.txt", "plain.txt" }, f.root)
-				h.exec({ "svn", "propset", "svn:eol-style", "native", "added.txt" }, f.root)
+				h.exec({ "svn", "add", added, "plain.txt" }, f.root)
+				h.exec({ "svn", "propset", "svn:eol-style", "native", added }, f.root)
 				-- SVN on Windows expands a "*" argument as a wildcard; it stores any svn:executable value as "*".
-				h.exec({ "svn", "propset", "svn:executable", "ON", "added.txt" }, f.root)
+				h.exec({ "svn", "propset", "svn:executable", "ON", added }, f.root)
 				h.write_file(f.file, "one\ntwo\nthree\n")
 				h.exec({ "svn", "propset", "custom:file", "value", "sample.txt" }, f.root)
 				local snapshot = assert(await(function(done)
@@ -43,7 +44,7 @@ return function(ctx)
 						provider.preview(snapshot, assert(paths[name]), done)
 					end)
 				end
-				local result, err = preview("added.txt")
+				local result, err = preview(added)
 				assert(result, err)
 				assert(contains(result.properties, "svn:eol-style"), "added SVN properties missing from metadata")
 				assert(contains(result.properties, "svn:executable"))
@@ -59,10 +60,10 @@ return function(ctx)
 					return s.preview_result
 				end, "SVN comparison did not load", 15000)
 				api.nvim_set_current_win(s.sidewin)
-				api.nvim_win_set_cursor(s.sidewin, { s.row_by_path["added.txt"], 0 })
+				api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[added], 0 })
 				s.actions.metadata()
 				ctx.wait_for(function()
-					return s.mode == "metadata" and s.shown_item.relpath == "added.txt"
+					return s.mode == "metadata" and s.shown_item.relpath == added
 				end, "added metadata UI did not load", 15000)
 				assert(contains(api.nvim_buf_get_lines(s.left, 0, -1, false), "svn:eol-style"))
 				compare.refresh(s)
@@ -73,8 +74,8 @@ return function(ctx)
 				compare.close(s)
 				local large = h.tempdir() .. "/large-property"
 				h.write_file(large, string.rep("x", 1024 * 1024 + 1))
-				h.exec({ "svn", "propset", "custom:large", "--file", large, "added.txt" }, f.root)
-				result, err = preview("added.txt")
+				h.exec({ "svn", "propset", "custom:large", "--file", large, added }, f.root)
+				result, err = preview(added)
 				assert(
 					result and result.right[1] == "added text",
 					"oversized optional properties discarded valid text: " .. tostring(err)

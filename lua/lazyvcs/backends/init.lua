@@ -16,13 +16,14 @@ local probe_cache = {}
 local probe_order, probe_cursor = {}, 0
 local in_flight = {}
 local cache_generation = 0
+local checked_at = {}
 
 local function cache_put(key, value)
 	if not probe_cache[key] then
 		probe_cursor = probe_cursor % 512 + 1
 		local previous = probe_order[probe_cursor]
 		if previous then
-			probe_cache[previous] = nil
+			probe_cache[previous], checked_at[previous] = nil, nil
 		end
 		probe_order[probe_cursor] = key
 	end
@@ -32,8 +33,24 @@ end
 -- How long a "no working copy here" answer stays cached.
 local NEGATIVE_TTL_MS = 5000
 
-function M.invalidate()
+function M.invalidate(path)
+	if path then
+		local key = util.dir_of(path)
+		probe_cache[key], checked_at[key] = nil, nil
+		local shared = in_flight[key]
+		if shared then
+			shared.stale = true
+		end
+		for slot, entry in pairs(probe_order) do
+			if entry == key then
+				probe_order[slot] = false
+			end
+		end
+		in_flight[key] = nil
+		return
+	end
 	probe_cache = {}
+	checked_at = {}
 	probe_order, probe_cursor = {}, 0
 	cache_generation = cache_generation + 1
 	in_flight = {}
@@ -43,7 +60,10 @@ end
 --- The deepest root wins, so a Git checkout nested inside an SVN working copy
 --- (or vice versa) resolves to the inner one.
 ---@return table|nil backend, string|nil root, string|nil err
-function M.resolve(path)
+function M.resolve(path, opts)
+	if opts and opts.force_resolve then
+		M.invalidate(path)
+	end
 	-- dir_of, not dirname: callers also pass directories (buffer_ops falls back to
 	-- the cwd for non-file buffers), and dirname would probe the PARENT of a
 	-- working copy, so a repo root resolved to "no working copy found".
@@ -96,24 +116,50 @@ function M.resolve_cached(path)
 	return nil
 end
 
+local function repository_failure(err, path, missing_only)
+	-- Error messages quote repository paths; words within those paths are not
+	-- cancellation, timeout or output-limit diagnostics.
+	err = tostring(err or "")
+	if path then
+		err = err:gsub(vim.pesc(path), "")
+	end
+	err = err:gsub("(['\"]).-%1", ""):lower()
+	if
+		err:find("cancel")
+		or err:find("timed out")
+		or err:find("timeout")
+		or err:find("truncat")
+		or err:find("output limit")
+	then
+		return false
+	end
+	return err:find("not a git repository", 1, true)
+		or err:find("not a working copy", 1, true)
+		or err:find("e155007", 1, true)
+		or (not missing_only and err:find("cannot change to", 1, true))
+end
+
 ---Asynchronously resolve the backend owning `path`.
 ---The callback receives `(backend, root, err)`.
 function M.resolve_async(path, on_done, opts)
 	opts = opts or {}
+	if opts.force_resolve then
+		M.invalidate(path)
+	end
 	local task = Task.new(on_done)
 	local key = util.dir_of(path)
 	local hit = probe_cache[key]
-	if hit ~= nil then
+	if hit ~= nil and not opts.revalidate then
 		if hit.backend then
-			vim.schedule(function()
+			vim.schedule(util.safe_callback(function()
 				task:finish(hit.backend, hit.root, nil)
-			end)
+			end))
 			return task
 		end
 		if vim.uv.now() - hit.at < NEGATIVE_TTL_MS then
-			vim.schedule(function()
+			vim.schedule(util.safe_callback(function()
 				task:finish(nil, nil, hit.err)
-			end)
+			end))
 			return task
 		end
 		probe_cache[key] = nil
@@ -123,7 +169,11 @@ function M.resolve_async(path, on_done, opts)
 	if shared then
 		shared.listeners[task] = true
 	else
-		shared = { listeners = { [task] = true }, owner = Task.new(), generation = cache_generation }
+		shared = {
+			listeners = { [task] = true },
+			owner = Task.new(),
+			generation = cache_generation,
+		}
 		in_flight[key] = shared
 	end
 	task:on_cancel(function()
@@ -140,14 +190,24 @@ function M.resolve_async(path, on_done, opts)
 	end
 	shared.started = true
 	local pending, best, errors = #backends, nil, {}
+	local uncertain, roots = {}, {}
 	local function completed(backend, info, err)
 		if not shared.owner:is_active() then
 			return
 		end
-		if info and info.root and (not best or #info.root > #best.root) then
-			best = { backend = backend, root = info.root }
-		elseif err and err ~= "" then
-			errors[#errors + 1] = err
+		if info and info.root then
+			roots[backend] = info.root
+			if not best or #info.root > #best.root then
+				best = { backend = backend, root = info.root }
+			end
+		end
+		if not (info and info.root) then
+			-- A missing executable, spawn failure or timeout cannot disprove a
+			-- previously resolved owner.
+			uncertain[backend] = not repository_failure(err, key, true)
+			if err and err ~= "" then
+				errors[#errors + 1] = err
+			end
 		end
 		pending = pending - 1
 		if pending > 0 then
@@ -158,8 +218,21 @@ function M.resolve_async(path, on_done, opts)
 		end
 		local generic = "No Git or SVN working copy found for " .. path
 		local failure = not best and (#errors == 0 and generic or generic .. ": " .. table.concat(errors, "; ")) or nil
-		if shared.generation == cache_generation then
-			cache_put(key, best or { err = failure, at = vim.uv.now() })
+		if shared.generation == cache_generation and not shared.stale then
+			checked_at[key] = vim.uv.now()
+			local previous = probe_cache[key]
+			if
+				previous
+				and previous.backend
+				and not roots[previous.backend]
+				and uncertain[previous.backend]
+				and (not best or #best.root <= #previous.root)
+			then
+				best, failure = previous, nil
+			end
+			if not previous or not best or previous.backend ~= best.backend or previous.root ~= best.root then
+				cache_put(key, best or { err = failure, at = vim.uv.now() })
+			end
 		end
 		shared.owner:finish()
 		for listener in pairs(shared.listeners) do
@@ -185,25 +258,49 @@ function M.load(path)
 	if not backend then
 		return nil, err
 	end
-	return backend.load(path)
+	local result, load_err = backend.load(path)
+	if not result and repository_failure(load_err, path) then
+		M.invalidate(path)
+		local fresh, _, resolve_err = M.resolve(path)
+		if not fresh then
+			return nil, resolve_err
+		end
+		return fresh.load(path)
+	end
+	return result, load_err
+end
+
+local function read_async(method, path, on_done, opts, arguments)
+	opts = opts or {}
+	local task = Task.new(on_done)
+	local function attempt(retry)
+		local resolve_opts = vim.tbl_extend("force", opts, { force_resolve = retry or opts.force_resolve })
+		task:add(M.resolve_async(path, function(backend, root, err)
+			if not backend then
+				return task:finish(nil, err)
+			end
+			local args = { path }
+			vim.list_extend(args, arguments or {})
+			args[#args + 1] = function(result, load_err, extra)
+				if not result and repository_failure(load_err, path) then
+					M.invalidate(path)
+					if not retry then
+						return attempt(true)
+					end
+				end
+				task:finish(result, load_err, extra)
+			end
+			args[#args + 1] = vim.tbl_extend("force", opts, { root = root })
+			task:add(backend[method](unpack(args)))
+		end, resolve_opts))
+	end
+	attempt(false)
+	return task
 end
 
 ---Asynchronous full session payload. No synchronous repository probe occurs.
 function M.load_async(path, on_done, opts)
-	opts = opts or {}
-	local task = Task.new(on_done)
-	task:add(M.resolve_async(path, function(backend, root, err)
-		if not task:is_active() then
-			return
-		end
-		if not backend then
-			return task:finish(nil, err)
-		end
-		task:add(backend.load_async(path, function(result, load_err)
-			task:finish(result, load_err)
-		end, vim.tbl_extend("force", opts, { root = root })))
-	end, opts))
-	return task
+	return read_async("load_async", path, on_done, opts)
 end
 
 -- Thin dispatchers. Each mirrors the identically named backend function.
@@ -217,7 +314,16 @@ local function dispatch(fn_name)
 		if not fn then
 			return nil, string.format("%s does not support %s", backend.name, fn_name)
 		end
-		return fn(path, ...)
+		local result, load_err, extra = fn(path, ...)
+		if fn_name ~= "revert_file" and not result and repository_failure(load_err, path) then
+			M.invalidate(path)
+			local fresh, _, resolve_err = M.resolve(path)
+			if not fresh then
+				return nil, resolve_err
+			end
+			return fresh[fn_name](path, ...)
+		end
+		return result, load_err, extra
 	end
 end
 
@@ -229,20 +335,7 @@ M.revision_log = dispatch("revision_log")
 
 --- Async variants report failure through `on_done(nil, err)` rather than returning.
 function M.load_base_async(path, on_done, opts)
-	opts = opts or {}
-	local task = Task.new(on_done)
-	task:add(M.resolve_async(path, function(backend, root, err)
-		if not task:is_active() then
-			return
-		end
-		if not backend then
-			return task:finish(nil, err)
-		end
-		task:add(backend.load_base_async(path, function(result, load_err)
-			task:finish(result, load_err)
-		end, vim.tbl_extend("force", opts, { root = root })))
-	end, opts))
-	return task
+	return read_async("load_base_async", path, on_done, opts)
 end
 
 ---@param path string
@@ -273,71 +366,19 @@ function M.validate_editable_base_async(path, base_identity, callback, opts)
 end
 
 function M.blame_lines_async(path, on_done, opts)
-	opts = opts or {}
-	local task = Task.new(on_done)
-	task:add(M.resolve_async(path, function(backend, _, err)
-		if not task:is_active() then
-			return
-		end
-		if not backend then
-			return task:finish(nil, err)
-		end
-		task:add(backend.blame_lines_async(path, function(result, load_err, root)
-			task:finish(result, load_err, root)
-		end, opts))
-	end, opts))
-	return task
+	return read_async("blame_lines_async", path, on_done, opts)
 end
 
 function M.line_revision_async(path, line_number, on_done, opts)
-	opts = opts or {}
-	local task = Task.new(on_done)
-	task:add(M.resolve_async(path, function(backend, _, err)
-		if not task:is_active() then
-			return
-		end
-		if not backend then
-			return task:finish(nil, err)
-		end
-		task:add(backend.line_revision_async(path, line_number, function(revision, load_err)
-			task:finish(revision, load_err)
-		end, opts))
-	end, opts))
-	return task
+	return read_async("line_revision_async", path, on_done, opts, { line_number })
 end
 
 function M.revision_log_async(path, revision, on_done, opts)
-	opts = opts or {}
-	local task = Task.new(on_done)
-	task:add(M.resolve_async(path, function(backend, _, err)
-		if not task:is_active() then
-			return
-		end
-		if not backend then
-			return task:finish(nil, err)
-		end
-		task:add(backend.revision_log_async(path, revision, function(lines, load_err)
-			task:finish(lines, load_err)
-		end, opts))
-	end, opts))
-	return task
+	return read_async("revision_log_async", path, on_done, opts, { revision })
 end
 
 function M.changed_files_async(path, on_done, opts)
-	opts = opts or {}
-	local task = Task.new(on_done)
-	task:add(M.resolve_async(path, function(backend, _, err)
-		if not task:is_active() then
-			return
-		end
-		if not backend then
-			return task:finish(nil, err)
-		end
-		task:add(backend.changed_files_async(path, function(items, load_err)
-			task:finish(items, load_err)
-		end, opts))
-	end, opts))
-	return task
+	return read_async("changed_files_async", path, on_done, opts)
 end
 
 function M.revert_file_async(path, on_done, opts)
@@ -358,20 +399,7 @@ function M.revert_file_async(path, on_done, opts)
 end
 
 function M.is_versioned_async(path, on_done, opts)
-	opts = opts or {}
-	local task = Task.new(on_done)
-	task:add(M.resolve_async(path, function(backend, _, err)
-		if not task:is_active() then
-			return
-		end
-		if not backend then
-			return task:finish(false, err)
-		end
-		task:add(backend.is_versioned_async(path, function(versioned, check_err)
-			task:finish(versioned, check_err)
-		end, opts))
-	end, opts))
-	return task
+	return read_async("is_versioned_async", path, on_done, opts)
 end
 
 local function normalize_target(target)
@@ -489,7 +517,28 @@ end
 -- Keep the resolved backend accurate when the user changes directory.
 vim.api.nvim_create_autocmd("DirChanged", {
 	group = vim.api.nvim_create_augroup("lazyvcs_backends", { clear = true }),
-	callback = M.invalidate,
+	callback = function()
+		M.invalidate()
+	end,
+})
+
+vim.api.nvim_create_autocmd({ "BufEnter", "BufWritePost" }, {
+	group = "lazyvcs_backends",
+	callback = util.safe_callback(function(args)
+		if not util.is_real_file_buffer(args.buf) then
+			return
+		end
+		local path = util.buf_path(args.buf)
+		local key = util.dir_of(path)
+		local now = vim.uv.now()
+		if checked_at[key] and now - checked_at[key] < 5000 then
+			return
+		end
+		if probe_cache[key] or in_flight[key] then
+			checked_at[key] = now
+		end
+		M.resolve_async(path, function() end, { revalidate = true })
+	end),
 })
 
 return M
