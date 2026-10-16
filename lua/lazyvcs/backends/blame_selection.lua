@@ -84,6 +84,12 @@ function M.load(target, contents, callback, capture)
 								if not task:is_active() then
 									return
 								end
+								if not raw and type(err) == "string" and err:find("no such path", 1, true) then
+									if item.old_path and not retry then
+										return historical(item.old_path, true)
+									end
+									return uncommitted()
+								end
 								local selected, format_err
 								if raw then
 									selected, format_err = format.select(raw, opts, policy)

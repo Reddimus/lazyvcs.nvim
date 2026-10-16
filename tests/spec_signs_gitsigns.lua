@@ -17,7 +17,7 @@ return function(ctx)
 		s.signs.refresh(buf, false)
 		s.api.nvim_win_set_cursor(0, { 2, 0 })
 	end
-	local function wait_for_refresh(no_refresh_api)
+	local function wait_for_refresh(no_refresh_api, second_revert)
 		local f, buf = s.fixture(false, {
 			use_gitsigns = true,
 			signs = { max_file_bytes = 1 },
@@ -44,6 +44,9 @@ return function(ctx)
 		s.wait(function()
 			return (s.signs.current_state(buf).native_holds or 0) == 1
 		end, "revert did not wait for base settlement")
+		if second_revert then
+			vim.cmd("LazyVCS hunk revert")
+		end
 		s.h.write_file(f.file, "one\nstaged\nthree\n")
 		s.h.exec({ "git", "add", "sample.txt" }, f.root)
 		s.signs.finish_base_change(change)
@@ -64,6 +67,153 @@ return function(ctx)
 		return pending
 	end
 	return {
+		{
+			"test_signs_large_file_second_waiting_revert_is_rejected",
+			s.guard(function()
+				local notices = {}
+				vim.notify = function(message)
+					if message:find("already pending", 1, true) then
+						notices[#notices + 1] = message
+					end
+				end
+				local pending = wait_for_refresh(false, true)
+				vim.cmd("LazyVCS hunk revert")
+				assert(#notices == 2, "second reverts must report the pending command in both wait phases")
+				assert((s.signs.current_state(pending.buf).native_holds or 0) == 1)
+				pending.publish(pending.buf)
+				s.wait(function()
+					return type(pending.confirmation()) == "function"
+				end, "first revert was orphaned")
+				pending.confirmation()()
+				s.wait(function()
+					return pending.resets == 1
+				end, "first revert never completed")
+				assert((s.signs.current_state(pending.buf).native_holds or 0) == 0)
+			end),
+		},
+		{
+			"test_signs_recent_settlement_waits_for_buffer_update",
+			s.guard(function()
+				for _, large in ipairs({ true, false }) do
+					local f, buf = s.fixture(false, {
+						use_gitsigns = true,
+						signs = { max_file_bytes = large and 1 or 1024 },
+						source_control = { confirm_mutations = true },
+					})
+					local resets, refreshes = 0, 0
+					attach(buf, function()
+						resets = resets + 1
+						s.api.nvim_buf_set_lines(buf, 1, 2, false, { "staged" })
+					end)
+					local hunks = assert(package.loaded.gitsigns.get_hunks(buf))
+					---@diagnostic disable-next-line: duplicate-set-field
+					package.loaded.gitsigns.get_hunks = function(target)
+						return target == buf and hunks or nil
+					end
+					package.loaded.gitsigns.refresh = function()
+						refreshes = refreshes + 1
+					end
+					local change = s.signs.begin_base_change(f.root, { f.file })
+					s.h.write_file(f.file, "one\nstaged\nthree\n")
+					s.h.exec({ "git", "add", "sample.txt" }, f.root)
+					s.signs.finish_base_change(change)
+					-- An automatic refresh between settlement and command must retain the mark.
+					s.signs.refresh(buf, false)
+					vim.cmd("LazyVCS hunk revert")
+					s.wait(function()
+						return refreshes == 1 or type(vim.fn.maparg("1", "n", false, true).callback) == "function"
+					end, "recent settlement command did not start", 15000)
+					assert(refreshes == 1, "recent settlement consumed stale gitsigns hunks")
+					assert(type(vim.fn.maparg("1", "n", false, true).callback) ~= "function")
+					local other = s.api.nvim_create_buf(false, true)
+					s.api.nvim_exec_autocmds("User", { pattern = "GitSignsUpdate", data = { buffer = other } })
+					assert(type(vim.fn.maparg("1", "n", false, true).callback) ~= "function")
+					hunks[1].removed.lines = { "staged" }
+					s.api.nvim_exec_autocmds("User", { pattern = "GitSignsUpdate", data = { buffer = buf } })
+					s.wait(function()
+						return type(vim.fn.maparg("1", "n", false, true).callback) == "function"
+					end, "matching update did not open confirmation")
+					assert(#s.marks(buf) == 0)
+					vim.fn.maparg("1", "n", false, true).callback()
+					s.wait(function()
+						return resets == 1
+					end, "matching refreshed hunk did not delegate", 15000)
+					assert(s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "staged")
+					-- Once the update arrives, a later revert does not wait again.
+					s.api.nvim_buf_set_lines(buf, 1, 2, false, { "changed" })
+					vim.cmd("LazyVCS hunk revert")
+					s.wait(function()
+						return type(vim.fn.maparg("1", "n", false, true).callback) == "function"
+					end, "settlement mark was not cleared", 15000)
+					assert(refreshes == 1)
+					vim.fn.maparg("3", "n", false, true).callback()
+					s.api.nvim_buf_delete(other, { force = true })
+				end
+			end),
+		},
+		{
+			"test_signs_refresh_callbacks_contain_errors",
+			s.guard(function()
+				local confirm = require("lazyvcs.source_control.confirm")
+				local mutation = confirm.mutation
+				local pending = wait_for_refresh()
+				local notices = {}
+				vim.notify = function(message)
+					notices[#notices + 1] = message
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				confirm.mutation = function()
+					error("confirmation UI failed")
+				end
+				local ok, err = pcall(pending.publish, pending.buf)
+				confirm.mutation = mutation
+				assert(ok, "error escaped into gitsigns: " .. tostring(err))
+				assert(#notices == 1 and notices[1]:find("confirmation UI failed", 1, true))
+				assert((s.signs.current_state(pending.buf).native_holds or 0) == 0)
+			end),
+		},
+		{
+			"test_signs_refresh_timeout_callback_contains_errors",
+			s.guard(function()
+				local new_timer, timeout = vim.uv.new_timer, nil
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.uv.new_timer = function()
+					local timer = assert(new_timer())
+					return {
+						start = function(_, ms, repeat_ms, callback)
+							if ms == 2000 then
+								timeout = callback
+							else
+								timer:start(ms, repeat_ms, callback)
+							end
+						end,
+						stop = function()
+							timer:stop()
+						end,
+						close = function()
+							timer:close()
+						end,
+						is_closing = function()
+							return timer:is_closing()
+						end,
+					}
+				end
+				local pending = wait_for_refresh()
+				local notice
+				vim.notify = function(message)
+					if message:find("has not refreshed its hunks", 1, true) then
+						error("timeout notification failed")
+					end
+					notice = message
+				end
+				assert(timeout)()
+				s.wait(function()
+					return notice ~= nil
+				end, "timeout error escaped vim.schedule")
+				assert(notice:find("timeout notification failed", 1, true))
+				assert((s.signs.current_state(pending.buf).native_holds or 0) == 0 and pending.resets == 0)
+			end),
+		},
 		{
 			"test_signs_large_file_delegated_revert",
 			s.guard(function()
@@ -223,6 +373,12 @@ return function(ctx)
 			"test_signs_large_file_refresh_wait_cancels_on_unload_or_base_change",
 			s.guard(function()
 				for _, unload in ipairs({ true, false }) do
+					local notices = {}
+					vim.notify = function(message)
+						if message:find("nothing was reverted", 1, true) then
+							notices[#notices + 1] = message
+						end
+					end
 					local pending = wait_for_refresh()
 					local state = s.signs.current_state(pending.buf)
 					if unload then
@@ -233,6 +389,10 @@ return function(ctx)
 						s.signs.finish_base_change(change)
 					end
 					assert((state.native_holds or 0) == 0 and next(state.gitsigns_waiters) == nil)
+					assert(#notices == (unload and 0 or 1), "base cancellation must warn; unload must stay silent")
+					if not unload then
+						assert(notices[1]:find("base changed", 1, true))
+					end
 					pending.publish(pending.buf)
 					assert(pending.resets == 0 and type(pending.confirmation()) ~= "function")
 				end
@@ -459,7 +619,7 @@ return function(ctx)
 		{
 			"test_signs_delegated_confirmation_rejects_changed_base_generation",
 			s.guard(function()
-				local _, buf = s.fixture(false, { use_gitsigns = true, source_control = { confirm_mutations = true } })
+				local f, buf = s.fixture(false, { use_gitsigns = true, source_control = { confirm_mutations = true } })
 				s.refresh(buf, true)
 				local resets = 0
 				attach(buf, function()
@@ -470,7 +630,26 @@ return function(ctx)
 					return type(vim.fn.maparg("1", "n", false, true).callback) == "function"
 				end, "confirmation absent", 15000)
 				local state = s.signs.current_state(buf)
-				state.base_generation = state.base_generation + 1
+				assert(#s.marks(buf) == 0, "native signs appeared while delegated confirmation was open")
+				local generation = state.base_generation
+				local config = require("lazyvcs.config").get()
+				config.source_control.confirm_mutations = false
+				local repo =
+					{ root = f.root, name = "fixture", vcs = "git", counts = { staged = 0, local_changes = 1 } }
+				require("lazyvcs.source_control.ops").stage_file({
+					path = f.root,
+					lazyvcs_repo_cache = { [f.root] = repo },
+					lazyvcs_render = function() end,
+				}, {
+					type = "file",
+					path = f.file,
+					extra = { repo_root = f.root, relpath = "sample.txt", section = "unstaged", status = " M" },
+				})
+				s.wait(function()
+					return state.base_generation >= generation + 2
+				end, "real staging did not settle", 15000)
+				config.source_control.confirm_mutations = true
+				assert(s.h.exec({ "git", "show", ":sample.txt" }, f.root) == "one\nchanged\nthree\n")
 				vim.fn.maparg("1", "n", false, true).callback()
 				vim.wait(30)
 				assert(resets == 0, "delegated confirmation ignored changed base generation")

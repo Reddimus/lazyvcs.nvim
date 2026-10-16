@@ -567,7 +567,11 @@ return function(ctx)
 			package.loaded.gitsigns.preview_hunk = nil
 			vim.cmd("LazyVCS preview")
 			local state = s.signs.current_state(buf)
-			assert(state and state.skipped and not state.base_generation, "oversized native fallback allocated a base")
+			assert(
+				state and state.skipped and not state.loaded and not state.base_text and not state.base_identity,
+				"oversized native fallback allocated a base"
+			)
+			assert(loads == 0, "oversized native fallback loaded a base")
 		end),
 	}
 	return cases

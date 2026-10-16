@@ -992,7 +992,7 @@ function M.blame_lines_async(path, on_done, opts)
 														base,
 														opts.profile,
 														lines,
-														1024 * 1024
+														require("lazyvcs.config").get().signs.max_file_bytes
 													)
 												if not decoded then
 													return task:finish(nil, decode_err)

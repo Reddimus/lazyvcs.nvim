@@ -51,6 +51,9 @@ local function clear(bufnr)
 	for cancel in pairs(state and state.gitsigns_waiters or {}) do
 		cancel()
 	end
+	if state and state.large_revert_pending then
+		state.large_revert_pending()
+	end
 	stop_timer(bufnr)
 	if state and state.command then
 		pcall(state.command.kill, state.command, 15)
@@ -162,6 +165,11 @@ local function hunk_rows(bufnr, hunk)
 end
 
 local function render_signs(bufnr, state)
+	if state.delegate_after_command then
+		vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
+		state.decorated_hunks, state.decorated_enabled = nil, nil
+		return
+	end
 	if state.decorated_hunks == state.hunks and state.decorated_enabled == opts().enabled then
 		return
 	end
@@ -349,7 +357,7 @@ end
 
 local function ensure_state(bufnr, path)
 	local state = buffers[bufnr]
-	if state and not state.skipped and state.path == path then
+	if state and state.path == path then
 		return state
 	end
 	if state then
@@ -391,9 +399,9 @@ local function changing_base(state)
 	return false
 end
 
-local function invalidate_base(bufnr, state)
+local function invalidate_base(bufnr, state, reason)
 	for cancel in pairs(state.gitsigns_waiters or {}) do
-		cancel()
+		cancel(reason)
 	end
 	state.generation = (state.generation or 0) + 1
 	state.base_generation = (state.base_generation or 0) + 1
@@ -456,7 +464,7 @@ function M.begin_base_change(root, paths)
 	base_changes[change] = true
 	for buf, state in pairs(buffers) do
 		if matches_change(change, state) then
-			invalidate_base(buf, state)
+			invalidate_base(buf, state, "base_changed")
 		end
 	end
 	return change
@@ -469,8 +477,9 @@ function M.finish_base_change(change)
 	base_changes[change] = nil
 	for buf, state in pairs(buffers) do
 		if matches_change(change, state) then
-			invalidate_base(buf, state)
+			invalidate_base(buf, state, "base_changed")
 			if not changing_base(state) then
+				state.gitsigns_refresh_needed = true
 				local waiters = state.base_waiters or {}
 				state.base_waiters = nil
 				local awaiting = #waiters > 0 or state.load_waiters ~= nil or state.compute_waiters ~= nil
@@ -498,7 +507,12 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 	local path, reason, skipped_path = supported_buffer(bufnr)
 	if not path then
 		local state = buffers[bufnr]
-		if reason == "too_large" and state and state.path == skipped_path and (state.native_holds or 0) > 0 then
+		if
+			reason == "too_large"
+			and state
+			and state.path == skipped_path
+			and ((state.native_holds or 0) > 0 or state.gitsigns_refresh_needed)
+		then
 			-- A delegated revert shares the native command hold and settlement waiters,
 			-- but cannot load a native base. Preserve it across automatic refreshes.
 			if changing_base(state) then
@@ -513,7 +527,7 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 		end
 		clear(bufnr)
 		if reason == "too_large" then
-			buffers[bufnr] = { path = skipped_path, skipped = true }
+			ensure_state(bufnr, skipped_path).skipped = true
 		end
 		if on_ready then
 			on_ready(nil, "No supported VCS buffer")
@@ -522,6 +536,7 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 	end
 
 	local state = ensure_state(bufnr, path)
+	state.skipped = nil
 	if changing_base(state) then
 		if on_ready then
 			state.base_waiters = state.base_waiters or {}
@@ -587,7 +602,7 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 		then
 			clear(bufnr)
 			if reason == "too_large" then
-				buffers[bufnr] = { path = skipped_path, skipped = true }
+				ensure_state(bufnr, skipped_path).skipped = true
 			end
 			if on_ready then
 				on_ready(nil, "Buffer decoding context changed while loading")
@@ -817,8 +832,14 @@ local function after_gitsigns_refresh(context, state, release, on_ready)
 			error(err, 0)
 		end
 	end
-	cancel = function()
+	cancel = function(reason)
+		if finished then
+			return
+		end
 		finish(false)
+		if reason == "base_changed" then
+			util.notify("Hunk base changed while waiting; nothing was reverted", vim.log.levels.WARN)
+		end
 	end
 	state.gitsigns_waiters = state.gitsigns_waiters or {}
 	state.gitsigns_waiters[cancel] = true
@@ -837,13 +858,13 @@ local function after_gitsigns_refresh(context, state, release, on_ready)
 		autocmd = vim.api.nvim_create_autocmd("User", {
 			group = augroup,
 			pattern = "GitSignsUpdate",
-			callback = function(args)
+			callback = util.safe_callback(function(args)
 				if (args.data and args.data.buffer or args.buf) == bufnr then
 					finish(true)
 				end
-			end,
+			end),
 		})
-		timer:start(2000, 0, vim.schedule_wrap(timeout))
+		timer:start(2000, 0, vim.schedule_wrap(util.safe_callback(timeout)))
 		-- The public API refreshes all attached buffers; only this buffer's update
 		-- releases the wait. Install the listener before calling it.
 		if type(gs) == "table" and type(gs.refresh) == "function" then
@@ -862,8 +883,17 @@ end
 local function revert_large_gitsigns_hunk(context)
 	local bufnr = context.bufnr
 	local state = ensure_state(bufnr, context.path)
+	if state.large_revert_pending then
+		util.notify("A hunk revert is already pending for this buffer", vim.log.levels.WARN)
+		return false
+	end
 	state.skipped = true
-	local release = hold_native(bufnr, state)
+	local release_native = hold_native(bufnr, state)
+	local function release()
+		state.large_revert_pending = nil
+		release_native()
+	end
+	state.large_revert_pending = release
 	local function ready()
 		if
 			buffers[bufnr] ~= state
@@ -954,6 +984,9 @@ local function revert_large_gitsigns_hunk(context)
 		end
 		return true
 	end
+	if state.gitsigns_refresh_needed then
+		return after_gitsigns_refresh(context, state, release, ready)
+	end
 	return ready()
 end
 
@@ -967,7 +1000,7 @@ local function revert_hunk(context)
 	if reason == "too_large" and gitsigns_method("reset_hunk") then
 		return revert_large_gitsigns_hunk(context)
 	end
-	return with_current_state(context, function(state, release, waited_for_base)
+	local function ready(state, release, waited_for_base)
 		if vim.api.nvim_get_current_win() ~= context.winid or not util.buffer_context_is_unchanged(context) then
 			release()
 			return false
@@ -1083,6 +1116,14 @@ local function revert_hunk(context)
 				return false
 			end
 		)
+	end
+	return with_current_state(context, function(state, release, waited_for_base)
+		if state.gitsigns_refresh_needed and not waited_for_base and gitsigns_method("reset_hunk") then
+			return after_gitsigns_refresh(context, state, release, function()
+				return ready(state, release, waited_for_base)
+			end)
+		end
+		return ready(state, release, waited_for_base)
 	end, true)
 end
 
@@ -1246,6 +1287,9 @@ function M.setup()
 		callback = util.safe_callback(function(args)
 			local buf = args.data and args.data.buffer or args.buf
 			local state = buffers[buf]
+			if state then
+				state.gitsigns_refresh_needed = nil
+			end
 			if state and not state.skipped then
 				delegate_to_gitsigns(buf, state)
 			end

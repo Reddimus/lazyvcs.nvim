@@ -61,7 +61,7 @@ function M.select(lines, opts, policy)
 		local decoded = require("lazyvcs.compare_text").decode(
 			table.concat(source, "\n") .. (#source > 0 and "\n" or ""),
 			policy.profile,
-			1024 * 1024
+			require("lazyvcs.config").get().signs.max_file_bytes
 		)
 		if not decoded or #decoded.lines ~= #records then
 			return nil, "Unsupported blame line format: Git and the editor use different lines"

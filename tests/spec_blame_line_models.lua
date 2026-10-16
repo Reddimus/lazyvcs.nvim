@@ -96,13 +96,13 @@ return function(ctx)
 		vim.cmd("edit!")
 		return f, buf, win, backend
 	end
-	local function snapshot_result(f, buf, side, bytes)
+	local function snapshot_result(f, buf, side, bytes, item)
 		local head = vim.trim(t.h.exec({ "git", "rev-parse", "HEAD" }, f.root))
 		local done, entries, err
 		require("lazyvcs.backends.blame_selection").load(
 			{
 				snapshot = { vcs = "git", root = f.root, revision = head, head = head },
-				item = { relpath = "sample.txt" },
+				item = item or { relpath = "sample.txt" },
 				path = f.file,
 				side = side,
 				bytes = bytes or capture(buf).bytes,
@@ -138,38 +138,80 @@ return function(ctx)
 		{
 			"test_blame_git_saved_filter_validates_before_legacy_mapping",
 			function()
-				local f, buf = filter_fixture("drop")
-				local entries, err = snapshot_result(f, buf, "saved")
-				assert(
-					not entries and err and err:find("Unsupported blame line format", 1, true),
-					"saved filter accepted unsafe rows"
-				)
+				local process = require("lazyvcs.backends.process")
+				local run = process.lines
+				for _, legacy in ipairs({ false, true }) do
+					-- Each mode starts with a fresh executable capability cache, restored by the guard.
+					t.patch(package.loaded, "lazyvcs.backends.blame_selection", nil)
+					local explicit, validation = 0, 0
+					t.patch(process, "lines", function(args, opts, callback)
+						if args[2] == "blame" and vim.tbl_contains(args, "--contents") then
+							local dash = vim.fn.index(args, "--") + 1
+							if args[dash - 1] ~= "-" then
+								explicit = explicit + 1
+								if legacy then
+									vim.schedule(function()
+										callback(nil, "cannot use --contents with final commit object name")
+									end)
+									return { kill = function() end }
+								end
+								-- Emulate modern Git on installations that reject a revision with --contents.
+								-- The fixture's saved revision is HEAD, so the real no-revision blame is equivalent.
+								args = vim.deepcopy(args)
+								table.remove(args, dash - 1)
+							else
+								validation = validation + 1
+							end
+						end
+						return run(args, opts, callback)
+					end)
+					local f, buf = filter_fixture("drop")
+					local entries, err = snapshot_result(f, buf, "saved")
+					assert(
+						not entries and err and err:find("Unsupported blame line format", 1, true),
+						"unsafe saved rows accepted"
+					)
+					local canonical = t.h.exec({ "git", "show", "HEAD:sample.txt" }, f.root)
+					entries, err = snapshot_result(f, buf, "base", canonical)
+					assert(entries and not entries[2].uncommitted, err)
+					local clean, cleanbuf = filter_fixture("keep", true)
+					entries, err = snapshot_result(clean, cleanbuf, "saved")
+					assert(
+						entries
+							and not entries[1].uncommitted
+							and entries[2].summary == "change B"
+							and entries[3].summary == "change C",
+						err
+					)
+					assert(explicit == (legacy and 1 or 2), "explicit-revision path was hidden by the legacy cache")
+					assert(validation == (legacy and 2 or 0), "validation did not exercise the selected Git capability")
+				end
+			end,
+		},
+		{
+			"test_blame_saved_legacy_filter_missing_path_fallbacks",
+			function()
+				t.patch(package.loaded, "lazyvcs.backends.blame_selection", nil)
+				local f, buf = filter_fixture("keep", true)
+				t.h.write_file(f.root .. "/.gitattributes", "* filter=blame-model ident\n")
 				local process = require("lazyvcs.backends.process")
 				local run = process.lines
 				t.patch(process, "lines", function(args, opts, callback)
-					if args[2] == "blame" and vim.tbl_contains(args, "--contents") and args[#args - 2] ~= "-" then
-						-- Older Git rejects --contents with an explicit revision.
+					if args[2] == "blame" and vim.tbl_contains(args, "--contents") then
 						local dash = vim.fn.index(args, "--") + 1
 						if args[dash - 1] ~= "-" then
-							vim.schedule(require("lazyvcs.util").safe_callback(function()
+							vim.schedule(function()
 								callback(nil, "cannot use --contents with final commit object name")
-							end))
+							end)
 							return { kill = function() end }
 						end
 					end
 					return run(args, opts, callback)
 				end)
-				entries, err = snapshot_result(f, buf, "saved")
-				assert(
-					not entries and err and err:find("Unsupported blame line format", 1, true),
-					"legacy mapping accepted unsafe rows"
-				)
-				-- The legacy capability cache may already have selected the fallback.
-				local canonical = t.h.exec({ "git", "show", "HEAD:sample.txt" }, f.root)
-				entries, err = snapshot_result(f, buf, "base", canonical)
-				assert(entries and not entries[2].uncommitted, err)
-				local clean, cleanbuf = filter_fixture("keep", true)
-				entries, err = snapshot_result(clean, cleanbuf, "saved")
+				local entries, err = snapshot_result(f, buf, "saved", nil, { relpath = "missing.txt" })
+				assert(entries and entries[1].uncommitted and entries[2].uncommitted and entries[3].uncommitted, err)
+				entries, err =
+					snapshot_result(f, buf, "saved", nil, { relpath = "renamed.txt", old_path = "sample.txt" })
 				assert(
 					entries
 						and not entries[1].uncommitted
@@ -177,6 +219,93 @@ return function(ctx)
 						and entries[3].summary == "change C",
 					err
 				)
+			end,
+		},
+		{
+			"test_blame_filter_normalizes_only_trailing_whitespace",
+			function()
+				local format = require("lazyvcs.backends.blame_format")
+				local oid = string.rep("a", 40)
+				local function raw(line)
+					return { oid .. " 1 1 1", "\t" .. line }
+				end
+				local opts =
+					{ text = { lines = { "  A B \t" } }, profile = { fileencoding = "utf-8", fileformat = "unix" } }
+				local policy = format.git_policy(opts, { filter = "strip" })
+				assert(format.select(raw("  A B"), opts, policy), "trailing spaces and tabs must normalize")
+				assert(not format.select(raw("A B"), opts, policy), "leading whitespace must remain significant")
+				assert(not format.select(raw("  A  B"), opts, policy), "internal whitespace must remain significant")
+			end,
+		},
+		{
+			"test_blame_filter_validation_uses_configured_decode_limit",
+			function()
+				local format, text = require("lazyvcs.backends.blame_format"), require("lazyvcs.compare_text")
+				local limit = 2 * 1024 * 1024
+				t.patch(require("lazyvcs.config").get().signs, "max_file_bytes", limit)
+				local decode, limits = text.decode, {}
+				t.patch(text, "decode", function(bytes, profile, max_bytes)
+					limits[#limits + 1] = max_bytes
+					return decode(bytes, profile, max_bytes)
+				end)
+				local opts = { text = { lines = { "one" } }, profile = { fileencoding = "utf-8", fileformat = "unix" } }
+				assert(
+					format.select(
+						{ string.rep("a", 40) .. " 1 1 1", "\tone" },
+						opts,
+						format.git_policy(opts, { filter = "strip" })
+					)
+				)
+				assert(limits[1] == limit, "Git validation imposed a hidden 1 MiB cap")
+				local f, buf, _, backend = t.open(true, { signs = { max_file_bytes = limit } })
+				assert(result(f, backend, buf, 1))
+				assert(limits[2] == limit, "SVN validation imposed a hidden 1 MiB cap")
+			end,
+		},
+		{
+			"test_svn_blame_decode_encoding_and_empty_base",
+			function()
+				local format, text = require("lazyvcs.backends.blame_format"), require("lazyvcs.compare_text")
+				for _, bytes in ipairs({ "", "one\n", "\239\187\191one\n" }) do
+					local profile = { fileencoding = "utf-8", fileformat = "unix" }
+					local decoded = assert(text.decode(bytes, profile, 1024))
+					assert(type(decoded.encoding) == "string" and decoded.encoding:lower() == "utf-8")
+					local records = bytes == "" and {} or { "record" }
+					assert(format.svn_base(bytes, profile, records, 1024))
+					if bytes == "" then
+						assert(#decoded.lines == 0 and decoded.empty)
+					end
+				end
+				local f, buf, _, backend = t.open(true)
+				vim.fn.writefile({}, f.file)
+				t.h.exec({ "svn", "commit", "-m", "empty", f.file }, f.root)
+				vim.cmd("edit!")
+				local rows, err = result(f, backend, buf)
+				assert(rows and #rows == 0, err or "empty SVN file must have zero blame records")
+			end,
+		},
+		{
+			"test_blame_git_policy_timeout_fallback",
+			function()
+				local timeouts = {}
+				t.patch(require("lazyvcs.backends.process"), "bytes", function(_, opts, callback)
+					timeouts[#timeouts + 1] = opts.timeout
+					vim.schedule(function()
+						callback("")
+					end)
+					return { kill = function() end }
+				end)
+				for _, opts in ipairs({ {}, { timeout_ms = 71 } }) do
+					local done
+					require("lazyvcs.backends.git_blame_policy").load("/tmp", "sample.txt", opts, function(value)
+						assert(value)
+						done = true
+					end)
+					t.wait(function()
+						return done
+					end, "policy load did not finish")
+				end
+				assert(timeouts[1] == 30000 and timeouts[2] == 71, "policy must share the async timeout fallback")
 			end,
 		},
 		{
