@@ -84,8 +84,11 @@ local function restore_source_options(source_bufnr, view)
 			else
 				local entered = vim.api.nvim_get_current_win()
 				local temporary = { wrap = false, foldenable = false, scrollbind = true, cursorbind = true }
+				local live = blame_views[source_bufnr]
 				if
 					entered ~= win
+					-- A newer split on this window owns its temporary values.
+					and not (live and live.source_winid == entered)
 					and vim.api.nvim_win_get_buf(entered) == source_bufnr
 					and vim.deep_equal(capture_win_options(entered, vim.tbl_keys(temporary)), temporary)
 				then

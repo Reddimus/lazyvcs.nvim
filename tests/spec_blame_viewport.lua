@@ -197,6 +197,35 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_blame_split_pending_restore_skips_window_with_live_split",
+			function()
+				local buf, win = source()
+				util.set_win_options(win, { wrap = true, foldenable = true, scrollbind = false, cursorbind = false })
+				local keys = { "wrap", "foldenable", "scrollbind", "cursorbind" }
+				open(buf)
+				local other = api.nvim_create_buf(false, true)
+				util.show_win_buffer(win, other)
+				t.wait(function()
+					return not blame._test_blame_views()[buf] and #api.nvim_list_wins() == 1
+				end, "split cleanup did not finish")
+				vim.cmd.vsplit()
+				local second = api.nvim_get_current_win()
+				util.show_win_buffer(second, buf)
+				local live = open(buf)
+				local temporary = util.capture_win_options(second, keys)
+				assert(not temporary.wrap and temporary.scrollbind, "second split did not apply its temporary options")
+				-- Leave and return within one tick, before the split's scheduled presence check.
+				util.show_win_buffer(second, other)
+				util.show_win_buffer(second, buf)
+				assert(blame._test_blame_views()[buf] == live, "same-tick switch closed the live split")
+				assert(
+					vim.deep_equal(temporary, util.capture_win_options(second, keys)),
+					"an earlier pending restore changed the live split's source options"
+				)
+				blame.blame_split()
+			end,
+		},
+		{
 			"test_blame_split_open_failure_restores_source_options",
 			function()
 				local buf, win = source()

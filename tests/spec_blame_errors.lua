@@ -50,6 +50,7 @@ return function(ctx)
 				t.wait(function()
 					return table.concat(api.nvim_buf_get_lines(request.buf, 0, -1, false)):find("Binary file", 1, true)
 				end, "snapshot error was not rendered")
+				assert(request.handle == nil, "finished snapshot task stayed attached to the report")
 				local lines = protected_report(request)
 				vim.bo[buf].fileformat = "dos"
 				api.nvim_exec_autocmds("OptionSet", { pattern = "fileformat" })
