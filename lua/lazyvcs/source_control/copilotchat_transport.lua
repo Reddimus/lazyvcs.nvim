@@ -8,9 +8,11 @@ local function terminate(job)
 	if job.is_shutdown or not handle or handle:is_closing() then
 		return
 	end
+	local exited = false
 	local on_exit = job._user_on_exit
 	if on_exit then
 		job._user_on_exit = function(self, code, signal)
+			exited = true
 			-- A signal-only exit has code 0 in libuv. Plenary curl checks only
 			-- the code, so route it to on_error instead of parsing missing output.
 			if code == 0 and signal and signal ~= 0 then
@@ -32,7 +34,8 @@ local function terminate(job)
 	pcall(handle.kill, handle, 15)
 	timer:start(2000, 0, function()
 		close_timer()
-		if not job.is_shutdown and not handle:is_closing() then
+		-- Plenary's exit chain can stop early if a callback throws; never signal a reaped pid.
+		if not exited and not job.is_shutdown and not handle:is_closing() and handle:is_active() then
 			pcall(handle.kill, handle, 9)
 		end
 	end)
