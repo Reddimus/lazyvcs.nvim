@@ -64,6 +64,7 @@ return function(ctx)
 			return start(args, opts, function(raw, err, result)
 				if args[1] == "svn" and opts.text == false and raw and raw.stdout then
 					local subcommand = args[2] == "--non-interactive" and args[3] or args[2]
+					local untranslated = raw.stdout
 					seen[subcommand] = true
 					if not native_windows then
 						if vim.tbl_contains(args, "--xml") then
@@ -73,7 +74,7 @@ return function(ctx)
 						end
 					end
 					if capture then
-						capture(args, raw.stdout)
+						capture(args, raw.stdout, not native_windows and untranslated or nil)
 					end
 				end
 				done(raw, err, result)
@@ -198,9 +199,14 @@ return function(ctx)
 							assert(actual == bytes, "svn cat changed committed bytes")
 						end
 					end
-				end, function(args, raw)
+				end, function(args, raw, untranslated)
 					-- Compare against this invocation: SVN XML attribute order can vary.
-					expected = vim.tbl_contains(args, "--xml") and raw:gsub("\r\n", "\n") or raw
+					-- Native Windows has no untranslated XML, so it checks the inverse.
+					if vim.tbl_contains(args, "--xml") then
+						expected = untranslated or raw:gsub("\r\n", "\n")
+					else
+						expected = raw
+					end
 				end)
 				for _, args in ipairs(cases) do
 					assert(seen[args[2]], args[2] .. " missed the raw stdout hook")
