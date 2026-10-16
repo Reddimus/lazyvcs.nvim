@@ -159,12 +159,16 @@ local function async_defaults(opts)
 	opts = vim.tbl_extend("force", {}, opts or {})
 	opts.run_mutation = opts.run_mutation
 		or function(repo, _choice, args, mutation_opts)
-			return util.system_start(args, { cwd = mutation_opts.cwd or repo.root }, function(result, err, raw)
-				if err then
-					return mutation_opts.on_error(err, raw)
+			return util.system_start(
+				args,
+				{ cwd = mutation_opts.cwd or repo.root, preserve_on_shutdown = true },
+				function(result, err, raw)
+					if err then
+						return mutation_opts.on_error(err, raw)
+					end
+					mutation_opts.on_success(result, raw)
 				end
-				mutation_opts.on_success(result, raw)
-			end)
+			)
 		end
 	return defaults(opts)
 end

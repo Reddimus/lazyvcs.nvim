@@ -700,16 +700,25 @@ cleanup uses taskkill /T /F while the direct process is alive, then falls back t
 direct-process termination. Descendants whose parent has already exited may
 survive on Windows.
 
-Neovim exit discards queued work and terminates all tracked asynchronous
-commands, including editor requests and commands already cancelled. Exit cleanup
-uses shared deadlines of up to 100 ms after TERM and up to 200 ms after KILL for
-reaping. Application callbacks are suppressed during shutdown. Forceful
-termination is requested before exit even if the OS cannot reap a process within
-that budget.
+Neovim exit discards queued work, including mutations that have not started.
+Running repository mutations (commit, update, pull, merge, switch, stage, and
+revert) are untracked and left to finish in their own process groups. This avoids
+interrupting writes that could leave an index.lock or a locked SVN working copy.
+Read-only and background commands (status, diff, blame, log, fetch, AI context,
+and discovery) are terminated, including editor requests and commands already
+cancelled. Mutation preflights cannot start a mutation during shutdown.
+Exit cleanup uses shared deadlines of up to 100 ms after TERM and up to 200 ms
+after KILL for reaping. Application callbacks are suppressed during shutdown.
+Required resource cleanup still runs. Forceful termination of read-only and
+background commands is requested even if the OS cannot reap them within that
+budget.
 
 Git terminal prompts are disabled by default with GIT_TERMINAL_PROMPT=0. An
 explicit command environment can override that value. SVN commands always use
 --non-interactive. Configure credentials before running remote operations.
+On POSIX, commands run without a controlling terminal. Terminal passphrase
+prompts for signing and interactive SSH host-key or passphrase prompts fail
+immediately. GUI pinentry and agents are unaffected.
 
 AI commit-message options, under ai.commit_message:
 

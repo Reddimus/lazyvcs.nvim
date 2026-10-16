@@ -253,6 +253,7 @@ local function start_job(job)
 		output_limit = job.output_limit_bytes,
 		kill_grace_ms = job.kill_grace_ms,
 		on_exit_during_shutdown = true,
+		preserve_on_shutdown = job.scope == "mutation",
 		on_terminate = function(result, err, raw)
 			on_process_terminate(job, result, err, raw)
 		end,
@@ -367,7 +368,8 @@ end
 
 function M.command(repo, kind, args, opts, on_done)
 	if runtime.is_shutting_down() then
-		return nil
+		next_id = next_id + 1
+		return next_id
 	end
 	opts = opts or {}
 	if type(repo) ~= "table" or type(repo.root) ~= "string" or repo.root == "" then
@@ -608,7 +610,9 @@ runtime.before_shutdown(function()
 		end
 	end
 	for _, job in pairs(running) do
-		cancel(job)
+		if job.scope ~= "mutation" then
+			cancel(job)
+		end
 	end
 end)
 

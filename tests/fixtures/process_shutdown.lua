@@ -105,7 +105,7 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
 				{ "sh", "-c", 'echo late > "$1/queued"', "sh", dir },
 				{},
 				callback
-			) == nil
+			) ~= nil
 			util.system_start({ "sh", "-c", 'echo late > "$1/queued"', "sh", dir }, {}, callback)
 		end
 		vim.fn.writefile({ vim.json.encode(state) }, dir .. "/shutdown.json")

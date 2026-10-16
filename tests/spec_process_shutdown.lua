@@ -28,6 +28,58 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_source_control_process_exit_preserves_running_mutation_and_kills_status",
+			function()
+				if vim.fn.has("win32") == 1 then
+					error({ lazyvcs_skip = "POSIX process groups" })
+				end
+				local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+				for _, guarded in ipairs({ "no", "yes" }) do
+					local f = h.make_git_fixture()
+					h.exec({ "git", "add", "sample.txt" }, f.root)
+					h.write_file(
+						f.root .. "/.git/hooks/pre-commit",
+						"#!/bin/sh\necho $PPID > mutation.pid\necho $$ > hook.pid\nwhile [ ! -f release ]; do sleep 0.05; done\n"
+					)
+					vim.uv.fs_chmod(f.root .. "/.git/hooks/pre-commit", 493)
+					p.guarded(f.root, function()
+						p.editor(
+							root .. "/tests/fixtures/process_mutation_shutdown.lua",
+							f.root,
+							{ root, f.root, guarded }
+						)
+						assert(p.alive(p.pid(f.root .. "/mutation.pid")), "running mutation died at editor shutdown")
+						assert(p.dead(f.root .. "/status"), "status survived editor shutdown")
+						assert(p.dead(f.root .. "/fetch"), "fetch survived editor shutdown")
+						assert(vim.fn.filereadable(f.root .. "/queued") == 0, "queued mutation started during shutdown")
+						h.write_file(f.root .. "/release", "finish")
+						ctx.wait_for(function()
+							return p.dead(f.root)
+						end, "mutation did not finish after editor exit")
+						assert(h.exec({ "git", "log", "-1", "--format=%s" }, f.root):match("survived shutdown"))
+						assert(vim.fn.filereadable(f.root .. "/.git/index.lock") == 0, "mutation left an index lock")
+						assert(vim.fn.filereadable(f.root .. "/callback") == 0, "application callback ran at shutdown")
+					end)
+				end
+			end,
+		},
+		{
+			"test_source_control_process_shutdown_cleans_private_attachment",
+			function()
+				local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+				local f = h.make_git_fixture()
+				p.editor(root .. "/tests/fixtures/process_cleanup_shutdown.lua", f.root, { root, f.root })
+			end,
+		},
+		{
+			"test_source_control_process_shutdown_returns_inert_handles",
+			function()
+				local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+				local f = h.make_git_fixture()
+				p.editor(root .. "/tests/fixtures/process_cleanup_shutdown.lua", f.root, { root, f.root, "handles" })
+			end,
+		},
+		{
 			"test_source_control_process_exit_kills_editor_and_repository_trees",
 			function()
 				shutdown("running", "no")

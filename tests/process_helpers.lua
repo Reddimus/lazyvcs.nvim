@@ -37,7 +37,9 @@ end
 function M.guarded(dir, fn)
 	local ok, err = xpcall(fn, debug.traceback)
 	for _, pid in ipairs(M.pids(dir)) do
-		pcall(vim.uv.kill, pid, 9)
+		if M.alive(pid) then
+			pcall(vim.uv.kill, pid, 9)
+		end
 	end
 	assert(ok, err)
 end

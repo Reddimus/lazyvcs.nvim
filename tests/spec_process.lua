@@ -74,7 +74,118 @@ return function(ctx)
 		config.setup(old)
 		assert(ok, err)
 	end
+	local function held_pipe_case(forced)
+		posix()
+		local dir = h.tempdir()
+		local kill = vim.uv.kill
+		local signals = {}
+		local handle
+		local ok, err = pcall(p.guarded, dir, function()
+			local calls, timed_out = 0, false
+			handle = util.system_start({
+				"sh",
+				"-c",
+				(forced and 'trap "" TERM; ' or "")
+					.. 'setsid sh -c \'echo $$ > "$1/helper.pid"; exec sleep 60\' sh "$1" & '
+					.. 'echo $$ > "$1/parent.pid"; while [ ! -f "$1/helper.pid" ]; do sleep 0.01; done; '
+					.. (forced and "wait" or "exit 0"),
+				"sh",
+				dir,
+			}, {
+				timeout_ms = forced and 10000 or 300,
+				kill_grace_ms = 30,
+				on_terminate = function(_, _, raw)
+					timed_out = raw.timed_out == true
+				end,
+			}, function()
+				calls = calls + 1
+			end)
+			local pid = handle.process.pid
+			---@diagnostic disable-next-line: duplicate-set-field
+			vim.uv.kill = function(target, signal)
+				if target == -pid and signal ~= 0 then
+					signals[#signals + 1] = signal
+				end
+				return kill(target, signal)
+			end
+			ctx.wait_for(function()
+				return p.pid(dir .. "/helper.pid") ~= nil
+			end, "escaped pipe holder not ready")
+			if forced then
+				handle:cancel("test")
+				ctx.wait_for(function()
+					return vim.tbl_contains(signals, 9)
+				end, "force signal missing")
+			else
+				ctx.wait_for(function()
+					return handle.process:is_closing() and not kill(-pid, 0)
+				end, "leader or original group still alive")
+				ctx.wait_for(function()
+					return timed_out
+				end, "timeout did not fire")
+				assert(#signals == 0, "timeout signalled an empty group")
+			end
+			assert(calls == 0 and p.alive(p.pid(dir .. "/helper.pid")), "pipes closed before regression probe")
+			local count = #signals
+			-- Pretend the now-free group id has been reused after the first observation.
+			---@diagnostic disable-next-line: duplicate-set-field
+			vim.uv.kill = function(target, signal)
+				if target == -pid then
+					if signal ~= 0 then
+						signals[#signals + 1] = signal
+					end
+					return true
+				end
+				return kill(target, signal)
+			end
+			handle:shutdown()
+			handle:force()
+			vim.wait(80)
+			assert(#signals == count, "shutdown, force or timer signalled a retired group id")
+		end)
+		vim.uv.kill = kill
+		if handle then
+			handle:close_timers()
+		end
+		assert(ok, err)
+	end
 	return {
+		{
+			"test_core_process_guarded_kills_only_live_recorded_pids",
+			function()
+				local pids, alive, kill = p.pids, p.alive, vim.uv.kill
+				local killed = {}
+				---@diagnostic disable-next-line: duplicate-set-field
+				p.pids = function()
+					return { 101, 102 }
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				p.alive = function(pid)
+					return pid == 102
+				end
+				vim.uv.kill = function(pid, signal)
+					assert(signal == 9)
+					killed[#killed + 1] = pid
+					return true
+				end
+				local ok, err = pcall(p.guarded, "/unused", function() end)
+				p.pids, p.alive, vim.uv.kill = pids, alive, kill
+				assert(ok, err)
+				assert(vim.deep_equal(killed, { 102 }), "cleanup signalled a dead recorded pid")
+			end,
+		},
+		{
+			"test_core_process_force_never_retargets_group_with_escaped_pipes",
+			function()
+				held_pipe_case(true)
+			end,
+		},
+		{
+			"test_core_process_timeout_never_targets_empty_group_with_escaped_pipes",
+			function()
+				held_pipe_case(false)
+			end,
+		},
 		{
 			"test_source_control_process_timeout_kills_tree_and_recovers_queue",
 			function()

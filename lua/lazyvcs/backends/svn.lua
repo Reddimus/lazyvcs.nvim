@@ -520,6 +520,7 @@ function M.revert_file_async(path, on_done, opts)
 			task:add(start({ "svn", "revert", "--", literal_target(relpath) }, {
 				cwd = info.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+				preserve_on_shutdown = true,
 			}, function(result, revert_err)
 				if not result then
 					return task:finish(nil, revert_err)

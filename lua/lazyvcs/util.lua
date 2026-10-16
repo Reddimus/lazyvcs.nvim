@@ -220,7 +220,22 @@ end
 
 function M.system_start(args, opts, on_exit)
 	if runtime.is_shutting_down() then
-		return nil
+		local function finished(_)
+			return false
+		end
+		if opts and opts.on_exit_during_shutdown and type(on_exit) == "function" then
+			vim.schedule(function()
+				local err = "Cancelled: editor shutdown"
+				M.safe_callback(on_exit)(nil, err, {
+					code = 130,
+					stdout = "",
+					stderr = err,
+					cancelled = true,
+					reason = "editor shutdown",
+				})
+			end)
+		end
+		return { done = true, cancel = finished, kill = finished, force = finished, shutdown = finished }
 	end
 	opts, args = command_options(args, opts)
 	local text_mode = opts.text ~= false
@@ -229,7 +244,9 @@ function M.system_start(args, opts, on_exit)
 	local kill_grace_ms = math.max(0, math.floor(opts.kill_grace_ms or 1000))
 	local on_terminate = opts.on_terminate
 	local shutdown_exit = opts.on_exit_during_shutdown
+	local preserve_on_shutdown = opts.preserve_on_shutdown
 	opts.on_exit_during_shutdown = nil
+	opts.preserve_on_shutdown = nil
 	opts.timeout = nil
 	opts.timeout_ms = nil
 	opts.output_limit = nil
@@ -243,13 +260,21 @@ function M.system_start(args, opts, on_exit)
 	local forced_result
 	local exited_result
 	local force_sent = false
+	local group_gone = false
 	local complete_exit
 	local windows = vim.fn.has("win32") == 1
 	local wrapper = {}
 	opts.detach = not windows
 
 	local function group_alive()
-		return not windows and process and process.pid and process.pid > 0 and vim.uv.kill(-process.pid, 0) ~= nil
+		if windows or group_gone or not process or not process.pid or process.pid <= 0 then
+			return false
+		end
+		local alive = vim.uv.kill(-process.pid, 0) ~= nil
+		if not alive and (exited_result or (process.is_closing and process:is_closing())) then
+			group_gone = true
+		end
+		return alive
 	end
 
 	local function signal_scope(signal)
@@ -257,6 +282,13 @@ function M.system_start(args, opts, on_exit)
 			return
 		end
 		if not windows then
+			if force_sent or group_gone then
+				return
+			end
+			group_alive()
+			if group_gone then
+				return
+			end
 			if process.pid and process.pid > 0 then
 				pcall(vim.uv.kill, -process.pid, signal)
 			else
@@ -465,7 +497,7 @@ function M.system_start(args, opts, on_exit)
 		if type(on_exit) == "function" then
 			runtime.track(wrapper)
 			vim.schedule(function()
-				if shutdown_exit and runtime.is_shutting_down() and not forced_result then
+				if shutdown_exit and runtime.is_shutting_down() and not forced_result and not preserve_on_shutdown then
 					result, err = nil, "Cancelled: editor shutdown"
 					raw = { code = 130, stdout = "", stderr = err, cancelled = true, reason = "editor shutdown" }
 				end
@@ -503,7 +535,12 @@ function M.system_start(args, opts, on_exit)
 	end
 
 	function wrapper:shutdown()
-		if not begin_termination("cancelled", 15, "editor shutdown") and not done then
+		if preserve_on_shutdown and not forced_result then
+			self:close_timers()
+			runtime.untrack(self)
+			return
+		end
+		if not begin_termination("cancelled", 15, "editor shutdown") and not done and not force_sent then
 			signal_scope(15)
 		end
 	end

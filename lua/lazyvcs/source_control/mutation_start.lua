@@ -60,7 +60,7 @@ function M.start(repo, args, opts, guards, on_exit)
 		return self:cancel("cancelled")
 	end
 
-	local function spawn(command, continuation)
+	local function spawn(command, continuation, mutation)
 		if done or terminal then
 			return
 		end
@@ -74,7 +74,11 @@ function M.start(repo, args, opts, guards, on_exit)
 		end
 		serial = serial + 1
 		local current = serial
-		local process_opts = vim.tbl_extend("force", opts, { timeout = remaining, on_terminate = terminate })
+		local process_opts = vim.tbl_extend("force", opts, {
+			timeout = remaining,
+			on_terminate = terminate,
+			preserve_on_shutdown = opts.preserve_on_shutdown and mutation == true,
+		})
 		if command == args and guards.on_mutation_start then
 			guards.on_mutation_start()
 		end
@@ -119,7 +123,7 @@ function M.start(repo, args, opts, guards, on_exit)
 		end
 		spawn(args, function(result)
 			finish(result, nil, result)
-		end)
+		end, true)
 	end
 	if guards.branch_ref then
 		spawn({ "git", "symbolic-ref", "--quiet", "HEAD" }, function(result)
