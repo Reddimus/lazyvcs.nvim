@@ -583,7 +583,12 @@ return function(ctx)
 		local previous_gitsigns = package.loaded["gitsigns"]
 		local previous_resolve_cached = backends.resolve_cached
 		local reset_count = 0
-		local hunks = { { added = { start = 2, count = 1 }, removed = { start = 2, count = 1 } } }
+		local hunks = {
+			{
+				added = { start = 2, count = 1, lines = { "changed" } },
+				removed = { start = 2, count = 1, lines = { "two" } },
+			},
+		}
 		package.loaded["gitsigns"] = {
 			get_hunks = function()
 				return hunks
@@ -607,7 +612,11 @@ return function(ctx)
 		end
 
 		local ok, err = xpcall(function()
+			vim.api.nvim_win_set_cursor(0, { 2, 0 })
 			signs.revert_hunk()
+			wait_for(function()
+				return type(confirm_choice) == "function"
+			end, "confirmation absent", 15000)
 			assert(type(confirm_choice) == "function", "gitsigns revert should wait for confirmation")
 			vim.cmd.enew()
 			confirm_choice("confirm")
@@ -636,7 +645,12 @@ return function(ctx)
 		local signs = require("lazyvcs.signs")
 		local previous_gitsigns = package.loaded["gitsigns"]
 		local previous_resolve_cached = backends.resolve_cached
-		local hunks = { { added = { start = 2, count = 1 }, removed = { start = 2, count = 1 } } }
+		local hunks = {
+			{
+				added = { start = 2, count = 1, lines = { "changed" } },
+				removed = { start = 2, count = 1, lines = { "two" } },
+			},
+		}
 		local reset_count = 0
 		package.loaded["gitsigns"] = {
 			get_hunks = function()
@@ -662,7 +676,11 @@ return function(ctx)
 		end
 
 		local ok, err = xpcall(function()
+			vim.api.nvim_win_set_cursor(0, { 2, 0 })
 			signs.revert_hunk()
+			wait_for(function()
+				return type(confirm_choice) == "function"
+			end, "confirmation absent", 15000)
 			assert(type(confirm_choice) == "function", "gitsigns revert should wait for confirmation")
 			hunks = { { added = { start = 4, count = 1 }, removed = { start = 4, count = 1 } } }
 			confirm_choice("confirm")

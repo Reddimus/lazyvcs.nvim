@@ -102,6 +102,12 @@ local function semantic(name)
 	return name:match("^@lsp%.type%.") or name:match("^@lsp%.mod%.") or name:match("^@lsp%.typemod%.")
 end
 
+local function write_pooled_highlight(ns, name, definition)
+	local value = vim.deepcopy(definition)
+	value.default = nil
+	api.nvim_set_hl(ns, name, value)
+end
+
 local function define(slot, name, value)
 	if slot.native then
 		if slot.suppressed[name] then
@@ -115,7 +121,7 @@ local function define(slot, name, value)
 		end
 		return false
 	else
-		api.nvim_set_hl(slot.ns, name, value)
+		write_pooled_highlight(slot.ns, name, value)
 		slot.names[name] = true
 		return true
 	end
@@ -185,7 +191,7 @@ function M.refresh(win)
 		end
 		-- Namespaces cannot delete definitions. Reset through the new owner's graph.
 		for name in pairs(slot.names) do
-			api.nvim_set_hl(slot.ns, name, inherited(name))
+			write_pooled_highlight(slot.ns, name, inherited(name))
 		end
 		for name in pairs(theme) do
 			define(slot, name, inherited(name))

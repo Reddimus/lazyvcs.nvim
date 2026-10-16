@@ -305,7 +305,8 @@ raw index content. Historical object comparisons also keep raw content.
 When `use_gitsigns` is true (the default), lazyvcs delegates Git signs and hunk
 commands when gitsigns.nvim can report this buffer's hunks. Unattached buffers,
 including untracked files under default gitsigns settings, use native fallback.
-lazyvcs always renders SVN signs.
+lazyvcs always renders SVN signs. If gitsigns detaches, the next edit resumes
+native signs automatically. Attached gitsigns buffers keep their normal gutter.
 
 `signs.enabled` controls gutter decorations. Standalone hunk commands and previews
 remain available when signs are disabled, without automatic base reads.
@@ -314,7 +315,17 @@ below `signs.max_file_bytes`. Unloading a buffer releases its native sign state.
 LazyVCS index and SVN BASE mutations invalidate matching bases at process startup
 and settlement. Commands wait for settlement, and pending revert confirmations
 reject changed base generations. External VCS mutations require
-`:LazyVCS signs refresh` to reload a cached base.
+`:LazyVCS signs refresh` to reload a cached base. Within the native size limit,
+delegated hunk reverts load a settled native base and check its generation and
+identity before resetting. These reverts use the native hunk after waiting for a
+mutation. Otherwise, gitsigns reset requires matching ranges, text, and
+final-newline state. Above `signs.max_file_bytes`, attached gitsigns handles
+reverts after pending LazyVCS base mutations settle and this buffer emits
+`User GitSignsUpdate`. LazyVCS requests a gitsigns refresh when its public API is
+available. If no update arrives within two seconds, nothing is reverted and
+LazyVCS asks you to retry. Without a pending mutation, confirmation opens
+immediately. Confirmation checks gitsigns hunks and rejects matching base
+mutations that begin or settle while open.
 
 Large native sign comparisons run histogram diff in a worker thread. Results from
 older edits or bases are discarded. Small comparisons run synchronously. Preview
@@ -340,6 +351,14 @@ unsupported. Git applies its normal attributes and clean filters to these bytes.
 If Git and the editor use different lines, such as raw UTF-16 or Mac separators,
 blame reports an unsupported line format instead of assigning incorrect history.
 UTF-16 files normalized by Git's working-tree-encoding attribute are supported.
+Active Git clean filters require bounded full-file blame and ordered source-row
+validation, including saved Compare blame. Trailing horizontal whitespace and
+ident collapse ($Id: ... $ to $Id$) are supported normalization. Other row rewrites
+report an unsupported line format, even when the row count stays unchanged.
+Historical blob blame does not inherit the worktree filter policy.
+SVN blame rejects UTF-16, UCS-2, UCS-4, and incompatible separator models.
+Supported SVN representations require lossless BASE decoding and matching record
+counts before mapping unsaved edits.
 
 Inline blame refreshes after a buffer is unloaded and reopened or reread with
 :edit!. Cursor movement reuses cached attribution between changes.
@@ -353,7 +372,7 @@ wrap, foldenable, scrollbind, and cursorbind values, preserving fold definitions
 The split closes when the source window changes buffers, the source is unloaded,
 or either window closes. Line history uses the current buffer contents and has
 no committed revision for newly inserted lines. Pending history is cancelled
-when its source changes or closes.
+when its source changes, closes, or moves its cursor, including during loading.
 
 Hunk commands work in normal Git and SVN buffers too:
 
@@ -618,6 +637,8 @@ while the diff is open. Statuslines and other raw option readers see this overla
 while the window is managed. New splits and floats keep only your mappings.
 Explicit custom highlight namespaces use a reusable namespace that resolves
 links through the source theme; closing restores the previous namespace.
+Reused namespaces and ColorScheme refreshes replace copied default definitions
+with the current theme colors, preserving the source definitions.
 The internal overlay is bounded to 4096 entries and 256 KiB, plus your mappings.
 Excess semantic groups retain editor colors if either bound is reached.
 Syntax comments, diff backgrounds, diagnostics, signs, and blame remain visible.
@@ -649,7 +670,8 @@ Git/SVN blame options:
                        Delay before showing slow-load feedback.
     blame.loading_text Muted text shown while slow blame is still loading.
     blame.uncommitted_text
-                       Muted text for local/uncommitted blame rows.
+                       Muted text for local/uncommitted blame rows, preserved verbatim.
+                       Short, empty, and multibyte labels also work in splits.
     blame.format       Inline format with {author}, {date}, {revision}, and
                        {revision_label}. The label adds 'r' only for SVN.
     blame.max_width    Maximum inline blame text width.

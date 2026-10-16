@@ -49,6 +49,18 @@ and this project adheres to
   values safely.
 - Terminate editor restore descendants on explicit Windows cancellation while
   preserving shutdown behavior.
+- Reject Git clean filters that remove or reorder blame rows while preserving
+  whitespace cleaners and ident expansion.
+- Keep blame splits open with short or empty uncommitted labels.
+- Cancel pending line history when the source cursor moves.
+- Reject SVN blame encodings with incompatible line boundaries or undecodable
+  BASE.
+- Wait for index mutations and refreshed gitsigns hunks before confirming
+  large-file reverts. Abort after two seconds without an update and reject stale
+  hunk confirmations.
+- Resume native gutter signs after gitsigns detaches.
+- Refresh custom theme colors when highlight namespaces are reused or
+  colorschemes change.
 
 ## [0.11.3] - 2026-10-16
 

@@ -48,6 +48,9 @@ local function clear(bufnr)
 		pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns_id, 0, -1)
 	end
 	buffers[bufnr] = nil
+	for cancel in pairs(state and state.gitsigns_waiters or {}) do
+		cancel()
+	end
 	stop_timer(bufnr)
 	if state and state.command then
 		pcall(state.command.kill, state.command, 15)
@@ -231,6 +234,10 @@ local function notify_waiters(bufnr, state, keys, loaded, err)
 end
 
 local function hold_native(bufnr, state)
+	local backend = backends.resolve_cached(state.path)
+	if defers_to_gitsigns(state.backend or (backend and backend.name), bufnr) then
+		state.delegate_after_command = true
+	end
 	state.native_holds = (state.native_holds or 0) + 1
 	state.native, state.delegated = true, nil
 	local released = false
@@ -385,6 +392,9 @@ local function changing_base(state)
 end
 
 local function invalidate_base(bufnr, state)
+	for cancel in pairs(state.gitsigns_waiters or {}) do
+		cancel()
+	end
 	state.generation = (state.generation or 0) + 1
 	state.base_generation = (state.base_generation or 0) + 1
 	local job = state.job
@@ -487,6 +497,20 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 	end
 	local path, reason, skipped_path = supported_buffer(bufnr)
 	if not path then
+		local state = buffers[bufnr]
+		if reason == "too_large" and state and state.path == skipped_path and (state.native_holds or 0) > 0 then
+			-- A delegated revert shares the native command hold and settlement waiters,
+			-- but cannot load a native base. Preserve it across automatic refreshes.
+			if changing_base(state) then
+				if on_ready then
+					state.base_waiters = state.base_waiters or {}
+					state.base_waiters[#state.base_waiters + 1] = on_ready
+				end
+			elseif on_ready then
+				on_ready(state)
+			end
+			return
+		end
 		clear(bufnr)
 		if reason == "too_large" then
 			buffers[bufnr] = { path = skipped_path, skipped = true }
@@ -635,8 +659,19 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 	return job
 end
 
+local function delegated_owner_available(bufnr, state)
+	if not state or not state.delegated then
+		return false
+	end
+	if defers_to_gitsigns(state.backend or "git", bufnr) then
+		return true
+	end
+	state.delegated = nil
+	return false
+end
+
 local function schedule(bufnr)
-	if not opts().enabled or (buffers[bufnr] and buffers[bufnr].delegated) then
+	if not opts().enabled or delegated_owner_available(bufnr, buffers[bufnr]) then
 		return
 	end
 	stop_timer(bufnr)
@@ -669,11 +704,12 @@ local function with_current_state(context, on_ready, asynchronous)
 		end, true)
 		return true
 	end
+	local waited_for_base = changing_base(state)
 	local release = hold_native(bufnr, state)
 	local result = false
 	local function ready(loaded, err)
 		if loaded and vim.api.nvim_get_current_win() == context.winid and util.buffer_context_is_unchanged(context) then
-			local ok, value = pcall(on_ready, loaded, release)
+			local ok, value = pcall(on_ready, loaded, release, waited_for_base)
 			if not asynchronous or not ok then
 				release()
 			end
@@ -708,52 +744,230 @@ function M.current_state(bufnr)
 	return buffers[bufnr]
 end
 
-local function revert_hunk(context)
-	if not context then
-		return false
+local function matching_gitsigns_reset(bufnr, state, hunk)
+	local reset = gitsigns_method("reset_hunk")
+	local gs = reset and gitsigns_api()
+	if not gs then
+		return nil
 	end
-	local reset_hunk = gitsigns_method("reset_hunk")
-	if reset_hunk then
-		local gitsigns = gitsigns_api()
-		if not gitsigns or type(gitsigns.get_hunks) ~= "function" then
-			util.notify("gitsigns.nvim cannot report hunk state; update it before reverting", vim.log.levels.WARN)
+	local ok, hunks = pcall(gs.get_hunks, bufnr)
+	if not ok or type(hunks) ~= "table" then
+		return nil
+	end
+	local function matches(part, start, count, document)
+		if type(part) ~= "table" or part.start ~= start or part.count ~= count then
 			return false
 		end
-		local ok, hunks = pcall(gitsigns.get_hunks, context.bufnr)
-		if not ok or type(hunks) ~= "table" then
+		local lines = {}
+		for i = start, start + count - 1 do
+			lines[#lines + 1] = document.lines[i]
+		end
+		return vim.deep_equal(part.lines, lines)
+			and ((part.no_nl_at_eof or false) == (hunk.covers_eof and not document.eol or false))
+	end
+	for _, candidate in ipairs(hunks) do
+		if
+			matches(candidate.removed, hunk.base_start, hunk.base_count, state.base_text)
+			and matches(candidate.added, hunk.current_start, hunk.current_count, state.current_text)
+		then
+			return reset
+		end
+	end
+end
+
+-- Index settlement precedes gitsigns' debounced watcher. Share one deadline
+-- between the refresh request and its buffer-specific update event.
+local function after_gitsigns_refresh(context, state, release, on_ready)
+	local bufnr = context.bufnr
+	if
+		buffers[bufnr] ~= state
+		or vim.api.nvim_get_current_win() ~= context.winid
+		or not util.buffer_context_is_unchanged(context)
+	then
+		release()
+		return false
+	end
+	local gs = package.loaded.gitsigns
+	local timer = vim.uv.new_timer()
+	local autocmd, finished, cancel
+	local function finish(refreshed)
+		if finished then
+			return
+		end
+		finished = true
+		if state.gitsigns_waiters then
+			state.gitsigns_waiters[cancel] = nil
+		end
+		if timer then
+			timer:stop()
+			if not timer:is_closing() then
+				timer:close()
+			end
+		end
+		if autocmd then
+			pcall(vim.api.nvim_del_autocmd, autocmd)
+		end
+		if not refreshed or package.loaded.gitsigns ~= gs then
+			release()
+			return
+		end
+		local ok, err = pcall(on_ready)
+		if not ok then
+			release()
+			error(err, 0)
+		end
+	end
+	cancel = function()
+		finish(false)
+	end
+	state.gitsigns_waiters = state.gitsigns_waiters or {}
+	state.gitsigns_waiters[cancel] = true
+	local function timeout()
+		if finished then
+			return
+		end
+		cancel()
+		util.notify("gitsigns.nvim has not refreshed its hunks; retry the revert", vim.log.levels.WARN)
+	end
+	if not timer then
+		timeout()
+		return false
+	end
+	local ok, err = pcall(function()
+		autocmd = vim.api.nvim_create_autocmd("User", {
+			group = augroup,
+			pattern = "GitSignsUpdate",
+			callback = function(args)
+				if (args.data and args.data.buffer or args.buf) == bufnr then
+					finish(true)
+				end
+			end,
+		})
+		timer:start(2000, 0, vim.schedule_wrap(timeout))
+		-- The public API refreshes all attached buffers; only this buffer's update
+		-- releases the wait. Install the listener before calling it.
+		if type(gs) == "table" and type(gs.refresh) == "function" then
+			vim.api.nvim_buf_call(bufnr, gs.refresh)
+		end
+	end)
+	if not ok then
+		cancel()
+		util.notify("Unable to refresh gitsigns.nvim hunks: " .. tostring(err), vim.log.levels.WARN)
+		return false
+	end
+	return true
+end
+
+-- Only the native size limit is bypassed; gitsigns still owns eligibility and hunks.
+local function revert_large_gitsigns_hunk(context)
+	local bufnr = context.bufnr
+	local state = ensure_state(bufnr, context.path)
+	state.skipped = true
+	local release = hold_native(bufnr, state)
+	local function ready()
+		if
+			buffers[bufnr] ~= state
+			or vim.api.nvim_get_current_win() ~= context.winid
+			or not util.buffer_context_is_unchanged(context)
+		then
+			release()
+			return false
+		end
+		local gs = gitsigns_api()
+		if not gs or type(gs.reset_hunk) ~= "function" then
+			release()
 			util.notify("Unable to read gitsigns.nvim hunk state", vim.log.levels.WARN)
 			return false
 		end
+		local reset = gs.reset_hunk
+		local ok, hunks = pcall(gs.get_hunks, bufnr)
+		if not ok or type(hunks) ~= "table" then
+			release()
+			util.notify("Unable to read gitsigns.nvim hunk state", vim.log.levels.WARN)
+			return false
+		end
+		local at_cursor = false
+		for _, hunk in ipairs(hunks) do
+			if
+				diff.find_current_hunk(
+					{ {
+						current_start = hunk.added.start,
+						current_count = hunk.added.count,
+					} },
+					context.cursor[1]
+				)
+			then
+				at_cursor = true
+				break
+			end
+		end
+		if not at_cursor then
+			release()
+			util.notify("No modified gitsigns hunk at the cursor", vim.log.levels.WARN)
+			return false
+		end
+		local confirmed_generation = state.base_generation
 		local confirmed_hunks = vim.deepcopy(hunks)
 		local function context_is_unchanged()
-			if not util.buffer_context_is_unchanged(context) then
+			local current_ok, current_hunks = pcall(gs.get_hunks, bufnr)
+			local unchanged = util.buffer_context_is_unchanged(context)
+				and buffers[bufnr] == state
+				and not changing_base(state)
+				and state.base_generation == confirmed_generation
+				and package.loaded.gitsigns == gs
+				and gs.reset_hunk == reset
+				and defers_to_gitsigns("git", bufnr)
+				and current_ok
+				and vim.deep_equal(current_hunks, confirmed_hunks)
+			if not unchanged then
+				release()
 				util.notify(
-					"Hunk context changed while confirmation was open; nothing was reverted",
+					"Hunk context or base changed while confirmation was open; nothing was reverted",
 					vim.log.levels.WARN
 				)
-				return false
 			end
-			local current_ok, current_hunks = pcall(gitsigns.get_hunks, context.bufnr)
-			if not current_ok or not vim.deep_equal(current_hunks, confirmed_hunks) then
-				util.notify("Hunk base changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
-				return false
-			end
-			return true
+			return unchanged
 		end
-		return confirm.mutation({
+		local confirmed, result = pcall(confirm.mutation, {
 			prompt = "Revert hunk under cursor?",
 			before_confirm = context_is_unchanged,
 		}, function()
 			if not context_is_unchanged() then
 				return false
 			end
-			return with_unchanged_buffer(context, function()
-				return pcall(reset_hunk)
+			local reverted = with_unchanged_buffer(context, function()
+				return pcall(reset)
 			end)
-		end)
+			release()
+			return reverted
+		end, release)
+		if not confirmed then
+			release()
+			error(result, 0)
+		end
+		return result
 	end
+	if changing_base(state) then
+		state.base_waiters = state.base_waiters or {}
+		state.base_waiters[#state.base_waiters + 1] = function()
+			return after_gitsigns_refresh(context, state, release, ready)
+		end
+		return true
+	end
+	return ready()
+end
+
+local function revert_hunk(context)
+	if not context then
+		return false
+	end
+
 	local bufnr = context.bufnr
-	return with_current_state(context, function(state, release)
+	local _, reason = supported_buffer(bufnr)
+	if reason == "too_large" and gitsigns_method("reset_hunk") then
+		return revert_large_gitsigns_hunk(context)
+	end
+	return with_current_state(context, function(state, release, waited_for_base)
 		if vim.api.nvim_get_current_win() ~= context.winid or not util.buffer_context_is_unchanged(context) then
 			release()
 			return false
@@ -767,6 +981,7 @@ local function revert_hunk(context)
 		end
 		local confirmed_generation = state.base_generation
 		local confirmed_base = vim.deepcopy(state.base_text)
+		local confirmed_identity = vim.deepcopy(state.base_identity)
 		local confirmed_hunk = vim.deepcopy(hunk)
 		local function release_on_error(callback)
 			return function(...)
@@ -796,6 +1011,7 @@ local function revert_hunk(context)
 				or not live.loaded
 				or live.base_generation ~= confirmed_generation
 				or not vim.deep_equal(live.base_text, confirmed_base)
+				or not vim.deep_equal(live.base_identity, confirmed_identity)
 				or not vim.deep_equal(current_hunk, confirmed_hunk)
 			then
 				util.notify("Hunk base changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
@@ -814,7 +1030,12 @@ local function revert_hunk(context)
 					return false
 				end
 				local result = with_unchanged_buffer(context, function()
-					diff.reset_text_hunk(bufnr, confirmed_base, state.current_text, confirmed_hunk)
+					local reset_hunk = not waited_for_base and matching_gitsigns_reset(bufnr, state, confirmed_hunk)
+					if reset_hunk then
+						reset_hunk()
+					else
+						diff.reset_text_hunk(bufnr, confirmed_base, state.current_text, confirmed_hunk)
+					end
 					schedule(bufnr)
 					return true
 				end)
@@ -1063,7 +1284,7 @@ function M.setup()
 	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
 		group = augroup,
 		callback = util.safe_callback(function(args)
-			if opts().enabled and buffers[args.buf] and not buffers[args.buf].delegated then
+			if opts().enabled and buffers[args.buf] and not delegated_owner_available(args.buf, buffers[args.buf]) then
 				schedule(args.buf)
 			end
 		end),
