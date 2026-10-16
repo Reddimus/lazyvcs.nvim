@@ -21,10 +21,10 @@ return function(ctx)
 		file:close()
 		h.exec({ "svn", "propset", name, "--file", propfile, "--", path .. "@" }, f.root)
 	end
-	local function directory_preview(f, path, status)
+	local function directory_preview(f, path, status, snapshot)
 		return await(function(done)
 			provider.preview(
-				{ root = f.root, url = h.file_url(f.repo), revision = "2" },
+				snapshot or { root = f.root, url = h.file_url(f.repo), revision = "HEAD" },
 				{ relpath = path, kind = "dir", status = status or "M", property_only = true },
 				done
 			)
@@ -63,7 +63,10 @@ return function(ctx)
 				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
 				local f = h.make_svn_fixture()
 				h.exec({ "svn", "revert", f.file }, f.root)
-				local paths = { ".", "dir &@'()", "dir %23#" }
+				local paths = { ".", "dir &@'()", "dir %23#", "dir ;café", "dir !$*+,=" }
+				if vim.fn.has("win32") ~= 1 then
+					paths[#paths + 1] = "dir !+,=:?"
+				end
 				for _, path in ipairs(paths) do
 					if path ~= "." then
 						h.exec({ "svn", "mkdir", "--", path .. "@" }, f.root)
@@ -72,15 +75,23 @@ return function(ctx)
 				end
 				h.exec({ "svn", "commit", "-m", "property targets" }, f.root)
 				h.exec({ "svn", "update" }, f.root)
+				local url = h.exec({ "svn", "info", "--show-item", "url", "." }, f.root):gsub("%s+$", "")
+				local revision = h.exec({ "svn", "info", "--show-item", "revision", "." }, f.root):match("%d+")
+				-- A trailing slash is accepted as input but is absent in svn info's URL.
+				local base = url .. "/@" .. assert(revision)
+				local snapshot = assert(await(function(done)
+					provider.resolve({ root = f.root }, base, done)
+				end))
+				assert(snapshot.url == url and snapshot.url ~= url .. "/", "snapshot retained the input URL")
+				assert(snapshot.base == base and snapshot.revision == revision)
 				for _, path in ipairs(paths) do
 					set_property(f, path, "custom:value", "AFTER\n")
-					local result, err = directory_preview(f, path)
+					local result, err = directory_preview(f, path, nil, snapshot)
 					assert(result, path .. ": " .. tostring(err))
 					assert(contains(result.right, "-BEFORE") and contains(result.right, "+AFTER"))
 				end
-				local url = h.file_url(f.repo)
 				assert(require("lazyvcs.backends.svn_url").append_path(url, ".") == url)
-				local s = assert(compare.open({ path = f.root, base = url .. "@2" }))
+				local s = assert(compare.open({ path = f.root, base = base }))
 				local ok, err = xpcall(function()
 					ctx.wait_for(function()
 						return s.preview_result

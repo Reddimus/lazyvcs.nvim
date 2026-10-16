@@ -1,6 +1,5 @@
 local runtime = require("lazyvcs.process_runtime")
 local M = {}
-local windows_paths = vim.fn.has("win32") == 1
 
 ---@param winid integer
 ---@param name string
@@ -833,6 +832,7 @@ end
 ---@param path string
 ---@return string? absolute, string? err
 local function absolute_literal_path(path)
+	local windows_paths = vim.fn.has("win32") == 1
 	if windows_paths then
 		path = path:gsub("\\", "/")
 	end
@@ -895,6 +895,11 @@ function M.canonical_entry_path(path, strict)
 	local normalized = M.normalize_literal_path(absolute)
 	local parent = vim.fs.dirname(absolute)
 	local suffix = { vim.fs.basename(absolute) }
+	-- A final dot component denotes a directory, not an entry to preserve.
+	-- Resolve it as a whole: Windows collapses .. before following junctions.
+	if suffix[1] == "." or suffix[1] == ".." then
+		parent, suffix = absolute, {}
+	end
 	while parent do
 		local resolved, err, code = vim.uv.fs_realpath(parent)
 		if resolved then

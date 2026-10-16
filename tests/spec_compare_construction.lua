@@ -54,10 +54,17 @@ return function(ctx)
 				local tabs, before = api.nvim_list_tabpages(), api.nvim_list_bufs()
 				for _, destination in ipairs({ origin, unrelated }) do
 					for _, event in ipairs({ "TabNew", "WinEnter" }) do
+						local switched, message
+						---@diagnostic disable-next-line: duplicate-set-field
+						util.notify = function(text)
+							message = text
+						end
 						local autocmd = api.nvim_create_autocmd(event, {
 							once = true,
 							callback = function()
+								local opened = api.nvim_get_current_tabpage()
 								api.nvim_set_current_tabpage(destination)
+								switched = opened ~= destination and api.nvim_get_current_tabpage() == destination
 							end,
 						})
 						---@diagnostic disable-next-line: duplicate-set-field
@@ -66,7 +73,12 @@ return function(ctx)
 						end
 						local ok, s = pcall(compare.open, { path = f.root, base = "HEAD" })
 						pcall(api.nvim_del_autocmd, autocmd)
+						assert(switched, event .. " autocmd did not switch tabs")
 						assert(ok and not s, "redirected comparison did not fail safely")
+						assert(
+							message and message:find("Comparison tab changed while opening", 1, true),
+							"redirected comparison did not report the changed tab: " .. tostring(message)
+						)
 						assert(api.nvim_tabpage_is_valid(unrelated), "rollback closed an unrelated tab")
 						assert(vim.deep_equal(api.nvim_list_tabpages(), tabs), "rollback left an orphan comparison tab")
 						assert(vim.deep_equal(api.nvim_list_bufs(), before), "rollback left scratch buffers")

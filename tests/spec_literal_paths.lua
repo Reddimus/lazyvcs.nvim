@@ -124,6 +124,7 @@ return function(ctx)
 					timer:close()
 					ok, err = pcall(function()
 						assert(vim.in_fast_event(), "probe did not run in a fast context")
+						assert(vim.fn.has("win32") == (package.config:sub(1, 1) == "\\" and 1 or 0))
 						assert(util.canonical_path(f.root) == f.root)
 						assert(util.canonical_path(".") == cwd)
 						assert(util.canonical_entry_path(f.file, true) == f.file)
@@ -134,6 +135,44 @@ return function(ctx)
 				ctx.wait_for(function()
 					return done
 				end, "fast-context path probe did not finish")
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_core_windows_terminal_dot_paths_agree",
+			function()
+				local has, normalize = vim.fn.has, vim.fs.normalize
+				local realpath, stat = vim.uv.fs_realpath, vim.uv.fs_stat
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.has = function(feature)
+					return feature == "win32" and 1 or has(feature)
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fs.normalize = function(path, opts)
+					return normalize(path, vim.tbl_extend("force", opts or {}, { win = true }))
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.uv.fs_realpath = function(path)
+					-- Model Windows resolving .. lexically before following a junction.
+					local normalized = util.normalize_literal_path(path)
+					return normalized:gsub("^C:/repo/junction", "C:/other/child")
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.uv.fs_stat = function()
+					return { type = "directory" }
+				end
+				local ok, err = pcall(function()
+					for path, expected in pairs({
+						[ [[C:\repo\junction\..]] ] = "C:/repo",
+						["C:/repo/junction/.."] = "C:/repo",
+						["C:/repo/junction/."] = "C:/other/child",
+					}) do
+						assert(util.canonical_path(path) == expected)
+						assert(util.canonical_entry_path(path, true) == expected, "entry disagreed for " .. path)
+					end
+				end)
+				vim.fn.has, vim.fs.normalize = has, normalize
+				vim.uv.fs_realpath, vim.uv.fs_stat = realpath, stat
 				assert(ok, err)
 			end,
 		},
@@ -161,6 +200,7 @@ return function(ctx)
 				vim.env.LAZYVCS_CANONICAL_ROOT = first.root
 				local ok, err = xpcall(function()
 					assert(util.canonical_path(first.root .. "/link") == second.root .. "/child")
+					assert(util.canonical_entry_path(requested, true) == util.canonical_path(requested))
 					if not windows then
 						for _, command in ipairs({ false, true }) do
 							local state

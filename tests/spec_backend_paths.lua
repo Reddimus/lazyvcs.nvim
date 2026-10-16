@@ -124,6 +124,7 @@ return function(ctx)
 						end, "incoming sidebar comparison did not open", 15000)
 						local session = assert(require("lazyvcs.state").current())
 						local target = session.comparison
+						assert(target.relpath == row.extra.relpath, "comparison opened a different remote row")
 						assert(
 							target.kind == "svn_remote" and not target.editable_side,
 							"incoming collision opened as editable local content"

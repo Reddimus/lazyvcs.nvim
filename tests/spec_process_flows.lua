@@ -84,7 +84,8 @@ return function(ctx)
 				setup()
 				local f = h.make_git_fixture()
 				vim.fn.mkdir(f.root .. "/a", "p")
-				local paths = { f.root .. "/", f.root .. "/a/.." }
+				local sibling = h.tempdir()
+				local paths = { f.root .. "/", sibling .. "/../" .. vim.fs.basename(f.root) }
 				if vim.fn.has("win32") ~= 1 then
 					local other = h.make_git_fixture()
 					assert(vim.uv.fs_symlink(f.root .. "/a", other.root .. "/link", { dir = true }))
@@ -98,32 +99,35 @@ return function(ctx)
 						end, "alias sidebar discovery did not finish", 15000)
 						assert(s.path == f.root and s.lazyvcs_repo_specs[1].root == f.root)
 						for _, route in ipairs({ "api", "command", "ops", "jobs" }) do
-							local started, cancelled, exit
-							jobs.command({ root = path, vcs = "git" }, "alias_probe", { "held" }, {
-								owner = s,
-								start = function(_, _, done)
-									started, exit = true, done
-									return {
-										cancel = function()
-											cancelled = true
-										end,
-									}
-								end,
-							}, function() end)
-							ctx.wait_for(function()
-								return started
-							end, "alias job did not start")
-							if route == "api" then
-								assert(require("lazyvcs").source_control_cancel(path) == 1)
-							elseif route == "command" then
-								vim.cmd("LazyVCS sidebar cancel " .. vim.fn.fnameescape(path))
-							elseif route == "ops" then
-								assert(ops.cancel(path, { owner = s }) == 1)
-							else
-								assert(jobs.cancel_repo(path) == 1)
+							for _, roots in ipairs({ { f.root, path }, { path, f.root } }) do
+								local registered, requested = unpack(roots)
+								local started, cancelled, exit
+								jobs.command({ root = registered, vcs = "git" }, "alias_probe", { "held" }, {
+									owner = s,
+									start = function(_, _, done)
+										started, exit = true, done
+										return {
+											cancel = function()
+												cancelled = true
+											end,
+										}
+									end,
+								}, function() end)
+								ctx.wait_for(function()
+									return started
+								end, "alias job did not start")
+								if route == "api" then
+									assert(require("lazyvcs").source_control_cancel(requested) == 1)
+								elseif route == "command" then
+									vim.cmd("LazyVCS sidebar cancel " .. vim.fn.fnameescape(requested))
+								elseif route == "ops" then
+									assert(ops.cancel(requested, { owner = s }) == 1)
+								else
+									assert(jobs.cancel_repo(requested) == 1)
+								end
+								assert(cancelled, route .. " did not cancel " .. registered .. " via " .. requested)
+								exit({ code = 130, stdout = "", stderr = "cancelled" })
 							end
-							assert(cancelled, route .. " did not cancel the canonical root for " .. path)
-							exit({ code = 130, stdout = "", stderr = "cancelled" })
 						end
 						native.close()
 					end
@@ -261,12 +265,14 @@ return function(ctx)
 					if handle then
 						handle:force()
 					end
+					local cleanup_ok, cleanup_err = true, nil
 					if handle then
-						ctx.wait_for(function()
+						cleanup_ok, cleanup_err = pcall(ctx.wait_for, function()
 							return owner.active == false and restore_completed
 						end, "restore cleanup did not complete", 5000)
 					end
 					assert(ok, err)
+					assert(cleanup_ok, cleanup_err)
 				end
 			end,
 		},
