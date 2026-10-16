@@ -75,6 +75,9 @@ function M.start(repo, args, opts, guards, on_exit)
 		serial = serial + 1
 		local current = serial
 		local process_opts = vim.tbl_extend("force", opts, { timeout = remaining, on_terminate = terminate })
+		if command == args and guards.on_mutation_start then
+			guards.on_mutation_start()
+		end
 		local ok, started = pcall(util.system_start, command, process_opts, function(result, err, raw)
 			if done or current ~= serial then
 				return

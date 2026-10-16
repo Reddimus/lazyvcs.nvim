@@ -386,10 +386,63 @@ end
 local function start_command(repo, kind, args, on_done, opts)
 	opts = opts or {}
 	local timeout = opts.timeout_ms or config.get().source_control.background.mutation_timeout_ms
+	local base_mutation = kind == "git_stage_file"
+		or kind == "git_unstage_file"
+		or kind == "discard_staged"
+		or kind == "git_stage_all"
+		or kind == "git_commit"
+		or kind == "git_merge"
+		or kind == "svn_commit"
+		or kind == "svn_update"
+		or kind == "switch_mutation"
 	local process_start = opts.start
-	if opts.guard_modified_buffers or opts.branch_ref or opts.svn_discard then
+	if base_mutation or opts.guard_modified_buffers or opts.branch_ref or opts.svn_discard then
 		process_start = function(command, process_opts, on_exit)
-			return mutation_start.start(repo, command, process_opts, opts, on_exit)
+			local signs, change
+			local guards = vim.tbl_extend("force", {}, opts)
+			if base_mutation then
+				local paths
+				if kind == "git_stage_file" or kind == "git_unstage_file" or kind == "discard_staged" then
+					paths = {}
+					local after_separator = false
+					for _, arg in ipairs(command) do
+						if after_separator then
+							paths[#paths + 1] = util.normalize_literal_path(repo.root .. "/" .. arg)
+						elseif arg == "--" then
+							after_separator = true
+						end
+					end
+				end
+				signs = require("lazyvcs.signs")
+				guards.on_mutation_start = function()
+					change = signs.begin_base_change(repo.root, paths)
+				end
+			end
+			local function settle_base()
+				if change then
+					local settled = change
+					change = nil
+					util.safe_callback(signs.finish_base_change)(settled)
+				end
+			end
+			local function settle(result, err, raw)
+				settle_base()
+				on_exit(result, err, raw)
+			end
+			-- Custom starters (for example private commit-message files) spawn the command
+			-- themselves; without a preflight the base changes when they start.
+			if opts.start and not (opts.guard_modified_buffers or opts.branch_ref or opts.svn_discard) then
+				if guards.on_mutation_start then
+					guards.on_mutation_start()
+				end
+				local ok, handle = pcall(opts.start, command, process_opts, settle)
+				if not ok then
+					settle_base()
+					error(handle, 0)
+				end
+				return handle
+			end
+			return mutation_start.start(repo, command, process_opts, guards, settle)
 		end
 	end
 	return jobs.command(repo, kind, args, {

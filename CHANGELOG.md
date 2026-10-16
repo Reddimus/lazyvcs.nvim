@@ -58,6 +58,19 @@ and this project adheres to
   working-tree files.
 - Show properties on added SVN files and keep text previews available when
   optional property patches exceed the preview limit.
+- Resume native signs after oversized buffers shrink below the size limit.
+- Keep standalone hunk commands and previews available with signs disabled.
+- Dispatch the first hunk command after asynchronous repository discovery.
+- Use native hunk fallback when gitsigns has no usable state for the buffer.
+- Show the ordinary deletion glyph for content removed below the first line.
+- Reload native sign bases after LazyVCS staging, commits, and base changes.
+- Reject revert confirmations after the native base generation changes.
+- Release sign bases and pending work when buffers unload.
+- Handle small editors and failed preview windows without errors or buffer
+  leaks.
+- Compare clean Git ident files in checkout form without running external
+  filters.
+- Run large native sign comparisons off the editor thread.
 
 ## [0.11.2] - 2026-10-16
 

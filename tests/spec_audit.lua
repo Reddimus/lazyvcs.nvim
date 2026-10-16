@@ -465,7 +465,11 @@ return function(ctx)
 				local fixture = ctx.helpers.make_git_fixture()
 				local backends = require("lazyvcs.backends")
 				local old, old_gitsigns = backends.load_base_async, package.loaded.gitsigns
-				package.loaded.gitsigns = {}
+				package.loaded.gitsigns = {
+					get_hunks = function()
+						return {}
+					end,
+				}
 				---@diagnostic disable-next-line: duplicate-set-field
 				backends.load_base_async = function()
 					error("delegated signs loaded content")
