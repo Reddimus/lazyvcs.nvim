@@ -92,16 +92,23 @@ return function(ctx)
 			guard(function(f)
 				local state = open(f.root)
 				local loader = model.load_repo_summary_async
-				local items = incoming_items(f)
-				items[1].padding = string.rep("x", 4 * 1024 * 1024)
-				---@diagnostic disable-next-line: duplicate-set-field
-				model.load_repo_summary_async = function(_, _, _, done)
-					done(model.with_remote_snapshot(state.lazyvcs_repo_cache[f.root], { items = items, version = 1 }))
+				local items, published_version
+				for version = 1, 2 do
+					items = incoming_items(f)
+					items[1].id = items[1].id .. "-" .. version
+					items[1].padding = string.rep("x", 4 * 1024 * 1024)
+					---@diagnostic disable-next-line: duplicate-set-field
+					model.load_repo_summary_async = function(_, opts, _, done)
+						done(model.with_remote_snapshot(opts.previous, { items = items, version = version }))
+					end
+					native.refresh(true)
+					settled(state)
+					assert(not cache.read(f.root), "oversized snapshot retained")
+					displayed(state, f.root, "incoming", "Update")
+					local remote_version = state.lazyvcs_repo_cache[f.root].remote_version
+					assert(remote_version and remote_version ~= published_version, "remote version did not advance")
+					published_version = remote_version
 				end
-				native.refresh(true)
-				settled(state)
-				assert(not cache.read(f.root), "oversized snapshot retained")
-				displayed(state, f.root, "incoming", "Update")
 				model.load_repo_summary_async = loader
 				state.lazyvcs_expanded[model.repo_changes_id(f.root)] = false
 				require("lazyvcs.source_control.ops").open_repo(state, {
@@ -117,11 +124,16 @@ return function(ctx)
 				displayed(state, f.root, "incoming", "Update")
 				assert(
 					state.lazyvcs_repo_cache[f.root].remote_snapshot[1].id == items[1].id,
-					"details lost incoming row"
+					"details restored the first oversized incoming row"
+				)
+				assert(
+					state.lazyvcs_repo_cache[f.root].remote_version == published_version,
+					"details restored the first remote version"
 				)
 				native.refresh(false)
 				settled(state)
 				displayed(state, f.root, "incoming", "Update")
+				assert(state.lazyvcs_repo_cache[f.root].remote_snapshot[1].id == items[1].id)
 				vim.cmd.tabnew()
 				local second = open(f.root)
 				displayed(second, f.root, "unknown", "Commit")

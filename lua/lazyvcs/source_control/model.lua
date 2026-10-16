@@ -1012,6 +1012,8 @@ function M.merge_summary(current, summary)
 	for _, field in ipairs({ "branch", "upstream", "upstream_gone", "detached", "unborn", "sync" }) do
 		result[field] = summary[field]
 	end
+	-- The live cache may have replaced or invalidated the summary's private snapshot.
+	result.remote_local = current.remote_local
 	if current.details_loaded then
 		result.sections = current.sections
 		result.details_loaded = true
