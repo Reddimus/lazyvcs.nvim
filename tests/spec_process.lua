@@ -922,6 +922,40 @@ vim.cmd("qa!")
 			end,
 		},
 		{
+			"test_core_process_windows_kill_reaches_handles_without_closing_state",
+			function()
+				local original, has = vim.system, vim.fn.has
+				local exit, handle
+				local signals = {}
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.has = function(name)
+					return name == "win32" and 1 or has(name)
+				end
+				-- A handle that cannot report whether it is closing must still be killed.
+				vim.system = function(_, _, cb)
+					exit = cb
+					return {
+						kill = function(_, signal)
+							signals[#signals + 1] = signal
+						end,
+					}
+				end
+				local ok, err = xpcall(function()
+					handle = util.system_start({ "git", "status" }, { kill_grace_ms = 100 })
+					assert(handle:kill(15))
+					assert(vim.deep_equal(signals, { 15 }), "cancellation did not signal the process")
+				end, debug.traceback)
+				vim.system, vim.fn.has = original, has
+				if exit then
+					exit({ code = 143, signal = 15, stdout = "", stderr = "" })
+				end
+				if handle then
+					handle:close_timers()
+				end
+				assert(ok, err)
+			end,
+		},
+		{
 			"test_core_process_command_options_disable_prompts",
 			function()
 				local original = vim.system

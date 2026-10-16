@@ -388,7 +388,7 @@ function M.system_start(args, opts, on_exit)
 					local ok, closing = pcall(function()
 						return process:is_closing()
 					end)
-					if not done and ok and not closing then
+					if not done and not (ok and closing) then
 						pcall(process.kill, process, force_sent and 9 or signal)
 					end
 				end)
@@ -402,7 +402,7 @@ function M.system_start(args, opts, on_exit)
 				local ok, closing = pcall(function()
 					return process:is_closing()
 				end)
-				if not done and ok and not closing then
+				if not done and not (ok and closing) then
 					pcall(process.kill, process, signal)
 				end
 			end
