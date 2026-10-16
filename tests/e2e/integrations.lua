@@ -198,6 +198,7 @@ local function run()
 		local path = require("resession.util").get_session_file(session_name)
 		local serialized = assert(files.read_file(path), "session file was not written")
 		assert(not serialized:find("LazyVcsSemanticHidden", 1, true), "session file contains semantic overlay")
+		assert(serialized:find("Normal:ErrorMsg", 1, true), "session file lost user winhighlight mapping")
 	end
 	print("PASS integration " .. backend .. " real Resession serialized user winhighlight without overlay")
 	local write = files.write_json_file
@@ -212,6 +213,28 @@ local function run()
 	end, "failed save left options projected")
 	assert(vim.deep_equal(snapshot(editor), live), "failed save did not restore live diff options")
 	print("PASS integration " .. backend .. " real Resession write-failure recovery")
+	-- Readonly targets always use scratch buffers, even with a real source path.
+	require("lazyvcs.actions").close(s.editable_bufnr)
+	local readonly = assert(require("lazyvcs.actions").open_target({
+		backend = backend,
+		root = f.root,
+		path = f.file,
+		relpath = vim.fs.basename(f.file),
+		kind = backend .. "_revision",
+		left = { label = "BEFORE", lines = { "before" } },
+		right = { label = "AFTER", lines = { "after" } },
+	}))
+	assert(readonly.readonly_comparison, "fixture is not a readonly comparison")
+	assert(
+		tostring(snapshot(readonly.editable_win).winhighlight):find("LazyVcsSemanticHidden", 1, true),
+		"readonly fixture has no semantic overlay"
+	)
+	for _, win in ipairs({ readonly.editable_win, readonly.base_win }) do
+		local buf = api.nvim_win_get_buf(win)
+		assert(vim.bo[buf].buftype == "nofile" and not vim.bo[buf].buflisted, "readonly pane is not scratch")
+		assert(not resession.default_buf_filter(buf), "default Resession filter accepts readonly pane")
+	end
+	print("PASS integration " .. backend .. " readonly overlay panes rejected by default Resession filter")
 end
 
 local ok, err = xpcall(run, debug.traceback)

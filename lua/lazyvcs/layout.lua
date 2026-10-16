@@ -345,7 +345,6 @@ function M.prepare_session_save(session, tokens)
 			token.windows[win] = {
 				options = capture_window_options(win),
 				winbar = util.get_win_option(win, "winbar"),
-				winhighlight = util.get_win_option(win, "winhighlight"),
 			}
 		end
 	end
@@ -360,7 +359,12 @@ function M.prepare_session_save(session, tokens)
 		if session.editable_label and record.winbar == session.editable_label then
 			util.set_win_option_noautocmd(win, "winbar", session.editable_prev_winbar)
 		end
-		util.set_win_option_noautocmd(win, "winhighlight", highlighting.user_winhighlight(win))
+		local user = highlighting.user_winhighlight(win)
+		local live = util.get_win_option(win, "winhighlight")
+		if user ~= live then
+			record.winhighlight = live
+			util.set_win_option_noautocmd(win, "winhighlight", user)
+		end
 	end
 end
 
@@ -386,7 +390,9 @@ function M.finish_session_save(token)
 				restore(util.set_win_option_noautocmd, win, name, value)
 			end
 			restore(util.set_win_option_noautocmd, win, "winbar", record.winbar)
-			restore(util.set_win_option_noautocmd, win, "winhighlight", record.winhighlight)
+			if record.winhighlight ~= nil then
+				restore(util.set_win_option_noautocmd, win, "winhighlight", record.winhighlight)
+			end
 		end
 	end
 	restore(vim.api.nvim_win_call, token.win, function()

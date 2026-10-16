@@ -2,7 +2,7 @@ return function(ctx)
 	local api, h = vim.api, ctx.helpers
 	local util = require("lazyvcs.util")
 	local names = { "diff", "scrollbind", "cursorbind", "wrap", "foldmethod", "foldcolumn", "winbar", "winhighlight" }
-	local hooks, original
+	local hooks, original, cleanups
 	local function dispatch(name, tab)
 		for _, callback in ipairs(hooks[name] or {}) do
 			callback("test", {}, tab)
@@ -14,11 +14,52 @@ return function(ctx)
 	local function equal(actual, expected, message)
 		assert(vim.deep_equal(actual, expected), message .. ": " .. vim.inspect(actual))
 	end
-	local function open(preexisting)
+	local function preserve_highlighting(win)
+		local value = util.get_win_option(win, "winhighlight")
+		local ns = api.nvim_get_hl_ns({ winid = win })
+		cleanups[#cleanups + 1] = function()
+			if api.nvim_win_is_valid(win) then
+				util.set_win_option_noautocmd(win, "winhighlight", value)
+				api.nvim_win_set_hl_ns(win, ns)
+			end
+		end
+	end
+	local function watch_options(pattern)
+		local events = { count = 0 }
+		local id = api.nvim_create_autocmd("OptionSet", {
+			pattern = pattern,
+			callback = function()
+				events.count = events.count + 1
+			end,
+		})
+		cleanups[#cleanups + 1] = function()
+			api.nvim_del_autocmd(id)
+		end
+		return events
+	end
+	local function semantic_overlay(win)
+		local user = "Normal:ErrorMsg,@lsp.type.lazyvcs_resession:Comment"
+		api.nvim_set_hl(0, "@lsp.type.lazyvcs_resession", { fg = 0xff0000 })
+		util.set_win_option(win, "winhighlight", user)
+		require("lazyvcs.highlighting").refresh(win)
+		-- Drain the fixture's OptionSet refresh before observing the save hooks.
+		vim.wait(20, function()
+			return false
+		end)
+		local live = util.get_win_option(win, "winhighlight")
+		---@cast live string
+		assert(live:find("LazyVcsSemanticHidden", 1, true), "fixture has no active semantic overlay")
+		return user, live
+	end
+	local function open(preexisting, configure)
 		local f = h.make_git_fixture()
 		vim.cmd.edit(vim.fn.fnameescape(f.file))
 		local win, buf = api.nvim_get_current_win(), api.nvim_get_current_buf()
+		preserve_highlighting(win)
 		util.set_win_option(win, "winbar", " original ' bar | %f")
+		if configure then
+			configure(win)
+		end
 		if preexisting then
 			vim.cmd("diffthis")
 		end
@@ -31,6 +72,7 @@ return function(ctx)
 	end
 	local function guarded(fn)
 		return function()
+			cleanups = {}
 			original = package.loaded.resession
 			hooks = { pre_save = {}, post_save = {} }
 			package.loaded.resession = {
@@ -52,12 +94,20 @@ return function(ctx)
 				require("lazyvcs.integrations.resession").teardown()
 			end
 			package.loaded.resession = original
-			h.cleanup()
+			local cleanup_ok, cleanup_err = pcall(h.cleanup)
+			for i = #cleanups, 1, -1 do
+				local success, failure = pcall(cleanups[i])
+				if not success then
+					cleanup_ok, cleanup_err = false, failure
+				end
+			end
+			api.nvim_set_hl(0, "@lsp.type.lazyvcs_resession", {})
 			vim.cmd("silent! tabonly!")
 			vim.cmd("silent! only!")
 			vim.cmd("diffoff")
 			util.set_win_option(api.nvim_get_current_win(), "winbar", "")
 			assert(ok, err)
+			assert(cleanup_ok, cleanup_err)
 		end
 	end
 	local function lazy_open(specs, expected)
@@ -314,20 +364,15 @@ return function(ctx)
 			"test_live_diff_resession_serializes_user_winhighlight_and_resumes_overlay",
 			function()
 				local s = open(false)
-				local highlighting = require("lazyvcs.highlighting")
-				local user = "Normal:ErrorMsg,@lsp.type.lazyvcs_resession:Comment"
-				api.nvim_set_hl(0, "@lsp.type.lazyvcs_resession", { fg = 0xff0000 })
-				util.set_win_option(s.editable_win, "winhighlight", user)
-				highlighting.refresh(s.editable_win)
-				local live = util.get_win_option(s.editable_win, "winhighlight")
-				---@cast live string
-				assert(live:find("LazyVcsSemanticHidden", 1, true), "fixture has no active semantic overlay")
+				local user, live = semantic_overlay(s.editable_win)
+				local events = watch_options("winhighlight")
 				for _ = 1, 2 do
 					dispatch("pre_save")
 					local serialized = vim.json.encode(get(s.editable_win))
 					assert(not serialized:find("LazyVcsSemanticHidden", 1, true), "serializer saw semantic overlay")
 					equal(vim.json.decode(serialized).winhighlight, user, "serializer lost user mappings")
 					dispatch("post_save")
+					assert(events.count == 0, "save dispatched winhighlight OptionSet")
 					vim.wait(20, function()
 						return false
 					end)
@@ -343,22 +388,96 @@ return function(ctx)
 					user,
 					"save changed highlighting user mappings"
 				)
-				util.set_win_option(s.editable_win, "winhighlight", "")
+			end,
+		},
+		{
+			"test_live_diff_resession_preserves_slot_namespace_and_ownership",
+			function()
+				local user = "Normal:ErrorMsg"
+				local ns = api.nvim_create_namespace("lazyvcs-resession-user")
+				local name = "LazyVcsResessionUser"
+				api.nvim_set_hl(ns, name, { fg = 0x112233 })
+				local s = open(false, function(win)
+					util.set_win_option(win, "winhighlight", user)
+					api.nvim_win_set_hl_ns(win, ns)
+				end)
+				local win = s.editable_win
+				local slot = api.nvim_get_hl_ns({ winid = win })
+				assert(slot > 0 and slot ~= ns, "highlighting did not take the slot path")
+				local events = watch_options("winhighlight")
+				for i = 1, 2 do
+					dispatch("pre_save")
+					equal(api.nvim_get_hl_ns({ winid = win }), slot, "projection replaced slot namespace")
+					equal(util.get_win_option(win, "winhighlight"), user, "projection changed user mappings")
+					dispatch("post_save")
+					assert(events.count == 0, "save dispatched winhighlight OptionSet")
+					vim.wait(20, function()
+						return false
+					end)
+					equal(api.nvim_get_hl_ns({ winid = win }), slot, "save replaced slot namespace")
+					local color = 0x112233 + i
+					api.nvim_set_hl(ns, name, { fg = color })
+					require("lazyvcs.highlighting").refresh(win)
+					equal(api.nvim_get_hl(slot, { name = name, link = false }).fg, color, "highlighting lost ownership")
+				end
+				require("lazyvcs.actions").close(s.editable_bufnr)
+				equal(api.nvim_get_hl_ns({ winid = win }), ns, "close did not restore user namespace")
+				equal(util.get_win_option(win, "winhighlight"), user, "close did not restore user mappings")
+			end,
+		},
+		{
+			"test_live_diff_resession_readonly_comparison_has_only_nofile_panes",
+			function()
+				preserve_highlighting(api.nvim_get_current_win())
+				local f = h.make_git_fixture()
+				local s = assert(require("lazyvcs.actions").open_target({
+					backend = "git",
+					root = f.root,
+					path = f.file,
+					relpath = "sample.txt",
+					kind = "git_revision",
+					left = { label = "HEAD", lines = { "before" } },
+					right = { label = "HEAD~1", lines = { "after" } },
+				}))
+				assert(s.readonly_comparison, "fixture is not a readonly comparison")
+				semantic_overlay(s.editable_win)
+				local live = {}
+				for _, win in ipairs({ s.editable_win, s.base_win }) do
+					local buf = api.nvim_win_get_buf(win)
+					assert(vim.bo[buf].buftype == "nofile" and not vim.bo[buf].buflisted, "pane is restorable")
+					live[win] = get(win)
+				end
+				local events = watch_options("winhighlight")
+				dispatch("pre_save")
+				assert(s.phase == "active", "readonly comparison was projected")
+				dispatch("post_save")
+				for win, options in pairs(live) do
+					equal(get(win), options, "save changed readonly pane")
+				end
+				assert(events.count == 0, "readonly save dispatched winhighlight OptionSet")
 			end,
 		},
 		{
 			"test_live_diff_resession_recovers_interrupted_save",
 			function()
 				local s, before = open(false)
+				local user = semantic_overlay(s.editable_win)
+				before.winhighlight = user
 				local live = get(s.editable_win)
+				local events = watch_options("winhighlight")
 				dispatch("pre_save")
 				equal(get(s.editable_win), before, "interrupted save did not project editor options")
 				dispatch("pre_save")
 				ctx.wait_for(function()
 					return s.phase == "active"
 				end, "interrupted save was not resumed")
-				equal(get(s.editable_win), live, "fallback did not restore live options")
+				equal(get(s.editable_win), live, "fallback did not restore live overlay and options")
 				dispatch("post_save")
+				assert(events.count == 0, "interrupted save dispatched winhighlight OptionSet")
+				-- Refresh must still own the window and reapply its stripped overlay.
+				util.set_win_option_noautocmd(s.editable_win, "winhighlight", user)
+				require("lazyvcs.highlighting").refresh(s.editable_win)
+				equal(get(s.editable_win), live, "interrupted save lost highlighting ownership")
 				local setter, notify = util.set_win_option_noautocmd, util.notify
 				local failed, messages = false, {}
 				---@diagnostic disable-next-line: duplicate-set-field
@@ -397,26 +516,17 @@ return function(ctx)
 				vim.cmd("tabnew")
 				local second = open(false)
 				local live = get(second.editable_win)
-				local events = 0
-				local group = api.nvim_create_augroup("LazyVCSIntegrationOptions", { clear = true })
-				api.nvim_create_autocmd("OptionSet", {
-					group = group,
-					pattern = "*",
-					callback = function()
-						events = events + 1
-					end,
-				})
+				local events = watch_options("*")
 				util.set_win_option(second.editable_win, "wrap", not live.wrap)
-				assert(events > 0, "OptionSet control did not fire")
+				assert(events.count > 0, "OptionSet control did not fire")
 				util.set_win_option(second.editable_win, "wrap", live.wrap)
-				events = 0
+				events.count = 0
 				dispatch("pre_save", tab)
 				local projected = get(first.editable_win)
 				dispatch("post_save", tab)
-				api.nvim_del_augroup_by_id(group)
 				equal(projected, before, "tab save did not project its editor")
 				equal(get(second.editable_win), live, "tab save changed another tab")
-				assert(events == 0, "projection dispatched OptionSet")
+				assert(events.count == 0, "projection dispatched OptionSet")
 				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
 				assert(#hooks.pre_save == 1 and #hooks.post_save == 1, "setup duplicated save hooks")
 				util.set_win_option(second.editable_win, "wrap", not live.wrap)
