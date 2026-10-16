@@ -118,8 +118,6 @@ return function(ctx)
 			vim.bo[buf].fixendofline = true
 			accept()
 			assert(vim.bo[buf].endofline ~= base_eol, "EOF option change did not invalidate confirmation")
-			-- Restore the no-newline write profile before retrying the EOF-only revert.
-			vim.bo[buf].fixendofline = false
 			revert(live)
 			vim.fn.maparg("1", "n", false, true).callback()
 			ctx.wait_for(function()
@@ -320,7 +318,7 @@ return function(ctx)
 			f:close()
 		end
 		cases[#cases + 1] = {
-			"test_sign_fixendofline_matches_written_bytes",
+			"test_capture_fixendofline_matches_written_bytes",
 			function()
 				local f = h.make_git_fixture()
 				write(f.file, "alpha")

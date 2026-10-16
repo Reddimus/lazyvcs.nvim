@@ -304,7 +304,7 @@ refresh = function(bufnr)
 			or util.buf_path(session.editable_bufnr) ~= session.source_path
 		then
 			session.hunks, session.base_invalid = {}, true
-			if not session.refresh_job then
+			if not session.refresh_job and (not session.reload_retry_at or vim.uv.now() >= session.reload_retry_at) then
 				reload_session(session)
 			end
 			return
@@ -1106,9 +1106,15 @@ reload_session = function(session)
 		end
 		if not result then
 			live.hunks, live.base_invalid = {}, true
-			util.notify(err or "Could not refresh the VCS comparison base", vim.log.levels.WARN)
+			local message = err or "Could not refresh the VCS comparison base"
+			live.reload_retry_at = vim.uv.now() + 3000
+			if live.reload_error ~= message then
+				live.reload_error = message
+				util.notify(message, vim.log.levels.WARN)
+			end
 			return
 		end
+		live.reload_error, live.reload_retry_at = nil, nil
 		if live.comparison then
 			live.comparison = result
 			result.base_label = result.left.label

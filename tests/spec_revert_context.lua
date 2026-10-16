@@ -253,7 +253,12 @@ return function(ctx)
 		cases[#cases + 1] = {
 			"test_live_diff_rejects_unsupported_target_before_open_and_transfer",
 			function()
-				for _, value in ipairs({ string.rep("x", 1024 * 1024 + 1), "a\0b\n", "\192\175\n" }) do
+				for _, input in ipairs({
+					{ string.rep("x", 1024 * 1024 + 1), "Buffer exceeds the editable content limit" },
+					{ "a\0b\n", "Buffer is oversized or contains unsupported text" },
+					{ "\192\175\n", "Buffer is oversized or contains unsupported text" },
+				}) do
+					local value, expected_message = input[1], input[2]
 					local f, s = setup()
 					local path = f.root .. "/unsupported.txt"
 					local out = assert(io.open(path, "wb"))
@@ -270,6 +275,8 @@ return function(ctx)
 						return #messages > 0
 					end, "transfer rejection")
 					local buf = api.nvim_get_current_buf()
+					local transfer_message = messages[1]
+					messages = {}
 					local transfer_clean = state.get(buf) == nil and state.get(s.editable_bufnr) == nil
 					local task = actions.open({ silent = true })
 					if task then
@@ -279,6 +286,10 @@ return function(ctx)
 					end
 					local opened = state.get(buf)
 					util.notify = original
+					assert(
+						transfer_message and transfer_message:find(expected_message, 1, true),
+						tostring(transfer_message)
+					)
 					assert(
 						transfer_clean and not opened,
 						"transfer_clean="
@@ -375,7 +386,7 @@ return function(ctx)
 				local ok, err = xpcall(function()
 					actions.refresh_current()
 					requests[1](nil, "temporary timeout")
-					actions.next_hunk()
+					actions.refresh_current()
 					assert(#requests == 2, "failed reload retry requests=" .. #requests)
 					requests[2]({
 						base_bytes = "one\ntwo\nthree\nfour\nfive\n",

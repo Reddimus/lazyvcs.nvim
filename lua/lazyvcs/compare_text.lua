@@ -20,8 +20,24 @@ local M = {}
 ---@field profile_key string
 ---@field endofline boolean
 ---@field fixendofline boolean
+---@field modified boolean
 ---@field binary boolean
 ---@field empty boolean
+
+-- Neovim can write a final newline without updating 'endofline'. Keep clean
+-- captures faithful to the bytes just written, including when signs are disabled.
+function M.setup()
+	local group = vim.api.nvim_create_augroup("lazyvcs_text", { clear = true })
+	vim.api.nvim_create_autocmd("BufWritePost", {
+		group = group,
+		callback = function(args)
+			local bo = vim.bo[args.buf]
+			if bo.fixendofline and not bo.binary and not bo.endofline then
+				bo.endofline = true
+			end
+		end,
+	})
+end
 
 local function valid_buffer(bufnr)
 	return vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_is_loaded(bufnr)
@@ -193,9 +209,11 @@ function M.capture(bufnr, limit_bytes)
 	if empty then
 		lines = {}
 	end
+	local bo = vim.bo[bufnr]
+	local write_eol = bo.modified and bo.fixendofline and not profile.binary
 	local result = {
 		lines = lines,
-		eol = not empty and (vim.bo[bufnr].endofline or (vim.bo[bufnr].fixendofline and not profile.binary)),
+		eol = not empty and (bo.endofline or write_eol),
 		empty = empty,
 		encoding = profile.fileencoding,
 		bom = profile.bomb,
@@ -224,6 +242,7 @@ function M.identity(bufnr)
 		profile_key = profile.key,
 		endofline = vim.bo[bufnr].endofline,
 		fixendofline = vim.bo[bufnr].fixendofline,
+		modified = vim.bo[bufnr].modified,
 		binary = profile.binary,
 		empty = is_empty(bufnr, candidate),
 	}

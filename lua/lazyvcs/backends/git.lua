@@ -149,11 +149,11 @@ local function encoding_sync(root, relpath)
 	return { encoding = encoding, attribute = attribute }
 end
 
-local function finish_index_payload(task, root, relpath, payload)
+local function finish_index_payload(task, root, relpath, payload, opts)
 	task:add(
 		process.bytes(
 			{ "git", "check-attr", "-z", "working-tree-encoding", "--", relpath },
-			{ cwd = root },
+			{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
 			function(records, err)
 				if not records then
 					return task:finish(nil, err)
@@ -410,7 +410,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 								payload.name = M.name
 								payload.impl = M
 							end
-							finish_index_payload(task, root, relpath, payload)
+							finish_index_payload(task, root, relpath, payload, opts)
 						end))
 					end
 				)
@@ -428,7 +428,8 @@ function M.load_base_async(path, on_done, opts)
 	return load_payload_async(path, on_done, opts, true)
 end
 
-local function conflict_base_async(path, root, relpath, callback)
+local function conflict_base_async(path, root, relpath, callback, opts)
+	opts = opts or {}
 	local task = Task.new(callback)
 	task:add(entry.classify_async(path, function(kind, err)
 		local valid, why = entry.editable(kind, err)
@@ -464,7 +465,13 @@ local function conflict_base_async(path, root, relpath, callback)
 						if bytes == nil then
 							return task:finish(nil, show_err)
 						end
-						finish_index_payload(task, root, relpath, { base_bytes = bytes, base_identity = identity })
+						finish_index_payload(
+							task,
+							root,
+							relpath,
+							{ base_bytes = bytes, base_identity = identity },
+							opts
+						)
 					end))
 				end
 			)
@@ -479,7 +486,7 @@ function M.validate_editable_base_async(path, identity, callback, opts)
 		callback(valid, err or (not valid and "Hunk base changed; retry the action" or nil))
 	end
 	if identity.index_stages then
-		return conflict_base_async(path, identity.root, identity.relpath, loaded)
+		return conflict_base_async(path, identity.root, identity.relpath, loaded, opts)
 	end
 	return M.load_base_async(path, loaded, opts)
 end
@@ -632,9 +639,11 @@ function M.load_diff_target_async(target, on_done, opts)
 				task:finish(comparison)
 			end
 			if comparison.kind == "git_conflict" then
-				task:add(conflict_base_async(comparison.path, comparison.root, comparison.relpath, loaded))
+				task:add(conflict_base_async(comparison.path, comparison.root, comparison.relpath, loaded, opts))
 			else
-				task:add(M.load_base_async(comparison.path, loaded, { root = comparison.root }))
+				task:add(
+					M.load_base_async(comparison.path, loaded, { root = comparison.root, timeout_ms = opts.timeout_ms })
+				)
 			end
 		else
 			task:finish(comparison)
@@ -935,6 +944,11 @@ function M.blame_lines_async(path, on_done, opts)
 						vim.list_extend(blame_args, { "--contents", "-" })
 						blame_opts.stdin = type(opts.contents) == "table" and util.join_lines(opts.contents)
 							or tostring(opts.contents)
+						-- Buffer lines omit DOS separators. Restore them for Git's byte-based
+						-- --contents comparison so unchanged CRLF lines retain their history.
+						if opts.fileformat == "dos" then
+							blame_opts.stdin = blame_opts.stdin:gsub("\n", "\r\n")
+						end
 					end
 					vim.list_extend(blame_args, { "--", relpath })
 					task:add(process.lines(blame_args, blame_opts, function(lines, blame_err)

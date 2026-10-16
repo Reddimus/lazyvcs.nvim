@@ -123,7 +123,8 @@ return function()
 					assert(empty.empty and text.serialize(empty) == "", "empty placeholder became a newline")
 					api.nvim_buf_set_lines(buf, 0, -1, false, { "a", "b" })
 					vim.bo[buf].endofline = false
-					vim.bo[buf].fixendofline = false
+					-- Seed a clean read state; modified buffers follow fixendofline.
+					vim.bo[buf].modified = false
 					local before = assert(text.identity(buf))
 					local content = assert(text.capture(buf, 1024))
 					assert(text.serialize(content) == "a\nb")

@@ -100,6 +100,7 @@ function M.open(first, last)
 		target = { path = util.buf_path(source) }
 	end
 	target.first, target.last = first, last
+	target.fileformat = vim.bo[source].fileformat
 	local path = target.path
 	local bytes = target.snapshot and util.buffer_size(source)
 		or math.max(util.file_size(path), util.buffer_size(source))

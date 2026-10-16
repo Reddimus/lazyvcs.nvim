@@ -758,7 +758,7 @@ function M.load_diff_target_async(target, on_done, opts)
 				local raw_side = comparison.editable_side == "right"
 					and side == comparison.left
 					and source.kind == "svn_object"
-				local loader = process.bytes
+				local loader = source.kind == "svn_object" and process.bytes or process.lines
 				task:add(loader(args, {
 					cwd = comparison.root,
 					timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
@@ -782,7 +782,7 @@ function M.load_diff_target_async(target, on_done, opts)
 					if raw_side then
 						side.bytes, side.lines = lines, nil
 					else
-						side.lines = util.split_lines(lines)
+						side.lines = type(lines) == "string" and util.split_lines(lines) or lines
 					end
 					complete()
 				end))
@@ -902,7 +902,7 @@ function M.blame_lines_async(path, on_done, opts)
 											end
 											return task:finish(nil, blame_err)
 										end
-										task:add(process.bytes({ "svn", "cat", "-r", "BASE", literal_target(path) }, {
+										task:add(process.lines({ "svn", "cat", "-r", "BASE", literal_target(path) }, {
 											cwd = root,
 											timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 										}, function(base, base_err)
@@ -919,7 +919,7 @@ function M.blame_lines_async(path, on_done, opts)
 											task:finish(
 												require("lazyvcs.backends.blame_mapping").map(
 													lines,
-													util.split_lines(base),
+													base,
 													current,
 													"     - - -"
 												),

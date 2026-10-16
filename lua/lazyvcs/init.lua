@@ -14,6 +14,7 @@ end
 
 function M.setup(opts)
 	local resolved = config.setup(opts)
+	require("lazyvcs.compare_text").setup()
 	require("lazyvcs.commands").setup()
 	require("lazyvcs.signs").setup()
 	require("lazyvcs.blame").setup()

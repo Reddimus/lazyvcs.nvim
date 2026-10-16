@@ -41,7 +41,10 @@ and this project adheres to
 - Cancel hunk and whole-file reverts after the invoking context changes, and
   identify the whole-file target in its confirmation.
 - Invalidate cached hunk bases after buffer renames and reject stale loads.
-- Preserve CRLF, BOMs, and supported file encodings in native hunk reverts.
+- Report no hunks for unchanged CRLF, BOM, Latin-1, and UTF-16 files, and
+  preserve their line endings and encoding in native hunk reverts.
+- Keep Git blame history for unchanged lines of CRLF files in inline blame,
+  blame splits, line history, and selection reports.
 - Refuse editable hunk bases from Git or SVN symlinks, including entry changes
   during confirmation.
 - Detect and revert final-newline changes and distinguish empty files from blank

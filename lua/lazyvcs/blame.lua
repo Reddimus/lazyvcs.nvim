@@ -321,7 +321,11 @@ local function load_inline(bufnr, path, backend)
 				live.entries = backend.parse_blame_entries(lines)
 				render_inline(bufnr)
 			end, failed),
-			{ contents = util.join_lines(util.get_buf_lines(bufnr)), root = select(2, backends.resolve_cached(path)) }
+			{
+				contents = util.join_lines(util.get_buf_lines(bufnr)),
+				fileformat = vim.bo[bufnr].fileformat,
+				root = select(2, backends.resolve_cached(path)),
+			}
 		)
 	end, failed)()
 end
@@ -787,7 +791,7 @@ function M.blame_split()
 						debounce()
 					end
 				end),
-				{ contents = contents, root = root }
+				{ contents = contents, fileformat = vim.bo[captured.bufnr].fileformat, root = root }
 			)
 		end
 		local backend, root = backends.resolve_cached(captured.name)
@@ -948,7 +952,7 @@ function M.line_log()
 					{ root = root }
 				)
 			end),
-			{ contents = contents, root = root }
+			{ contents = contents, fileformat = vim.bo[captured.bufnr].fileformat, root = root }
 		)
 	end)
 	safe(function()

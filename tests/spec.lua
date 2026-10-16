@@ -7154,6 +7154,7 @@ vim.list_extend(cases, require("spec_mutation_start")({ helpers = helpers, wait_
 vim.list_extend(cases, require("spec_copilotchat_context")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_confirm")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_window_options")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_revert_integrity")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_text")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))
 vim.list_extend(cases, require("spec_compare_text")())
 vim.list_extend(cases, require("spec_revert_context")({ helpers = helpers, wait_for = wait_for }))
