@@ -227,14 +227,15 @@ return function(ctx)
 					.. " disk="
 					.. vim.inspect(disk)
 			)
+			-- 'fileformats' defaults to dos first on Windows, so the written separator follows the buffer.
+			local nl = vim.bo[buf].fileformat == "dos" and "\r\n" or "\n"
 			assert(
-				disk == "beta\n" and vim.bo[buf].endofline and not vim.bo[buf].modified,
+				disk == "beta" .. nl and vim.bo[buf].endofline and not vim.bo[buf].modified,
 				"write did not synchronize EOF without modification"
 			)
-			assert(
-				require("lazyvcs.compare_text").serialize(assert(require("lazyvcs.compare_text").capture(buf, 1024)))
-					== disk
-			)
+			local text = require("lazyvcs.compare_text")
+			local read = assert(text.decode(disk, assert(text.profile(buf)), 1024))
+			assert(text.serialize(assert(text.capture(buf, 1024))) == text.serialize(read))
 		end,
 	}
 	cases[#cases + 1] = {
@@ -408,7 +409,8 @@ return function(ctx)
 			local fd = assert(io.open(f.file, "rb"))
 			local bytes = fd:read("*a")
 			fd:close()
-			assert(bytes == "alpha\n", "update did not write the restored newline: " .. vim.inspect(bytes))
+			local nl = vim.bo[buf].fileformat == "dos" and "\r\n" or "\n"
+			assert(bytes == "alpha" .. nl, "update did not write the restored newline: " .. vim.inspect(bytes))
 		end,
 	}
 	cases[#cases + 1] = {

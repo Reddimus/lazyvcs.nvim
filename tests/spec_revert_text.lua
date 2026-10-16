@@ -320,6 +320,7 @@ return function(ctx)
 		cases[#cases + 1] = {
 			"test_capture_fixendofline_matches_written_bytes",
 			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
 				local f = h.make_git_fixture()
 				write(f.file, "alpha")
 				vim.cmd.edit(vim.fn.fnameescape(f.file))
@@ -331,8 +332,9 @@ return function(ctx)
 				local bytes = file:read("*a")
 				file:close()
 				local captured = assert(text.capture(buf, 1024))
+				local read = assert(text.decode(bytes, assert(text.profile(buf)), 1024))
 				assert(
-					text.serialize(captured) == bytes,
+					text.serialize(captured) == text.serialize(read),
 					"endofline="
 						.. tostring(vim.bo.endofline)
 						.. " fixendofline="
