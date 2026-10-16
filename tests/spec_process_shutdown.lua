@@ -55,7 +55,10 @@ return function(ctx)
 					"sidebar teardown ran before runtime shutdown"
 				)
 			end
-			assert(p.dead(f.root .. "/status") and p.dead(f.root .. "/fetch"), "read-only commands survived")
+			-- Shutdown requests KILL without waiting for the kernel to finish termination.
+			ctx.wait_for(function()
+				return p.dead(f.root .. "/status") and p.dead(f.root .. "/fetch")
+			end, "read-only commands survived", 3000)
 			local path = vim.fn.readfile(f.root .. "/message-path")[1]
 			assert(vim.fn.filereadable(path) == 1, "commit message file disappeared at editor exit")
 			h.write_file(f.root .. "/release", "finish")
@@ -141,8 +144,13 @@ return function(ctx)
 							{ root, f.root, guarded }
 						)
 						assert(p.alive(p.pid(f.root .. "/mutation.pid")), "running mutation died at editor shutdown")
-						assert(p.dead(f.root .. "/status"), "status survived editor shutdown")
-						assert(p.dead(f.root .. "/fetch"), "fetch survived editor shutdown")
+						-- Shutdown requests KILL without waiting for the kernel to finish termination.
+						ctx.wait_for(function()
+							return p.dead(f.root .. "/status")
+						end, "status survived editor shutdown", 3000)
+						ctx.wait_for(function()
+							return p.dead(f.root .. "/fetch")
+						end, "fetch survived editor shutdown", 3000)
 						assert(vim.fn.filereadable(f.root .. "/queued") == 0, "queued mutation started during shutdown")
 						h.write_file(f.root .. "/release", "finish")
 						ctx.wait_for(function()

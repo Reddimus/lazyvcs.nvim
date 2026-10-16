@@ -21,7 +21,7 @@ end
 -- Filesystem data and Lua API paths use util.normalize_literal_path instead.
 local function path_arg(args, expand)
 	local path = args[1]
-	return (path and path ~= "") and (expand and vim.fs.normalize(path) or path) or nil
+	return (path and path ~= "") and (expand and require("lazyvcs.util").expand_user_path(path) or path) or nil
 end
 
 local function show_profile(args)
@@ -42,7 +42,7 @@ local function show_profile(args)
 			item.root or ""
 		)
 		if item.error and item.error ~= "" then
-			for _, line in ipairs(require("lazyvcs.util").split_lines(item.error)) do
+			for _, line in ipairs(require("lazyvcs.util").split_text_lines(item.error)) do
 				lines[#lines + 1] = "  " .. line
 			end
 		end

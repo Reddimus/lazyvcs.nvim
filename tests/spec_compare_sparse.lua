@@ -23,6 +23,51 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_core_compare_sparse_preview_uses_full_byte_limit",
+			guarded(function()
+				local f = h.make_git_fixture()
+				vim.fn.mkdir(f.root .. "/visible", "p")
+				vim.fn.mkdir(f.root .. "/excluded", "p")
+				h.write_file(f.root .. "/visible/file", "visible")
+				local sizes = { 700001, common.max_file_bytes, common.max_file_bytes + 1 }
+				for _, size in ipairs(sizes) do
+					h.write_file(f.root .. "/excluded/" .. size, "base")
+				end
+				h.exec({ "git", "add", "." }, f.root)
+				h.exec({ "git", "commit", "-m", "base" }, f.root)
+				for _, size in ipairs(sizes) do
+					h.write_file(f.root .. "/excluded/" .. size, string.rep("x", size - 1) .. "\n")
+				end
+				h.exec({ "git", "add", "." }, f.root)
+				h.exec({ "git", "commit", "-m", "large contents" }, f.root)
+				h.exec({ "git", "sparse-checkout", "init", "--cone" }, f.root)
+				h.exec({ "git", "sparse-checkout", "set", "visible" }, f.root)
+				local snapshot = assert(await(function(done)
+					provider.resolve({ root = f.root }, "HEAD^", done)
+				end))
+				for _, size in ipairs(sizes) do
+					local path = "excluded/" .. size
+					local result, err = await(function(done)
+						provider.preview(snapshot, { relpath = path, status = "M" }, done)
+					end)
+					if size <= common.max_file_bytes then
+						assert(result, "supported sparse preview rejected: " .. tostring(err))
+						assert(
+							table.concat(result.right, "\n") .. "\n" == string.rep("x", size - 1) .. "\n",
+							"sparse preview bytes changed"
+						)
+						assert(result.right_label == "INDEX (sparse checkout)")
+					else
+						assert(
+							not result and err and err:find("1 MiB", 1, true),
+							"oversized sparse preview was accepted"
+						)
+					end
+					assert(not vim.uv.fs_lstat(f.root .. "/" .. path), "sparse preview materialized the file")
+				end
+			end),
+		},
+		{
 			"test_core_compare_sparse_omitted_path_uses_index",
 			guarded(function()
 				local f = h.make_git_fixture()

@@ -152,16 +152,26 @@ function M.render(s)
 	)
 end
 
-function M.layout(columns, manual, auto, content)
-	local available = math.max(1, columns - 3)
-	local compact = math.min(manual, available)
-	local stacked = columns - compact - 2 < 90
-	local cap = math.floor(columns / 2)
+---@param constraints? { min_width: integer, min_height: integer, height: integer }
+---@return integer width, boolean stacked, string? err
+function M.layout(columns, manual, auto, content, constraints)
+	constraints = constraints or { min_width = 1, min_height = 1, height = vim.o.lines - 4 }
+	local minimum = math.max(1, constraints.min_width)
+	local compact = math.max(minimum, manual)
+	local can_stack = constraints.height >= 2 * math.max(1, constraints.min_height) + 3
+	local can_columns = columns >= 3 * minimum + 2
+	local stacked = (columns - compact - 2 < 90 or not can_columns) and can_stack
+	if columns < 2 * minimum + 1 or (not stacked and not can_columns) then
+		return minimum, stacked, "Not enough room for comparison panes"
+	end
+	local available = columns - (stacked and minimum + 1 or 2 * minimum + 2)
+	compact = math.min(compact, available)
+	local cap = math.min(math.floor(columns / 2), available)
 	if not stacked then
-		cap = math.min(cap, columns - 92)
+		cap = math.min(cap, math.max(compact, columns - 92))
 	end
 	local width = auto and math.max(compact, math.min(cap, content + 1)) or compact
-	return math.max(1, math.min(width, available)), stacked
+	return math.max(minimum, math.min(width, available)), stacked
 end
 
 M.highlights()

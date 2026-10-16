@@ -2,6 +2,8 @@ local common = require("lazyvcs.backends.comparison")
 local util = require("lazyvcs.util")
 local M = {}
 
+-- Git writes LF on Windows too; splitting its output must preserve literal CR bytes.
+
 local function command(task, repo, args, cb, opts)
 	local argv = { "git", "--literal-pathspecs" }
 	vim.list_extend(argv, args)
@@ -23,7 +25,7 @@ function M.context(repo, callback)
 					return task:finish(nil, refs_err)
 				end
 				local context = { branch = branch and util.trim(branch), candidates = {}, suggestion = nil }
-				for line in refs:gmatch("[^\n]+") do
+				for _, line in ipairs(util.split_lines(refs)) do
 					local name, target = line:match("^(.-)\t(.*)$")
 					if name and target == "" then
 						context.candidates[#context.candidates + 1] = name:gsub("^refs/heads/", "")
@@ -339,7 +341,7 @@ local function load_saved_side(task, snapshot, item, done)
 					end
 					done(blob, entry)
 				end)
-			end, { output_limit_bytes = common.max_file_bytes })
+			end, { output_limit_bytes = 2 * common.max_file_bytes })
 		end)
 	end)
 end

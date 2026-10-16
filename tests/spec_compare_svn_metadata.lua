@@ -14,7 +14,596 @@ return function(ctx)
 	local function contains(lines, text)
 		return lines and table.concat(lines, "\n"):find(text, 1, true)
 	end
+	local function set_property(f, path, name, value)
+		local propfile = h.tempdir() .. "/property"
+		local file = assert(io.open(propfile, "wb"))
+		file:write(value)
+		file:close()
+		h.exec({ "svn", "propset", name, "--file", propfile, "--", path .. "@" }, f.root)
+	end
+	local function directory_preview(f, path, status, snapshot)
+		return await(function(done)
+			provider.preview(
+				snapshot or { root = f.root, url = h.file_url(f.repo), revision = "HEAD" },
+				{ relpath = path, kind = "dir", status = status or "M", property_only = true },
+				done
+			)
+		end)
+	end
+	-- Diff writes binary value/content bytes, with native endings only on SVN's syntax.
+	local function windows_diff(raw)
+		local lines, in_hunk = vim.split(raw, "\n", { plain = true }), false
+		for index = 1, #lines - 1 do
+			local line = lines[index]
+			if line:match("^Index: ") or line:match("^Property changes on: ") then
+				in_hunk = false
+			elseif line:match("^## ") or line:match("^@@ ") then
+				in_hunk = true
+			end
+			local generated = not in_hunk or not line:match("^[ +%-]")
+			if line:match("^\\ No newline at end of ") then
+				-- SVN adds a native newline after an unterminated value/content line.
+				lines[index - 1] = lines[index - 1] .. "\r"
+			end
+			lines[index] = line .. (generated and "\r" or "")
+		end
+		return table.concat(lines, "\n")
+	end
+	-- XML uses text-mode stdout, which translates every LF, including value bytes.
+	local function with_windows_stdout(check, capture)
+		local util = require("lazyvcs.util")
+		local start, has = util.system_start, vim.fn.has
+		local native_windows = has("win32") == 1
+		local seen = {}
+		---@diagnostic disable-next-line: duplicate-set-field
+		vim.fn.has = function(feature)
+			return feature == "win32" and 1 or has(feature)
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.system_start = function(args, opts, done)
+			return start(args, opts, function(raw, err, result)
+				if args[1] == "svn" and opts.text == false and raw and raw.stdout then
+					local subcommand = args[2] == "--non-interactive" and args[3] or args[2]
+					local untranslated = raw.stdout
+					seen[subcommand] = true
+					if not native_windows then
+						if vim.tbl_contains(args, "--xml") then
+							raw.stdout = raw.stdout:gsub("\n", "\r\n")
+						elseif subcommand == "diff" then
+							raw.stdout = windows_diff(raw.stdout)
+						end
+					end
+					if capture then
+						capture(args, raw.stdout, not native_windows and untranslated or nil)
+					end
+				end
+				done(raw, err, result)
+			end)
+		end
+		local ok, err = xpcall(check, debug.traceback)
+		util.system_start, vim.fn.has = start, has
+		assert(ok, err)
+		return seen
+	end
+	local function property_value_line_endings()
+		local f = h.make_svn_fixture()
+		h.exec({ "svn", "revert", f.file }, f.root)
+		h.exec({ "svn", "mkdir", "folder" }, f.root)
+		for index, case in ipairs({
+			{
+				before = "one\ntwo\n",
+				changes = {
+					{ "one\r\ntwo\r\n", { "-one", "-two", "+one\r", "+two\r" } },
+					{ "one\ntwo\nlast", { " one", " two", "+last" } },
+					{ "one\ntwo\nlast\r", { " one", " two", "+last\r" } },
+					{ "one\r\ntwo\r\nlast", { "-one", "-two", "+one\r", "+two\r", "+last" } },
+				},
+			},
+			{
+				before = "one\r\ntwo\r\n",
+				changes = { { "one\ntwo\n", { "-one\r", "-two\r", "+one", "+two" } } },
+			},
+		}) do
+			for _, path in ipairs({ "sample.txt", "folder" }) do
+				set_property(f, path, "custom:lines", case.before)
+			end
+			h.exec({ "svn", "commit", "-m", "property line endings" }, f.root)
+			h.exec({ "svn", "update" }, f.root)
+			local snapshot = assert(await(function(done)
+				return provider.resolve({ root = f.root }, h.file_url(f.repo) .. "@" .. (index + 1), done)
+			end))
+			for _, values in ipairs(case.changes) do
+				for _, path in ipairs({ "sample.txt", "folder" }) do
+					set_property(f, path, "custom:lines", values[1])
+					local result, err = await(function(done)
+						provider.preview(snapshot, {
+							relpath = path,
+							kind = path == "folder" and "dir" or "file",
+							status = "M",
+							property_only = true,
+						}, done)
+					end)
+					assert(result, err)
+					local content = {}
+					for _, line in ipairs(result.right) do
+						if line:match("^[ +%-]") and not line:match("^%-%-%- ") and not line:match("^%+%+%+ ") then
+							content[#content + 1] = line
+						end
+					end
+					assert(vim.deep_equal(content, values[2]), path .. ": " .. vim.inspect(content))
+				end
+			end
+		end
+	end
 	return {
+		{
+			"test_svn_compare_property_value_line_endings",
+			property_value_line_endings,
+		},
+		{
+			"test_svn_compare_windows_property_value_line_endings",
+			function()
+				local seen = with_windows_stdout(property_value_line_endings)
+				assert(seen.info and seen.diff and seen.proplist, "Windows stdout hook missed a property read")
+			end,
+		},
+		{
+			"test_svn_compare_windows_raw_xml_diff_and_cat",
+			function()
+				local f = h.make_svn_fixture()
+				local bytes = "one\r\r\ntwo\r\nlast\r"
+				local file = assert(io.open(f.file, "wb"))
+				file:write(bytes)
+				file:close()
+				set_property(f, "sample.txt", "custom:lines", "one\ntwo\r\nlast\r")
+				h.exec({ "svn", "commit", "-m", "binary stdout and XML" }, f.root)
+				set_property(f, "sample.txt", "custom:lines", "changed\nvalue\r\n")
+				file = assert(io.open(f.file, "wb"))
+				file:write("changed\r\nvalue\r\nlast\r")
+				file:close()
+				local cases = {
+					{ "info", "--xml", "." },
+					{ "ls", "--xml", "." },
+					{ "status", "--xml", "." },
+					{ "log", "--xml", "-r", "2", "." },
+					{ "proplist", "--xml", "--verbose", "sample.txt" },
+					{ "propget", "--xml", "custom:lines", "sample.txt" },
+					{ "diff", "--properties-only", "sample.txt" },
+					{ "diff", "--summarize", "--xml", "sample.txt" },
+					{ "diff", "sample.txt" },
+					{ "cat", "-r", "2", "sample.txt" },
+				}
+				for _, args in ipairs(cases) do
+					table.insert(args, 1, "svn")
+				end
+				local expected
+				local common = require("lazyvcs.backends.comparison")
+				local seen = with_windows_stdout(function()
+					for _, args in ipairs(cases) do
+						local actual = await(function(done)
+							local task = common.task(done)
+							common.command(task, { root = f.root }, args, function(raw, err)
+								task:finish(raw, err)
+							end)
+						end)
+						assert(actual, args[2] .. " returned no raw stdout")
+						assert(actual == expected, args[2] .. " changed raw stdout bytes")
+						if args[2] == "diff" and not vim.tbl_contains(args, "--xml") then
+							assert(actual:find("Index: sample.txt\r\n", 1, true), "missing native diff header ending")
+							assert(actual:find("+value\r\n", 1, true), "diff value lost its CR byte")
+							if not vim.tbl_contains(args, "--properties-only") then
+								assert(actual:find("+changed\r\n", 1, true), "diff content bytes changed")
+							end
+						end
+						if args[2] == "cat" then
+							assert(actual == bytes, "svn cat changed committed bytes")
+						end
+					end
+				end, function(args, raw, untranslated)
+					-- Compare against this invocation: SVN XML attribute order can vary.
+					-- Native Windows has no untranslated XML, so it checks the inverse.
+					if vim.tbl_contains(args, "--xml") then
+						expected = untranslated or raw:gsub("\r\n", "\n")
+					else
+						expected = raw
+					end
+				end)
+				for _, args in ipairs(cases) do
+					assert(seen[args[2]], args[2] .. " missed the raw stdout hook")
+				end
+			end,
+		},
+		{
+			"test_svn_compare_directory_property_whitespace_linear",
+			function()
+				local f = h.make_svn_fixture()
+				h.exec({ "svn", "mkdir", "padding" }, f.root)
+				set_property(f, "padding", "custom:padding", string.rep(" ", 300000))
+				local started = vim.uv.hrtime()
+				local result, err = directory_preview(f, "padding", "A")
+				assert(result, err)
+				assert(contains(result.right, "+" .. string.rep(" ", 300000)), "whitespace value was trimmed")
+				assert((vim.uv.hrtime() - started) / 1e9 < 5, "whitespace property parsing took over five seconds")
+			end,
+		},
+		{
+			"test_svn_compare_directory_property_literal_hex_text",
+			function()
+				local f = h.make_svn_fixture()
+				h.exec({ "svn", "mkdir", "text" }, f.root)
+				set_property(f, "text", "custom:text", "see <42> café\n")
+				set_property(f, "text", "custom:invalid", "invalid \255\n")
+				local result, err = directory_preview(f, "text", "A")
+				assert(result, err)
+				assert(contains(result.right, "+see <42> café"), "literal hex text was treated as binary")
+				assert(contains(result.right, "[base64] " .. vim.base64.encode("invalid \255\n")))
+			end,
+		},
+		{
+			"test_svn_compare_root_and_canonical_url_properties",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = h.make_svn_fixture()
+				h.exec({ "svn", "revert", f.file }, f.root)
+				local paths = { ".", "dir &@'()", "dir %23#", "dir ;café", "dir !$+,=" }
+				-- Windows rejects * : ? in file names.
+				if vim.fn.has("win32") ~= 1 then
+					paths[#paths + 1] = "dir *!+,=:?"
+				end
+				for _, path in ipairs(paths) do
+					if path ~= "." then
+						h.exec({ "svn", "mkdir", "--", path .. "@" }, f.root)
+					end
+					set_property(f, path, "custom:value", "BEFORE\n")
+				end
+				h.exec({ "svn", "commit", "-m", "property targets" }, f.root)
+				h.exec({ "svn", "update" }, f.root)
+				local url = h.exec({ "svn", "info", "--show-item", "url", "." }, f.root):gsub("%s+$", "")
+				local revision = h.exec({ "svn", "info", "--show-item", "revision", "." }, f.root):match("%d+")
+				-- A trailing slash is accepted as input but is absent in svn info's URL.
+				local base = url .. "/@" .. assert(revision)
+				local snapshot = assert(await(function(done)
+					provider.resolve({ root = f.root }, base, done)
+				end))
+				assert(snapshot.url == url and snapshot.url ~= url .. "/", "snapshot retained the input URL")
+				assert(snapshot.base == base and snapshot.revision == revision)
+				for _, path in ipairs(paths) do
+					set_property(f, path, "custom:value", "AFTER\n")
+					local result, err = directory_preview(f, path, nil, snapshot)
+					assert(result, path .. ": " .. tostring(err))
+					assert(contains(result.right, "-BEFORE") and contains(result.right, "+AFTER"))
+				end
+				assert(require("lazyvcs.backends.svn_url").append_path(url, ".") == url)
+				local s = assert(compare.open({ path = f.root, base = base }))
+				local ok, err = xpcall(function()
+					ctx.wait_for(function()
+						return s.preview_result
+					end, "root property rows did not load", 15000)
+					api.nvim_set_current_win(s.sidewin)
+					api.nvim_win_set_cursor(s.sidewin, { assert(s.row_by_path["."]), 0 })
+					s.actions.preview()
+					ctx.wait_for(function()
+						return s.preview_result and s.shown_item.relpath == "."
+					end, "root property preview did not load", 15000)
+					assert(contains(api.nvim_buf_get_lines(s.right, 0, -1, false), "+AFTER"))
+				end, debug.traceback)
+				compare.close(s)
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_svn_compare_cr_property_and_xml_attributes",
+			function()
+				local f = h.make_svn_fixture()
+				local path = "dir & 'entities'"
+				h.exec({ "svn", "mkdir", path }, f.root)
+				set_property(f, path, "custom:cr", "first\rsecond\r\nthird\n")
+				local raw = h.exec({ "svn", "proplist", "--xml", "--verbose", path }, f.root)
+				assert(raw:find("&#13;", 1, true), "SVN did not emit numeric CR references")
+				local result, err = directory_preview(f, path, "A")
+				assert(result, err)
+				assert(contains(result.right, "first\rsecond"), "numeric CR entity was not decoded")
+				local xml = require("lazyvcs.backends.xml")
+				local attrs = xml.attributes([[path="dir &amp; &apos;entities&apos;" name="custom:&#x63;&#114;"]])
+				assert(attrs.path == path and attrs.name == "custom:cr", "attribute entities were not decoded")
+			end,
+		},
+		{
+			"test_svn_compare_directory_properties_are_pinned_and_shallow",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = h.make_svn_fixture()
+				h.exec({ "svn", "revert", f.file }, f.root)
+				h.exec({ "svn", "mkdir", "selected", "selected/child", "deleted" }, f.root)
+				local propfile = h.tempdir() .. "/property"
+				local function set(path, name, value)
+					local file = assert(io.open(propfile, "wb"))
+					file:write(value)
+					file:close()
+					h.exec({ "svn", "propset", name, "--file", propfile, path }, f.root)
+				end
+				set("selected", "custom:modified", "PINNED VALUE\n")
+				set("selected", "custom:deleted", "DELETE VALUE\n")
+				set("selected", "custom:empty", "NONEMPTY\n")
+				set("deleted", "custom:removed", "REMOVED DIRECTORY\n")
+				h.exec({ "svn", "commit", "-m", "pinned properties" }, f.root)
+				h.exec({ "svn", "update" }, f.root)
+				set("selected", "custom:modified", "WORKING PROBE\n")
+				local initial = assert(await(function(done)
+					provider.preview(
+						{ root = f.root, url = h.file_url(f.repo), revision = "2" },
+						{ relpath = "selected", kind = "dir", status = "M", property_only = true },
+						done
+					)
+				end))
+				assert(contains(initial.right, "WORKING PROBE"), "directory property preview was empty")
+				set("selected", "custom:modified", "WC BASE ONLY\n")
+				h.exec({ "svn", "commit", "-m", "advance BASE" }, f.root)
+				h.exec({ "svn", "update" }, f.root)
+				set("selected", "custom:modified", "WORKING VALUE\n")
+				set("selected", "custom:empty", "")
+				set("selected", "custom:escaped", "<&> \"quoted\" 'value'\n")
+				set("selected", "custom:binary", "a\0b\1")
+				set("selected/child", "custom:child", "CHILD MUST NOT APPEAR\n")
+				h.exec({ "svn", "propdel", "custom:deleted", "selected" }, f.root)
+				h.exec({ "svn", "mkdir", "added" }, f.root)
+				set("added", "custom:new", "ADDED DIRECTORY\n")
+				h.exec({ "svn", "delete", "deleted" }, f.root)
+				local snapshot = assert(await(function(done)
+					provider.resolve({ root = f.root }, h.file_url(f.repo) .. "@2", done)
+				end))
+				local items = assert(await(function(done)
+					provider.list(snapshot, false, done)
+				end))
+				local by_path = {}
+				for _, item in ipairs(items) do
+					by_path[item.relpath] = item
+				end
+				local function preview(item)
+					return await(function(done)
+						provider.preview(snapshot, item or by_path.selected, done)
+					end)
+				end
+				local result, err = preview()
+				assert(result, err)
+				assert(
+					contains(result.right, "-PINNED VALUE") and contains(result.right, "+WORKING VALUE"),
+					"directory patch did not compare pinned and working properties"
+				)
+				assert(
+					not contains(result.right, "WC BASE ONLY") and not contains(result.right, "CHILD MUST NOT APPEAR"),
+					"directory patch used BASE or descendants"
+				)
+				assert(
+					contains(result.right, "Deleted: custom:deleted")
+						and contains(result.right, "Modified: custom:empty")
+				)
+				assert(
+					contains(result.right, "<&> \"quoted\" 'value'")
+						and contains(result.right, "[base64] " .. vim.base64.encode("a\0b\1"))
+				)
+				assert(vim.deep_equal(result.right, result.properties), "directory metadata differs from text")
+				assert(contains(assert(preview(assert(by_path.added))).right, "ADDED DIRECTORY"))
+				assert(contains(assert(preview(assert(by_path.deleted))).right, "REMOVED DIRECTORY"))
+				for _, name in ipairs({ "dir &@%#" }) do
+					local path = f.root .. "/" .. name
+					vim.fn.mkdir(path, "p")
+					h.exec({ "svn", "add", path .. "@" }, f.root)
+					set(path .. "@", "custom:literal", "LITERAL DIRECTORY")
+					assert(
+						contains(
+							assert(preview({ relpath = name, kind = "dir", status = "A", property_only = true })).right,
+							"LITERAL DIRECTORY"
+						)
+					)
+				end
+				local common, util = require("lazyvcs.backends.comparison"), require("lazyvcs.util")
+				local command, start = common.command, util.system_start
+				local s
+				local ok, failure = xpcall(function()
+					s = assert(compare.open({ path = f.root, base = h.file_url(f.repo) .. "@2" }))
+					ctx.wait_for(function()
+						return s.preview_result
+					end, "directory comparison did not load", 15000)
+					api.nvim_set_current_win(s.sidewin)
+					api.nvim_win_set_cursor(s.sidewin, { assert(s.row_by_path.selected), 0 })
+					s.actions.preview()
+					ctx.wait_for(function()
+						return s.preview_result and s.shown_item.relpath == "selected"
+					end, "directory preview did not load", 15000)
+					assert(contains(api.nvim_buf_get_lines(s.right, 0, -1, false), "PINNED VALUE"))
+					s.actions.metadata()
+					assert(contains(api.nvim_buf_get_lines(s.left, 0, -1, false), "WORKING VALUE"))
+					compare.close(s)
+					s = nil
+					local held, delivered
+					---@diagnostic disable-next-line: duplicate-set-field
+					util.system_start = function(args, opts, done)
+						return start(args, opts, function(raw)
+							if vim.tbl_contains(args, "proplist") then
+								held = function()
+									done(raw)
+								end
+							else
+								done(raw)
+							end
+						end)
+					end
+					local task = provider.preview(snapshot, by_path.selected, function()
+						delivered = true
+					end)
+					ctx.wait_for(function()
+						return held
+					end, "directory property query did not run", 15000)
+					task:cancel()
+					held()
+					util.system_start = start
+					assert(not delivered, "cancelled property query delivered a result")
+					for _, raw in ipairs({
+						"<properties><target>",
+						'<properties><target path="wrong"></target></properties>',
+						'<properties><target path="wrong"></target><target path="wrong"></target></properties>',
+					}) do
+						---@diagnostic disable-next-line: duplicate-set-field
+						common.command = function(_, _, _, done)
+							done(raw)
+						end
+						result, err = preview()
+						assert(not result and err, "malformed property XML was accepted")
+					end
+					---@diagnostic disable-next-line: duplicate-set-field
+					common.command = function(_, _, _, done, opts)
+						assert(opts.output_limit_bytes == 16 * 1024 * 1024)
+						done(nil, "truncated", { stdout_truncated = true })
+					end
+					result, err = preview()
+					assert(not result and err and err:find("transport limit", 1, true))
+					common.command = command
+					set("selected", "custom:large", string.rep("x", 1024 * 1024 + 1))
+					result, err = preview()
+					assert(
+						not result and err and err:find("Decoded properties", 1, true),
+						"decoded property map exceeded its bound"
+					)
+					h.exec({ "svn", "propdel", "custom:large", "selected" }, f.root)
+					set("selected", "custom:expanded", string.rep("&", 700000))
+					result, err = preview()
+					assert(
+						result and contains(result.right, string.rep("&", 700000)),
+						"XML expansion reduced property budget: " .. tostring(err)
+					)
+					set("selected", "custom:expanded", string.rep("x", 1024 * 1024 - 250))
+					result, err = preview()
+					assert(
+						not result and err and err:find("Property patch", 1, true),
+						"rendered patch headers exceeded their bound"
+					)
+				end, debug.traceback)
+				common.command, util.system_start = command, start
+				if s then
+					compare.close(s)
+				end
+				assert(ok, failure)
+			end,
+		},
+		{
+			"test_svn_compare_property_only_file_metadata_actions",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = h.make_svn_fixture()
+				h.exec({ "svn", "revert", f.file }, f.root)
+				h.exec({ "svn", "propset", "custom:review", "changed value", f.file }, f.root)
+				local s = assert(compare.open({ path = f.root, base = h.file_url(f.repo) .. "@1" }))
+				local ok, err = xpcall(function()
+					ctx.wait_for(function()
+						return s.preview_result
+					end, "property-only preview did not load", 15000)
+					api.nvim_set_current_win(s.sidewin)
+					api.nvim_win_set_cursor(s.sidewin, { assert(s.row_by_path["sample.txt"]), 0 })
+					s.actions.preview()
+					ctx.wait_for(function()
+						return s.preview_result and s.shown_item.relpath == "sample.txt"
+					end, "file property preview did not load", 15000)
+					assert(
+						s.shown_item.property_only
+							and contains(api.nvim_buf_get_lines(s.right, 0, -1, false), "changed value")
+					)
+					api.nvim_set_current_win(s.sidewin)
+					vim.fn.maparg("p", "n", false, true).callback()
+					assert(
+						s.mode == "metadata" and contains(api.nvim_buf_get_lines(s.left, 0, -1, false), "custom:review"),
+						"property-only mapping showed empty metadata"
+					)
+					vim.cmd("LazyVCS compare metadata")
+					assert(
+						s.mode == "text" and contains(api.nvim_buf_get_lines(s.right, 0, -1, false), "changed value")
+					)
+					vim.cmd("LazyVCS compare metadata")
+					assert(
+						s.mode == "metadata" and contains(api.nvim_buf_get_lines(s.left, 0, -1, false), "changed value"),
+						"property-only command showed empty metadata"
+					)
+				end, debug.traceback)
+				compare.close(s)
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_svn_compare_property_patch_uses_full_byte_limit",
+			function()
+				local f = h.make_svn_fixture()
+				h.exec({ "svn", "revert", f.file }, f.root)
+				local snapshot = assert(await(function(done)
+					provider.resolve({ root = f.root }, h.file_url(f.repo) .. "@1", done)
+				end))
+				local item =
+					{ relpath = "sample.txt", kind = "file", status = "M", property_only = true, properties = true }
+				local function preview()
+					return await(function(done)
+						provider.preview(snapshot, item, done)
+					end)
+				end
+				set_property(f, "sample.txt", "custom:large", string.rep("x", 700000))
+				local patch = h.exec({
+					"svn",
+					"diff",
+					"--properties-only",
+					"--old",
+					snapshot.url .. "/sample.txt@1",
+					"--new",
+					f.file .. "@",
+				}, f.root)
+				assert(#patch > 512 * 1024 and #patch < 1024 * 1024, "fixture patch outside supported budget")
+				assert(patch:find("\\ No newline at end of property", 1, true), "fixture value gained a newline")
+				local result, err = preview()
+				assert(result, "supported property patch rejected: " .. tostring(err))
+				local windows_result
+				local seen = with_windows_stdout(function()
+					windows_result, err = preview()
+					assert(windows_result, "Windows property patch rejected: " .. tostring(err))
+				end)
+				assert(seen.diff, "Windows stdout hook missed the large property patch")
+				assert(vim.deep_equal(result.right, windows_result.right), "Windows changed large patch bytes")
+				-- Header lines name the target, and Windows spells the test's path differently.
+				local function body(lines)
+					local kept = {}
+					for _, line in ipairs(lines) do
+						if not line:find("sample.txt", 1, true) then
+							kept[#kept + 1] = line
+						end
+					end
+					return kept
+				end
+				local expected = body(require("lazyvcs.util").split_lines(patch))
+				for index, line in ipairs(result.right) do
+					assert(not line:find("\r$"), "property patch line " .. index .. " kept a carriage return")
+				end
+				local actual = body(result.right)
+				assert(#expected > 0 and #table.concat(expected) > 512 * 1024, "fixture patch body is empty")
+				for index = 1, math.max(#expected, #actual) do
+					assert(
+						expected[index] == actual[index],
+						string.format(
+							"property patch bytes changed at body line %d: expected %q, got %q",
+							index,
+							(expected[index] or "<none>"):sub(1, 80),
+							(actual[index] or "<none>"):sub(1, 80)
+						)
+					)
+				end
+				set_property(f, "sample.txt", "custom:large", string.rep("x", 1024 * 1024))
+				result, err = preview()
+				assert(not result and err and err:find("1 MiB", 1, true), "oversized property patch was accepted")
+				item.property_only = false
+				h.write_file(f.file, "edited text")
+				result, err = preview()
+				assert(result and result.right[1] == "edited text", err)
+				assert(
+					not result.properties and contains(result.details, "1 MiB"),
+					"optional property failure discarded text or its error"
+				)
+			end,
+		},
 		{
 			"test_svn_compare_added_file_metadata_includes_properties",
 			function()

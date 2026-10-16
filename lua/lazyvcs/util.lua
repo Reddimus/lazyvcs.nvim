@@ -154,6 +154,11 @@ function M.split_lines(text)
 	return lines
 end
 
+-- Normalize display text only; file bytes must reach compare_text unchanged.
+function M.split_text_lines(text)
+	return M.split_lines(((text or ""):gsub("\r\n", "\n")))
+end
+
 function M.join_lines(lines)
 	if #lines == 0 then
 		return ""
@@ -829,6 +834,36 @@ function M.relative_literal_path(root, path)
 	)
 end
 
+---@param path string
+---@return string? absolute, string? err
+local function absolute_literal_path(path)
+	local windows_paths = vim.fn.has("win32") == 1
+	if windows_paths then
+		path = path:gsub("\\", "/")
+	end
+	if path:sub(1, 1) == "/" or (windows_paths and path:match("^%a:/")) then
+		return path
+	end
+	local ok, absolute = pcall(vim.fs.abspath, path:sub(1, 1) == "~" and ("./" .. path) or path)
+	if not ok then
+		return nil, "Cannot make repository path absolute: " .. tostring(absolute):gsub("[%c]", " ")
+	end
+	return absolute
+end
+
+---Expand command-input paths without collapsing symlink traversal.
+---@param path string
+---@return string expanded
+function M.expand_user_path(path)
+	if path:sub(1, 1) == "~" then
+		local home = vim.uv.os_homedir()
+		if home then
+			path = home:gsub("[/\\]$", "") .. path:sub(2)
+		end
+	end
+	return (path:gsub("%$([%w_]+)", vim.uv.os_getenv))
+end
+
 -- Canonicalize root identities by resolving symlinks. Missing paths retain their
 -- normalized spelling; verified membership uses relpath instead.
 ---@param path string|nil
@@ -837,8 +872,9 @@ function M.canonical_path(path)
 	if not path or path == "" then
 		return path or ""
 	end
-	local normalized = M.normalize_literal_path(path)
-	local resolved = vim.uv.fs_realpath(normalized)
+	local absolute = absolute_literal_path(path)
+	local normalized = M.normalize_literal_path(absolute or path)
+	local resolved = absolute and vim.uv.fs_realpath(absolute)
 	return resolved and M.normalize_literal_path(resolved) or normalized
 end
 
@@ -854,9 +890,21 @@ function M.canonical_entry_path(path, strict)
 		end
 		return path or ""
 	end
-	local normalized = M.normalize_literal_path(path)
-	local parent = vim.fs.dirname(normalized)
-	local suffix = { vim.fs.basename(normalized) }
+	local absolute, absolute_err = absolute_literal_path(path)
+	if not absolute then
+		if strict then
+			return nil, absolute_err
+		end
+		return M.normalize_literal_path(path), absolute_err
+	end
+	local normalized = M.normalize_literal_path(absolute)
+	local parent = vim.fs.dirname(absolute)
+	local suffix = { vim.fs.basename(absolute) }
+	-- A final dot component denotes a directory, not an entry to preserve.
+	-- Resolve it as a whole: Windows collapses .. before following junctions.
+	if suffix[1] == "." or suffix[1] == ".." then
+		parent, suffix = absolute, {}
+	end
 	while parent do
 		local resolved, err, code = vim.uv.fs_realpath(parent)
 		if resolved then
@@ -872,7 +920,15 @@ function M.canonical_entry_path(path, strict)
 		end
 		-- ENOENT can mean a missing directory or a dangling symlink. Only the
 		-- former has a knowable entry identity beneath an existing ancestor.
-		if code ~= "ENOENT" or vim.uv.fs_lstat(parent) then
+		local component = vim.fs.basename(parent)
+		if
+			code ~= "ENOENT"
+			or vim.uv.fs_lstat(parent)
+			or component == "."
+			or component == ".."
+			or suffix[1] == "."
+			or suffix[1] == ".."
+		then
 			if strict then
 				return nil, "Cannot resolve repository entry parent: " .. tostring(err):gsub("[%c]", " ")
 			end
@@ -901,7 +957,8 @@ function M.relpath(root, path)
 	if not root or root == "" or not path or path == "" then
 		return nil, err .. ": missing root or entry"
 	end
-	local real_root = vim.uv.fs_realpath(M.normalize_literal_path(root))
+	local absolute = absolute_literal_path(root)
+	local real_root = absolute and vim.uv.fs_realpath(absolute)
 	local stat = real_root and vim.uv.fs_stat(real_root)
 	if not real_root or not stat or stat.type ~= "directory" then
 		return nil, err .. ": unresolved root"

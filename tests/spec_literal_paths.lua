@@ -114,6 +114,155 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_core_literal_path_helpers_in_fast_context",
+			function()
+				local f = h.make_git_fixture()
+				local timer = assert(vim.uv.new_timer())
+				local done, ok, err
+				local cwd = util.canonical_path(vim.uv.cwd())
+				timer:start(0, 0, function()
+					timer:close()
+					ok, err = pcall(function()
+						assert(vim.in_fast_event(), "probe did not run in a fast context")
+						assert(vim.fn.has("win32") == (package.config:sub(1, 1) == "\\" and 1 or 0))
+						assert(util.canonical_path(f.root) == f.root)
+						assert(util.canonical_path(".") == cwd)
+						assert(util.canonical_entry_path(f.file, true) == f.file)
+						assert(util.relpath(f.root, f.file) == "sample.txt")
+					end)
+					done = true
+				end)
+				ctx.wait_for(function()
+					return done
+				end, "fast-context path probe did not finish")
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_core_windows_terminal_dot_paths_agree",
+			function()
+				local has, normalize = vim.fn.has, vim.fs.normalize
+				local realpath, stat = vim.uv.fs_realpath, vim.uv.fs_stat
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.has = function(feature)
+					return feature == "win32" and 1 or has(feature)
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fs.normalize = function(path, opts)
+					return normalize(path, vim.tbl_extend("force", opts or {}, { win = true }))
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.uv.fs_realpath = function(path)
+					-- Model Windows resolving .. lexically before following a junction.
+					local normalized = util.normalize_literal_path(path)
+					return normalized:gsub("^C:/repo/junction", "C:/other/child")
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.uv.fs_stat = function()
+					return { type = "directory" }
+				end
+				local ok, err = pcall(function()
+					for path, expected in pairs({
+						[ [[C:\repo\junction\..]] ] = "C:/repo",
+						["C:/repo/junction/.."] = "C:/repo",
+						["C:/repo/junction/."] = "C:/other/child",
+					}) do
+						assert(util.canonical_path(path) == expected)
+						assert(util.canonical_entry_path(path, true) == expected, "entry disagreed for " .. path)
+					end
+				end)
+				vim.fn.has, vim.fs.normalize = has, normalize
+				vim.uv.fs_realpath, vim.uv.fs_stat = realpath, stat
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_core_sidebar_symlink_parent_selects_filesystem_repository",
+			function()
+				require("lazyvcs").setup({
+					use_gitsigns = false,
+					signs = { enabled = false },
+					source_control = { remote_refresh = "manual" },
+				})
+				local first, second = h.make_git_fixture(), h.make_git_fixture()
+				local windows = vim.fn.has("win32") == 1
+				vim.fn.mkdir(second.root .. "/child", "p")
+				assert(
+					vim.uv.fs_symlink(
+						second.root .. "/child",
+						first.root .. "/link",
+						windows and { junction = true } or { dir = true }
+					)
+				)
+				local requested = first.root .. "/link/.."
+				local native = require("lazyvcs.source_control.native")
+				local previous, cwd = vim.env.LAZYVCS_CANONICAL_ROOT, vim.fn.getcwd()
+				vim.env.LAZYVCS_CANONICAL_ROOT = first.root
+				local ok, err = xpcall(function()
+					assert(util.canonical_path(first.root .. "/link") == second.root .. "/child")
+					assert(util.canonical_entry_path(requested, true) == util.canonical_path(requested))
+					if not windows then
+						for _, command in ipairs({ false, true }) do
+							local state
+							if command then
+								vim.cmd("LazyVCS sidebar open " .. "$LAZYVCS_CANONICAL_ROOT/link/..")
+								state = native._state()
+							else
+								state = require("lazyvcs").source_control_open({ path = requested })
+							end
+							ctx.wait_for(function()
+								return not state.lazyvcs_discovering and state.lazyvcs_repo_specs
+							end, "symlink sidebar discovery did not finish", 15000)
+							assert(
+								state.path == second.root and state.lazyvcs_repo_specs[1].root == second.root,
+								"sidebar selected the lexical repository instead of the filesystem repository"
+							)
+							native.close()
+						end
+						assert(util.canonical_path(requested) == second.root)
+						assert(util.canonical_entry_path(requested .. "/sample.txt", true) == second.file)
+						assert(util.relpath(requested, requested .. "/sample.txt") == "sample.txt")
+						assert(util.relpath(first.root, requested .. "/sample.txt") == nil)
+						assert(util.relpath(second.root, requested .. "/missing/..") == nil)
+						assert(util.relpath(second.root, requested .. "/missing/deep/file") == "missing/deep/file")
+						assert(
+							util.relpath(second.root, requested .. "/missing/../sample.txt") == nil,
+							"unresolved traversal authorized an entry"
+						)
+						assert(vim.uv.fs_symlink(first.file, second.root .. "/final-link"))
+						assert(
+							util.canonical_entry_path(requested .. "/final-link", true) == second.root .. "/final-link"
+						)
+						assert(util.relpath(second.root, requested .. "/final-link") == "final-link")
+						assert(vim.uv.fs_symlink(second.root .. "/absent", second.root .. "/dangling", { dir = true }))
+						assert(util.relpath(second.root, requested .. "/dangling/file") == nil)
+					end
+					vim.fn.mkdir(second.root .. "/~literal/$LAZYVCS_CANONICAL_ROOT", "p")
+					vim.cmd.cd(vim.fn.fnameescape(second.root))
+					assert(
+						util.canonical_path("~literal/$LAZYVCS_CANONICAL_ROOT")
+							== second.root .. "/~literal/$LAZYVCS_CANONICAL_ROOT",
+						"Lua paths expanded literal tilde or dollar bytes"
+					)
+					assert(util.expand_user_path("$LAZYVCS_CANONICAL_ROOT/link/..") == requested)
+					assert(util.expand_user_path("~/link/..") == vim.uv.os_homedir() .. "/link/..")
+					assert(util.expand_user_path("%/#/*.txt") == "%/#/*.txt")
+					if windows then
+						local drive = second.root:sub(1, 2)
+						assert(
+							util.canonical_path(drive .. "child/..") == second.root,
+							"drive-relative traversal changed roots"
+						)
+						assert(util.canonical_path((second.root .. "/child/.."):gsub("/", "\\")) == second.root)
+					end
+				end, debug.traceback)
+				vim.env.LAZYVCS_CANONICAL_ROOT = previous
+				vim.cmd.cd(vim.fn.fnameescape(cwd))
+				native.close()
+				assert(ok, err)
+			end,
+		},
+		{
 			"test_source_control_literal_paths_open_selected_file",
 			function()
 				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })

@@ -55,7 +55,9 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
 
 :LazyVCS sidebar {open, close, toggle, refresh, cancel} [path]
                       Control the source-control sidebar. `open` and `toggle`
-                      accept an optional directory to scan.
+                      accept an optional directory to scan. On POSIX, selection
+                      follows symlinks before parent traversal. Windows uses
+                      native path semantics, resolving `..` textually first.
 
 :LazyVCS diff {open, close, toggle, refresh}
                       Control the live diff view for the current file.
@@ -115,12 +117,16 @@ buffers. Nonignored untracked files are included by default. SVN ignore matching
 follows SVN wildcard rules, including inherited rules in switched subtrees.
 Omitted sparse-checkout files use a read-only INDEX (sparse checkout) snapshot
 when Git confirms a stage-zero, regular skip-worktree entry. Present files
-still use saved filesystem contents. A preview never materializes omitted files.
+still use saved filesystem contents. Sparse snapshots receive the full 1 MiB
+content limit. A preview never materializes omitted files.
 
 SVN metadata includes properties on added versioned files, even when SVN's summary
-reports no property changes. Property patches are limited to 1 MiB per selected
-path. If optional properties are unavailable, metadata shows the reason and the
-text preview remains available.
+reports no property changes. Directory properties compare only the selected path
+against the pinned numeric revision, without descendant properties. Property-only
+patches also appear through p and :LazyVCS compare metadata. Property patches are
+limited to 1 MiB per selected path, including generated headers. If optional
+properties are unavailable, metadata shows the reason and the text preview
+remains available.
 
 A base choice is remembered per worktree and branch, or per SVN working-copy URL.
 Detached Git choices last only for the comparison session. Each refresh pins
@@ -180,7 +186,10 @@ add the files you select to your ordinary buffer list.
 File rows show the filename before the directory. The > marker identifies the
 previewed file independently of the cursor. Auto-fit measures file rows, caps
 width growth at half the terminal, and reserves 45 columns for each horizontal
-preview. Terminal resizing can stack previews. Manual width survives tab changes.
+preview when space permits. Compare chooses a feasible arrangement before opening
+panes, respecting winminwidth and winminheight. Terminal resizing can stack
+previews. Failed construction removes its partial tab and scratch buffers.
+Manual width survives tab changes.
 
 LazyVcsCompareTitle, Base, Path, Hint, Add, Change, Delete, Conflict, Current, and
 Property are highlight groups with the LazyVcsCompare prefix. They default to
@@ -725,7 +734,8 @@ Other cancellations terminate only the direct process, including SVN log,
 blame, and URL reads. Their transport helpers exit when the parent's pipes
 close, so reads need no tree walk. taskkill requires a live direct process and
 falls back to direct termination. Descendants whose parent has already exited
-may survive on Windows.
+may survive on Windows. Explicit editor Git restore and SVN revert cancellation
+uses mutation scope and terminates descendants with taskkill /T /F.
 
 Neovim exit discards queued work, including mutations that have not started.
 Running repository mutations (commit, update, merge, switch, stage, unstage,
@@ -862,9 +872,12 @@ NOTES                                                           *lazyvcs-notes*
   preserving CRLF, BOMs, supported file encodings, empty files, and final-newline
   changes. Raw and decoded live-diff content is limited to 1 MiB per side; signs
   also honor signs.max_file_bytes. Unsupported or lossy conversions and symlink
-  bases are refused. Read-only Compare symlink previews remain available.
+  bases are refused. BOMs are recognized only for the effective encoding and byte
+  order. BOM-shaped bytes in legacy encodings remain content. Read-only Compare
+  symlink previews remain available.
 - Hunk commands retain the invoking window, filename, cursor, text, and text
   options while loading or confirming. A changed context cancels the operation.
+  Git also revalidates the effective base bytes after attribute conversion.
   Renaming a buffer invalidates its cached base. Delete-only hunks select only
   the displayed sign anchor, including deletions at the start or end of a file.
 - Whole-file revert identifies the target pathname in its confirmation and

@@ -250,7 +250,25 @@ return function(ctx)
 		)
 		assert(next_session.base_text.bom and not next_session.base_bytes)
 	end
-	local cases = {}
+	local cases = {
+		{
+			"test_live_diff_latin1_bom_bytes_remain_content",
+			function()
+				local original = "\239\187\191alpha\nbeta\n"
+				local f, buf = fixture(false, original, "latin1")
+				local before = api.nvim_buf_get_lines(buf, 0, -1, false)
+				assert(before[1] == "ï»¿alpha" and not vim.bo[buf].bomb)
+				local state = loaded(buf, true)
+				assert(#state.hunks == 0, "clean Latin-1 BOM-shaped content received a false hunk")
+				api.nvim_buf_set_lines(buf, 0, 1, false, { "EDIT" })
+				loaded(buf, true, true)
+				api.nvim_win_set_cursor(0, { 1, 0 })
+				confirm_revert(true, buf, before)
+				vim.cmd.write()
+				assert(bytes(f.file) == original, "Latin-1 revert removed signature-shaped content bytes")
+			end,
+		},
+	}
 	for _, mode in ipairs({
 		{ "test_sign_", false, false },
 		{ "test_live_diff_", false, true },

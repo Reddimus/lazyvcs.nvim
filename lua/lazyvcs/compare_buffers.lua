@@ -145,8 +145,12 @@ function M.setup()
 	})
 end
 
-function M.scratch()
+function M.scratch(owner)
 	local buf = vim.api.nvim_create_buf(false, true)
+	if owner then
+		owner.owned_scratch = owner.owned_scratch or {}
+		owner.owned_scratch[#owner.owned_scratch + 1] = buf
+	end
 	vim.bo[buf].bufhidden = "hide"
 	locked(buf)
 	return buf
@@ -158,7 +162,7 @@ function M.init(s)
 	s.buffer_id = namespace .. "-" .. sequence
 	s.buffer_cache = { pairs = {}, count = 0, sequence = 0 }
 	s.stale_pairs = {}
-	s.message_left, s.message_right = M.scratch(), M.scratch()
+	s.message_left, s.message_right = M.scratch(s), M.scratch(s)
 	s.left, s.right = s.message_left, s.message_right
 	resources[s.sidebar] = { session = s, presentation = "sidebar" }
 	resources[s.message_left] = { session = s, presentation = "message" }
@@ -404,6 +408,29 @@ function M.reconcile(s, snapshot, items)
 		end
 		pair = next_pair
 	end
+end
+
+---Release scratch resources from an incomplete construction.
+---@param s table
+function M.abort(s)
+	local owned = {}
+	for _, buf in ipairs(s.owned_scratch or {}) do
+		owned[buf] = true
+	end
+	for buf, resource in pairs(resources) do
+		if resource.session == s then
+			owned[buf], resources[buf] = true, nil
+			if resource.pair and resource.pair.reload_job then
+				pcall(resource.pair.reload_job.kill, resource.pair.reload_job)
+			end
+		end
+	end
+	for buf in pairs(owned) do
+		if vim.api.nvim_buf_is_valid(buf) then
+			pcall(vim.api.nvim_buf_delete, buf, { force = true })
+		end
+	end
+	s.owned_scratch = nil
 end
 
 function M.close(s)
