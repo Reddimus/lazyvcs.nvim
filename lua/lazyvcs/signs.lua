@@ -492,6 +492,7 @@ function M.preview_diff()
 			border = "rounded",
 			title = " LazyVCS Diff ",
 		})
+		util.unbind_window(win)
 		local function close_preview()
 			if util.win_is_valid(win) then
 				vim.api.nvim_win_close(win, true)

@@ -1,3 +1,4 @@
+local util = require("lazyvcs.util")
 local api = vim.api
 local M = {}
 local windows, pool = {}, {}
@@ -138,15 +139,16 @@ function M.release(win)
 	if not state then
 		return
 	end
+	windows[win] = nil
 	if owned(win, state) then
 		if state.mapping_source then
 			api.nvim_win_set_hl_ns(win, -1)
-			vim.wo[win].winhighlight = vim.wo[win].winhighlight
+			util.set_win_option(win, "winhighlight", util.get_win_option(win, "winhighlight"))
 		else
 			api.nvim_win_set_hl_ns(win, state.previous)
 		end
 	end
-	windows[win], state.slot.busy = nil, false
+	state.slot.busy = false
 	if not next(windows) and group then
 		api.nvim_del_augroup_by_id(group)
 		group = nil

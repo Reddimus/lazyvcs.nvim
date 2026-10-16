@@ -65,17 +65,25 @@ local function set_window_labels(session)
 	end
 
 	if util.win_is_valid(session.editable_win) then
-		session.editable_prev_winbar = session.editable_prev_winbar or vim.wo[session.editable_win].winbar
+		session.editable_prev_winbar = session.editable_prev_winbar
+			or util.get_win_option(session.editable_win, "winbar")
 		local right_label = session.right_label or session.base_label
 		local right_role = session.readonly_comparison and "right" or "editable"
-		vim.wo[session.editable_win].winbar =
+		util.set_win_option(
+			session.editable_win,
+			"winbar",
 			string.format(" lazyvcs %s %s [%s]", session.backend, right_label:lower(), right_role)
+		)
 	end
 
 	if util.win_is_valid(session.base_win) then
-		session.base_prev_winbar = session.base_prev_winbar or vim.wo[session.base_win].winbar
+		session.base_prev_winbar = session.base_prev_winbar or util.get_win_option(session.base_win, "winbar")
 		local left_label = session.left_label or session.base_label
-		vim.wo[session.base_win].winbar = string.format(" lazyvcs %s %s [left]", session.backend, left_label:lower())
+		util.set_win_option(
+			session.base_win,
+			"winbar",
+			string.format(" lazyvcs %s %s [left]", session.backend, left_label:lower())
+		)
 	end
 end
 
@@ -108,17 +116,20 @@ end
 
 local function restore_winbar(winid, value)
 	if util.win_is_valid(winid) then
-		vim.wo[winid].winbar = value or ""
+		util.set_win_option(winid, "winbar", value or "")
 	end
 end
 
 local function restore_window_option(winid, name, value)
 	if util.win_is_valid(winid) and value ~= nil then
-		vim.wo[winid][name] = value
+		util.set_win_option(winid, name, value)
 	end
 end
 
 local tracked_window_options = {
+	"number",
+	"relativenumber",
+	"cursorline",
 	"diff",
 	"scrollbind",
 	"cursorbind",
@@ -132,11 +143,7 @@ local tracked_window_options = {
 }
 
 local function capture_window_options(winid)
-	local values = {}
-	for _, name in ipairs(tracked_window_options) do
-		values[name] = vim.wo[winid][name]
-	end
-	return values
+	return util.capture_win_options(winid, tracked_window_options)
 end
 
 local function restore_window_options(winid, values)
@@ -156,9 +163,7 @@ function M.reset_tab_diff(winid)
 	end
 
 	if util.win_is_valid(target) then
-		vim.api.nvim_win_call(target, function()
-			vim.cmd("silent diffoff")
-		end)
+		util.diff_off(target)
 	end
 end
 
@@ -173,7 +178,6 @@ function M.open(session)
 
 	session.editable_win = editable_win
 	session.editable_had_diff = vim.wo[editable_win].diff
-	session.editable_prev_scrollbind = vim.wo[editable_win].scrollbind
 	session.editable_window_options = capture_window_options(editable_win)
 
 	configure_base_buffer(session)
@@ -184,22 +188,20 @@ function M.open(session)
 	-- git, VS Code, GitHub, and vimdiff (old -> new reads left -> right).
 	vim.cmd("leftabove vsplit")
 	session.base_win = vim.api.nvim_get_current_win()
-	vim.api.nvim_win_set_buf(session.base_win, session.base_bufnr)
+	session.base_window_options = capture_window_options(session.base_win)
+	session.base_prev_winbar = util.get_win_option(session.base_win, "winbar")
+	util.show_win_buffer(session.base_win, session.base_bufnr)
 	session.base_had_diff = false
 
 	vim.cmd.wincmd("p")
 
-	-- Save options before changing them. The base may survive as the last window after
-	-- :only.
-	session.base_window_options = capture_window_options(session.base_win)
-
-	vim.wo[session.base_win].number = vim.wo[editable_win].number
-	vim.wo[session.base_win].relativenumber = false
-	vim.wo[session.base_win].wrap = vim.wo[editable_win].wrap
-	vim.wo[session.base_win].linebreak = vim.wo[editable_win].linebreak
-	vim.wo[session.base_win].breakindent = vim.wo[editable_win].breakindent
-	vim.wo[session.base_win].cursorline = false
-	vim.wo[session.base_win].winfixwidth = true
+	util.set_win_option(session.base_win, "number", vim.wo[editable_win].number)
+	util.set_win_option(session.base_win, "relativenumber", false)
+	util.set_win_option(session.base_win, "wrap", vim.wo[editable_win].wrap)
+	util.set_win_option(session.base_win, "linebreak", vim.wo[editable_win].linebreak)
+	util.set_win_option(session.base_win, "breakindent", vim.wo[editable_win].breakindent)
+	util.set_win_option(session.base_win, "cursorline", false)
+	util.set_win_option(session.base_win, "winfixwidth", true)
 
 	local width = resolve_base_width(session.opts.base_window.width)
 	pcall(vim.api.nvim_win_set_width, session.base_win, width)
@@ -213,8 +215,8 @@ function M.open(session)
 	-- it.
 	local cursor_sync = session.opts.base_window.cursor_sync
 	for _, win in ipairs({ editable_win, session.base_win }) do
-		vim.wo[win].scrollbind = true
-		vim.wo[win].cursorbind = cursor_sync
+		util.set_win_option(win, "scrollbind", true)
+		util.set_win_option(win, "cursorbind", cursor_sync)
 	end
 
 	vim.api.nvim_win_call(editable_win, function()
@@ -261,11 +263,11 @@ function M.rebalance(session)
 	end
 
 	local base_fix = vim.wo[session.base_win].winfixwidth
-	vim.wo[session.base_win].winfixwidth = false
+	util.set_win_option(session.base_win, "winfixwidth", false)
 
 	local ok = pcall(vim.api.nvim_win_set_width, session.base_win, target_base)
 
-	vim.wo[session.base_win].winfixwidth = base_fix
+	util.set_win_option(session.base_win, "winfixwidth", base_fix)
 	session.tabpage = vim.api.nvim_win_get_tabpage(session.editable_win)
 	set_window_labels(session)
 
@@ -318,6 +320,7 @@ end
 
 function M.close(session, opts)
 	opts = opts or {}
+	local base_survived = false
 	highlighting.release(session.editable_win)
 	highlighting.release(session.base_win)
 
@@ -347,8 +350,7 @@ function M.close(session, opts)
 		if not pcall(vim.api.nvim_win_close, session.base_win, true) then
 			-- The base window survived -- it was the last one in the tab. It now
 			-- shows the user's own file, so put back everything we changed.
-			restore_window_options(session.base_win, session.base_window_options)
-			vim.wo[session.base_win].winfixwidth = false
+			base_survived = true
 		end
 	end
 
@@ -358,6 +360,14 @@ function M.close(session, opts)
 		-- BufWipeout): deleting it again raises E937, which aborts the user's :q.
 		if not session.base_wiping then
 			pcall(vim.api.nvim_buf_delete, session.base_bufnr, { force = true })
+		end
+	end
+
+	if base_survived and util.win_is_valid(session.base_win) then
+		restore_window_options(session.base_win, session.base_window_options)
+		util.set_win_option(session.base_win, "winfixwidth", false)
+		if session.opts.set_winbar then
+			restore_winbar(session.base_win, session.base_prev_winbar)
 		end
 	end
 

@@ -604,6 +604,14 @@ NOTES                                                           *lazyvcs-notes*
 - SVN compares live diff buffers against working-copy BASE.
 - Git untracked files and SVN added files show an empty base.
 - Normal undo works after a hunk revert.
+- Pane presentation options stay local. Closing a pane restores its previous
+  settings, including an inherited global winbar. Other windows keep their
+  defaults, and unrelated diff windows remain active.
+- A float showing the same buffer as a diff pane can copy its local bindings,
+  as with native :diffthis. Floats showing fresh buffers use inherited defaults.
+- To recover an already broken Compare tab, close and reopen it, or run
+  :diffoff! followed by :LazyVCS compare refresh. :diffoff! resets the entire
+  current tab's diff group, including unrelated diff windows.
 - Live diff shows the VCS base (old) on the left and the editable file
   (new) on the right.
                                                         *lazyvcs-wrapped-diffs*

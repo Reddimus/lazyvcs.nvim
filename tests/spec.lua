@@ -3641,8 +3641,8 @@ local function test_svn_blame_split_is_fixed_width_and_muted()
 	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
 	local source_win = vim.api.nvim_get_current_win()
 	local source_buf = vim.api.nvim_get_current_buf()
-	vim.wo[source_win].scrollbind = false
-	vim.wo[source_win].cursorbind = false
+	require("lazyvcs.util").set_win_option(source_win, "scrollbind", false)
+	require("lazyvcs.util").set_win_option(source_win, "cursorbind", false)
 	require("lazyvcs.blame").blame_split()
 
 	wait_for(function()
@@ -3709,7 +3709,7 @@ local function test_live_diff_scrollbinds_panes_and_restores_editable_window()
 		"four",
 		"five",
 	})
-	vim.wo[editable_win].scrollbind = false
+	require("lazyvcs.util").set_win_option(editable_win, "scrollbind", false)
 
 	local config = require("lazyvcs.config")
 	local layout = require("lazyvcs.layout")
@@ -7067,6 +7067,7 @@ vim.list_extend(cases, require("spec_compare")({ helpers = helpers, wait_for = w
 vim.list_extend(cases, require("spec_compare_navigation")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_compare_files")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_compare_native")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_window_options")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_highlighting")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {

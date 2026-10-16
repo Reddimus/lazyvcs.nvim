@@ -71,20 +71,30 @@ local function preview_options(s, win)
 	end
 	vim.api.nvim_win_call(win, function()
 		vim.w.lazyvcs_compare = true
-		vim.wo.winfixbuf = false
+		util.set_win_option(0, "winfixbuf", false)
 		vim.cmd(s.mode == "text" and "diffthis" or "diffoff")
 		if s.mode ~= "text" then
-			vim.wo.foldenable, vim.wo.cursorbind, vim.wo.scrollbind = false, false, false
+			util.set_win_options(win, { foldenable = false, cursorbind = false, scrollbind = false })
 		end
 	end)
 end
 local function sidebar_options(s)
 	vim.w[s.sidewin].lazyvcs_compare = true
-	local wo = vim.wo[s.sidewin]
-	wo.winfixwidth, wo.winfixbuf, wo.cursorline = true, false, true
-	wo.number, wo.relativenumber, wo.wrap, wo.spell, wo.foldenable = false, false, false, false, false
-	wo.diff, wo.cursorbind, wo.scrollbind = false, false, false
-	wo.signcolumn, wo.foldcolumn, wo.list, wo.listchars = "no", "0", true, "extends:>,precedes:<"
+	util.unbind_window(s.sidewin)
+	util.set_win_options(s.sidewin, {
+		winfixwidth = true,
+		winfixbuf = false,
+		cursorline = true,
+		number = false,
+		relativenumber = false,
+		wrap = false,
+		spell = false,
+		foldenable = false,
+		signcolumn = "no",
+		foldcolumn = "0",
+		list = true,
+		listchars = "extends:>,precedes:<",
+	})
 end
 local function resize(s, manual_event)
 	if not alive(s) or vim.api.nvim_get_current_tabpage() ~= s.tab or s.resizing then
@@ -160,10 +170,10 @@ end
 local function labels(s, left, right)
 	s.left_label, s.right_label = display(left):gsub("%%", "%%%%"), display(right):gsub("%%", "%%%%")
 	if valid(s.leftwin) then
-		vim.wo[s.leftwin].winbar = "%<" .. s.left_label
+		util.set_win_option(s.leftwin, "winbar", "%<" .. s.left_label)
 	end
 	if valid(s.rightwin) then
-		vim.wo[s.rightwin].winbar = "%<" .. s.right_label
+		util.set_win_option(s.rightwin, "winbar", "%<" .. s.right_label)
 	end
 end
 local function failure(s, err)
@@ -603,7 +613,10 @@ local function origin_window(s, editing, buf)
 			end
 		end
 	end
-	vim.cmd(buf and "tab sbuffer " .. buf or "tabnew")
+	vim.cmd("tab split")
+	util.editor_window(vim.api.nvim_get_current_win())
+	util.show_win_buffer(vim.api.nvim_get_current_win(), buf or vim.api.nvim_create_buf(true, false))
+	util.editor_window(vim.api.nvim_get_current_win())
 	s.origin_tab = vim.api.nvim_get_current_tabpage()
 	s.origin_edit_win = vim.api.nvim_get_current_win()
 	return s.origin_edit_win
@@ -691,8 +704,10 @@ local function edit_buffer(s, buf, position)
 	local win = origin_window(s, true, buf)
 	vim.api.nvim_set_current_win(win)
 	if vim.wo.winfixbuf or (vim.bo.modified and not vim.o.hidden) then
-		vim.cmd("rightbelow sbuffer " .. buf)
+		vim.cmd("rightbelow split")
 		s.origin_edit_win = vim.api.nvim_get_current_win()
+		util.editor_window(s.origin_edit_win)
+		util.show_win_buffer(s.origin_edit_win, buf)
 	end
 	vim.api.nvim_win_set_buf(0, buf)
 	if position then
@@ -804,6 +819,7 @@ local function help(s)
 		width = math.max(1, math.min(76, vim.o.columns - 4)),
 		height = math.max(1, math.min(#lines, vim.o.lines - 5)),
 	})
+	util.unbind_window(s.helpwin)
 	vim.w[s.helpwin].lazyvcs_compare = true
 	for _, key in ipairs({ "q", "?", "<Esc>" }) do
 		compat.keymap_set("n", key, function()
@@ -863,18 +879,19 @@ local function open_session(opts, origin)
 	})
 	s.sidebar = buffers.scratch()
 	buffers.init(s)
-	vim.cmd("tab sbuffer " .. s.sidebar)
+	vim.cmd("tab split")
+	util.show_win_buffer(vim.api.nvim_get_current_win(), s.sidebar)
 	s.tab, s.sidewin = vim.api.nvim_get_current_tabpage(), vim.api.nvim_get_current_win()
 	for label, buf in pairs({ files = s.sidebar, base = s.left, saved = s.right }) do
 		vim.api.nvim_buf_set_name(buf, "lazyvcs://compare/" .. s.buffer_id .. "/" .. label)
 	end
-	vim.wo.winfixbuf = false
+	util.set_win_option(0, "winfixbuf", false)
 	vim.cmd("rightbelow vsplit")
 	s.leftwin = vim.api.nvim_get_current_win()
-	vim.api.nvim_win_set_buf(s.leftwin, s.left)
+	util.show_win_buffer(s.leftwin, s.left)
 	vim.cmd("rightbelow vsplit")
 	s.rightwin, s.stacked = vim.api.nvim_get_current_win(), false
-	vim.api.nvim_win_set_buf(s.rightwin, s.right)
+	util.show_win_buffer(s.rightwin, s.right)
 	preview_options(s, s.leftwin)
 	preview_options(s, s.rightwin)
 	vim.bo[s.sidebar].filetype = "lazyvcs-comparison"

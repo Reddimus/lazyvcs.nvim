@@ -815,6 +815,7 @@ local function target_editor_window()
 		end
 	end
 	vim.cmd("rightbelow split")
+	util.editor_window(vim.api.nvim_get_current_win())
 	return vim.api.nvim_get_current_win(), true
 end
 

@@ -75,6 +75,10 @@ A green run on an svn-less machine therefore covers less than CI does.
 - **Highlights link to standard groups** with `default = true` and are
   re-applied on `ColorScheme`. Never hardcode colors; colorschemes must be able
   to theme them.
+- Window-option writes use the local-scope helpers in `lazyvcs.util`. Capture
+  raw local values and restore them, including global-local fallback sentinels.
+- Detach a buffer from diff mode before hiding it from a diff window. Use
+  `util.show_win_buffer` for buffer replacements; callers reapply diff mode.
 - Paths are normalized with `vim.fs.normalize`. Tests must normalize
   `vim.fn.tempname()` too, or they fail on Windows with mixed separators.
 

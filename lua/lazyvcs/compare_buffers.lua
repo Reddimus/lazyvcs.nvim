@@ -165,9 +165,7 @@ function M.swap(s, left, right)
 	local ok, err = pcall(function()
 		for _, slot in ipairs({ { s.leftwin, left }, { s.rightwin, right } }) do
 			if vim.api.nvim_win_is_valid(slot[1]) and vim.api.nvim_win_get_buf(slot[1]) ~= slot[2] then
-				vim.api.nvim_win_call(slot[1], function()
-					vim.cmd("keepjumps buffer " .. slot[2])
-				end)
+				util.show_win_buffer(slot[1], slot[2])
 			end
 		end
 	end)
