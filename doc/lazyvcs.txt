@@ -655,7 +655,20 @@ NOTES                                                           *lazyvcs-notes*
 - Git compares live diff buffers against the index.
 - SVN compares live diff buffers against working-copy BASE.
 - Git untracked files and SVN added files show an empty base.
-- Normal undo works after a hunk revert.
+- Native hunks compare decoded UTF-8 buffer text with the Git index or SVN BASE,
+  preserving CRLF, BOMs, supported file encodings, empty files, and final-newline
+  changes. Raw and decoded live-diff content is limited to 1 MiB per side; signs
+  also honor signs.max_file_bytes. Unsupported or lossy conversions and symlink
+  bases are refused. Read-only Compare symlink previews remain available.
+- Hunk commands retain the invoking window, filename, cursor, text, and text
+  options while loading or confirming. A changed context cancels the operation.
+  Renaming a buffer invalidates its cached base. Delete-only hunks select only
+  the displayed sign anchor, including deletions at the start or end of a file.
+- Whole-file revert identifies the target pathname in its confirmation and
+  cancels when the originating window, buffer, filename, text, or options change.
+- Hunk text replacement is undoable, but Neovim undo does not restore changes to
+  'endofline' or 'fixendofline'. These options change only when the reverted hunk
+  covers EOF; restoring a missing final newline disables 'fixendofline'.
 - Pane presentation options stay local. Closing a pane restores its previous
   settings, including an inherited global winbar. Other windows keep their
   defaults, and unrelated diff windows remain active.

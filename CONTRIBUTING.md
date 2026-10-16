@@ -113,7 +113,16 @@ the GitHub release.
 
 ## Architecture
 
-- `backends/` owns Git/SVN commands, eligibility, and immutable comparison data.
+- `backends/` owns Git/SVN commands, entry eligibility, and immutable comparison
+  data. Editable payloads retain complete raw bytes until the real buffer is
+  available. Legacy `base_lines` payloads remain decoded UTF-8 with a final
+  newline.
+- `compare_text.lua` owns lossless byte conversion, decoded documents, and
+  buffer text identities. It depends only on Neovim APIs. Native editable hunks
+  use full documents, including empty-content and EOF state. Live diff bounds
+  both raw and decoded content to 1 MiB per side; signs also honor
+  `signs.max_file_bytes`. Profile changes invalidate decoded bases. Revalidate
+  entry eligibility and the captured context before native replacement.
 - `source_control/jobs.lua` bounds and profiles repository/comparison commands.
 - `source_control/mutation_start.lua` holds one scheduler worker and one
   deadline across asynchronous preflight and mutation. Recheck branch and buffer

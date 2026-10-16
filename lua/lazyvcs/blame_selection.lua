@@ -100,6 +100,7 @@ function M.open(first, last)
 		target = { path = util.buf_path(source) }
 	end
 	target.first, target.last = first, last
+	target.fileformat = vim.bo[source].fileformat
 	local path = target.path
 	local bytes = target.snapshot and util.buffer_size(source)
 		or math.max(util.file_size(path), util.buffer_size(source))
@@ -190,6 +191,7 @@ function M.open(first, last)
 				if
 					not vim.api.nvim_buf_is_valid(source)
 					or vim.api.nvim_buf_get_changedtick(source) ~= request.tick
+					or vim.bo[source].fileformat ~= target.fileformat
 					or (target.valid and not target.valid())
 					or (not target.snapshot and util.buf_path(source) ~= path)
 				then

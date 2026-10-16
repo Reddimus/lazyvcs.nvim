@@ -3159,7 +3159,7 @@ local function test_git_backend()
 
 	eq(info.name, "git")
 	eq(info.base_label, "INDEX")
-	eq(info.base_lines, { "one", "two", "three" })
+	eq(info.base_bytes, "one\ntwo\nthree\n")
 end
 
 local function test_async_system_reports_missing_executable()
@@ -3292,7 +3292,7 @@ local function test_svn_backend()
 
 	eq(info.name, "svn")
 	eq(info.base_label, "BASE")
-	eq(info.base_lines, { "one", "two", "three" })
+	eq(info.base_bytes, "one\ntwo\nthree\n")
 end
 
 local function test_svn_backend_added_file_uses_empty_base()
@@ -3303,11 +3303,11 @@ local function test_svn_backend_added_file_uses_empty_base()
 	eq(info.name, "svn")
 	eq(info.tracked, true)
 	eq(info.base_label, "EMPTY")
-	eq(info.base_lines, {})
+	eq(info.base_bytes, "")
 
 	local base = assert(backend.load_base(fixture.file))
 	eq(base.base_label, "EMPTY")
-	eq(base.base_lines, {})
+	eq(base.base_bytes, "")
 
 	local async_result
 	local async_err
@@ -3320,7 +3320,7 @@ local function test_svn_backend_added_file_uses_empty_base()
 	end, "SVN added file base should load asynchronously", ASYNC_TIMEOUT_MS)
 	eq(async_err, nil)
 	eq(async_result.base_label, "EMPTY")
-	eq(async_result.base_lines, {})
+	eq(async_result.base_bytes, "")
 end
 
 local function test_svn_added_file_blame_uses_uncommitted_lines()
@@ -4225,6 +4225,9 @@ local function test_svn_signs_render_and_revert_without_live_diff()
 	actions.next_hunk()
 	eq(vim.api.nvim_win_get_cursor(0)[1], 2)
 	actions.revert_hunk()
+	wait_for(function()
+		return vim.deep_equal(vim.api.nvim_buf_get_lines(0, 0, -1, false), { "one", "two", "three" })
+	end, "SVN hunk should restore after eligibility validation", ASYNC_TIMEOUT_MS)
 	eq(vim.api.nvim_buf_get_lines(0, 0, -1, false), { "one", "two", "three" })
 end
 
@@ -7151,6 +7154,10 @@ vim.list_extend(cases, require("spec_mutation_start")({ helpers = helpers, wait_
 vim.list_extend(cases, require("spec_copilotchat_context")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_confirm")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_window_options")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_revert_integrity")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_revert_text")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))
+vim.list_extend(cases, require("spec_compare_text")())
+vim.list_extend(cases, require("spec_revert_context")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_paths")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_literal_paths")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_inline")({ helpers = helpers, wait_for = wait_for }))

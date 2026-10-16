@@ -98,7 +98,18 @@ function M.show_text(title, lines)
 end
 
 function M.notify(msg, level)
-	vim.notify(msg, level or vim.log.levels.INFO, { title = "lazyvcs.nvim" })
+	vim.notify(tostring(msg):gsub("%s*\n%s*", " "), level or vim.log.levels.INFO, { title = "lazyvcs.nvim" })
+end
+
+function M.safe_callback(fn)
+	return function(...)
+		local ok, result = pcall(fn, ...)
+		if not ok then
+			M.notify(result, vim.log.levels.ERROR)
+			return nil
+		end
+		return result
+	end
 end
 
 -- Parentheses keep gsub's substitution count out of the return values.
@@ -183,6 +194,7 @@ end
 
 function M.system_start(args, opts, on_exit)
 	opts = command_options(args, opts)
+	local text_mode = opts.text ~= false
 	local timeout_ms = opts.timeout_ms or opts.timeout
 	local output_limit = math.max(256, math.floor(opts.output_limit_bytes or opts.output_limit or 4 * 1024 * 1024))
 	local kill_grace_ms = math.max(0, math.floor(opts.kill_grace_ms or 1000))
@@ -256,9 +268,12 @@ function M.system_start(args, opts, on_exit)
 		local stream = streams[name]
 		local limit = name == "stdout" and stdout_limit or stderr_limit
 		if #stream.chunks == 0 and stream.omitted == 0 then
-			return bounded_text(fallback, limit)
+			return bounded_text(text_mode and (fallback or ""):gsub("\r\n", "\n") or fallback, limit)
 		end
 		local value = table.concat(stream.chunks)
+		if text_mode then
+			value = value:gsub("\r\n", "\n")
+		end
 		if stream.omitted > 0 then
 			value = value .. string.format("\n... [truncated at least %d bytes]", stream.omitted)
 		end
@@ -374,7 +389,7 @@ function M.system_start(args, opts, on_exit)
 		kill_timer = nil
 		if type(on_exit) == "function" then
 			vim.schedule(function()
-				on_exit(result, err, raw)
+				M.safe_callback(on_exit)(result, err, raw)
 			end)
 		end
 		return true
@@ -661,6 +676,14 @@ function M.buf_is_valid(bufnr)
 	return bufnr and bufnr ~= 0 and vim.api.nvim_buf_is_valid(bufnr)
 end
 
+function M.buffer_text_options(bufnr)
+	local values = {}
+	for _, name in ipairs({ "fileencoding", "fileformat", "bomb", "binary", "endofline", "fixendofline" }) do
+		values[name] = vim.bo[bufnr][name]
+	end
+	return values
+end
+
 function M.capture_buffer_context(winid)
 	winid = winid or vim.api.nvim_get_current_win()
 	if not M.win_is_valid(winid) then
@@ -676,10 +699,11 @@ function M.capture_buffer_context(winid)
 		path = M.buf_path(bufnr),
 		changedtick = vim.api.nvim_buf_get_changedtick(bufnr),
 		cursor = vim.api.nvim_win_get_cursor(winid),
+		text_identity = require("lazyvcs.compare_text").identity(bufnr),
 	}
 end
 
-function M.buffer_context_is_unchanged(context)
+function M.buffer_context_is_unchanged(context, opts)
 	if
 		not context
 		or not M.win_is_valid(context.winid)
@@ -691,8 +715,8 @@ function M.buffer_context_is_unchanged(context)
 	local cursor = vim.api.nvim_win_get_cursor(context.winid)
 	return M.buf_path(context.bufnr) == context.path
 		and vim.api.nvim_buf_get_changedtick(context.bufnr) == context.changedtick
-		and cursor[1] == context.cursor[1]
-		and cursor[2] == context.cursor[2]
+		and vim.deep_equal(require("lazyvcs.compare_text").identity(context.bufnr), context.text_identity)
+		and ((opts and opts.ignore_cursor) or (cursor[1] == context.cursor[1] and cursor[2] == context.cursor[2]))
 end
 
 ---Truncate to a byte budget without ever splitting a UTF-8 sequence.

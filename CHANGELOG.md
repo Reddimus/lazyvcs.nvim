@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.2] - 2026-10-16
 
 ### Fixed
 
@@ -38,6 +38,18 @@ and this project adheres to
   local branch.
 - Isolate CopilotChat commit generation from selections, chat history, tools,
   and file directives in diffs. Reject unsupported client versions.
+- Cancel hunk and whole-file reverts after the invoking context changes, and
+  identify the whole-file target in its confirmation.
+- Invalidate cached hunk bases after buffer renames and reject stale loads.
+- Report no hunks for unchanged CRLF, BOM, Latin-1, and UTF-16 files, and
+  preserve their line endings and encoding in native hunk reverts.
+- Keep Git blame history for unchanged lines of CRLF files in inline blame,
+  blame splits, line history, and selection reports.
+- Refuse editable hunk bases from Git or SVN symlinks, including entry changes
+  during confirmation.
+- Detect and revert final-newline changes and distinguish empty files from blank
+  lines.
+- Select deletion hunks only at their displayed anchors.
 
 ## [0.11.1] - 2026-10-16
 
@@ -571,3 +583,4 @@ First tagged release.
 [0.8.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.8.0...v0.8.1
 [0.11.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.10.0...v0.11.0
 [0.11.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.0...v0.11.1
+[0.11.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.1...v0.11.2

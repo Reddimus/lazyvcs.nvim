@@ -43,6 +43,22 @@ function M.start(args, opts, callback)
 	return task
 end
 
+---@param args string[]
+---@param opts table
+---@param callback fun(bytes: string?, err: string?, raw: table?): any
+---@return table task
+function M.bytes(args, opts, callback)
+	return M.start(args, vim.tbl_extend("force", opts or {}, { text = false }), function(result, err, raw)
+		if not result then
+			return callback(nil, err, raw)
+		end
+		if result.stdout_truncated or result.stderr_truncated then
+			return callback(nil, "Command output was truncated; refusing incomplete contents", raw)
+		end
+		callback(result.stdout or "", nil, raw)
+	end)
+end
+
 function M.lines(args, opts, callback)
 	return M.start(args, opts, function(result, err, raw)
 		if not result then

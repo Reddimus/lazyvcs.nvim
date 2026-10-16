@@ -1,4 +1,5 @@
 local util = require("lazyvcs.util")
+local text = require("lazyvcs.compare_text")
 local compat = require("lazyvcs.compat")
 
 local M = {}
@@ -28,6 +29,81 @@ function M.compute_hunks(base_lines, current_lines)
 	return hunks
 end
 
+function M.decode_base(bufnr, payload, limit)
+	local profile, err = text.profile(bufnr)
+	if not profile then
+		return nil, err
+	end
+	local document
+	if payload.base_bytes ~= nil then
+		local decode_profile =
+			vim.tbl_extend("force", profile, { fileencoding = payload.base_encoding or profile.fileencoding })
+		document, err = text.decode(payload.base_bytes, decode_profile, limit)
+	else
+		local lines = payload.base_lines or {}
+		local size = 0
+		for _, line in ipairs(lines) do
+			size = size + #line + 1
+			if size > limit then
+				return nil, "Decoded base exceeds the editable content limit"
+			end
+		end
+		document = {
+			lines = lines,
+			eol = true,
+			empty = #lines == 0,
+			encoding = "utf-8",
+			bom = false,
+			profile_key = profile.key,
+		}
+	end
+	if document then
+		payload.base_bytes = nil
+	end
+	return document, err
+end
+
+---@param base LazyVcsText
+---@param current LazyVcsText
+---@return table[] hunks
+function M.compute_text_hunks(base, current)
+	local raw =
+		compat.diff(text.serialize(base), text.serialize(current), { algorithm = "histogram", result_type = "indices" })
+	local hunks = {}
+	for _, item in ipairs(type(raw) == "table" and raw or {}) do
+		local hunk = normalize_hunk(item)
+		local base_end = hunk.base_start + math.max(hunk.base_count - 1, 0)
+		local current_end = hunk.current_start + math.max(hunk.current_count - 1, 0)
+		hunk.covers_eof = base_end >= #base.lines and current_end >= #current.lines
+		hunks[#hunks + 1] = hunk
+	end
+	return hunks
+end
+
+---@param bufnr integer
+---@param base LazyVcsText
+---@param current LazyVcsText
+---@param hunk table
+function M.reset_text_hunk(bufnr, base, current, hunk)
+	if current.empty then
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, base.lines)
+	else
+		M.reset_hunk(bufnr, base.lines, hunk)
+	end
+	if hunk.covers_eof then
+		local changed = vim.bo[bufnr].endofline ~= base.eol
+		vim.bo[bufnr].endofline = base.eol
+		if not base.eol then
+			vim.bo[bufnr].fixendofline = false
+		end
+		-- With 'fixendofline' set, Neovim ignores 'endofline' when deciding whether the
+		-- buffer is modified, so :update and autosave would skip an EOF-only revert.
+		if changed then
+			vim.bo[bufnr].modified = true
+		end
+	end
+end
+
 function M.hunk_anchor(hunk)
 	return math.max(hunk.current_start, 1)
 end
@@ -44,9 +120,6 @@ function M.find_current_hunk(hunks, line)
 		local start_line = M.hunk_anchor(hunk)
 		local end_line = M.hunk_last_line(hunk)
 		if line >= start_line and line <= end_line then
-			return hunk
-		end
-		if hunk.current_count == 0 and line == math.max(start_line - 1, 1) then
 			return hunk
 		end
 	end

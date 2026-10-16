@@ -1,5 +1,6 @@
 local backends = require("lazyvcs.backends")
 local config = require("lazyvcs.config")
+local compare_text = require("lazyvcs.compare_text")
 local compat = require("lazyvcs.compat")
 local diff = require("lazyvcs.diff")
 local confirm = require("lazyvcs.source_control.confirm")
@@ -159,14 +160,24 @@ local function render(bufnr)
 	if not state or not util.buf_is_valid(bufnr) then
 		return
 	end
-	local tick = vim.api.nvim_buf_get_changedtick(bufnr)
-	if state.rendered_tick == tick and state.rendered_base == state.base_lines then
-		return
+	local identity, identity_err = compare_text.identity(bufnr)
+	if not identity or not state.base_text or identity.profile_key ~= state.base_text.profile_key then
+		state.hunks, state.loaded = {}, false
+		vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
+		return false, identity_err or "Buffer decoding profile changed; reload the VCS base"
 	end
-	state.rendered_tick = tick
-	state.rendered_base = state.base_lines
-
-	state.hunks = diff.compute_hunks(state.base_lines, util.get_buf_lines(bufnr))
+	if vim.deep_equal(state.rendered_identity, identity) and state.rendered_base == state.base_text then
+		return true
+	end
+	local current, err = compare_text.capture(bufnr, opts().max_file_bytes)
+	if not current then
+		state.hunks = {}
+		vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
+		return false, err
+	end
+	state.rendered_identity, state.rendered_base = identity, state.base_text
+	state.current_text = current
+	state.hunks = diff.compute_text_hunks(state.base_text, current)
 	vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
 
 	local text = opts().text
@@ -228,7 +239,15 @@ function M.refresh(bufnr, reload_base, on_ready)
 		end
 		return
 	end
-	if not reload_base and state.loaded then
+	local profile, profile_err = compare_text.profile(bufnr)
+	if not profile then
+		clear(bufnr)
+		if on_ready then
+			on_ready(nil, profile_err)
+		end
+		return
+	end
+	if not reload_base and state.loaded and state.base_text and state.base_text.profile_key == profile.key then
 		render(bufnr)
 		if on_ready then
 			on_ready(state)
@@ -243,9 +262,23 @@ function M.refresh(bufnr, reload_base, on_ready)
 	local generation = state.generation
 	state.loading = true
 	local job = require("lazyvcs.backends.task").new()
-	local function loaded(result, err)
+	local function loaded_impl(result, err)
 		local live = buffers[bufnr]
-		if not live or live.generation ~= generation or not util.buf_is_valid(bufnr) then
+		if not live or live ~= state or live.generation ~= generation then
+			return
+		end
+		job:finish()
+		local current_profile = compare_text.profile(bufnr)
+		if
+			not util.buf_is_valid(bufnr)
+			or util.buf_path(bufnr) ~= path
+			or not current_profile
+			or current_profile.key ~= profile.key
+		then
+			clear(bufnr)
+			if on_ready then
+				on_ready(nil, "Buffer decoding context changed while loading")
+			end
 			return
 		end
 		live.job = nil
@@ -268,13 +301,23 @@ function M.refresh(bufnr, reload_base, on_ready)
 		live.root = result.root
 		live.relpath = result.relpath
 		live.base_label = result.base_label
-		live.base_lines = result.base_lines
+		local document, decode_err = diff.decode_base(bufnr, result, opts().max_file_bytes)
+		if not document then
+			clear(bufnr)
+			if on_ready then
+				on_ready(nil, decode_err)
+			end
+			return
+		end
+		live.base_text, live.base_lines = document, document.lines
+		live.base_identity = result.base_identity
 		live.loaded = true
 		render(bufnr)
 		if on_ready then
 			on_ready(live)
 		end
 	end
+	local loaded = util.safe_callback(loaded_impl)
 	job:add(backends.resolve_async(path, function(backend, _, err)
 		if not job:is_active() then
 			return
@@ -306,18 +349,26 @@ local function schedule(bufnr)
 	timer:start(
 		opts().debounce_ms,
 		0,
-		vim.schedule_wrap(function()
+		vim.schedule_wrap(util.safe_callback(function()
 			stop_timer(bufnr)
 			timers[bufnr] = nil
 			M.refresh(bufnr, false)
-		end)
+		end))
 	)
 end
 
 local function with_current_state(on_ready)
 	local bufnr = vim.api.nvim_get_current_buf()
 	local state = buffers[bufnr]
-	if state and state.loaded then
+	local profile = compare_text.profile(bufnr)
+	if
+		state
+		and state.loaded
+		and state.path == supported_buffer(bufnr)
+		and profile
+		and state.base_text
+		and state.base_text.profile_key == profile.key
+	then
 		render(bufnr)
 		local result = on_ready(state)
 		if result ~= nil then
@@ -393,8 +444,7 @@ function M.revert_hunk()
 	end
 	local bufnr = context.bufnr
 	return with_current_state(function(state)
-		context = util.capture_buffer_context()
-		if not context then
+		if vim.api.nvim_get_current_win() ~= context.winid or not util.buffer_context_is_unchanged(context) then
 			return false
 		end
 		local line = context.cursor[1]
@@ -403,7 +453,7 @@ function M.revert_hunk()
 			util.notify("No modified hunk at the cursor", vim.log.levels.WARN)
 			return
 		end
-		local confirmed_base_lines = vim.deepcopy(state.base_lines)
+		local confirmed_base = vim.deepcopy(state.base_text)
 		local confirmed_hunk = vim.deepcopy(hunk)
 		local function context_is_unchanged()
 			if not util.buffer_context_is_unchanged(context) then
@@ -414,11 +464,14 @@ function M.revert_hunk()
 				return false
 			end
 			local live = buffers[bufnr]
+			if live then
+				render(bufnr)
+			end
 			local current_hunk = live and diff.find_current_hunk(live.hunks or {}, context.cursor[1]) or nil
 			if
 				not live
 				or not live.loaded
-				or not vim.deep_equal(live.base_lines, confirmed_base_lines)
+				or not vim.deep_equal(live.base_text, confirmed_base)
 				or not vim.deep_equal(current_hunk, confirmed_hunk)
 			then
 				util.notify("Hunk base changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
@@ -433,11 +486,32 @@ function M.revert_hunk()
 			if not context_is_unchanged() then
 				return false
 			end
-			return with_unchanged_buffer(context, function()
-				diff.reset_hunk(bufnr, confirmed_base_lines, confirmed_hunk)
-				schedule(bufnr)
-				return true
-			end)
+			local function reset()
+				if not context_is_unchanged() then
+					return false
+				end
+				return with_unchanged_buffer(context, function()
+					diff.reset_text_hunk(bufnr, confirmed_base, state.current_text, confirmed_hunk)
+					schedule(bufnr)
+					return true
+				end)
+			end
+			if not state.base_identity then
+				return reset()
+			end
+			return backends.validate_editable_base_async(
+				context.path,
+				state.base_identity,
+				util.safe_callback(function(valid, err)
+					if not valid then
+						clear(bufnr)
+						return util.notify(err or "Hunk base is no longer editable", vim.log.levels.WARN)
+					end
+					reset()
+				end)
+			)
+		end, function()
+			return false
 		end)
 	end)
 end
@@ -464,7 +538,7 @@ function M.preview_diff()
 	end
 	local bufnr = vim.api.nvim_get_current_buf()
 	return with_current_state(function(state)
-		local text = compat.diff(util.join_lines(state.base_lines), util.join_lines(util.get_buf_lines(bufnr)), {
+		local text = compat.diff(compare_text.serialize(state.base_text), compare_text.serialize(state.current_text), {
 			algorithm = "histogram",
 			result_type = "unified",
 		})
@@ -522,7 +596,7 @@ function M.setup()
 	local hl_group = vim.api.nvim_create_augroup("lazyvcs_highlights", { clear = true })
 	vim.api.nvim_create_autocmd("ColorScheme", {
 		group = hl_group,
-		callback = setup_highlights,
+		callback = util.safe_callback(setup_highlights),
 	})
 
 	if not opts().enabled then
@@ -530,39 +604,50 @@ function M.setup()
 	end
 
 	augroup = vim.api.nvim_create_augroup("lazyvcs_signs", { clear = true })
-	vim.api.nvim_create_autocmd("BufReadPost", {
+	vim.api.nvim_create_autocmd({ "BufReadPost", "BufFilePost" }, {
 		group = augroup,
-		callback = function(args)
+		callback = util.safe_callback(function(args)
 			M.refresh(args.buf, true)
-		end,
+		end),
 	})
 	vim.api.nvim_create_autocmd("BufEnter", {
 		group = augroup,
-		callback = function(args)
+		callback = util.safe_callback(function(args)
 			-- Reuse the cached base on window changes; reload_base would spawn and cancel a VCS
 			-- read on every switch.
 			M.refresh(args.buf, false)
-		end,
+		end),
 	})
 	vim.api.nvim_create_autocmd("BufWritePost", {
 		group = augroup,
-		callback = function(args)
+		callback = util.safe_callback(function(args)
 			M.refresh(args.buf, true)
-		end,
+		end),
 	})
 	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
 		group = augroup,
-		callback = function(args)
+		callback = util.safe_callback(function(args)
 			if buffers[args.buf] then
 				schedule(args.buf)
 			end
-		end,
+		end),
 	})
+	vim.api.nvim_create_autocmd("OptionSet", {
+		group = augroup,
+		pattern = { "fileencoding", "fileformat", "bomb", "binary", "endofline", "fixendofline" },
+		callback = util.safe_callback(function()
+			local buf = vim.api.nvim_get_current_buf()
+			if buffers[buf] then
+				schedule(buf)
+			end
+		end),
+	})
+
 	vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
 		group = augroup,
-		callback = function(args)
+		callback = util.safe_callback(function(args)
 			clear(args.buf)
-		end,
+		end),
 	})
 
 	if vim.api.nvim_get_current_buf() ~= 0 then

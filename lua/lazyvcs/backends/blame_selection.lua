@@ -31,13 +31,13 @@ function M.load(target, contents, callback)
 		end
 		local snapshot, item = target.snapshot, target.item
 		if not snapshot then
-			task:add(
-				backend.blame_lines_async(
-					target.path,
-					finish,
-					{ root = root, contents = contents, line_start = target.first, line_end = target.last }
-				)
-			)
+			task:add(backend.blame_lines_async(target.path, finish, {
+				root = root,
+				contents = contents,
+				fileformat = target.fileformat,
+				line_start = target.first,
+				line_end = target.last,
+			}))
 		elseif snapshot.vcs == "git" then
 			local base = target.side == "base"
 			local revision = base and snapshot.revision or snapshot.head
@@ -183,13 +183,13 @@ function M.load(target, contents, callback)
 				url .. "@" .. snapshot.revision,
 			}, { cwd = root }, finish))
 		else
-			task:add(
-				backend.blame_lines_async(
-					target.path,
-					finish,
-					{ root = root, contents = contents, line_start = target.first, line_end = target.last }
-				)
-			)
+			task:add(backend.blame_lines_async(target.path, finish, {
+				root = root,
+				contents = contents,
+				fileformat = target.fileformat,
+				line_start = target.first,
+				line_end = target.last,
+			}))
 		end
 	end
 	if target.snapshot then

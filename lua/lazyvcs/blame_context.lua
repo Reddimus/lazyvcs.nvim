@@ -6,6 +6,7 @@ local M = {}
 ---@field winid integer
 ---@field name string
 ---@field changedtick integer
+---@field fileformat string
 
 ---@param bufnr integer
 ---@param winid integer
@@ -24,6 +25,7 @@ function M.capture(bufnr, winid)
 		winid = winid,
 		name = vim.api.nvim_buf_get_name(bufnr),
 		changedtick = vim.api.nvim_buf_get_changedtick(bufnr),
+		fileformat = vim.bo[bufnr].fileformat,
 	}
 end
 
@@ -35,6 +37,8 @@ function M.valid(captured, require_window)
 		and vim.api.nvim_buf_is_loaded(captured.bufnr)
 		and vim.api.nvim_buf_get_name(captured.bufnr) == captured.name
 		and vim.api.nvim_buf_get_changedtick(captured.bufnr) == captured.changedtick
+		-- Changing 'fileformat' changes the bytes sent to the backend but not the tick.
+		and vim.bo[captured.bufnr].fileformat == captured.fileformat
 		and (
 			not require_window
 			or (util.win_is_valid(captured.winid) and vim.api.nvim_win_get_buf(captured.winid) == captured.bufnr)
