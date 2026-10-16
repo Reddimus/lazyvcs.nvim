@@ -58,6 +58,7 @@ end
 vim.opt.runtimepath:prepend(repo_root)
 local test_state_dir = vim.fn.tempname()
 vim.env.XDG_STATE_HOME = test_state_dir
+vim.env.XDG_CACHE_HOME = test_state_dir .. "/cache"
 vim.api.nvim_create_autocmd("VimLeavePre", {
 	once = true,
 	callback = function()

@@ -1084,9 +1084,10 @@ local function test_svn_async_blame_cancels_active_child_process()
 	end
 
 	local backend = require("lazyvcs.backends.svn")
+	local jobs = require("lazyvcs.source_control.jobs")
 	local util = require("lazyvcs.util")
 	local original_system_start = util.system_start
-	local path = vim.fn.tempname()
+	local path = helpers.tempdir() .. "/cancel-blame.txt"
 	helpers.write_file(path, "line\n")
 
 	-- Guarantee the global monkey-patch is restored even if an assertion
@@ -1096,7 +1097,10 @@ local function test_svn_async_blame_cancels_active_child_process()
 		local callbacks = {}
 
 		---@diagnostic disable-next-line: duplicate-set-field
-		util.system_start = function(args, _, on_exit)
+		util.system_start = function(args, opts, on_exit)
+			if opts.cwd ~= vim.fs.dirname(path) then
+				return original_system_start(args, opts, on_exit)
+			end
 			local handle = {
 				args = args,
 				killed = false,
@@ -1115,10 +1119,37 @@ local function test_svn_async_blame_cancels_active_child_process()
 		end)
 		callbacks[1]({ stdout = vim.fs.dirname(path) .. "\n", code = 0 })
 		eq(#handles, 2)
+		callbacks[2]({ stdout = "", code = 0 })
+		eq(#handles, 3)
+		assert(vim.tbl_contains(handles[3].args, "blame"), "fixture did not reach svn blame")
+		-- Other buffers share this single worker and can already be queued when
+		-- cancellation completes. The mock must not capture their real processes.
+		local other_done, other_started = false, false
+		jobs.command({ root = helpers.tempdir(), vcs = "svn" }, "buffer", { "svn", "--version", "--quiet" }, {
+			start = function(args, opts, done)
+				other_started = true
+				return original_system_start(args, opts, done)
+			end,
+		}, function(result, failure)
+			assert(result and not failure, failure)
+			other_done = true
+		end)
 		job:kill()
-		assert(handles[2].killed, "active svn blame child process should be killed")
-		callbacks[2]({ stdout = "     1 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line\n", code = 0 })
+		assert(handles[3].killed, "active svn blame child process should be killed")
+		assert(not other_started, "worker released before physical completion")
+		callbacks[3]({ stdout = "     1 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line\n", code = 0 })
 		eq(completed, false)
+		local released = false
+		jobs.command({ root = vim.fs.dirname(path), vcs = "svn" }, "buffer", { "worker-probe" }, {
+			start = function(_, _, done)
+				released = true
+				done({ code = 0, stdout = "", stderr = "" })
+				return {}
+			end,
+		})
+		wait_for(function()
+			return released and other_done
+		end, "cancelled svn blame kept its scheduler worker", ASYNC_TIMEOUT_MS)
 	end)
 
 	util.system_start = original_system_start
@@ -5252,11 +5283,11 @@ local function test_source_control_git_file_actions_commit_and_sync()
 	wait_for(function()
 		-- Git checkout briefly removes the file. Retry missing-file reads instead of throwing
 		-- from the wait predicate.
-		if vim.fn.filereadable(fixture.file) ~= 1 then
+		local ok, lines = pcall(vim.fn.readfile, fixture.file)
+		if not ok then
 			return false
 		end
-		return vim.deep_equal(vim.fn.readfile(fixture.file), { "one", "two", "three" })
-			and session_state.get_repo_job(fixture.root) == nil
+		return vim.deep_equal(lines, { "one", "two", "three" }) and session_state.get_repo_job(fixture.root) == nil
 	end, "git discard should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(vim.fn.readfile(fixture.file), { "one", "two", "three" })
 
@@ -6126,7 +6157,8 @@ local function test_source_control_svn_commit_and_update()
 	}
 	ops.sync_repo(update_state, update_node)
 	wait_for(function()
-		return vim.deep_equal(vim.fn.readfile(update_fixture.file), { "one", "updated", "three" })
+		local ok, lines = pcall(vim.fn.readfile, update_fixture.file)
+		return ok and vim.deep_equal(lines, { "one", "updated", "three" })
 	end, "svn update should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(vim.fn.readfile(update_fixture.file), { "one", "updated", "three" })
 end
@@ -7152,6 +7184,9 @@ vim.list_extend(cases, require("spec_signs_commands")({ helpers = helpers, wait_
 vim.list_extend(cases, require("spec_signs_lifecycle")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_integrations_resession")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_integrations_editor")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_process_shutdown")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_process_flows")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_process")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_window_options")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_integrity")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_text")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))

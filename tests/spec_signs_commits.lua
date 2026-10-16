@@ -71,6 +71,20 @@ return function(ctx)
 		util.system_start, vim.system, vim.uv.fs_open = start, system, open
 		assert(ok, err)
 	end
+	-- Commit messages live in the private cache directory, or in a tempname when
+	-- that directory cannot be protected.
+	local function message_file(file)
+		file = vim.fs.normalize(file)
+		for _, dir in ipairs({
+			vim.fn.stdpath("cache") .. "/lazyvcs/commit",
+			vim.fn.fnamemodify(vim.fn.tempname(), ":h"),
+		}) do
+			if vim.startswith(file, vim.fs.normalize(dir) .. "/") then
+				return true
+			end
+		end
+		return false
+	end
 	local cases = {}
 	for _, svn in ipairs({ false, true }) do
 		local prefix = svn and "test_svn_signs_commit_" or "test_signs_commit_"
@@ -136,7 +150,7 @@ return function(ctx)
 							vim.cmd("LazyVCS preview")
 						end
 						vim.uv.fs_open = function(file, ...)
-							if failure == "starter_throw" and file:find("-lazyvcs-commit.txt", 1, true) then
+							if failure == "starter_throw" and message_file(file) then
 								pending()
 								path = file
 								error("injected starter error")
@@ -144,7 +158,8 @@ return function(ctx)
 							return open(file, ...)
 						end
 						vim.system = function(args, ...)
-							if failure == "spawn_report" and args[2] == "commit" then
+							-- SVN commands gain --non-interactive before the subcommand.
+							if failure == "spawn_report" and (args[2] == "commit" or args[3] == "commit") then
 								error("injected spawn error")
 							end
 							return system(args, ...)

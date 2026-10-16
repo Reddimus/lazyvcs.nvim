@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.3] - 2026-10-16
 
 ### Fixed
 
@@ -89,6 +89,11 @@ and this project adheres to
 - Keep Neo-tree and other plugin windows intact when choosing sidebar diff
   destinations.
 - Save original editor window options through Resession while live diff is open.
+- Terminate command descendants after timeout or cancellation so inherited
+  output pipes cannot strand scheduler workers.
+- Stop running read and background commands and discard queued work when Neovim
+  exits. On Linux and macOS, running repository mutations are left to finish.
+- Fail Git and SVN commands without waiting for terminal credential prompts.
 
 ## [0.11.2] - 2026-10-16
 
@@ -668,3 +673,4 @@ First tagged release.
 [0.11.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.10.0...v0.11.0
 [0.11.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.0...v0.11.1
 [0.11.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.1...v0.11.2
+[0.11.3]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.2...v0.11.3

@@ -1,5 +1,6 @@
 local config = require("lazyvcs.config")
 local util = require("lazyvcs.util")
+local runtime = require("lazyvcs.process_runtime")
 
 local M = {}
 
@@ -143,12 +144,14 @@ end
 
 local function notify_callback_error(err)
 	vim.schedule(function()
-		util.notify("Source-control job callback failed: " .. tostring(err), vim.log.levels.ERROR)
+		if not runtime.is_shutting_down() then
+			util.notify("Source-control job callback failed: " .. tostring(err), vim.log.levels.ERROR)
+		end
 	end)
 end
 
 local function invoke_done(job, result, err, raw)
-	if type(job.on_done) ~= "function" then
+	if runtime.is_shutting_down() or type(job.on_done) ~= "function" then
 		return
 	end
 	local ok, callback_err = pcall(job.on_done, result, err, raw)
@@ -246,9 +249,12 @@ local function start_job(job)
 	local starter = job.start or util.system_start
 	local ok, handle = pcall(starter, job.args, {
 		cwd = job.cwd,
+		scope = job.scope,
 		timeout = job.timeout_ms > 0 and job.timeout_ms or nil,
 		output_limit = job.output_limit_bytes,
 		kill_grace_ms = job.kill_grace_ms,
+		on_exit_during_shutdown = true,
+		preserve_on_shutdown = job.scope == "mutation",
 		on_terminate = function(result, err, raw)
 			on_process_terminate(job, result, err, raw)
 		end,
@@ -270,6 +276,9 @@ local function start_job(job)
 end
 
 pump = function(vcs)
+	if runtime.is_shutting_down() then
+		return
+	end
 	-- Defer pumps during cancellation. Synchronous callbacks can enqueue jobs that would
 	-- otherwise escape the sweep.
 	if cancelling > 0 then
@@ -359,6 +368,10 @@ local function finite_option(name, value, default)
 end
 
 function M.command(repo, kind, args, opts, on_done)
+	if runtime.is_shutting_down() then
+		next_id = next_id + 1
+		return next_id
+	end
 	opts = opts or {}
 	if type(repo) ~= "table" or type(repo.root) ~= "string" or repo.root == "" then
 		error("lazyvcs source-control jobs require a repository root")
@@ -445,6 +458,9 @@ function M.command(repo, kind, args, opts, on_done)
 end
 
 function M.cancel(filter, reason)
+	if runtime.is_shutting_down() then
+		return 0
+	end
 	filter = filter or function()
 		return true
 	end
@@ -577,5 +593,28 @@ end
 function M.clear_history()
 	history = {}
 end
+
+runtime.before_shutdown(function()
+	local function cancel(job)
+		finish(job, "cancelled", nil, "Cancelled: editor shutdown", {
+			code = 130,
+			stdout = "",
+			stderr = "Cancelled: editor shutdown",
+			cancelled = true,
+			reason = "editor shutdown",
+		})
+	end
+	for vcs, queue in pairs(queues) do
+		queues[vcs] = {}
+		for _, job in ipairs(queue) do
+			cancel(job)
+		end
+	end
+	for _, job in pairs(running) do
+		if job.scope ~= "mutation" then
+			cancel(job)
+		end
+	end
+end)
 
 return M

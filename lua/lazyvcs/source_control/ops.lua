@@ -384,6 +384,15 @@ local function start_repo_job(state, repo, spec)
 	return true
 end
 
+local read_only_commands = {
+	git_status = true,
+	git_current_branch = true,
+	git_upstream = true,
+	git_remotes = true,
+	git_fetch = true,
+	svn_discard_info = true,
+}
+
 local function start_command(repo, kind, args, on_done, opts)
 	opts = opts or {}
 	local timeout = opts.timeout_ms or config.get().source_control.background.mutation_timeout_ms
@@ -452,7 +461,7 @@ local function start_command(repo, kind, args, on_done, opts)
 		kill_grace_ms = opts.kill_grace_ms,
 		output_limit_bytes = opts.output_limit_bytes,
 		owner = opts.owner or repo.root,
-		scope = opts.scope or "mutation",
+		scope = opts.scope or (read_only_commands[kind] and kind or "mutation"),
 		generation = opts.generation or mutation_generations[repo.root],
 		priority = opts.priority or 100,
 		start = process_start,
@@ -481,23 +490,16 @@ local function start_commit_command(repo, message, on_done)
 				on_exit(nil, "Commit command is missing the -F message file argument")
 				return
 			end
-			local path = vim.fn.tempname() .. "-lazyvcs-commit.txt"
-			local fd, open_err = vim.uv.fs_open(path, "wx", 384)
-			if not fd then
-				on_exit(nil, "Could not create private commit message: " .. tostring(open_err))
+			local path, file_err, persistent = require("lazyvcs.source_control.commit_files").create(message)
+			if not path then
+				on_exit(nil, file_err)
 				return
 			end
 			local function cleanup()
 				pcall(vim.uv.fs_unlink, path)
 			end
-			local ok, written, write_err = pcall(require("lazyvcs.fs").write_all, fd, message, 0)
-			local closed, close_err = vim.uv.fs_close(fd)
-			if not ok or not written or not closed then
-				cleanup()
-				on_exit(nil, "Could not write commit message: " .. tostring(ok and (write_err or close_err) or written))
-				return
-			end
 			command[message_index] = path
+			process_opts.preserve_on_shutdown = process_opts.preserve_on_shutdown and persistent
 			local started, handle = pcall(util.system_start, command, process_opts, function(...)
 				cleanup()
 				on_exit(...)

@@ -14,6 +14,7 @@ end
 
 function M.setup(opts)
 	local resolved = config.setup(opts)
+	require("lazyvcs.source_control.commit_files").prune()
 	require("lazyvcs.compare_text").setup()
 	require("lazyvcs.commands").setup()
 	require("lazyvcs.signs").setup()

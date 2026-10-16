@@ -68,7 +68,9 @@ A green run on an svn-less machine therefore covers less than CI does.
   checkout.
 - **Never block the UI thread.** Navigation, autocmds, and keystrokes use async
   backends (`load_base_async`, `blame_lines_async`). Synchronous VCS calls
-  belong only in `health.lua` and tests.
+  belong only in `health.lua` and tests. Editor exit is the exception: process
+  cleanup shares a 100 ms TERM deadline and a 200 ms KILL/reaping deadline
+  across all commands.
 - **Never let an error escape a `vim.schedule` or autocmd callback.** Headless
   Neovim only logs it, but interactive Neovim renders the traceback and blocks
   on the hit-enter prompt. Report failures with a single-line `util.notify`.
@@ -140,6 +142,12 @@ the GitHub release.
   originating tab.
 - `source_control/persist.lua` writes independent project files and reads the
   legacy shared file without changing it. Same-project saves use the last write.
+- `util.system_start` owns every asynchronous command's process group and
+  escalation. Custom scheduler `start` functions must delegate to it, including
+  preflight and mutation wrappers. `process_runtime.lua` tracks physical cleanup
+  and closes submissions during `VimLeavePre`. Application callbacks stop during
+  shutdown; scheduler completion callbacks retain `on_exit_during_shutdown` for
+  worker accounting. Only `release_worker` releases scheduler capacity.
 - `source_control/mutation_start.lua` holds one scheduler worker and one
   deadline across asynchronous preflight and mutation. Recheck branch and buffer
   guards before spawning the mutation; never enqueue preflight into the same

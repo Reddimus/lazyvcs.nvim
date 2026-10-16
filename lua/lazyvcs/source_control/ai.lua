@@ -2,6 +2,7 @@ local config = require("lazyvcs.config")
 local fs = require("lazyvcs.fs")
 local jobs = require("lazyvcs.source_control.jobs")
 local util = require("lazyvcs.util")
+local runtime = require("lazyvcs.process_runtime")
 
 local M = {}
 
@@ -278,6 +279,7 @@ local function run_cli_provider(request, provider, repo, prompt, callback)
 		cwd = repo.root,
 		timeout = opts.timeout_ms,
 		stdin = prompt,
+		on_exit_during_shutdown = true,
 	}
 
 	if provider == "claude" then
@@ -331,6 +333,12 @@ local function run_cli_provider(request, provider, repo, prompt, callback)
 	end
 
 	local handle = util.system_start(args, run_opts, function(result, err)
+		if runtime.is_shutting_down() then
+			request.active = false
+			request.handle = nil
+			request:cleanup()
+			return
+		end
 		if not request.active then
 			return
 		end
