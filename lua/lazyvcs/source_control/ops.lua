@@ -12,6 +12,8 @@ local repo_switch = require("lazyvcs.source_control.switch")
 local session_state = require("lazyvcs.state")
 local util = require("lazyvcs.util")
 
+local remote_snapshots = require("lazyvcs.source_control.remote_refresh")
+
 local M = {}
 local mutation_generations = {}
 local draft_states = setmetatable({}, { __mode = "k" })
@@ -412,11 +414,12 @@ local function start_command(repo, kind, args, on_done, opts)
 		or opts.branch_ref
 		or opts.svn_discard
 		or opts.git_untracked_delete
+		or repo.vcs == "svn" and not read_only_commands[kind]
 	then
 		process_start = function(command, process_opts, on_exit)
 			local signs, change
 			local guards = vim.tbl_extend("force", {}, opts)
-			if base_mutation then
+			if base_mutation or repo.vcs == "svn" then
 				local paths
 				if kind == "git_stage_file" or kind == "git_unstage_file" or kind == "discard_staged" then
 					paths = {}
@@ -431,6 +434,12 @@ local function start_command(repo, kind, args, on_done, opts)
 				end
 				signs = require("lazyvcs.signs")
 				guards.on_mutation_start = function()
+					if opts.on_mutation_start then
+						opts.on_mutation_start()
+					end
+					if repo.vcs == "svn" then
+						remote_snapshots.invalidate(repo.root)
+					end
 					change = signs.begin_base_change(repo.root, paths)
 				end
 			end
@@ -438,6 +447,9 @@ local function start_command(repo, kind, args, on_done, opts)
 				if change then
 					local settled = change
 					change = nil
+					if repo.vcs == "svn" then
+						remote_snapshots.invalidate(repo.root)
+					end
 					util.safe_callback(signs.finish_base_change)(settled)
 				end
 			end
@@ -847,6 +859,8 @@ local function ensure_repo_details(state, repo)
 				model.merge_details(state.lazyvcs_repo_cache[repo.root], model.make_error(repo, repo, err))
 			util.notify(err, vim.log.levels.WARN)
 		end
+		state.lazyvcs_repo_cache[repo.root] =
+			model.with_remote_snapshot(state.lazyvcs_repo_cache[repo.root], remote_snapshots.read(repo.root))
 		navigate_if_visible(state)
 	end)
 	return state.lazyvcs_repo_cache[repo.root]
@@ -1418,6 +1432,12 @@ function M.cancel(path, opts)
 			ai_count = ai_count + M.cancel_commit_generations(state, root)
 		end
 	end
+	ai_count = ai_count
+		+ require("lazyvcs.source_control.ai_requests").cancel(
+			root,
+			not opts.all_owners and opts.owner or nil,
+			opts.reason
+		)
 	local count = jobs.cancel(function(job)
 		if job.kind == "buffer" then
 			return false

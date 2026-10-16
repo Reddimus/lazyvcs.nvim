@@ -3,10 +3,11 @@ local util = require("lazyvcs.util")
 local M = {}
 
 local REQUIREMENT =
-	"CopilotChat commit generation requires the main client API (client:ask, client:models, client:get_providers) and plenary.async.run; update CopilotChat.nvim."
+	"CopilotChat commit generation requires the main client API (client:ask, client:models, client:get_providers) and plenary.async.run with cancellable plenary.curl Jobs; update CopilotChat.nvim."
 
 function M.start(prompt, settings, on_done)
 	local active, settled, timer = true, false, nil
+	local scope
 	local function stop_timer()
 		if timer and not timer:is_closing() then
 			timer:stop()
@@ -17,7 +18,11 @@ function M.start(prompt, settings, on_done)
 	local handle = {}
 	function handle:cancel()
 		active = false
+		settled = true
 		stop_timer()
+		if scope then
+			scope:cancel()
+		end
 	end
 	handle.kill = handle.cancel
 	local function finish(message, err)
@@ -26,6 +31,13 @@ function M.start(prompt, settings, on_done)
 		end
 		settled = true
 		stop_timer()
+		if scope then
+			if err then
+				scope:cancel()
+			else
+				scope:close()
+			end
+		end
 		vim.schedule(function()
 			if not active then
 				return
@@ -63,6 +75,11 @@ function M.start(prompt, settings, on_done)
 		finish(nil, REQUIREMENT)
 		return handle
 	end
+	scope = require("lazyvcs.source_control.copilotchat_transport").new_scope()
+	if not scope then
+		finish(nil, REQUIREMENT)
+		return handle
+	end
 	local config = chat.config or {}
 	if type(config.model) ~= "string" or config.model == "" then
 		finish(nil, "CopilotChat commit generation requires a scalar configured model.")
@@ -76,27 +93,29 @@ function M.start(prompt, settings, on_done)
 		end, settings.timeout_ms)
 	end
 	local ok, run_err = pcall(async.run, function()
-		if not active or settled then
-			return
-		end
-		local asked, response = pcall(client.ask, client, {
-			headless = true,
-			history = { { role = "user", content = prompt } },
-			system_prompt = "Generate one commit subject from the supplied literal diff. Return only one line.",
-			resources = {},
-			tools = {},
-			model = model,
-			temperature = temperature,
-		})
-		if not asked then
-			return finish(nil, (tostring(response):gsub("[\r\n]+", " ")))
-		end
-		local message = type(response) == "table" and response.message
-		local content = type(message) == "table" and message.content
-		if type(content) ~= "string" or util.trim(content) == "" then
-			return finish(nil, "CopilotChat returned an empty commit message")
-		end
-		finish(content)
+		scope:run(function()
+			if not active or settled then
+				return
+			end
+			local asked, response = pcall(client.ask, client, {
+				headless = true,
+				history = { { role = "user", content = prompt } },
+				system_prompt = "Generate one commit subject from the supplied literal diff. Return only one line.",
+				resources = {},
+				tools = {},
+				model = model,
+				temperature = temperature,
+			})
+			if not asked then
+				return finish(nil, (tostring(response):gsub("[\r\n]+", " ")))
+			end
+			local message = type(response) == "table" and response.message
+			local content = type(message) == "table" and message.content
+			if type(content) ~= "string" or util.trim(content) == "" then
+				return finish(nil, "CopilotChat returned an empty commit message")
+			end
+			finish(content)
+		end)
 	end)
 	if not ok then
 		finish(nil, (tostring(run_err):gsub("[\r\n]+", " ")))

@@ -3,6 +3,7 @@ local fs = require("lazyvcs.fs")
 local jobs = require("lazyvcs.source_control.jobs")
 local util = require("lazyvcs.util")
 local runtime = require("lazyvcs.process_runtime")
+local requests = require("lazyvcs.source_control.ai_requests")
 
 local M = {}
 
@@ -48,7 +49,7 @@ local function configured_providers()
 	return { opts.provider }
 end
 
-local function new_request(callback)
+local function new_request(callback, on_cancel)
 	local request = {
 		active = true,
 		cleanups = {},
@@ -80,6 +81,7 @@ local function new_request(callback)
 			return
 		end
 		self.active = false
+		requests.release(self.registration)
 		self.handle = nil
 		self:cleanup()
 		if type(callback) == "function" then
@@ -93,16 +95,20 @@ local function new_request(callback)
 		end
 	end
 
-	function request:cancel()
+	function request:cancel(reason)
 		if not self.active then
 			return
 		end
 		self.active = false
+		requests.release(self.registration)
 		if self.handle and type(self.handle.kill) == "function" then
 			pcall(self.handle.kill, self.handle, 15)
 		end
 		self.handle = nil
 		self:cleanup()
+		if on_cancel then
+			util.safe_callback(on_cancel)(reason)
+		end
 	end
 
 	request.kill = request.cancel
@@ -335,6 +341,7 @@ local function run_cli_provider(request, provider, repo, prompt, callback)
 	local handle = util.system_start(args, run_opts, function(result, err)
 		if runtime.is_shutting_down() then
 			request.active = false
+			requests.release(request.registration)
 			request.handle = nil
 			request:cleanup()
 			return
@@ -449,17 +456,28 @@ function M.generate(repo, callback, opts)
 		return nil, "No AI commit-message provider is configured"
 	end
 
-	local request = new_request(callback)
+	local request = new_request(callback, opts.on_cancel)
 	request.repo = repo
 	request.owner = opts.owner or repo.root
-	confirm_privacy(function(accepted)
+	request.registration = requests.register(util.canonical_path(repo.root), request.owner, function(reason)
+		request:cancel(reason)
+	end)
+	local function guarded(fn)
+		return function(...)
+			local ok, err = pcall(fn, ...)
+			if not ok then
+				request:finish(nil, tostring(err):gsub("[\r\n]+", " "))
+			end
+		end
+	end
+	guarded(confirm_privacy)(guarded(function(accepted)
 		if not request.active then
 			return
 		end
 		if not accepted then
 			return request:finish(nil, nil)
 		end
-		local context_callback = function(context)
+		local context_callback = guarded(function(context)
 			if not request.active then
 				return
 			end
@@ -470,13 +488,13 @@ function M.generate(repo, callback, opts)
 			try_provider(request, providers, 1, repo, prompt, function(message, err, provider)
 				request:finish(message, err, provider)
 			end)
-		end
+		end)
 		if repo.vcs == "git" then
 			git_context(request, repo.root, context_callback)
 		else
 			svn_context(request, repo.root, context_callback)
 		end
-	end)
+	end))
 
 	return request
 end

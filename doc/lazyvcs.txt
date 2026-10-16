@@ -433,6 +433,10 @@ when the commit process exits. Message length does not consume process argument
 space. Failed or cancelled commits preserve the draft. Sidebar Git commits store
 UTF-8 messages without changing repository configuration.
 
+Sidebar windows disable native folding locally so expanded rows stay visible.
+Editor folding is preserved. Manual sidebar resizing survives rendering and
+reopening an existing sidebar window.
+
 Pressing `e` outside a commit-message row toggles sidebar auto-fit. The width is
 capped by `source_control.auto_expand_max_width_ratio`, then restored when `e`
 is pressed again.
@@ -657,7 +661,7 @@ Source-control options:
     enabled            Enable the source-control sidebar.
     ui                 `auto` or `native`.
     scan_depth         Nested repo discovery depth.
-    width              Initial sidebar width.
+    width              Initial sidebar width, enforced beside fixed splits.
     auto_expand_width  Start sidebar in auto-fit mode.
     auto_expand_max_width_ratio
                        Width cap for `e` auto-fit.
@@ -694,6 +698,12 @@ Background scheduling options, under source_control.background:
     history_limit      Entries retained for :LazyVCS profile.
 
 Editor requests use two additional Git workers and one additional SVN worker.
+SVN incoming snapshots survive sidebar closure and are shared across tabs.
+Successful remote checks replace them, including empty results; failed checks
+retain them. SVN mutations invalidate snapshots at startup and settlement.
+Retention is bounded to 512 roots and 4 MiB. A throttled open without a retained
+snapshot shows unknown remote status (`?`) until the next remote check.
+
 Sidebar cancellation does not cancel editor requests.
 
 Every scheduled command is cancellable and bounded. A mutation that hangs
@@ -765,12 +775,16 @@ AI commit-message options, under ai.commit_message:
     confirm_privacy    Confirm before sending diffs to a provider.
 
 CopilotChat.nvim requires the main client API with client:ask(opts),
-client:models(), and client:get_providers(), plus plenary.async.run. Unsupported
+client:models(), and client:get_providers(), plus plenary.async.run and
+plenary.curl returning Jobs with shutdown support. Unsupported
 versions return a provider error asking you to update CopilotChat.nvim.
 Generation sends one literal user message and a fixed system message, with no
 inherited selections, resources, tools, or chat history. Diff directives such
 as #file: stay literal and cannot attach other files. Only the configured scalar
-CopilotChat model and temperature are reused.
+CopilotChat model and temperature are reused. LazyVCS cancels the request's
+transport processes on cancellation or timeout. Cancellation delivers no result;
+timeout reports one error. Other CopilotChat requests remain independent.
+Compatibility is tested with CopilotChat client 1e06be9 and Plenary b9fd522.
 
 CLI diff context reaches providers over stdin, or as a private 0600 attachment
 that is deleted on completion, so it never appears in process arguments or
@@ -780,6 +794,11 @@ New sidebar generation cancels the previous request for that repository. Submitt
 drafts and successful commits invalidate pending results, even when submitted
 text is unchanged. Closing the sidebar, changing its path, or cancelling repository
 work also cancels its pending generation. Separate sidebar drafts stay independent.
+Repository cancellation also stops commit-input generation during privacy
+confirmation, context collection, or provider execution. The input keeps its text
+and remains open for editing or retrying generation. Closing the input cancels
+its request. Late results and replacement confirmations cannot overwrite text
+after cancellation.
 
 AI context commands use the repository scheduler and its cancellation and output
 limits. Failed context commands stop generation and report the error. Only a

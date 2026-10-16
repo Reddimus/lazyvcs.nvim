@@ -1,11 +1,22 @@
 return function(ctx)
 	local h = ctx.helpers
 	local function fixture(fn)
-		local names = { "CopilotChat", "CopilotChat.client", "plenary.async", "lazy" }
+		local names = {
+			"CopilotChat",
+			"CopilotChat.client",
+			"plenary.async",
+			"plenary.curl",
+			"plenary.job",
+			"CopilotChat.utils.curl",
+			"lazy",
+		}
 		local previous = {}
 		for _, name in ipairs(names) do
 			previous[name] = package.loaded[name]
 		end
+		package.loaded["plenary.curl"] = { get = function() end, post = function() end }
+		package.loaded["CopilotChat.utils.curl"] = { get = function() end, post = function() end }
+		package.loaded["plenary.job"] = { new = function() end, shutdown = function() end }
 		local chat = {
 			config = {
 				model = "configured-model",
@@ -23,6 +34,9 @@ return function(ctx)
 		local client = { models = function() end, get_providers = function() end }
 		package.loaded["CopilotChat.client"] = client
 		package.loaded["plenary.async"] = {
+			wrap = function(fn)
+				return fn
+			end,
 			run = function(fn)
 				vim.schedule(fn)
 			end,

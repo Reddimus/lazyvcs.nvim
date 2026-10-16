@@ -83,18 +83,18 @@ function M.new(opts)
 		group = owner.augroup,
 		pattern = tostring(owner.winid),
 		callback = function()
-			vim.schedule(function()
+			vim.schedule(util.safe_callback(function()
 				owner:finish(owner.cancel_value)
-			end)
+			end))
 		end,
 	})
 	vim.api.nvim_create_autocmd("BufWipeout", {
 		group = owner.augroup,
 		buffer = owner.bufnr,
 		callback = function()
-			vim.schedule(function()
+			vim.schedule(util.safe_callback(function()
 				owner:finish(owner.cancel_value)
-			end)
+			end))
 		end,
 	})
 

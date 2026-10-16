@@ -204,6 +204,11 @@ local function reset_for_path(state, path)
 	if state.lazyvcs_invalidate_hydration then
 		state.lazyvcs_invalidate_hydration(state, nil, "source path changed")
 	end
+	for _, repo in ipairs(state.lazyvcs_repo_specs or {}) do
+		if repo.vcs == "svn" then
+			remote_admission.invalidate(repo.root)
+		end
+	end
 	ops.cancel_commit_generations(state)
 	ops.cancel_diff_target(state, "source path changed")
 	reset_discovery(state)
@@ -583,6 +588,18 @@ invalidate_hydration = function(state, repo_root, reason)
 	end, reason or "hydration invalidated")
 end
 
+remote_admission.set_listener(function(root)
+	safely(function()
+		for _, state in pairs(states) do
+			local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[root]
+			if cached and cached.vcs == "svn" then
+				state.lazyvcs_repo_cache[root] = model.with_remote_snapshot(cached, remote_admission.read(root), true)
+				M.schedule_render(state)
+			end
+		end
+	end)
+end)
+
 local function start_summary_hydration(state, remote_refresh)
 	local specs = state.lazyvcs_repo_specs or {}
 	if #specs == 0 then
@@ -602,7 +619,11 @@ local function start_summary_hydration(state, remote_refresh)
 				)
 			end
 			if refresh or not (cached and cached.summary_loaded) then
-				queue[#queue + 1] = { repo = repo, remote_refresh = refresh }
+				queue[#queue + 1] = {
+					repo = repo,
+					remote_refresh = refresh,
+					remote_unknown = remote_refresh == "auto" and not refresh or nil,
+				}
 			end
 		end
 	end
@@ -616,10 +637,18 @@ local function start_summary_hydration(state, remote_refresh)
 	for _, item in ipairs(queue) do
 		local repo = item.repo
 		local previous = state.lazyvcs_repo_cache[repo.root] or {}
-		state.lazyvcs_repo_cache[repo.root] = vim.tbl_extend("force", model.make_placeholder(repo, previous), {
-			loading_summary = true,
-			refreshing_summary = previous.summary_loaded == true,
-		})
+		state.lazyvcs_repo_cache[repo.root] = vim.tbl_extend(
+			"force",
+			model.with_remote_snapshot(
+				model.make_placeholder(repo, previous),
+				remote_admission.read(repo.root),
+				item.remote_unknown
+			),
+			{
+				loading_summary = true,
+				refreshing_summary = previous.summary_loaded == true,
+			}
+		)
 	end
 	update_hydration_counts(state)
 	M.render(state)
@@ -628,6 +657,7 @@ local function start_summary_hydration(state, remote_refresh)
 	for _, item in ipairs(queue) do
 		local current_repo = item.repo
 		local remote_refresh = item.remote_refresh
+		local token = current_repo.vcs == "svn" and remote_refresh and remote_admission.begin(current_repo.root)
 		local generation = bump_summary_generation(state, current_repo.root)
 		local previous = state.lazyvcs_repo_cache[current_repo.root] or nil
 		model.load_repo_summary_async(current_repo, {
@@ -646,10 +676,16 @@ local function start_summary_hydration(state, remote_refresh)
 			if summary_generation(state, current_repo.root) ~= generation then
 				return
 			end
+			if token and summary and not err and not summary.remote_error then
+				remote_admission.publish(token, summary.remote_snapshot or {})
+			end
 			local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[current_repo.root] or nil
-			state.lazyvcs_repo_cache[current_repo.root] = model.merge_summary(
-				cached,
-				summary or model.make_error(current_repo, cached, err, { remote_refresh = remote_refresh })
+			state.lazyvcs_repo_cache[current_repo.root] = model.with_remote_snapshot(
+				model.merge_summary(
+					cached,
+					summary or model.make_error(current_repo, cached, err, { remote_refresh = remote_refresh })
+				),
+				remote_admission.read(current_repo.root)
 			)
 			update_hydration_counts(state)
 			M.schedule_render(state)
@@ -848,6 +884,7 @@ local function ensure_window(state, opts)
 		"relativenumber",
 		"signcolumn",
 		"foldcolumn",
+		"foldenable",
 		"wrap",
 		"cursorline",
 		"winfixwidth",
@@ -860,10 +897,12 @@ local function ensure_window(state, opts)
 	util.set_win_option(state.winid, "relativenumber", false)
 	util.set_win_option(state.winid, "signcolumn", "no")
 	util.set_win_option(state.winid, "foldcolumn", "0")
+	util.set_win_option(state.winid, "foldenable", false)
 	util.set_win_option(state.winid, "wrap", false)
 	util.set_win_option(state.winid, "cursorline", true)
 	util.set_win_option(state.winid, "winfixwidth", true)
 	state.lazyvcs_applied_options = util.capture_win_options(state.winid, names)
+	vim.api.nvim_win_set_width(state.winid, source_opts.width)
 	if opts.focus == false and valid_win(current) then
 		vim.api.nvim_set_current_win(current)
 	end
