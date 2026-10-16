@@ -110,7 +110,7 @@ return function(ctx)
 				return complete
 			end, "unlink was not submitted")
 			if mode == "cancel" then
-				jobs.cancel_repo(f.root)
+				assert(jobs.cancel_repo(f.root) == 1, "cancel did not select the discard job")
 			else
 				wait(function()
 					return terminated
@@ -129,8 +129,14 @@ return function(ctx)
 			wait(function()
 				return queued
 			end, "unlink completion did not release worker")
-			local history = jobs.history()
-			assert(history[1].status == "ok", mode .. ": successful unlink reported " .. history[1].status)
+			local discard
+			for _, item in ipairs(jobs.history()) do
+				if item.kind == "delete_untracked" then
+					discard = item
+				end
+			end
+			assert(discard, mode .. ": discard job missing from history")
+			assert(discard.status == "ok", mode .. ": successful unlink reported " .. discard.status)
 			assert(not session.get_repo_job(f.root), "successful Discard left an error")
 			assert(not vim.uv.fs_lstat(f.path), "successful unlink left the file")
 			assert(vim.uv.fs_stat(f.file), "discard deleted another file")
