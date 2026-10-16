@@ -81,7 +81,10 @@ return function(ctx)
 					wait(function()
 						return process.reaped(second_pid)
 					end, "second transport was not reaped", 5000)
-					assert(second_job.job.is_shutdown, "Job exit callback did not shut down the job")
+					-- Windows can report the pid gone before libuv runs the exit callback.
+					wait(function()
+						return second_job.job.is_shutdown
+					end, "Job exit callback did not shut down the job", 5000)
 					local timeout_count, timeout_error = 0, nil
 					local timeout_callback
 					-- Hold only this deadline until the child is ready; startup can be slow.
