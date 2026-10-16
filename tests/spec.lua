@@ -1124,20 +1124,19 @@ local function test_svn_async_blame_cancels_active_child_process()
 		assert(vim.tbl_contains(handles[3].args, "blame"), "fixture did not reach svn blame")
 		-- Other buffers share this single worker and can already be queued when
 		-- cancellation completes. The mock must not capture their real processes.
-		local other_done = false
-		jobs.command(
-			{ root = helpers.tempdir(), vcs = "svn" },
-			"buffer",
-			{ "svn", "--version", "--quiet" },
-			{},
-			function(result, failure)
-				assert(result and not failure, failure)
-				other_done = true
-			end
-		)
+		local other_done, other_started = false, false
+		jobs.command({ root = helpers.tempdir(), vcs = "svn" }, "buffer", { "svn", "--version", "--quiet" }, {
+			start = function(args, opts, done)
+				other_started = true
+				return original_system_start(args, opts, done)
+			end,
+		}, function(result, failure)
+			assert(result and not failure, failure)
+			other_done = true
+		end)
 		job:kill()
 		assert(handles[3].killed, "active svn blame child process should be killed")
-		assert(not other_done, "worker released before physical completion")
+		assert(not other_started, "worker released before physical completion")
 		callbacks[3]({ stdout = "     1 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line\n", code = 0 })
 		eq(completed, false)
 		local released = false

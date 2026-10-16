@@ -1,6 +1,89 @@
 return function(ctx)
 	local h, p = ctx.helpers, require("process_helpers")
 	local util = require("lazyvcs.util")
+	local function windows_cancel_commands(commands)
+		local jobs = require("lazyvcs.source_control.jobs")
+		local original, has = vim.system, vim.fn.has
+		local taskkills, exit, handle = 0, nil, nil
+		local failures = {}
+		---@diagnostic disable-next-line: duplicate-set-field
+		vim.fn.has = function(name)
+			return name == "win32" and 1 or has(name)
+		end
+		vim.system = function(args, _, cb)
+			if args[1] == "taskkill" then
+				taskkills = taskkills + 1
+				assert(vim.deep_equal(args, { "taskkill", "/T", "/F", "/PID", "12345" }))
+				vim.schedule(function()
+					cb({ code = 0 })
+				end)
+				return {}
+			end
+			exit = cb
+			local closing = false
+			return {
+				pid = 12345,
+				is_closing = function()
+					return closing
+				end,
+				kill = function()
+					if not closing then
+						closing = true
+						vim.schedule(function()
+							cb({ code = 1, stdout = "", stderr = "" })
+						end)
+					end
+				end,
+			}
+		end
+		local ok, err = xpcall(function()
+			for _, command in ipairs(commands) do
+				taskkills, exit, handle = 0, nil, nil
+				local completed = false
+				local function done()
+					completed = true
+				end
+				local passed, failure = xpcall(function()
+					if command.kind then
+						local id = jobs.command(
+							{ root = h.tempdir(), vcs = command.args[1] },
+							command.kind,
+							command.args,
+							{
+								start = function(args, opts, cb)
+									handle = util.system_start(args, opts, cb)
+									return handle
+								end,
+							},
+							done
+						)
+						ctx.wait_for(function()
+							return handle ~= nil
+						end, "job did not start")
+						jobs.cancel(function(job)
+							return job.id == id
+						end)
+					else
+						handle = assert(util.system_start(command.args, { scope = command.scope }, done))
+						handle:cancel("test")
+					end
+					ctx.wait_for(function()
+						return completed
+					end, "cancelled process did not finish")
+					assert(taskkills == (command.tree and 1 or 0), command.label .. ": taskkill count " .. taskkills)
+				end, debug.traceback)
+				if exit then
+					exit({ code = 1, stdout = "", stderr = "" })
+				end
+				if not passed then
+					failures[#failures + 1] = command.label .. ": " .. failure
+				end
+			end
+		end, debug.traceback)
+		vim.system, vim.fn.has = original, has
+		assert(ok, err)
+		assert(#failures == 0, table.concat(failures, "\n"))
+	end
 	local function posix()
 		if vim.fn.has("win32") == 1 then
 			error({ lazyvcs_skip = "POSIX process groups" })
@@ -288,8 +371,8 @@ return function(ctx)
 				local jobs = require("lazyvcs.source_control.jobs")
 				local dir, has = h.tempdir(), vim.fn.has
 				local handle, recovered
-				-- Record native PIDs and inherit the real output handles on Windows
-				-- too; an MSYS shell's $! need not be a Windows process ID.
+				-- Detach only the helper: libuv kills non-detached Windows children
+				-- when their spawning process exits. Keep the inherited output handles.
 				h.write_file(
 					dir .. "/helper.lua",
 					[[
@@ -304,6 +387,7 @@ vim.cmd("qa!")
 local child = assert(vim.uv.spawn(vim.v.progpath, {
   args = { "--headless", "-u", "NONE", "-i", "NONE", "-l", arg[1], arg[2] },
   stdio = { nil, 1, 2 },
+  detached = true,
 }, function() end))
 child:unref()
 assert(vim.wait(5000, function() return vim.fn.filereadable(arg[2]) == 1 end, 10))
@@ -344,6 +428,9 @@ vim.cmd("qa!")
 							return {}
 						end,
 					})
+					vim.wait(100)
+					assert(p.alive(p.pid(dir .. "/helper.pid")), "pipe holder died with its parent")
+					assert(not recovered, "fixture did not keep inherited pipes open before cancellation")
 					jobs.cancel(function(job)
 						return job.id == id
 					end)
@@ -361,11 +448,234 @@ vim.cmd("qa!")
 			end,
 		},
 		{
+			"test_core_process_windows_remote_cancellation_uses_taskkill",
+			function()
+				windows_cancel_commands({
+					{
+						label = "remote svn status -u",
+						args = { "svn", "status", "--xml", "--ignore-externals", "-u", "target" },
+						kind = "remote",
+						tree = true,
+					},
+					{
+						label = "remote git fetch",
+						args = { "git", "fetch", "--all", "--prune", "--quiet" },
+						kind = "remote",
+						tree = true,
+					},
+					{ label = "remote scope", args = { "transport" }, kind = "remote", tree = true },
+					{
+						label = "svn status -u without scope",
+						args = { "svn", "status", "--xml", "-u", "target" },
+						tree = true,
+					},
+					{
+						label = "svn status --show-updates before subcommand",
+						args = { "svn", "--show-updates", "status", "--xml", "target" },
+						tree = true,
+					},
+					{
+						label = "svn status --show-updates after target",
+						args = { "svn", "status", "--xml", "target", "--show-updates" },
+						tree = true,
+					},
+					{ label = "local svn status", args = { "svn", "status", "--xml" }, kind = "summary" },
+				})
+			end,
+		},
+		{
+			"test_core_process_windows_cancel_tree_command_rules",
+			function()
+				local commands = {
+					{ label = "git remote listing", args = { "git", "remote" } },
+					{ label = "git publish is not a subcommand", args = { "git", "publish" } },
+					{ label = "git switch", args = { "git", "switch", "branch" } },
+					{ label = "git merge", args = { "git", "merge", "branch" } },
+					{ label = "git URL read", args = { "git", "show", "https://example.invalid/repo" } },
+					{ label = "svn read with -u", args = { "svn", "info", "-u", "target" } },
+					{ label = "mutation scope", args = { "custom-command" }, scope = "mutation", tree = true },
+					{
+						label = "git remote update",
+						args = { "git", "-C", "repo", "remote", "update", "--prune" },
+						tree = true,
+					},
+				}
+				for _, verb in ipairs({ "fetch", "pull", "push", "clone", "ls-remote", "commit" }) do
+					commands[#commands + 1] = { label = "git " .. verb, args = { "git", verb }, tree = true }
+				end
+				for _, verb in ipairs({
+					"checkout",
+					"co",
+					"update",
+					"up",
+					"switch",
+					"sw",
+					"merge",
+					"commit",
+					"ci",
+					"import",
+				}) do
+					commands[#commands + 1] =
+						{ label = "svn " .. verb, args = { "svn", "--non-interactive", verb, "target" }, tree = true }
+				end
+				for _, verb in ipairs({ "log", "blame" }) do
+					commands[#commands + 1] = { label = "svn " .. verb, args = { "svn", verb, "target" } }
+				end
+				for _, verb in ipairs({ "info", "ls", "log", "blame", "cat", "diff" }) do
+					commands[#commands + 1] = {
+						label = "svn URL " .. verb,
+						args = { "svn", verb, "svn+ssh://example.invalid/repo@42" },
+					}
+				end
+				commands[#commands + 1] = {
+					label = "svn info --xml URL",
+					args = { "svn", "info", "--xml", "https://example.invalid/repo" },
+				}
+				windows_cancel_commands(commands)
+			end,
+		},
+		{
+			"test_core_process_cancel_tree_invalid_executable_does_not_throw",
+			function()
+				local commands = {}
+				for _, args in ipairs({ {}, { false }, { 123 }, { {} }, { "" }, { "/" }, { "C:\\" } }) do
+					for _, scope in ipairs({ "buffer", "remote", "mutation" }) do
+						commands[#commands + 1] =
+							{ label = vim.inspect(args) .. " " .. scope, args = args, scope = scope }
+					end
+				end
+				windows_cancel_commands(commands)
+			end,
+		},
+		{
+			"test_core_process_windows_superseded_reads_do_not_spawn_taskkill",
+			function()
+				local jobs = require("lazyvcs.source_control.jobs")
+				local original, has = vim.system, vim.fn.has
+				local taskkills, spawned, exits = 0, 0, {}
+				local owner = {}
+				local repo = { root = h.tempdir(), vcs = "svn" }
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.has = function(name)
+					return name == "win32" and 1 or has(name)
+				end
+				vim.system = function(args, _, cb)
+					if args[1] == "taskkill" then
+						taskkills = taskkills + 1
+						vim.schedule(function()
+							cb({ code = 0 })
+						end)
+						return {}
+					end
+					spawned = spawned + 1
+					exits[#exits + 1] = cb
+					local closing = false
+					return {
+						pid = 12345,
+						is_closing = function()
+							return closing
+						end,
+						kill = function()
+							if not closing then
+								closing = true
+								vim.schedule(function()
+									cb({ code = 1, stdout = "", stderr = "" })
+								end)
+							end
+						end,
+					}
+				end
+				local ok, err = xpcall(function()
+					local reads = {
+						{ "git", "status", "--short" },
+						{ "git", "diff", "--", "commit" },
+						{ "git", "log", "-1" },
+						{ "svn", "info", "--xml" },
+						{ "svn", "cat", "-r", "BASE", "file" },
+						{ "svn", "cat", "svn+ssh://example.invalid/repo/file@42" },
+						{ "svn", "info", "--xml", "https://example.invalid/repo" },
+						{ "svn", "log", "target" },
+						{ "svn", "blame", "target" },
+					}
+					for generation = 1, 20 do
+						jobs.command(repo, "buffer", reads[(generation - 1) % #reads + 1], {
+							owner = owner,
+							scope = "signs",
+							generation = generation,
+						})
+						ctx.wait_for(function()
+							return spawned == generation
+						end, "superseded read held worker")
+					end
+					jobs.cancel_owner(owner)
+					vim.wait(50)
+					assert(taskkills == 0, "superseded reads spawned taskkill: " .. taskkills)
+				end, debug.traceback)
+				vim.system, vim.fn.has = original, has
+				for _, cb in ipairs(exits) do
+					cb({ code = 1, stdout = "", stderr = "" })
+				end
+				vim.wait(50)
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_core_process_windows_timeout_still_uses_taskkill",
+			function()
+				local original, has = vim.system, vim.fn.has
+				local exit, taskkill, raw
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.has = function(name)
+					return name == "win32" and 1 or has(name)
+				end
+				vim.system = function(args, opts, cb)
+					if args[1] == "taskkill" then
+						taskkill = args
+						vim.schedule(function()
+							cb({ code = 0 })
+						end)
+						return {}
+					end
+					exit = cb
+					return {
+						pid = 12345,
+						is_closing = function()
+							return false
+						end,
+						kill = function()
+							exit({ code = 1, stdout = "", stderr = "" })
+						end,
+					}
+				end
+				local ok, err = xpcall(function()
+					util.system_start(
+						{ "svn", "cat", "svn+ssh://example.invalid/repo/file@42" },
+						{ timeout_ms = 20 },
+						function(_, _, result)
+							raw = result
+						end
+					)
+					ctx.wait_for(function()
+						return raw ~= nil
+					end, "timeout did not finish")
+					assert(raw.timed_out and raw.code == 124, "timeout result lost")
+					assert(
+						vim.deep_equal(taskkill, { "taskkill", "/T", "/F", "/PID", "12345" }),
+						"timed-out read did not terminate descendants"
+					)
+				end, debug.traceback)
+				vim.system, vim.fn.has = original, has
+				assert(ok, err)
+			end,
+		},
+		{
 			"test_core_process_windows_hung_taskkill_cannot_hold_worker",
 			function()
 				local jobs = require("lazyvcs.source_control.jobs")
 				local original, has = vim.system, vim.fn.has
-				local process_exit, helper_opts
+				local process_exit, helper_opts, helper_timer
+				local helper_running, helpers = false, 0
+				local early_kill = false
 				local killed, recovered = false, false
 				---@diagnostic disable-next-line: duplicate-set-field
 				vim.fn.has = function(name)
@@ -373,8 +683,14 @@ vim.cmd("qa!")
 				end
 				vim.system = function(args, opts, cb)
 					if args[1] == "taskkill" then
-						helper_opts = opts
-						return {} -- Enumeration never finishes; no helper callback.
+						helper_opts, helper_running = opts, true
+						helpers = helpers + 1
+						-- Real vim.system kills a stalled helper at its own deadline.
+						helper_timer = vim.defer_fn(function()
+							helper_running = false
+							cb({ code = 124 })
+						end, opts.timeout)
+						return {}
 					end
 					process_exit = cb
 					return {
@@ -383,13 +699,14 @@ vim.cmd("qa!")
 							return false
 						end,
 						kill = function(_, signal)
+							early_kill = early_kill or helper_running
 							killed = signal == 9
 						end,
 					}
 				end
 				local ok, err = xpcall(function()
 					local repo = { root = h.tempdir(), vcs = "svn" }
-					local id = jobs.command(repo, "buffer", { "held" }, { kill_grace_ms = 20 })
+					local id = jobs.command(repo, "buffer", { "held" }, { scope = "mutation", kill_grace_ms = 20 })
 					jobs.command(repo, "buffer", { "next" }, {
 						start = function(_, _, done)
 							recovered = true
@@ -402,17 +719,21 @@ vim.cmd("qa!")
 					end)
 					ctx.wait_for(function()
 						return killed
-					end, "hung taskkill prevented forced parent termination")
-					assert(helper_opts.timeout and helper_opts.timeout > 0, "taskkill has no deadline")
+					end, "hung taskkill prevented forced parent termination", 3500)
+					assert(helper_opts.timeout == 2000, "taskkill deadline depends on kill grace")
+					assert(helpers == 1, "forced termination started a second tree walk")
+					assert(not early_kill, "parent killed before taskkill finished enumerating")
 					assert(not recovered, "worker released before process exit")
-				end, debug.traceback)
-				if process_exit then
 					process_exit({ code = 1, stdout = "", stderr = "" })
 					ctx.wait_for(function()
 						return recovered
 					end, "Windows cancellation held worker after process exit")
-				end
+				end, debug.traceback)
 				vim.system, vim.fn.has = original, has
+				if helper_timer and not helper_timer:is_closing() then
+					helper_timer:stop()
+					helper_timer:close()
+				end
 				assert(ok, err)
 			end,
 		},
@@ -450,15 +771,27 @@ vim.cmd("qa!")
 					}
 				end
 				local ok, err = pcall(function()
-					for mode = 1, 3 do
-						taskkill, fail, closing = nil, mode == 2, mode == 3
+					local commands = {
+						{ { "fake" }, { scope = "mutation" } },
+						{ { "fake" }, { scope = "mutation" }, fail = true },
+						{ { "fake" }, { scope = "mutation" }, closing = true },
+						{ { "git", "fetch" } },
+						{ { "git", "pull" } },
+						{ { "git", "push" } },
+						{ { "git", "commit" } },
+						{ { "C:\\Git\\git.exe", "-C", "repo", "-c", "key=value", "fetch" } },
+						{ { "svn", "--non-interactive", "commit" } },
+						{ { "svn", "cat", "https://example.invalid/repo/file" }, direct = true },
+					}
+					for mode, command in ipairs(commands) do
+						taskkill, fail, closing = nil, command.fail, command.closing
 						local calls = 0
-						local handle = assert(util.system_start({ "fake" }, {}, function()
+						local handle = assert(util.system_start(command[1], command[2], function()
 							calls = calls + 1
 						end))
 						handle:cancel("test")
-						if closing then
-							assert(taskkill == nil, "taskkill targeted an exited parent")
+						if closing or command.direct then
+							assert(taskkill == nil, "taskkill targeted an exited parent or routine read")
 						else
 							assert(
 								vim.deep_equal(taskkill, { "taskkill", "/T", "/F", "/PID", "12345" }),
@@ -475,6 +808,102 @@ vim.cmd("qa!")
 					end
 				end)
 				vim.system, vim.fn.has = original, has
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_core_process_windows_shutdown_forces_parent_during_taskkill",
+			function()
+				local runtime = require("lazyvcs.process_runtime")
+				local original, has, is_shutdown = vim.system, vim.fn.has, runtime.is_shutting_down
+				local shutdown, exit, helper_exit, killed, handle
+				local helpers = 0
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.has = function(name)
+					return name == "win32" and 1 or has(name)
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				runtime.is_shutting_down = function()
+					return shutdown == true
+				end
+				vim.system = function(args, _, cb)
+					if args[1] == "taskkill" then
+						helpers = helpers + 1
+						helper_exit = cb
+						return {}
+					end
+					exit = cb
+					return {
+						pid = 12345,
+						is_closing = function()
+							return false
+						end,
+						kill = function(_, signal)
+							killed = signal
+						end,
+					}
+				end
+				local ok, err = xpcall(function()
+					handle = util.system_start({ "git", "status" }, {})
+					shutdown = true
+					handle:shutdown()
+					assert(helper_exit and not killed, "shutdown did not allow initial tree walk")
+					handle:force()
+					assert(killed == 9, "shutdown waited for taskkill past its global deadline")
+					assert(helpers == 1, "shutdown started a second tree walk")
+				end, debug.traceback)
+				vim.system, vim.fn.has, runtime.is_shutting_down = original, has, is_shutdown
+				if exit then
+					exit({ code = 1, stdout = "", stderr = "" })
+				end
+				if helper_exit then
+					helper_exit({ code = 124 })
+				end
+				if handle then
+					handle:close_timers()
+				end
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_core_process_windows_reap_tolerates_invalid_pipe_handles",
+			function()
+				local original, has = vim.system, vim.fn.has
+				local exit, handle
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.has = function(name)
+					return name == "win32" and 1 or has(name)
+				end
+				vim.system = function(_, _, cb)
+					exit = cb
+					return {
+						pid = 12345,
+						is_closing = function()
+							return true
+						end,
+						kill = function() end,
+						_state = {
+							stdout = {},
+							stderr = {
+								is_closing = function()
+									error("invalid pipe")
+								end,
+							},
+						},
+					}
+				end
+				local ok, err = xpcall(function()
+					handle = util.system_start({ "git", "status" }, {})
+					handle:cancel("test")
+					handle:force()
+				end, debug.traceback)
+				vim.system, vim.fn.has = original, has
+				if exit then
+					exit({ code = 1, stdout = "", stderr = "" })
+				end
+				if handle then
+					handle:close_timers()
+				end
 				assert(ok, err)
 			end,
 		},

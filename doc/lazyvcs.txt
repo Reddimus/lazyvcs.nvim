@@ -692,13 +692,20 @@ mutation_timeout_ms rejects values below 1 ms. Cancel in-flight work with :LazyV
 cancel, with `X` in the sidebar, or with
 require("lazyvcs").source_control_cancel().
 
-Timeout and cancellation terminate owned command descendants. Logical cancellation
-can finish before physical cleanup; the worker stays occupied until cleanup
-completes. On POSIX, commands run in separate process groups. Descendants that
-create another session or leave the group are outside this cleanup. On Windows,
-cleanup uses taskkill /T /F while the direct process is alive, then falls back to
-direct-process termination. Descendants whose parent has already exited may
-survive on Windows.
+Logical cancellation can finish before physical cleanup; the worker stays
+occupied until cleanup completes. On POSIX, timeout and cancellation terminate
+owned command descendants in separate process groups. Descendants that create
+another session or leave the group are outside this cleanup.
+
+On Windows, taskkill /T /F handles all timeouts and shutdown termination.
+Cancellation uses it only for mutation or remote scopes, Git fetch, pull, push,
+clone, ls-remote, remote update, and commit, and SVN checkout/co, update/up,
+switch/sw, merge, commit/ci, import, and status with -u or --show-updates.
+Other cancellations terminate only the direct process, including SVN log,
+blame, and URL reads. Their transport helpers exit when the parent's pipes
+close, so reads need no tree walk. taskkill requires a live direct process and
+falls back to direct termination. Descendants whose parent has already exited
+may survive on Windows.
 
 Neovim exit discards queued work, including mutations that have not started.
 Running repository mutations (commit, update, merge, switch, stage, unstage,

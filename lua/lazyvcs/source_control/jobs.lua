@@ -249,6 +249,7 @@ local function start_job(job)
 	local starter = job.start or util.system_start
 	local ok, handle = pcall(starter, job.args, {
 		cwd = job.cwd,
+		scope = job.scope,
 		timeout = job.timeout_ms > 0 and job.timeout_ms or nil,
 		output_limit = job.output_limit_bytes,
 		kill_grace_ms = job.kill_grace_ms,

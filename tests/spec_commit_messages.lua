@@ -106,7 +106,7 @@ return function(ctx)
 		{
 			"test_source_control_commit_falls_back_when_cache_is_not_private",
 			guarded(function()
-				local mkdir, chmod, stat = vim.fn.mkdir, vim.uv.fs_chmod, vim.uv.fs_stat
+				local mkdir, chmod, stat, start = vim.fn.mkdir, vim.uv.fs_chmod, vim.uv.fs_stat, util.system_start
 				local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
 				local ok, err = xpcall(function()
 					local failures = { "mkdir", "chmod" }
@@ -141,7 +141,6 @@ return function(ctx)
 							return value, err, code
 						end
 						local path
-						local start = util.system_start
 						---@diagnostic disable-next-line: duplicate-set-field
 						util.system_start = function(args, opts, done)
 							path = args[vim.fn.index(args, "-F") + 2]
@@ -151,14 +150,13 @@ return function(ctx)
 						end
 						ops.commit_repo(state, node)
 						finished(f.root)
-						util.system_start = start
 						assert(path, "cache failure prevented commit spawn")
 						assert(not session.get_repo_job(f.root), "fallback commit failed")
 						assert(util.trim(h.exec({ "git", "log", "-1", "--format=%B" }, f.root)) == message)
 						assert(not vim.uv.fs_stat(path), "temporary message leaked")
 					end
 				end, debug.traceback)
-				vim.fn.mkdir, vim.uv.fs_chmod, vim.uv.fs_stat = mkdir, chmod, stat
+				vim.fn.mkdir, vim.uv.fs_chmod, vim.uv.fs_stat, util.system_start = mkdir, chmod, stat, start
 				assert(ok, err)
 			end),
 		},

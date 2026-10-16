@@ -218,6 +218,76 @@ function M.system(args, opts)
 	return result
 end
 
+-- Cancellation walks trees only for mutation/remote scopes and the Git/SVN
+-- commands below, which can own hooks or credential helpers. Other reads,
+-- including URL reads, need only direct termination: their transport helpers
+-- exit when the parent's pipes close. Timeouts and shutdown always walk trees.
+local function cancel_tree(args, scope)
+	if type(args) ~= "table" or type(args[1]) ~= "string" or args[1] == "" then
+		return false
+	end
+	local executable = args[1]:gsub("\\", "/"):match("([^/]+)$")
+	if not executable then
+		return false
+	end
+	if scope == "mutation" or scope == "remote" then
+		return true
+	end
+	executable = executable:lower():gsub("%.exe$", "")
+	if executable ~= "git" and executable ~= "svn" then
+		return false
+	end
+	local commands = executable == "git"
+			and {
+				fetch = true,
+				pull = true,
+				push = true,
+				commit = true,
+				clone = true,
+				["ls-remote"] = true,
+			}
+		or {
+			checkout = true,
+			co = true,
+			update = true,
+			up = true,
+			switch = true,
+			sw = true,
+			merge = true,
+			commit = true,
+			ci = true,
+			import = true,
+		}
+	local index = 2
+	while type(args[index]) == "string" and args[index]:sub(1, 1) == "-" do
+		local option = args[index]
+		index = index
+			+ (
+				(
+						option == "-C"
+						or option == "-c"
+						or option == "--git-dir"
+						or option == "--work-tree"
+						or option == "--namespace"
+						or option == "--config-env"
+					)
+					and 2
+				or 1
+			)
+	end
+	if commands[args[index]] or (executable == "git" and args[index] == "remote" and args[index + 1] == "update") then
+		return true
+	end
+	if executable == "svn" and args[index] == "status" then
+		for _, arg in ipairs(args) do
+			if arg == "-u" or arg == "--show-updates" then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 function M.system_start(args, opts, on_exit)
 	if runtime.is_shutting_down() then
 		local function finished(_)
@@ -237,7 +307,9 @@ function M.system_start(args, opts, on_exit)
 		end
 		return { done = true, cancel = finished, kill = finished, force = finished, shutdown = finished }
 	end
+	local tree_termination = cancel_tree(args, opts and opts.scope)
 	opts, args = command_options(args, opts)
+	opts.scope = nil
 	local text_mode = opts.text ~= false
 	local timeout_ms = opts.timeout_ms or opts.timeout
 	local output_limit = math.max(256, math.floor(opts.output_limit_bytes or opts.output_limit or 4 * 1024 * 1024))
@@ -261,6 +333,7 @@ function M.system_start(args, opts, on_exit)
 	local forced_result
 	local exited_result
 	local force_sent = false
+	local taskkill_running = false
 	local group_gone = false
 	local complete_exit
 	local reap_windows
@@ -297,20 +370,32 @@ function M.system_start(args, opts, on_exit)
 				pcall(process.kill, process, signal)
 			end
 		else
-			-- taskkill can find descendants only while their parent is still alive.
-			if not exited_result and process.pid and not process:is_closing() then
+			-- Keep the parent alive while taskkill enumerates its descendants.
+			if
+				tree_termination
+				and not taskkill_running
+				and not exited_result
+				and process.pid
+				and not process:is_closing()
+			then
+				taskkill_running = true
 				local ok = pcall(vim.system, { "taskkill", "/T", "/F", "/PID", tostring(process.pid) }, {
 					stdout = false,
 					stderr = false,
-					timeout = math.max(1, math.min(kill_grace_ms, 1000)),
+					timeout = 2000,
 				}, function()
-					pcall(process.kill, process, signal)
+					taskkill_running = false
+					if not done then
+						pcall(process.kill, process, force_sent and 9 or signal)
+					end
 				end)
-				-- A stalled tree walk must not defer the final parent kill.
-				if not ok or signal == 9 then
-					pcall(process.kill, process, signal)
+				if not ok then
+					taskkill_running = false
 				end
-			else
+			end
+			-- Shutdown has a shorter global deadline than taskkill. Otherwise its
+			-- own deadline bounds the wait without cutting off the tree walk.
+			if not taskkill_running or (signal == 9 and runtime.is_shutting_down()) then
 				pcall(process.kill, process, signal)
 			end
 		end
@@ -349,9 +434,14 @@ function M.system_start(args, opts, on_exit)
 			if state then
 				for _, name in ipairs({ "stdout", "stderr" }) do
 					local pipe = state[name]
-					if pipe and not pipe:is_closing() then
-						pcall(pipe.read_stop, pipe)
-						pcall(pipe.close, pipe)
+					if pipe then
+						local ok, closing = pcall(function()
+							return pipe:is_closing()
+						end)
+						if ok and not closing then
+							pcall(pipe.read_stop, pipe)
+							pcall(pipe.close, pipe)
+						end
 					end
 				end
 			end
@@ -510,6 +600,7 @@ function M.system_start(args, opts, on_exit)
 				reason = cancel_reason or "cancelled",
 			}
 		end
+		tree_termination = tree_termination or kind == "timeout" or reason == "editor shutdown"
 		forced_result = {
 			result = nil,
 			err = message,
