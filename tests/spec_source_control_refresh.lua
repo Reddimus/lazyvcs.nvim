@@ -225,23 +225,30 @@ return function(ctx)
 					)
 					assert(status.upstream == "origin/" .. branch)
 					native.render(s)
+					local marks = api.nvim_buf_get_extmarks(
+						s.bufnr,
+						api.nvim_get_namespaces().lazyvcs_native,
+						0,
+						-1,
+						{ details = true }
+					)
 					local warning
-					for _, mark in
-						ipairs(
-							api.nvim_buf_get_extmarks(
-								s.bufnr,
-								api.nvim_get_namespaces().lazyvcs_native,
-								0,
-								-1,
-								{ details = true }
-							)
-						)
-					do
+					for _, mark in ipairs(marks) do
 						if mark[4].hl_group == "DiagnosticWarn" then
-							warning = true
+							warning = mark
 						end
 					end
 					assert(warning, "missing-upstream badge must use DiagnosticWarn")
+					local cell = warning[3]
+					assert(warning[4].end_col > cell, "warning must cover a badge cell")
+					for _, mark in ipairs(marks) do
+						if mark ~= warning and mark[2] == warning[2] and mark[3] <= cell then
+							assert(
+								warning[4].priority > mark[4].priority,
+								"DiagnosticWarn must outrank the row highlight at the badge cell"
+							)
+						end
+					end
 				end
 				check()
 				details(s, f.root)
@@ -422,6 +429,78 @@ return function(ctx)
 			end,
 		},
 
+		{
+			"test_source_control_details_survive_later_summary_refresh",
+			function()
+				local summary_loader, detail_loader = model.load_repo_summary_async, model.load_repo_details_async
+				local ok, err = xpcall(function()
+					for _, first in ipairs({ "detail", "summary" }) do
+						local f = h.make_git_source_control_fixture()
+						local s = open(f.root)
+						local summary_done, detail_done
+						---@diagnostic disable-next-line: duplicate-set-field
+						model.load_repo_details_async = function(repo, opts, run, done)
+							return detail_loader(repo, opts, run, function(value, load_err)
+								detail_done = function()
+									done(value, load_err)
+								end
+							end)
+						end
+						ops.open_repo(s, {
+							type = "repo_changes",
+							path = f.git_dirty,
+							extra = { repo_root = f.git_dirty },
+						}, function() end)
+						ctx.wait_for(function()
+							return detail_done ~= nil
+						end, "B detail status not ready", 15000)
+						assert(s.lazyvcs_repo_cache[f.git_dirty].loading_details)
+						---@diagnostic disable-next-line: duplicate-set-field
+						model.load_repo_summary_async = function(repo, opts, run, done)
+							return summary_loader(repo, opts, run, function(value, load_err)
+								if repo.root == f.git_dirty then
+									summary_done = function()
+										done(value, load_err)
+									end
+								else
+									done(value, load_err)
+								end
+							end)
+						end
+						-- This is the same action dispatched by A's Refresh picker entry.
+						ops.run_primary_action(s, {
+							path = f.git_clean,
+							extra = { repo_root = f.git_clean, action = "refresh" },
+						})
+						ctx.wait_for(function()
+							return summary_done ~= nil
+						end, "B refresh summary not ready", 15000)
+						if first == "detail" then
+							detail_done()
+							summary_done()
+						else
+							summary_done()
+							detail_done()
+						end
+						local status = s.lazyvcs_repo_cache[f.git_dirty]
+						assert(
+							not status.loading_details and not s.lazyvcs_loading_details[f.git_dirty],
+							"B stayed at Loading changes after A refreshed (" .. first .. " completed first)"
+						)
+						assert(status.details_loaded and #status.sections > 0 and status.counts.local_changes == 1)
+						native.render(s)
+						local text = table.concat(api.nvim_buf_get_lines(s.bufnr, 0, -1, false), "\n")
+						assert(not text:find("Loading changes", 1, true), "B still renders Loading changes")
+						model.load_repo_summary_async, model.load_repo_details_async = summary_loader, detail_loader
+						native.close()
+					end
+				end, debug.traceback)
+				model.load_repo_summary_async, model.load_repo_details_async = summary_loader, detail_loader
+				if not ok then
+					error(err, 0)
+				end
+			end,
+		},
 		{
 			"test_source_control_summary_preserves_completed_and_pending_details",
 			function()

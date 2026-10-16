@@ -160,6 +160,7 @@ local function invalidate_hydration(state, repo_root, reason)
 
 	state.lazyvcs_hydration_generation = (state.lazyvcs_hydration_generation or 0) + 1
 	state.lazyvcs_repo_generations = state.lazyvcs_repo_generations or {}
+	state.lazyvcs_summary_generations = state.lazyvcs_summary_generations or {}
 	local roots = {}
 	if repo_root then
 		roots[repo_root] = true
@@ -173,6 +174,7 @@ local function invalidate_hydration(state, repo_root, reason)
 	end
 	for root in pairs(roots) do
 		state.lazyvcs_repo_generations[root] = (state.lazyvcs_repo_generations[root] or 0) + 1
+		state.lazyvcs_summary_generations[root] = (state.lazyvcs_summary_generations[root] or 0) + 1
 		local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[root] or nil
 		if cached then
 			cached.loading_summary = false

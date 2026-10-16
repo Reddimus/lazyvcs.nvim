@@ -355,7 +355,7 @@ Behavior:
   project, or is replaced by another buffer. Delayed opens use their original
   editor window and preserve focus after a tab switch.
 - Reopening a displaced sidebar creates a split and preserves the ordinary file.
-- Escapes backslashes and control characters in labels. Actions use raw paths.
+- Escapes control characters in labels. Actions use raw paths.
 - Tree leaves show basenames, with the original path as rename context.
 - Sort (`S`) and clean visibility (`H`) update the current rows without
   reloading status or discarding known incoming changes.

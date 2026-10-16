@@ -485,7 +485,7 @@ local function add_line(state, lines, marks, node, depth, width)
 end
 
 local function sidebar_width(state)
-	if valid_win(state.winid) then
+	if owns_window(state) then
 		return vim.api.nvim_win_get_width(state.winid)
 	end
 	return config.get().source_control.width
@@ -504,7 +504,7 @@ local function auto_width_target(state)
 end
 
 local function maybe_apply_auto_width(state)
-	if not valid_win(state.winid) or not state.lazyvcs_auto_expand_width then
+	if not owns_window(state) or not state.lazyvcs_auto_expand_width then
 		return false
 	end
 	local target = auto_width_target(state)
@@ -531,15 +531,14 @@ local function should_remote_refresh(state)
 	return config.get().source_control.remote_refresh == "on_open" and "auto" or false
 end
 
-local function repo_generation(state, repo_root)
-	state.lazyvcs_repo_generations = state.lazyvcs_repo_generations or {}
-	return state.lazyvcs_repo_generations[repo_root] or 0
+local function summary_generation(state, repo_root)
+	state.lazyvcs_summary_generations = state.lazyvcs_summary_generations or {}
+	return state.lazyvcs_summary_generations[repo_root] or 0
 end
 
-local function bump_repo_generation(state, repo_root)
-	state.lazyvcs_repo_generations = state.lazyvcs_repo_generations or {}
-	local generation = (state.lazyvcs_repo_generations[repo_root] or 0) + 1
-	state.lazyvcs_repo_generations[repo_root] = generation
+local function bump_summary_generation(state, repo_root)
+	local generation = summary_generation(state, repo_root) + 1
+	state.lazyvcs_summary_generations[repo_root] = generation
 	return generation
 end
 
@@ -568,7 +567,10 @@ invalidate_hydration = function(state, repo_root, reason)
 		end
 	end
 	for root in pairs(roots) do
-		bump_repo_generation(state, root)
+		bump_summary_generation(state, root)
+		-- Detail requests survive summary refreshes, but not repository invalidation.
+		state.lazyvcs_repo_generations = state.lazyvcs_repo_generations or {}
+		state.lazyvcs_repo_generations[root] = (state.lazyvcs_repo_generations[root] or 0) + 1
 		local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[root] or nil
 		if cached then
 			cached.loading_summary = false
@@ -626,7 +628,7 @@ local function start_summary_hydration(state, remote_refresh)
 	for _, item in ipairs(queue) do
 		local current_repo = item.repo
 		local remote_refresh = item.remote_refresh
-		local generation = bump_repo_generation(state, current_repo.root)
+		local generation = bump_summary_generation(state, current_repo.root)
 		local previous = state.lazyvcs_repo_cache[current_repo.root] or nil
 		model.load_repo_summary_async(current_repo, {
 			previous = previous or {},
@@ -641,7 +643,7 @@ local function start_summary_hydration(state, remote_refresh)
 				priority = remote_refresh and -10 or 0,
 			}, on_done)
 		end, function(summary, err)
-			if repo_generation(state, current_repo.root) ~= generation then
+			if summary_generation(state, current_repo.root) ~= generation then
 				return
 			end
 			local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[current_repo.root] or nil
@@ -916,6 +918,7 @@ local function render(state)
 			end_row = index,
 			hl_group = mark.highlight,
 			hl_eol = true,
+			priority = 100,
 		})
 		if mark.meta_start and mark.meta_highlight then
 			vim.api.nvim_buf_set_extmark(state.bufnr, ns, index - 1, mark.meta_start, {

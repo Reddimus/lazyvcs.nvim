@@ -118,6 +118,40 @@ return function(ctx)
 		},
 
 		{
+			"test_source_control_sidebar_auto_width_ignores_replacement_window",
+			function()
+				local f = h.make_git_fixture()
+				local s = open(f.root)
+				s.lazyvcs_auto_expand_width = true
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				api.nvim_win_set_width(s.winid, 25)
+				local width = api.nvim_win_get_width(s.winid)
+				native.schedule_render(s)
+				ctx.wait_for(function()
+					return not s.lazyvcs_render_pending
+				end, "background render did not finish")
+				assert(api.nvim_win_get_width(s.winid) == width, "background render resized the replacement window")
+				assert(api.nvim_win_get_buf(s.winid) ~= s.bufnr)
+			end,
+		},
+		{
+			"test_source_control_sidebar_layout_ignores_replacement_width",
+			function()
+				local f = h.make_git_fixture()
+				local s = open(f.root)
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				api.nvim_win_set_width(s.winid, 25)
+				assert(native.render(s))
+				local lines = api.nvim_buf_get_lines(s.bufnr, 0, -1, false)
+				api.nvim_win_set_width(s.winid, 55)
+				assert(native.render(s))
+				assert(
+					vim.deep_equal(lines, api.nvim_buf_get_lines(s.bufnr, 0, -1, false)),
+					"sidebar layout used the replacement window's width"
+				)
+			end,
+		},
+		{
 			"test_source_control_sidebar_reopens_after_buffer_replacement",
 			function()
 				local f = h.make_git_fixture()

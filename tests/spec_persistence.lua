@@ -96,6 +96,44 @@ vim.cmd("qa!")
 			end,
 		},
 		{
+			"test_source_control_persistence_recovers_unreadable_project_files",
+			function()
+				local persist, json = require("lazyvcs.source_control.persist"), require("lazyvcs.json_file")
+				local root = h.tempdir()
+				local path = vim.fn.stdpath("state") .. "/lazyvcs/source_control/" .. vim.fn.sha256(root) .. ".json"
+				persist.save(root, { changes_sort = "path" })
+				local failures = {}
+				for _, case in ipairs({
+					{ "corrupt", "{bad json" },
+					{ "empty", "" },
+					{ "unsupported schema", vim.json.encode({ version = 999, data = { root = root } }) },
+					{ "missing root", vim.json.encode({ version = 1, data = {} }) },
+					{ "nonstring root", vim.json.encode({ version = 1, data = { root = false } }) },
+					{ "unreadable", vim.json.encode({ version = 1, data = { root = root } }) },
+				}) do
+					h.write_file(path, case[2])
+					local original = vim.uv.fs_open
+					local denied = false
+					---@diagnostic disable-next-line: duplicate-set-field
+					vim.uv.fs_open = function(file, flags, mode, ...)
+						if case[1] == "unreadable" and file == path and flags == "r" then
+							denied = true
+							return nil, "EACCES: permission denied"
+						end
+						return original(file, flags, mode, ...)
+					end
+					local ok, err = pcall(persist.save, root, { changes_sort = "name" })
+					vim.uv.fs_open = original
+					assert(ok, err)
+					assert(case[1] ~= "unreadable" or denied, "unreadable case did not deny the read")
+					if persist.load(root).changes_sort ~= "name" or json.read(path).root ~= root then
+						failures[#failures + 1] = case[1]
+					end
+				end
+				assert(#failures == 0, "project saves blocked by: " .. table.concat(failures, ", "))
+			end,
+		},
+		{
 			"test_source_control_persistence_ignores_malformed_visibility",
 			function()
 				local persist, json = require("lazyvcs.source_control.persist"), require("lazyvcs.json_file")

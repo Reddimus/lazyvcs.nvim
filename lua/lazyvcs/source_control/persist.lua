@@ -93,7 +93,8 @@ end
 function M.save(root, value)
 	root = util.normalize_literal_path(root)
 	local path = project_path(root)
-	if vim.uv.fs_stat(path) and json_file.read(path).root ~= root then
+	local stored_root = vim.uv.fs_stat(path) and json_file.read(path).root or nil
+	if type(stored_root) == "string" and stored_root ~= root then
 		warn("Stored project root does not match " .. root)
 		return
 	end
