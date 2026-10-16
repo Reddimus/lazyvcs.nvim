@@ -156,26 +156,76 @@ return function(ctx)
 			end),
 		},
 		{
-			"test_ai_context_rejects_truncated_fallback",
+			"test_ai_context_uses_truncated_single_command",
 			guarded(function()
-				setup()
-				local failure, calls, completed = nil, 0, false
-				---@diagnostic disable-next-line: duplicate-set-field
-				util.system_start = function(_, _, done)
-					calls = calls + 1
-					done({ code = 0, stdout = "partial context", stdout_truncated = true })
-					return {}
+				for _, vcs in ipairs({ "git", "svn" }) do
+					for _, context in ipairs({ "staged_first", "staged", "unstaged", "status" }) do
+						setup(context)
+						require("lazyvcs.config").get().ai.commit_message.max_context_chars = 16
+						local stdout = "partial context with more changes"
+						local calls, prompt, message, failure, completed = 0, "", nil, nil, false
+						---@diagnostic disable-next-line: duplicate-set-field
+						util.system_start = function(args, opts, done)
+							if args[1] == vcs then
+								calls = calls + 1
+								done({ code = 0, stdout = stdout, stdout_truncated = true })
+							else
+								prompt = opts.stdin
+								done({ code = 0, stdout = "Summarize partial context" })
+							end
+							return {}
+						end
+						ai.generate({ root = h.tempdir(), vcs = vcs }, function(value, err)
+							message, failure, completed = value, err, true
+						end)
+						wait(function()
+							return completed
+						end)
+						assert(message == "Summarize partial context", failure or "truncated context blocked provider")
+						assert(calls == 1, "truncated " .. context .. " context fell through to another command")
+						local expected = util.truncate(stdout, 16)
+						assert(
+							prompt:sub(-#expected) == expected,
+							"provider prompt did not use bounded partial context"
+						)
+						assert(not prompt:find(stdout, 1, true), "provider prompt exceeded max_context_chars")
+					end
 				end
-				ai.generate({ root = h.tempdir(), vcs = "git" }, function(_, err)
-					failure, completed = err, true
-				end)
-				wait(function()
-					return completed
-				end)
-				assert(
-					calls == 1 and failure and failure:find("output limit", 1, true),
-					"truncated context reached provider"
-				)
+			end),
+		},
+		{
+			"test_ai_context_all_rejects_truncation",
+			guarded(function()
+				for _, vcs in ipairs({ "git", "svn" }) do
+					for _, truncate_call in ipairs({ 1, 2 }) do
+						setup("all")
+						local failure, calls, completed, providers = nil, 0, false, 0
+						---@diagnostic disable-next-line: duplicate-set-field
+						util.system_start = function(args, _, done)
+							if args[1] == vcs then
+								calls = calls + 1
+								done({ code = 0, stdout = "partial context", stdout_truncated = calls == truncate_call })
+							else
+								providers = providers + 1
+								done({ code = 0, stdout = "Unexpected generation" })
+							end
+							return {}
+						end
+						ai.generate({ root = h.tempdir(), vcs = vcs }, function(_, err)
+							failure, completed = err, true
+						end)
+						wait(function()
+							return completed
+						end)
+						assert(
+							calls == truncate_call
+								and providers == 0
+								and failure
+								and failure:find("output limit", 1, true),
+							"truncated all context reached provider"
+						)
+					end
+				end
 			end),
 		},
 		{

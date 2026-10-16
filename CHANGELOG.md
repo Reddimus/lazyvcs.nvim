@@ -16,14 +16,13 @@ and this project adheres to
   preserving manual peg syntax.
 - Fix Codex commit-message generation failing when `exec` rejects the approval
   option.
-- Collect SVN status context from paths containing `@`, report failed or
-  truncated context, and schedule AI context commands within repository worker
-  limits.
 - Preserve submitted and newer AI commit drafts, and cancel superseded
   generation on sidebar close, path changes, or repository cancellation.
 - Make confirmation controls work after Insert-mode `<C-o>` commands.
 - Commit long Git and SVN messages through private temporary files instead of
   process arguments.
+- Collect SVN status context from paths containing `@`, report failed context
+  commands, and schedule AI context commands within repository worker limits.
 
 ## [0.11.2] - 2026-10-16
 

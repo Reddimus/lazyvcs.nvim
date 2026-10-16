@@ -1644,7 +1644,7 @@ function M.switch_repo(state, node)
 	}, function(args, opts, on_done)
 		-- Own enumeration with the sidebar state so teardown cancels it. Use a per-repository
 		-- scope and generation to avoid stale watermarks from earlier sidebar lifetimes.
-		jobs.command(repo, opts.kind or "switch", args, {
+		return jobs.command(repo, opts.kind or "switch", args, {
 			timeout_ms = bg.switch_timeout_ms,
 			owner = state,
 			generation = switch_generation,

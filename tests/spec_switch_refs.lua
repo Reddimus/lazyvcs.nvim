@@ -166,15 +166,28 @@ return function(ctx)
 					end,
 				}
 				local start = util.system_start
+				local killed, enumerations = 0, 0
 				---@diagnostic disable-next-line: duplicate-set-field
-				util.system_start = function()
-					return { kill = function() end }
+				util.system_start = function(args, _, done)
+					if args[2] == "branch" then
+						done({ code = 0, stdout = "main\n" })
+						return {}
+					end
+					assert(args[2] == "for-each-ref", "expected in-flight ref enumeration")
+					enumerations = enumerations + 1
+					return {
+						kill = function()
+							killed = killed + 1
+							done(nil, "cancelled", { code = 130, cancelled = true })
+						end,
+					}
 				end
 				local ok, err = xpcall(function()
 					ops.switch_repo(state, { path = f.root })
 					state.lazyvcs_tearing_down = true
 					jobs.cancel_owner(state)
 					assert(not session.get_repo_job(f.root), "closed enumeration left repository busy")
+					assert(enumerations == 1 and killed == 1, "sidebar close did not stop ref enumeration")
 					state.lazyvcs_tearing_down = false
 					local task = assert(ops.switch_repo(state, { path = f.root }))
 					local newer = { status = "running", action = "newer" }
@@ -182,6 +195,8 @@ return function(ctx)
 					newer = session.get_repo_job(f.root)
 					task:cancel()
 					assert(session.get_repo_job(f.root) == newer, "old enumeration cleared newer marker")
+					assert(enumerations == 2 and killed == 2, "task cancellation did not stop ref enumeration")
+					assert(jobs.cancel_owner(state) == 0, "cancelled enumeration retained a scheduler job")
 				end, debug.traceback)
 				util.system_start = start
 				jobs.cancel_owner(state)

@@ -125,10 +125,7 @@ local function start_context_command(request, command, callback)
 		if not result or err then
 			return request:finish(nil, err or "Could not collect commit context")
 		end
-		if result.stdout_truncated or result.stderr_truncated then
-			return request:finish(nil, "Commit context exceeded the output limit")
-		end
-		callback(result.stdout or "")
+		callback(result.stdout or "", result)
 	end)
 	if not completed then
 		request:set_handle({
@@ -169,7 +166,10 @@ local function collect_context_commands(request, commands, callback)
 		if not command then
 			return callback(table.concat(output, "\n"))
 		end
-		start_context_command(request, command, function(stdout)
+		start_context_command(request, command, function(stdout, result)
+			if result.stdout_truncated or result.stderr_truncated then
+				return request:finish(nil, "Commit context exceeded the output limit")
+			end
 			if util.trim(stdout) ~= "" then
 				output[#output + 1] = util.trim(stdout)
 			end
