@@ -34,6 +34,57 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_blame_selection_snapshot_error_releases_handle",
+			function()
+				local f, buf = t.open(false)
+				t.patch(require("lazyvcs.compare"), "blame_target", function()
+					return {
+						snapshot = { vcs = "git", root = f.root, revision = "HEAD", head = "HEAD" },
+						item = { relpath = "sample.txt" },
+						path = f.file,
+						side = "base",
+						bytes = "binary\0snapshot",
+					}
+				end)
+				local request = assert(selection.open(1, 2))
+				t.wait(function()
+					return table.concat(api.nvim_buf_get_lines(request.buf, 0, -1, false)):find("Binary file", 1, true)
+				end, "snapshot error was not rendered")
+				local lines = protected_report(request)
+				vim.bo[buf].fileformat = "dos"
+				api.nvim_exec_autocmds("OptionSet", { pattern = "fileformat" })
+				assert(vim.deep_equal(lines, protected_report(request)), "option change overwrote the snapshot error")
+				assert(#t.notices == 0, "snapshot error became an internal callback error")
+			end,
+		},
+		{
+			"test_blame_selection_nil_base_contents_reports_error",
+			function()
+				local f = t.open(false)
+				local done, entries, err
+				local task = require("lazyvcs.backends.blame_selection").load(
+					{
+						snapshot = { vcs = "git", root = f.root, revision = "HEAD", head = "HEAD" },
+						item = { relpath = "sample.txt" },
+						path = f.file,
+						side = "base",
+						first = 1,
+						last = 2,
+					},
+					nil,
+					function(value, why)
+						entries, err, done = value, why, true
+					end
+				)
+				assert(not done, "invalid base completed before the task was returned")
+				t.wait(function()
+					return done
+				end, "missing base contents did not finish")
+				assert(not entries and type(err) == "string" and err ~= "", "missing base contents lost its diagnostic")
+				assert(task.done and not task:is_active(), "missing base task remained active")
+			end,
+		},
+		{
 			"test_blame_selection_failed_write_restores_protection",
 			function()
 				t.open(false)

@@ -166,6 +166,37 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_blame_split_restores_source_options_in_another_window",
+			function()
+				local buf, win = source()
+				util.set_win_options(win, { wrap = true, foldenable = true, scrollbind = false, cursorbind = false })
+				local options = util.capture_win_options(win, { "wrap", "foldenable", "scrollbind", "cursorbind" })
+				open(buf)
+				local other = api.nvim_create_buf(false, true)
+				util.show_win_buffer(win, other)
+				t.wait(function()
+					return not blame._test_blame_views()[buf] and #api.nvim_list_wins() == 1
+				end, "split cleanup did not finish")
+				local other_options = util.capture_win_options(win, vim.tbl_keys(options))
+				vim.cmd.vsplit()
+				local second = api.nvim_get_current_win()
+				util.show_win_buffer(second, buf)
+				assert(
+					vim.deep_equal(options, util.capture_win_options(second, vim.tbl_keys(options))),
+					"source inherited temporary options in another window"
+				)
+				assert(
+					vim.deep_equal(other_options, util.capture_win_options(win, vim.tbl_keys(options))),
+					"pending restore changed the replacement buffer"
+				)
+				util.show_win_buffer(win, buf)
+				assert(
+					vim.deep_equal(options, util.capture_win_options(win, vim.tbl_keys(options))),
+					"restoring another window discarded the original window's pending restore"
+				)
+			end,
+		},
+		{
 			"test_blame_split_open_failure_restores_source_options",
 			function()
 				local buf, win = source()

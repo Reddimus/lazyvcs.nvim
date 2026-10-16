@@ -921,6 +921,11 @@ function M.blame_lines_async(path, on_done, opts)
 															1024 * 1024
 														)
 														base = decoded and decoded.lines or util.split_lines(base)
+														if not decoded and opts.profile.fileformat == "dos" then
+															for i, line in ipairs(base) do
+																base[i] = line:gsub("\r$", "")
+															end
+														end
 													end
 													local ok, current =
 														true,

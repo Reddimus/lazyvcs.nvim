@@ -45,7 +45,10 @@ function M.load(target, contents, callback, capture)
 			contents = target.bytes or contents
 			local snapshot_lines, lines_err = comparison.lines(contents)
 			if not snapshot_lines then
-				return task:finish(nil, lines_err)
+				vim.schedule(function()
+					task:finish(nil, lines_err)
+				end)
+				return
 			end
 			-- Compare preserves raw bytes and displays LF-delimited lines. CR-only
 			-- snapshots still need full-file validation; binary previews are rejected above.

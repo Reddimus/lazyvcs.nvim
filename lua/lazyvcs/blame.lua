@@ -81,6 +81,18 @@ local function restore_source_options(source_bufnr, view)
 			if util.win_is_valid(win) and vim.api.nvim_win_get_buf(win) == source_bufnr then
 				clear()
 				apply_win_options(win, view.source_options)
+			else
+				local entered = vim.api.nvim_get_current_win()
+				local temporary = { wrap = false, foldenable = false, scrollbind = true, cursorbind = true }
+				if
+					entered ~= win
+					and vim.api.nvim_win_get_buf(entered) == source_bufnr
+					and vim.deep_equal(capture_win_options(entered, vim.tbl_keys(temporary)), temporary)
+				then
+					-- New windows can inherit the source's last saved temporary values.
+					-- The original window still needs its own pending restore.
+					apply_win_options(entered, view.source_options)
+				end
 			end
 		end, clear),
 	})

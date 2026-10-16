@@ -67,15 +67,20 @@ return function(ctx)
 		{
 			"test_svn_blame_undecodable_base_keeps_unchanged_attribution",
 			function()
-				local f, buf, _, backend = fixture(formats[1], true)
-				vim.bo[buf].fileencoding = "utf-8"
-				vim.cmd.write()
-				local entries, err = backend_entries(f, backend, source_capture(buf))
-				assert(entries, err)
-				assert(
-					entries[1].uncommitted and not entries[2].uncommitted and not entries[3].uncommitted,
-					"undecodable SVN BASE lost unchanged ASCII attribution"
-				)
+				for _, format in ipairs({
+					formats[1],
+					{ "latin1-crlf", "caf\233\r\nsecond\r\nlast\r\n", "++enc=latin1" },
+				}) do
+					local f, buf, _, backend = fixture(format, true)
+					vim.bo[buf].fileencoding = "utf-8"
+					vim.cmd.write()
+					local entries, err = backend_entries(f, backend, source_capture(buf))
+					assert(entries, err)
+					assert(
+						entries[1].uncommitted and not entries[2].uncommitted and not entries[3].uncommitted,
+						format[1] .. ": undecodable SVN BASE lost unchanged ASCII attribution"
+					)
+				end
 			end,
 		},
 		{
