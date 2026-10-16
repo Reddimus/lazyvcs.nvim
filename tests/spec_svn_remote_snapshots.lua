@@ -249,8 +249,11 @@ return function(ctx)
 				end, "SVN mutation did not settle", 15000)
 				settled(first)
 				vim.api.nvim_set_current_tabpage(second.tabid)
+				-- Only a merged summary can carry this field into the cache.
+				summary.lazyvcs_delayed_marker = true
 				delayed(summary)
 				settled(second)
+				assert(second.lazyvcs_repo_cache[f.root].lazyvcs_delayed_marker, "delayed local summary was discarded")
 				assert(second.lazyvcs_repo_cache[f.root].remote_unknown, "delayed local summary cleared unknown")
 				displayed(second, f.root, "unknown", "Commit")
 				assert(second.lazyvcs_repo_visibility[f.root], "unknown repository hidden with show_clean=false")
