@@ -1,4 +1,5 @@
 local backends = require("lazyvcs.backends")
+local compare_text = require("lazyvcs.compare_text")
 local compat = require("lazyvcs.compat")
 local config = require("lazyvcs.config")
 local diff = require("lazyvcs.diff")
@@ -21,6 +22,7 @@ local rebalance_tab
 local scroll_event_source
 local session_sequence = 0
 local target_sequence = 0
+local TEXT_LIMIT = 1024 * 1024
 local pending_opens = {}
 local source_attachments = {}
 local transfer
@@ -52,23 +54,40 @@ local function build_session_async(bufnr, on_done)
 		return on_done(nil, "Current buffer has no file path")
 	end
 
-	return backends.load_async(path, function(result, err)
-		if not result then
-			return on_done(nil, err or "Unable to load VCS base")
-		end
-		on_done({
-			editable_bufnr = bufnr,
-			source_path = path,
-			backend = result.name,
-			backend_impl = result.impl,
-			root = result.root,
-			relpath = result.relpath,
-			tracked = result.tracked,
-			base_label = result.base_label,
-			base_lines = result.base_lines,
-			opts = vim.deepcopy(config.get()),
-		})
-	end)
+	local profile, profile_err = compare_text.profile(bufnr)
+	if not profile then
+		return on_done(nil, profile_err)
+	end
+	return backends.load_async(
+		path,
+		util.safe_callback(function(result, err)
+			if not result then
+				return on_done(nil, err or "Unable to load VCS base")
+			end
+			local live_profile = compare_text.profile(bufnr)
+			if not live_profile or live_profile.key ~= profile.key or util.buf_path(bufnr) ~= path then
+				return on_done(nil, "Buffer decoding context changed while loading")
+			end
+			local document, decode_err = diff.decode_base(bufnr, result, TEXT_LIMIT)
+			if not document then
+				return on_done(nil, decode_err)
+			end
+			on_done({
+				editable_bufnr = bufnr,
+				source_path = path,
+				backend = result.name,
+				backend_impl = result.impl,
+				root = result.root,
+				relpath = result.relpath,
+				tracked = result.tracked,
+				base_label = result.base_label,
+				base_lines = document.lines,
+				base_text = document,
+				base_identity = result.base_identity,
+				opts = vim.deepcopy(config.get()),
+			})
+		end)
+	)
 end
 
 -- Return a session or nil, err. Catch failures so autocmds cannot trigger a hit-enter
@@ -179,7 +198,8 @@ local function commit_transfer(old, replacement)
 	old.phase, old.closing = "closed", true
 	set_session_maps(replacement)
 	attach_session(replacement)
-	replacement.hunks = diff.compute_hunks(replacement.base_lines, util.get_buf_lines(replacement.editable_bufnr))
+	local current = assert(compare_text.capture(replacement.editable_bufnr, TEXT_LIMIT))
+	replacement.hunks = diff.compute_text_hunks(replacement.base_text, current)
 end
 
 transfer = require("lazyvcs.live_transfer").new({
@@ -255,7 +275,35 @@ refresh = function(bufnr)
 		return
 	end
 
-	session.hunks = diff.compute_hunks(session.base_lines, util.get_buf_lines(session.editable_bufnr))
+	if not session.readonly_comparison then
+		local profile = compare_text.profile(session.editable_bufnr)
+		if
+			not profile
+			or not session.base_text
+			or session.base_text.profile_key ~= profile.key
+			or util.buf_path(session.editable_bufnr) ~= session.source_path
+		then
+			session.hunks, session.base_invalid = {}, true
+			if not session.refresh_job then
+				M.refresh_current()
+			end
+			return
+		end
+		if session.base_invalid then
+			session.hunks = {}
+			return
+		end
+		local current, err = compare_text.capture(session.editable_bufnr, TEXT_LIMIT)
+		if not current then
+			session.hunks = {}
+			util.notify(err, vim.log.levels.WARN)
+			return
+		end
+		session.current_text = current
+		session.hunks = diff.compute_text_hunks(session.base_text, current)
+	else
+		session.hunks = diff.compute_hunks(session.base_lines, util.get_buf_lines(session.editable_bufnr))
+	end
 	layout.refresh(session)
 end
 
@@ -472,6 +520,26 @@ attach_session = function(session)
 	end
 
 	session.augroup = vim.api.nvim_create_augroup("lazyvcs_" .. session.editable_bufnr, { clear = true })
+
+	vim.api.nvim_create_autocmd("OptionSet", {
+		group = session.augroup,
+		pattern = { "fileencoding", "fileformat", "bomb", "binary", "endofline", "fixendofline" },
+		callback = safe_callback(function()
+			if vim.api.nvim_get_current_buf() == session.editable_bufnr then
+				schedule_refresh(session.editable_bufnr)
+			end
+		end),
+	})
+	vim.api.nvim_create_autocmd("BufFilePost", {
+		group = session.augroup,
+		buffer = session.editable_bufnr,
+		callback = safe_callback(function()
+			session.base_invalid, session.hunks = true, {}
+			vim.schedule(safe_callback(function()
+				M.close(session.editable_bufnr)
+			end))
+		end),
+	})
 
 	vim.api.nvim_create_autocmd("WinScrolled", {
 		group = session.augroup,
@@ -777,6 +845,19 @@ local function open_target_impl(comparison, failure_context)
 		original_bufnr = owned and original_bufnr or nil,
 		comparison = comparison,
 	}
+	if not session.readonly_comparison then
+		local document, decode_err = diff.decode_base(editable_bufnr, {
+			base_bytes = comparison.left.bytes
+				or (comparison.left.source and comparison.left.source.kind == "empty" and "" or nil),
+			base_lines = comparison.left.lines,
+		}, TEXT_LIMIT)
+		if not document then
+			error(decode_err)
+		end
+		session.base_text, session.base_lines, session.base_identity =
+			document, document.lines, comparison.base_identity
+		comparison.left.bytes = nil
+	end
 	vim.api.nvim_set_current_win(editor_win)
 	local opened, err = open_session(session)
 	if not opened then
@@ -884,7 +965,7 @@ function M.revert_hunk()
 	if not context or context.bufnr ~= session.editable_bufnr then
 		return false
 	end
-	local confirmed_base_lines = vim.deepcopy(session.base_lines)
+	local confirmed_base = vim.deepcopy(session.base_text)
 	local confirmed_hunk = vim.deepcopy(hunk)
 	local function context_is_unchanged()
 		if not can_mutate() or context.bufnr ~= session.editable_bufnr then
@@ -894,10 +975,13 @@ function M.revert_hunk()
 			util.notify("Hunk context changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
 			return false
 		end
+		refresh(session.editable_bufnr)
+		if session.base_invalid then
+			return false
+		end
 		local current_hunk = diff.find_current_hunk(session.hunks or {}, context.cursor[1])
 		if
-			not vim.deep_equal(session.base_lines, confirmed_base_lines)
-			or not vim.deep_equal(current_hunk, confirmed_hunk)
+			not vim.deep_equal(session.base_text, confirmed_base) or not vim.deep_equal(current_hunk, confirmed_hunk)
 		then
 			util.notify("Hunk base changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
 			return false
@@ -909,14 +993,34 @@ function M.revert_hunk()
 		if not context_is_unchanged() then
 			return false
 		end
-		return vim.api.nvim_win_call(session.editable_win, function()
-			if not session.backend_impl.revert_hunk(session, confirmed_hunk) then
-				diff.reset_hunk(session.editable_bufnr, confirmed_base_lines, confirmed_hunk)
+		local function reset()
+			if not context_is_unchanged() then
+				return false
 			end
+			return vim.api.nvim_win_call(session.editable_win, function()
+				if not session.backend_impl.revert_hunk(session, confirmed_hunk) then
+					diff.reset_text_hunk(session.editable_bufnr, confirmed_base, session.current_text, confirmed_hunk)
+				end
 
-			schedule_refresh(session.editable_bufnr)
-			return true
-		end)
+				schedule_refresh(session.editable_bufnr)
+				return true
+			end)
+		end
+		if not session.base_identity then
+			return reset()
+		end
+		return backends.validate_editable_base_async(
+			context.path,
+			session.base_identity,
+			util.safe_callback(function(valid, err)
+				if not valid then
+					session.hunks = {}
+					session.base_invalid = true
+					return util.notify(err or "Hunk base is no longer editable", vim.log.levels.WARN)
+				end
+				reset()
+			end)
+		)
 	end)
 end
 
@@ -959,13 +1063,25 @@ function M.refresh_current()
 	end
 	session.base_generation = (session.base_generation or 0) + 1
 	local generation = session.base_generation
-	local function loaded(result, err)
+	local profile = compare_text.profile(session.editable_bufnr)
+	local source_path = util.buf_path(session.editable_bufnr)
+	local function loaded_impl(result, err)
 		local live = state.get(session.editable_bufnr)
 		if not live or live ~= session or live.closing or live.base_generation ~= generation then
 			return
 		end
 		live.refresh_job = nil
+		local current_profile = compare_text.profile(live.editable_bufnr)
+		if
+			not current_profile
+			or not profile
+			or current_profile.key ~= profile.key
+			or util.buf_path(live.editable_bufnr) ~= source_path
+		then
+			return
+		end
 		if not result then
+			live.hunks, live.base_invalid = {}, true
 			util.notify(err or "Could not refresh the VCS comparison base", vim.log.levels.WARN)
 			return
 		end
@@ -973,6 +1089,8 @@ function M.refresh_current()
 			live.comparison = result
 			result.base_label = result.left.label
 			result.base_lines = result.left.lines or {}
+			result.base_bytes = result.left.bytes
+				or (result.left.source and result.left.source.kind == "empty" and "" or nil)
 			if live.readonly_comparison and util.buf_is_valid(live.editable_bufnr) then
 				vim.bo[live.editable_bufnr].modifiable = true
 				vim.bo[live.editable_bufnr].readonly = false
@@ -984,16 +1102,36 @@ function M.refresh_current()
 		live.root = result.root
 		live.relpath = result.relpath
 		live.base_label = result.base_label
-		live.base_lines = result.base_lines
+		if not live.readonly_comparison then
+			local document, decode_err = diff.decode_base(live.editable_bufnr, result, TEXT_LIMIT)
+			if not document then
+				live.hunks, live.base_invalid = {}, true
+				util.notify(decode_err, vim.log.levels.WARN)
+				return
+			end
+			live.base_text, live.base_lines = document, document.lines
+			if live.comparison then
+				live.comparison.left.bytes = nil
+			end
+			live.base_invalid = false
+		else
+			live.base_lines = result.base_lines
+		end
+		live.base_identity = result.base_identity
 		if util.buf_is_valid(live.base_bufnr) then
 			vim.bo[live.base_bufnr].modifiable = true
 			vim.bo[live.base_bufnr].readonly = false
 			vim.api.nvim_buf_set_lines(live.base_bufnr, 0, -1, false, live.base_lines)
+			if live.base_text then
+				vim.bo[live.base_bufnr].endofline = live.base_text.eol
+				vim.bo[live.base_bufnr].fixendofline = false
+			end
 			vim.bo[live.base_bufnr].modifiable = false
 			vim.bo[live.base_bufnr].readonly = true
 		end
 		refresh(live.editable_bufnr)
 	end
+	local loaded = safe_callback(loaded_impl)
 	if session.comparison then
 		session.refresh_job = backends.load_diff_target_async(session.comparison, loaded)
 	else

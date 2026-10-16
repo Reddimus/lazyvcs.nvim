@@ -84,7 +84,22 @@ function M.revert_buffer()
 	if not path then
 		return util.notify("Current buffer is not a tracked Git or SVN file", vim.log.levels.WARN)
 	end
+	local context = util.capture_buffer_context()
+	if not context then
+		return util.notify("Unable to capture the discard context", vim.log.levels.WARN)
+	end
 	local owner = request_owner()
+	local function unchanged(require_current)
+		if
+			util.buffer_context_is_unchanged(context)
+			and (not require_current or vim.api.nvim_get_current_win() == context.winid)
+		then
+			return true
+		end
+		owner:finish()
+		util.notify("Discard context changed; nothing was restored", vim.log.levels.WARN)
+		return false
+	end
 	owner:set(backends.is_versioned_async(path, function(versioned, version_err)
 		if not owner.active then
 			return
@@ -94,6 +109,9 @@ function M.revert_buffer()
 			owner:finish()
 			return util.notify(version_err or "Current buffer is not a tracked Git or SVN file", vim.log.levels.WARN)
 		end
+		if not unchanged(true) then
+			return
+		end
 		local backend, root = backends.resolve_cached(path)
 		if not buffer_guard.check(root or util.dir_of(path), { path }) then
 			owner:finish()
@@ -101,13 +119,23 @@ function M.revert_buffer()
 		end
 		local backend_name = backend and backend.name or "VCS"
 		confirm.open({
-			prompt = string.format("Discard all %s worktree changes in this file?", backend_name:upper()),
+			prompt = string.format(
+				"Discard all %s worktree changes in %s?",
+				backend_name:upper(),
+				vim.fn.strtrans(path)
+			),
+			before_confirm = function()
+				return unchanged(false)
+			end,
 		}, function(choice)
 			if not owner.active then
 				return
 			end
 			if choice ~= "confirm" and choice ~= "confirm_session" then
 				owner:finish()
+				return
+			end
+			if not unchanged(false) then
 				return
 			end
 			if not buffer_guard.check(root or util.dir_of(path), { path }) then
@@ -128,7 +156,8 @@ function M.revert_buffer()
 				end
 			end, {
 				start = function(args, opts, on_exit)
-					local guard_err = buffer_guard.error(root or util.dir_of(path), { path })
+					local guard_err = not unchanged(false) and "Discard context changed; nothing was restored"
+						or buffer_guard.error(root or util.dir_of(path), { path })
 					if guard_err then
 						local raw = {
 							code = 1,

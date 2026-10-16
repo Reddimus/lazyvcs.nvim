@@ -1,6 +1,6 @@
 return function(ctx)
 	local h, util = ctx.helpers, require("lazyvcs.util")
-	return {
+	local cases = {
 		{
 			"test_revert_relocated_missing_entry_preserves_sibling",
 			function()
@@ -153,4 +153,119 @@ return function(ctx)
 			end,
 		},
 	}
+	local function symlink_case(svn, live)
+		require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+		local f = svn and h.make_svn_fixture() or h.make_git_fixture()
+		local target, link = f.root .. "/target.txt", f.root .. "/link.txt"
+		h.write_file(target, "TARGET CONTENT\n")
+		assert(vim.uv.fs_symlink("target.txt", link))
+		if svn then
+			h.exec({ "svn", "add", link }, f.root)
+			h.exec({ "svn", "commit", "-m", "link", link }, f.root)
+		else
+			h.exec({ "git", "config", "core.symlinks", "true" }, f.root)
+			h.exec({ "git", "add", "link.txt" }, f.root)
+			h.exec({ "git", "commit", "-m", "link" }, f.root)
+		end
+		local backend = require("lazyvcs.backends." .. (svn and "svn" or "git"))
+		for _, replace in ipairs({ false, true }) do
+			if replace then
+				assert(vim.uv.fs_unlink(link))
+				h.write_file(link, "REGULAR REPLACEMENT\n")
+			end
+			for _, method in ipairs({ "load", "load_base" }) do
+				local result, err = backend[method](link)
+				assert(not result and err, "editable loader accepted a symlink base")
+			end
+			vim.cmd.edit(vim.fn.fnameescape(link))
+			local buf = vim.api.nvim_get_current_buf()
+			local done, result, err
+			backend.load_async(link, function(value, why)
+				result, err, done = value, why, true
+			end)
+			ctx.wait_for(function()
+				return done
+			end, "symlink load did not finish", 15000)
+			assert(not result and err, "async loader accepted a symlink base")
+			if live then
+				local task = require("lazyvcs.actions").open({ silent = true })
+				ctx.wait_for(function()
+					return task.done
+				end, "ineligible live diff did not finish", 15000)
+				assert(not require("lazyvcs.state").get(buf), "symlink opened an editable diff")
+			else
+				require("lazyvcs.config").get().signs.enabled = true
+				done = false
+				require("lazyvcs.signs").refresh(buf, true, function(state)
+					result, done = state, true
+				end)
+				ctx.wait_for(function()
+					return done
+				end, "ineligible signs did not finish", 15000)
+				assert(not result, "symlink received native hunks")
+			end
+			assert(vim.deep_equal(vim.fn.readfile(target), { "TARGET CONTENT" }), "symlink target changed")
+		end
+		-- A regular index base must also reject a final worktree symlink.
+		assert(vim.uv.fs_unlink(f.file))
+		assert(vim.uv.fs_symlink("target.txt", f.file))
+		local result, err = backend.load(f.file)
+		assert(not result and err, "regular base accepted a worktree symlink")
+		-- Eligibility must be checked again after the user accepts a hunk.
+		assert(vim.uv.fs_unlink(f.file))
+		h.write_file(f.file, "one\nchanged\nthree\n")
+		vim.cmd.edit(vim.fn.fnameescape(f.file))
+		local buf = vim.api.nvim_get_current_buf()
+		local state, done
+		if live then
+			require("lazyvcs.actions").open({
+				on_open = function(value)
+					state, done = value, true
+				end,
+			})
+		else
+			require("lazyvcs.config").get().signs.enabled = true
+			require("lazyvcs.signs").refresh(buf, true, function(value)
+				state, done = value, true
+			end)
+		end
+		ctx.wait_for(function()
+			return done
+		end, "regular base did not load", 15000)
+		assert(state and #state.hunks > 0)
+		vim.api.nvim_win_set_cursor(0, { 2, 0 })
+		local action = live and require("lazyvcs.actions") or require("lazyvcs.signs")
+		action.revert_hunk()
+		assert(vim.bo.buftype == "nofile", "regular hunk did not prompt")
+		assert(vim.uv.fs_unlink(f.file))
+		assert(vim.uv.fs_symlink("target.txt", f.file))
+		vim.fn.maparg("1", "n", false, true).callback()
+		ctx.wait_for(function()
+			return live and state.base_invalid or not live and not require("lazyvcs.signs").current_state(buf)
+		end, "mutation did not reject the changed entry type", 15000)
+		assert(
+			vim.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "changed",
+			"symlink eligibility changed after confirmation"
+		)
+		assert(vim.deep_equal(vim.fn.readfile(target), { "TARGET CONTENT" }))
+	end
+	cases[#cases + 1] = {
+		"test_sign_symlink_base_is_ineligible",
+		function()
+			symlink_case(false, false)
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_live_diff_symlink_base_is_ineligible",
+		function()
+			symlink_case(false, true)
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_svn_sign_symlink_base_is_ineligible",
+		function()
+			symlink_case(true, false)
+		end,
+	}
+	return cases
 end

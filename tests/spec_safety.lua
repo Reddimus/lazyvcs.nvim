@@ -381,12 +381,16 @@ return function(ctx)
 		local ok, err = xpcall(function()
 			vim.api.nvim_win_set_cursor(0, { 2, 0 })
 			signs.revert_hunk()
-			assert(vim.api.nvim_buf_get_lines(bufnr, 1, 2, false)[1] == "two", "first hunk revert should apply")
+			wait_for(function()
+				return vim.api.nvim_buf_get_lines(bufnr, 1, 2, false)[1] == "two"
+			end, "first hunk revert should apply", ASYNC_TIMEOUT_MS)
 			vim.api.nvim_buf_set_lines(bufnr, 1, 2, false, { "changed again" })
 			signs.refresh(bufnr, false)
 			vim.api.nvim_win_set_cursor(0, { 2, 0 })
 			signs.revert_hunk()
-			assert(vim.api.nvim_buf_get_lines(bufnr, 1, 2, false)[1] == "two", "second hunk revert should apply")
+			wait_for(function()
+				return vim.api.nvim_buf_get_lines(bufnr, 1, 2, false)[1] == "two"
+			end, "second hunk revert should apply", ASYNC_TIMEOUT_MS)
 			assert(prompt_count == 1, "option 2 should suppress the second direct hunk revert prompt")
 		end, debug.traceback)
 		confirm.open = previous_confirm_open

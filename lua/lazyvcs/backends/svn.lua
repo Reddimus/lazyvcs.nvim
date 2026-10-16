@@ -1,5 +1,6 @@
 local util = require("lazyvcs.util")
 local process = require("lazyvcs.backends.process")
+local entry = require("lazyvcs.backends.entry")
 local Task = require("lazyvcs.backends.task")
 local svn_xml = require("lazyvcs.backends.xml")
 
@@ -90,23 +91,40 @@ local function uncommitted_blame_lines(path, contents)
 	return out
 end
 
-local function load_base_lines(path, root)
+local function load_base_bytes(path, root)
+	local valid, eligibility_err = entry.editable(entry.classify(path))
+	if not valid then
+		return nil, nil, eligibility_err
+	end
 	local code, status_err = status_code(path)
 	if not code then
 		return nil, nil, status_err
 	end
 	if code == "A" then
-		return {}, "EMPTY"
+		return "", "EMPTY"
 	end
 
-	local lines, load_err = util.system_lines({ "svn", "cat", "-r", "BASE", literal_target(path) }, { cwd = root })
-	if not lines then
+	local props, props_err = util.system(
+		{ "svn", "proplist", "--xml", "-r", "BASE", literal_target(path) },
+		{ cwd = root }
+	)
+	if not props then
+		return nil, nil, props_err
+	end
+	if props.stdout:match('name="svn:special"') then
+		return nil, nil, "Editable hunks do not support SVN special entries"
+	end
+	local loaded, load_err = util.system(
+		{ "svn", "cat", "-r", "BASE", literal_target(path) },
+		{ cwd = root, text = false }
+	)
+	if not loaded then
 		if is_added_base_error(load_err) then
-			return {}, "EMPTY"
+			return "", "EMPTY"
 		end
 		return nil, nil, load_err
 	end
-	return lines, "BASE"
+	return loaded.stdout, "BASE"
 end
 
 local function status_label(code)
@@ -171,15 +189,14 @@ function M.load(path)
 	if not tracked then
 		return nil, "File is not tracked by SVN"
 	end
-	---@type string[]
-	local base_lines = {}
+	local base_bytes = ""
 	local base_label = "EMPTY"
 
-	local loaded_lines, loaded_label, load_err = load_base_lines(path, root)
+	local loaded_lines, loaded_label, load_err = load_base_bytes(path, root)
 	if not loaded_lines then
 		return nil, load_err or err
 	end
-	base_lines = loaded_lines
+	base_bytes = loaded_lines
 	base_label = loaded_label or "EMPTY"
 
 	return {
@@ -188,7 +205,8 @@ function M.load(path)
 		relpath = relpath,
 		tracked = tracked,
 		base_label = base_label,
-		base_lines = base_lines,
+		base_bytes = base_bytes,
+		base_identity = { root = root, relpath = relpath, content = vim.fn.sha256(vim.base64.encode(base_bytes)) },
 		impl = M,
 	}
 end
@@ -250,7 +268,7 @@ function M.load_base(path)
 		return nil, "File is not tracked by SVN"
 	end
 
-	local lines, base_label, load_err = load_base_lines(path, root)
+	local lines, base_label, load_err = load_base_bytes(path, root)
 	if not lines then
 		return nil, load_err
 	end
@@ -258,7 +276,8 @@ function M.load_base(path)
 		root = root,
 		relpath = relpath,
 		base_label = base_label,
-		base_lines = lines,
+		base_bytes = lines,
+		base_identity = { root = root, relpath = relpath, content = vim.fn.sha256(vim.base64.encode(lines)) },
 	}
 end
 
@@ -273,13 +292,14 @@ local function load_payload_async(path, on_done, opts, base_only)
 	end
 
 	local cwd = util.dir_of(path)
-	local function payload(root, relpath, tracked, base_label, base_lines)
+	local function payload(root, relpath, tracked, base_label, base_bytes)
 		local value = {
 			root = root,
 			relpath = relpath,
 			tracked = tracked,
 			base_label = base_label,
-			base_lines = base_lines,
+			base_bytes = base_bytes,
+			base_identity = { root = root, relpath = relpath, content = vim.fn.sha256(vim.base64.encode(base_bytes)) },
 		}
 		if not base_only then
 			value.name = M.name
@@ -304,61 +324,83 @@ local function load_payload_async(path, on_done, opts, base_only)
 		if not relpath then
 			return task:finish(nil, path_err)
 		end
-		task:add(process.start({ "svn", "info", literal_target(path) }, {
-			cwd = cwd,
-			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-		}, function(_, tracked_err, tracked_raw)
-			if not task:is_active() then
-				return
+		task:add(entry.classify_async(path, function(kind, kind_err)
+			local valid, eligibility_err = entry.editable(kind, kind_err)
+			if not valid then
+				return task:finish(nil, eligibility_err)
 			end
-			if tracked_err then
-				if is_unversioned_error(tracked_err, tracked_raw) then
-					return task:finish(nil, "File is not tracked by SVN")
+			task:add(process.start({ "svn", "info", literal_target(path) }, {
+				cwd = cwd,
+				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+			}, function(_, tracked_err, tracked_raw)
+				if not task:is_active() then
+					return
 				end
-				return task:finish(nil, tracked_err)
-			end
-			task:add(
-				process.lines(
-					{ "svn", "status", "--depth", "empty", literal_target(path) },
-					{ cwd = cwd, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
-					function(status_lines, status_err)
-						if not task:is_active() then
-							return
-						end
-						if not status_lines then
-							return task:finish(nil, status_err)
-						end
-
-						local code = " "
-						for _, line in ipairs(status_lines) do
-							if line ~= "" then
-								code = line:sub(1, 1)
-								break
-							end
-						end
-
-						if code == "A" then
-							return task:finish(payload(root, relpath, true, "EMPTY", {}))
-						end
-
-						task:add(
-							process.lines(
-								{ "svn", "cat", "-r", "BASE", literal_target(path) },
-								{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
-								function(lines, cat_err)
-									if not lines then
-										if is_added_base_error(cat_err) then
-											return task:finish(payload(root, relpath, true, "EMPTY", {}))
-										end
-										return task:finish(nil, cat_err)
-									end
-									task:finish(payload(root, relpath, true, "BASE", lines))
-								end
-							)
-						)
+				if tracked_err then
+					if is_unversioned_error(tracked_err, tracked_raw) then
+						return task:finish(nil, "File is not tracked by SVN")
 					end
+					return task:finish(nil, tracked_err)
+				end
+				task:add(
+					process.lines(
+						{ "svn", "status", "--depth", "empty", literal_target(path) },
+						{ cwd = cwd, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
+						function(status_lines, status_err)
+							if not task:is_active() then
+								return
+							end
+							if not status_lines then
+								return task:finish(nil, status_err)
+							end
+
+							local code = " "
+							for _, line in ipairs(status_lines) do
+								if line ~= "" then
+									code = line:sub(1, 1)
+									break
+								end
+							end
+
+							if code == "A" then
+								return task:finish(payload(root, relpath, true, "EMPTY", ""))
+							end
+
+							task:add(
+								process.start(
+									{ "svn", "proplist", "--xml", "-r", "BASE", literal_target(path) },
+									{ cwd = root },
+									function(props, props_err)
+										if not props then
+											return task:finish(nil, props_err)
+										end
+										if props.stdout:match('name="svn:special"') then
+											return task:finish(nil, "Editable hunks do not support SVN special entries")
+										end
+										task:add(
+											process.bytes(
+												{ "svn", "cat", "-r", "BASE", literal_target(path) },
+												{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
+												function(lines, cat_err)
+													if not lines then
+														if is_added_base_error(cat_err) then
+															return task:finish(
+																payload(root, relpath, true, "EMPTY", "")
+															)
+														end
+														return task:finish(nil, cat_err)
+													end
+													task:finish(payload(root, relpath, true, "BASE", lines))
+												end
+											)
+										)
+									end
+								)
+							)
+						end
+					)
 				)
-			)
+			end))
 		end))
 	end))
 	return task
@@ -370,6 +412,32 @@ end
 
 function M.load_base_async(path, on_done, opts)
 	return load_payload_async(path, on_done, opts, true)
+end
+
+function M.validate_editable_base_async(path, identity, callback, opts)
+	if identity.untracked then
+		local task = Task.new(callback)
+		task:add(entry.classify_async(path, function(kind, err)
+			local valid, why = entry.editable(kind, err)
+			if not valid then
+				return task:finish(false, why)
+			end
+			if util.relpath(identity.root, path) ~= identity.relpath then
+				return task:finish(false, "Repository entry changed")
+			end
+			task:add(M.is_versioned_async(path, function(versioned, version_err)
+				task:finish(
+					not versioned and not version_err,
+					version_err or (versioned and "Repository entry is now tracked" or nil)
+				)
+			end, opts))
+		end))
+		return task
+	end
+	return M.load_base_async(path, function(result, err)
+		local valid = result ~= nil and vim.deep_equal(result.base_identity, identity)
+		callback(valid, err or (not valid and "Hunk base changed; retry the action" or nil))
+	end, opts)
 end
 
 function M.revert_file(path)
@@ -631,7 +699,31 @@ function M.load_diff_target_async(target, on_done, opts)
 		local pending = 0
 		local failed = false
 		local function complete()
-			if not failed and pending == 0 then
+			if failed or pending ~= 0 or not task:is_active() then
+				return
+			end
+			if comparison.editable_side == "right" and not comparison.property_only then
+				pending = 1
+				if comparison.kind == "svn_untracked" then
+					task:add(entry.classify_async(comparison.path, function(kind, err)
+						local valid, why = entry.editable(kind, err)
+						if not valid then
+							return task:finish(nil, why)
+						end
+						comparison.base_identity =
+							{ root = comparison.root, relpath = comparison.relpath, untracked = true }
+						task:finish(comparison)
+					end))
+				else
+					task:add(M.load_base_async(comparison.path, function(payload, err)
+						if not payload then
+							return task:finish(nil, err)
+						end
+						comparison.base_identity = payload.base_identity
+						task:finish(comparison)
+					end, { root = comparison.root }))
+				end
+			else
 				task:finish(comparison)
 			end
 		end
@@ -663,7 +755,11 @@ function M.load_diff_target_async(target, on_done, opts)
 				else
 					args = { "svn", "cat", "-r", source.revision, literal_target(command_path) }
 				end
-				task:add(process.lines(args, {
+				local raw_side = comparison.editable_side == "right"
+					and side == comparison.left
+					and source.kind == "svn_object"
+				local loader = raw_side and process.bytes or process.lines
+				task:add(loader(args, {
 					cwd = comparison.root,
 					timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 				}, function(lines, err)
@@ -683,7 +779,11 @@ function M.load_diff_target_async(target, on_done, opts)
 						failed = true
 						return task:finish(nil, err)
 					end
-					side.lines = lines
+					if raw_side then
+						side.bytes, side.lines = lines, nil
+					else
+						side.lines = lines
+					end
 					complete()
 				end))
 			end

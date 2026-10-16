@@ -101,6 +101,10 @@ local function configure_base_buffer(session)
 	vim.bo[buf].readonly = false
 	vim.bo[buf].filetype = vim.bo[session.editable_bufnr].filetype
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, session.base_lines)
+	if session.base_text then
+		vim.bo[buf].endofline = session.base_text.eol
+		vim.bo[buf].fixendofline = false
+	end
 	vim.bo[buf].modifiable = false
 	vim.bo[buf].readonly = true
 end
@@ -310,6 +314,10 @@ function M.rebind(old, replacement)
 	vim.bo[buf].modifiable = true
 	vim.bo[buf].readonly = false
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, replacement.base_lines)
+	if replacement.base_text then
+		vim.bo[buf].endofline = replacement.base_text.eol
+		vim.bo[buf].fixendofline = false
+	end
 	vim.bo[buf].filetype = vim.bo[replacement.editable_bufnr].filetype
 	local old_name = vim.api.nvim_buf_get_name(buf)
 	local new_name = resolve_base_buffer_name(replacement)

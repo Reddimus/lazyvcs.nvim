@@ -245,6 +245,33 @@ function M.load_base_async(path, on_done, opts)
 	return task
 end
 
+---@param path string
+---@param base_identity table?
+---@param callback fun(valid: boolean, err: string?)
+---@param opts? table
+---@return table task
+function M.validate_editable_base_async(path, base_identity, callback, opts)
+	local task = Task.new(callback)
+	if not base_identity then
+		vim.schedule(util.safe_callback(function()
+			task:finish(true)
+		end))
+		return task
+	end
+	task:add(M.resolve_async(path, function(backend, root, err)
+		if not backend then
+			return task:finish(false, err)
+		end
+		if not backend.validate_editable_base_async then
+			return task:finish(false, "Backend cannot validate editable hunks")
+		end
+		task:add(backend.validate_editable_base_async(path, base_identity, function(valid, why)
+			task:finish(valid, why)
+		end, vim.tbl_extend("force", opts or {}, { root = root })))
+	end, opts))
+	return task
+end
+
 function M.blame_lines_async(path, on_done, opts)
 	opts = opts or {}
 	local task = Task.new(on_done)

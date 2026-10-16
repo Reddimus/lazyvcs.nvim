@@ -57,7 +57,11 @@ return function(ctx)
 					end)
 					assert(loaded, failure)
 					for stage, key in ipairs({ "base", "ours", "theirs" }) do
-						assert(#loaded[key].lines == (present[stage] and 3 or 0), key)
+						assert(
+							#(loaded[key].bytes and util.split_lines(loaded[key].bytes) or loaded[key].lines)
+								== (present[stage] and 3 or 0),
+							key
+						)
 					end
 					done = false
 					require("lazyvcs.backends.git").load_base_async(fixture.file, function(value, err)
@@ -616,7 +620,7 @@ return function(ctx)
 				wait_for(function()
 					return done
 				end)
-				assert(result and result.base_lines[1] == "literal", err)
+				assert(result and result.base_bytes == "literal\n", err)
 			end,
 		},
 		{

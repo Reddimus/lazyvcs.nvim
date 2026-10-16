@@ -38,6 +38,15 @@ and this project adheres to
   local branch.
 - Isolate CopilotChat commit generation from selections, chat history, tools,
   and file directives in diffs. Reject unsupported client versions.
+- Cancel hunk and whole-file reverts after the invoking context changes, and
+  identify the whole-file target in its confirmation.
+- Invalidate cached hunk bases after buffer renames and reject stale loads.
+- Preserve CRLF, BOMs, and supported file encodings in native hunk reverts.
+- Refuse editable hunk bases from Git or SVN symlinks, including entry changes
+  during confirmation.
+- Detect and revert final-newline changes and distinguish empty files from blank
+  lines.
+- Select deletion hunks only at their displayed anchors.
 
 ## [0.11.1] - 2026-10-16
 

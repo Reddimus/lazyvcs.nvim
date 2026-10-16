@@ -1,5 +1,6 @@
 local util = require("lazyvcs.util")
 local process = require("lazyvcs.backends.process")
+local entry = require("lazyvcs.backends.entry")
 local Task = require("lazyvcs.backends.task")
 
 local M = {
@@ -36,6 +37,37 @@ end
 local function is_tracked(root, relpath)
 	local _, err = util.system({ "git", "ls-files", "--error-unmatch", "--", relpath }, { cwd = root })
 	return err == nil
+end
+
+local function index_entry(bytes, relpath)
+	local found
+	for record in (bytes or ""):gmatch("([^%z]+)%z") do
+		local mode, oid, stage, path = record:match("^(%d+) (%x+) (%d+)\t(.*)$")
+		if not mode or path ~= relpath or stage ~= "0" or found then
+			return nil, "Unmerged index; open this file from the sidebar's Merge Changes section"
+		end
+		if mode ~= "100644" and mode ~= "100755" then
+			return nil, "Editable hunks require a regular index entry; symlink bases are unsupported"
+		end
+		found = { mode = mode, oid = oid }
+	end
+	return found
+end
+
+local function editable_sync(root, relpath, path)
+	local valid, err = entry.editable(entry.classify(path))
+	if not valid then
+		return nil, err
+	end
+	local result, load_err = util.system(
+		{ "git", "ls-files", "--stage", "-z", "--", relpath },
+		{ cwd = root, text = false }
+	)
+	if not result then
+		return nil, load_err
+	end
+	local item, parse_err = index_entry(result.stdout, relpath)
+	return item or (not parse_err and { untracked = true } or nil), parse_err
 end
 
 -- `git status --porcelain` reports two status columns (index, worktree). Collapse
@@ -106,17 +138,20 @@ function M.load(path)
 	if not relpath then
 		return nil, path_err
 	end
-	local tracked = is_tracked(root, relpath)
-	---@type string[]
-	local base_lines = {}
+	local item, eligibility_err = editable_sync(root, relpath, path)
+	if not item then
+		return nil, eligibility_err
+	end
+	local tracked = not item.untracked
+	local base_bytes = ""
 	local base_label = "EMPTY"
 
 	if tracked then
-		local loaded_lines, load_err = util.system_lines({ "git", "show", ":" .. relpath }, { cwd = root })
-		if not loaded_lines then
+		local loaded, load_err = util.system({ "git", "show", item.oid }, { cwd = root, text = false })
+		if not loaded then
 			return nil, load_err or err
 		end
-		base_lines = loaded_lines
+		base_bytes = loaded.stdout
 		base_label = "INDEX"
 	end
 
@@ -126,7 +161,8 @@ function M.load(path)
 		relpath = relpath,
 		tracked = tracked,
 		base_label = base_label,
-		base_lines = base_lines,
+		base_bytes = base_bytes,
+		base_identity = { root = root, relpath = relpath, mode = item.mode, oid = item.oid, untracked = item.untracked },
 		impl = M,
 	}
 end
@@ -190,24 +226,30 @@ function M.load_base(path)
 	if not relpath then
 		return nil, path_err
 	end
-	if not is_tracked(root, relpath) then
+	local item, eligibility_err = editable_sync(root, relpath, path)
+	if not item then
+		return nil, eligibility_err
+	end
+	if item.untracked then
 		return {
 			root = root,
 			relpath = relpath,
 			base_label = "EMPTY",
-			base_lines = {},
+			base_bytes = "",
+			base_identity = { root = root, relpath = relpath, untracked = true },
 		}
 	end
 
-	local lines, load_err = util.system_lines({ "git", "show", ":" .. relpath }, { cwd = root })
-	if not lines then
+	local loaded, load_err = util.system({ "git", "show", item.oid }, { cwd = root, text = false })
+	if not loaded then
 		return nil, load_err
 	end
 	return {
 		root = root,
 		relpath = relpath,
 		base_label = "INDEX",
-		base_lines = lines,
+		base_bytes = loaded.stdout,
+		base_identity = { root = root, relpath = relpath, mode = item.mode, oid = item.oid },
 	}
 end
 
@@ -239,70 +281,76 @@ local function load_payload_async(path, on_done, opts, base_only)
 			return task:finish(nil, path_err)
 		end
 
-		task:add(
-			process.start(
-				{ "git", "ls-files", "--stage", "-z", "--error-unmatch", "--", relpath },
-				{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
-				function(_, tracked_err, raw)
-					if not task:is_active() then
-						return
-					end
-					if tracked_err then
-						-- `--error-unmatch` uses exit 1 for an ordinary untracked path.
-						-- Other exit codes indicate a real repository/process failure.
-						if not raw or raw.code ~= 1 then
-							return task:finish(nil, tracked_err)
+		task:add(entry.classify_async(path, function(kind, kind_err)
+			local valid, eligibility_err = entry.editable(kind, kind_err)
+			if not valid then
+				return task:finish(nil, eligibility_err)
+			end
+			task:add(
+				process.start(
+					{ "git", "ls-files", "--stage", "-z", "--error-unmatch", "--", relpath },
+					{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
+					function(_, tracked_err, raw)
+						if not task:is_active() then
+							return
 						end
-						local payload = {
-							root = root,
-							relpath = relpath,
-							tracked = false,
-							base_label = "EMPTY",
-							base_lines = {},
-						}
-						if not base_only then
-							payload.name = M.name
-							payload.impl = M
+						if tracked_err then
+							-- `--error-unmatch` uses exit 1 for an ordinary untracked path.
+							-- Other exit codes indicate a real repository/process failure.
+							if not raw or raw.code ~= 1 then
+								return task:finish(nil, tracked_err)
+							end
+							local payload = {
+								root = root,
+								relpath = relpath,
+								tracked = false,
+								base_label = "EMPTY",
+								base_bytes = "",
+								base_identity = { root = root, relpath = relpath, untracked = true },
+							}
+							if not base_only then
+								payload.name = M.name
+								payload.impl = M
+							end
+							return task:finish(payload)
 						end
-						return task:finish(payload)
-					end
 
-					if raw and (raw.stdout_truncated or raw.stderr_truncated) then
-						return task:finish(nil, "Git index output was truncated")
-					end
-					if raw and not raw.stdout:match("^%d+ %x+ 0\t") then
-						if base_only then
-							return task:finish(nil)
+						if raw and (raw.stdout_truncated or raw.stderr_truncated) then
+							return task:finish(nil, "Git index output was truncated")
 						end
-						return task:finish(
-							nil,
-							"Unmerged index; open this file from the sidebar's Merge Changes section"
-						)
-					end
+						local item, parse_err = index_entry(raw and raw.stdout, relpath)
+						if not item then
+							if base_only and parse_err and parse_err:match("^Unmerged") then
+								return task:finish(nil)
+							end
+							return task:finish(nil, parse_err or "Missing exact index entry")
+						end
 
-					task:add(process.lines({ "git", "show", ":" .. relpath }, {
-						cwd = root,
-						timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-					}, function(lines, show_err)
-						if not lines then
-							return task:finish(nil, show_err)
-						end
-						local payload = {
-							root = root,
-							relpath = relpath,
-							tracked = true,
-							base_label = "INDEX",
-							base_lines = lines,
-						}
-						if not base_only then
-							payload.name = M.name
-							payload.impl = M
-						end
-						task:finish(payload)
-					end))
-				end
+						task:add(process.bytes({ "git", "show", item.oid }, {
+							cwd = root,
+							timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+						}, function(bytes, show_err)
+							if bytes == nil then
+								return task:finish(nil, show_err)
+							end
+							local payload = {
+								root = root,
+								relpath = relpath,
+								tracked = true,
+								base_label = "INDEX",
+								base_bytes = bytes,
+								base_identity = { root = root, relpath = relpath, mode = item.mode, oid = item.oid },
+							}
+							if not base_only then
+								payload.name = M.name
+								payload.impl = M
+							end
+							task:finish(payload)
+						end))
+					end
+				)
 			)
-		)
+		end))
 	end))
 	return task
 end
@@ -313,6 +361,62 @@ end
 
 function M.load_base_async(path, on_done, opts)
 	return load_payload_async(path, on_done, opts, true)
+end
+
+local function conflict_base_async(path, root, relpath, callback)
+	local task = Task.new(callback)
+	task:add(entry.classify_async(path, function(kind, err)
+		local valid, why = entry.editable(kind, err)
+		if not valid then
+			return task:finish(nil, why)
+		end
+		if util.relpath(root, path) ~= relpath then
+			return task:finish(nil, "Repository entry changed")
+		end
+		task:add(
+			process.bytes(
+				{ "git", "ls-files", "--stage", "-z", "--", relpath },
+				{ cwd = root },
+				function(records, load_err)
+					if not records then
+						return task:finish(nil, load_err)
+					end
+					local ours
+					for record in records:gmatch("([^%z]+)%z") do
+						local mode, oid, stage, name = record:match("^(%d+) (%x+) (%d+)\t(.*)$")
+						if name ~= relpath or (mode ~= "100644" and mode ~= "100755") then
+							return task:finish(nil, "Unsupported conflict index entry")
+						end
+						if stage == "2" then
+							ours = oid
+						end
+					end
+					local identity = { root = root, relpath = relpath, index_stages = records }
+					if not ours then
+						return task:finish({ base_bytes = "", base_identity = identity })
+					end
+					task:add(process.bytes({ "git", "show", ours }, { cwd = root }, function(bytes, show_err)
+						if bytes == nil then
+							return task:finish(nil, show_err)
+						end
+						task:finish({ base_bytes = bytes, base_identity = identity })
+					end))
+				end
+			)
+		)
+	end))
+	return task
+end
+
+function M.validate_editable_base_async(path, identity, callback, opts)
+	local function loaded(result, err)
+		local valid = result ~= nil and vim.deep_equal(result.base_identity, identity)
+		callback(valid, err or (not valid and "Hunk base changed; retry the action" or nil))
+	end
+	if identity.index_stages then
+		return conflict_base_async(path, identity.root, identity.relpath, loaded)
+	end
+	return M.load_base_async(path, loaded, opts)
 end
 
 local function empty_side(label)
@@ -448,7 +552,25 @@ function M.load_diff_target_async(target, on_done, opts)
 	local pending = 0
 	local failed = false
 	local function complete()
-		if not failed and pending == 0 then
+		if failed or pending ~= 0 or not task:is_active() then
+			return
+		end
+		if comparison.editable_side == "right" then
+			pending = 1
+			local function loaded(payload, err)
+				if not payload then
+					return task:finish(nil, err)
+				end
+				comparison.base_identity = payload.base_identity
+				comparison.left.bytes, comparison.left.lines = payload.base_bytes, nil
+				task:finish(comparison)
+			end
+			if comparison.kind == "git_conflict" then
+				task:add(conflict_base_async(comparison.path, comparison.root, comparison.relpath, loaded))
+			else
+				task:add(M.load_base_async(comparison.path, loaded, { root = comparison.root }))
+			end
+		else
 			task:finish(comparison)
 		end
 	end
@@ -458,7 +580,9 @@ function M.load_diff_target_async(target, on_done, opts)
 			side.lines = {}
 		elseif source.kind == "git_object" then
 			pending = pending + 1
-			task:add(process.lines({ "git", "show", "--no-ext-diff", source.object }, {
+			local raw_side = comparison.editable_side == "right" and side == comparison.left
+			local loader = raw_side and process.bytes or process.lines
+			task:add(loader({ "git", "show", "--no-ext-diff", source.object }, {
 				cwd = comparison.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 			}, function(lines, err, raw)
@@ -488,7 +612,11 @@ function M.load_diff_target_async(target, on_done, opts)
 					failed = true
 					return task:finish(nil, err)
 				end
-				side.lines = lines
+				if raw_side then
+					side.bytes, side.lines = lines, nil
+				else
+					side.lines = lines
+				end
 				complete()
 			end))
 		end

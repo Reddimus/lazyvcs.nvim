@@ -50,6 +50,9 @@ Open a file inside a Git or SVN working copy:
 | `:LazyVCS hunk revert`  | Revert the current hunk; normal undo still works   |
 | `:LazyVCS blame toggle` | Toggle inline blame; `blame split` shows all lines |
 
+Native hunks preserve supported text encodings and EOF state and refuse symlink
+bases. See `:help lazyvcs-notes` for limits and undo behavior.
+
 Press `<Tab>` after `:LazyVCS ` for command completion. In the sidebar, `C`
 compares a repository against a base. `.` opens repository actions, `c` commits,
 `b` switches branches or SVN targets, `R` refreshes, `?` shows help, and `q`
