@@ -59,7 +59,11 @@ function M.setup(s, actions)
 			if buf == owned then
 				if pending[win] then
 					pending[win] = nil
-					actions.resume()
+					vim.schedule(protected(function()
+						if valid() then
+							actions.resume()
+						end
+					end))
 				end
 				return
 			end

@@ -64,10 +64,23 @@ return function(ctx)
 				assert(s.router.busy(), "unfocused borrowed buffer did not defer")
 				deliver()
 				assert(s.deferred_display, "preview was not deferred")
+				local entered = {}
+				api.nvim_create_autocmd("BufWinEnter", {
+					group = s.augroup,
+					callback = function(event)
+						if api.nvim_get_current_win() == s.rightwin and event.buf ~= owned then
+							entered[event.buf] = true
+						end
+					end,
+				})
 				-- A separate picker command restores its original buffer.
 				api.nvim_win_set_buf(s.rightwin, owned)
 				assert(not s.router.busy(), "restored picker left the router busy")
-				assert(not s.deferred_display and s.preview_result and s.mode == "text", "owned buffer did not resume")
+				assert(s.deferred_display, "preview resumed inside the buffer-enter callback")
+				ctx.wait_for(function()
+					return not s.deferred_display and s.preview_result and s.mode == "text"
+				end, "owned buffer did not resume")
+				assert(entered[s.right], "resumed install suppressed the pane's BufWinEnter autocmd")
 				assert(vim.deep_equal(api.nvim_buf_get_lines(s.right, 0, -1, false), vim.fn.readfile(f.file1)))
 				api.nvim_win_set_cursor(s.sidewin, { s.row_by_path["beta.txt"], 0 })
 				s.actions.preview()
@@ -86,12 +99,20 @@ return function(ctx)
 				ready(s)
 				local borrowed = vim.fn.bufadd(f.file)
 				vim.fn.bufload(borrowed)
-				local updates = 0
+				local updates, restored = 0, false
+				local show = util.show_win_buffer
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.show_win_buffer = function(win, buf)
+					show(win, buf)
+					if win == s.rightwin and buf == s.right and api.nvim_win_get_buf(win) == s.right then
+						restored = true
+					end
+				end
 				local command = vim.cmd
 				vim.cmd = setmetatable({}, {
 					__index = command,
 					__call = function(_, cmd)
-						if cmd == "diffupdate" then
+						if cmd == "diffupdate" and restored and api.nvim_win_get_buf(s.rightwin) == s.right then
 							updates = updates + 1
 						end
 						return command(cmd)
@@ -101,7 +122,9 @@ return function(ctx)
 				api.nvim_win_set_buf(s.rightwin, borrowed)
 				vim.wait(100)
 				vim.cmd = command
-				assert(updates > 0, "routing restore did not update the diff")
+				assert(api.nvim_win_get_buf(s.rightwin) == s.right, "routing restore did not install the right pane")
+				assert(s.mode == "text", "routing restore left text mode")
+				assert(restored and updates > 0, "routing restore did not update the diff")
 				assert(#errors == 0, table.concat(errors, "\n"))
 				compare.close(s)
 			end),

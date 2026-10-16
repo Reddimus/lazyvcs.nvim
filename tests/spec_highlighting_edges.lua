@@ -122,6 +122,36 @@ return function(ctx)
 		},
 
 		{
+			"test_core_highlighting_noautocmd_float_cleans_on_other_window_entry",
+			function()
+				local win = api.nvim_get_current_win()
+				vim.cmd.split()
+				local other = api.nvim_get_current_win()
+				api.nvim_set_current_win(win)
+				require("lazyvcs.util").set_win_option(win, "winhighlight", "")
+				guard.apply(win, "syntax")
+				local float = api.nvim_open_win(0, false, {
+					relative = "editor",
+					row = 1,
+					col = 1,
+					width = 20,
+					height = 3,
+					noautocmd = true,
+				})
+				assert(api.nvim_get_current_win() == win, "float was entered")
+				assert(vim.wo[float].winhighlight:find("LazyVcsSemanticHidden", 1, true), "float did not copy overlay")
+				api.nvim_set_current_win(other)
+				assert(
+					not vim.wo[float].winhighlight:find("LazyVcsSemanticHidden", 1, true),
+					"unentered float overlay survived entry into another window"
+				)
+				api.nvim_win_close(float, true)
+				guard.release(win)
+				api.nvim_win_close(other, true)
+			end,
+		},
+
+		{
 			"test_core_highlighting_repeated_tokens_do_not_rebuild_native_overlay",
 			function()
 				local util = require("lazyvcs.util")

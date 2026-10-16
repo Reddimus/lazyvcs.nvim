@@ -267,6 +267,7 @@ local function listen()
 		return
 	end
 	group = api.nvim_create_augroup("LazyVCSDiffHighlighting", { clear = true })
+	api.nvim_create_autocmd({ "WinEnter", "WinNew" }, { group = group, callback = protected(strip_unowned) })
 	local function schedule(win, state, mapping_changed)
 		state.mapping_changed = state.mapping_changed or mapping_changed
 		if state.pending then
