@@ -68,6 +68,9 @@ local function local_path(path)
 end
 
 local function load_property_patch(task, snapshot, item, done)
+	if item.kind == "dir" then
+		return require("lazyvcs.backends.svn_properties").load_directory_patch(task, snapshot, item, done)
+	end
 	local path = snapshot.root .. "/" .. item.relpath
 	local url = require("lazyvcs.backends.svn_url").append_path(snapshot.url, item.relpath)
 	command(task, snapshot, {
@@ -80,11 +83,11 @@ local function load_property_patch(task, snapshot, item, done)
 		"--new",
 		path .. "@",
 	}, function(raw, err, result)
-		if result and result.stdout_truncated then
+		if (result and result.stdout_truncated) or (raw and #raw > common.max_file_bytes) then
 			err = "Property patch exceeds the 1 MiB preview limit"
 		end
 		done(raw and raw ~= "" and require("lazyvcs.util").split_lines(raw) or nil, err)
-	end, { output_limit_bytes = common.max_file_bytes })
+	end, { output_limit_bytes = 2 * common.max_file_bytes })
 end
 
 function M.list(snapshot, include_untracked, callback)
@@ -263,6 +266,7 @@ function M.preview(snapshot, item, callback)
 				return task:finish(nil, err)
 			end
 			result.left, result.right = {}, lines or {}
+			result.properties = lines
 			result.right_label = "PROPERTY PATCH"
 			task:finish(result)
 		end)

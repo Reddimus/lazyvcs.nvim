@@ -79,6 +79,134 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_core_editor_restore_cancel_terminates_filter_tree",
+			function()
+				local p = require("process_helpers")
+				local windows = vim.fn.has("win32") == 1
+				for _, emulate in ipairs(windows and { false } or { true, false }) do
+					require("lazyvcs").setup({
+						use_gitsigns = false,
+						signs = { enabled = false },
+					})
+					local f = h.make_git_fixture()
+					local dir = h.tempdir()
+					local filter, child = dir .. "/filter.lua", dir .. "/child.lua"
+					vim.fn.writefile({
+						"local dir = arg[1]",
+						'vim.fn.writefile({ tostring(vim.uv.os_getpid()) }, dir .. "/filter.pid")',
+						'vim.system({ vim.v.progpath, "--headless", "-u", "NONE", "-i", "NONE", "-l", dir .. "/child.lua", dir })',
+						"vim.wait(60000, function() return false end, 50)",
+					}, filter)
+					vim.fn.writefile({
+						'vim.fn.writefile({ tostring(vim.uv.os_getpid()) }, arg[1] .. "/child.pid")',
+						"vim.wait(60000, function() return false end, 50)",
+					}, child)
+					h.write_file(f.root .. "/.gitattributes", "sample.txt filter=cancel-test")
+					h.exec({
+						"git",
+						"config",
+						"filter.cancel-test.smudge",
+						'"'
+							.. vim.v.progpath:gsub("\\", "/")
+							.. '" --headless -u NONE -i NONE -l "'
+							.. filter
+							.. '" "'
+							.. dir
+							.. '"',
+					}, f.root)
+					local start, system, has = util.system_start, vim.system, vim.fn.has
+					local captured, handle, owner, tree_kills
+					tree_kills = 0
+					local ok, err = xpcall(function()
+						---@diagnostic disable-next-line: duplicate-set-field
+						vim.system = function(args, opts, done)
+							if args[1] == "taskkill" then
+								tree_kills = tree_kills + 1
+								assert(
+									vim.tbl_contains(args, "/T") and vim.tbl_contains(args, "/F"),
+									"cancellation omitted tree termination"
+								)
+								if emulate then
+									for _, pid in ipairs(p.pids(dir)) do
+										if p.alive(pid) then
+											vim.uv.kill(pid, 9)
+										end
+									end
+									vim.schedule(function()
+										done({ code = 0 })
+									end)
+									return { kill = function() end }
+								end
+							end
+							return system(args, opts, done)
+						end
+						---@diagnostic disable-next-line: duplicate-set-field
+						util.system_start = function(args, opts, done)
+							if args[1] ~= "git" or args[2] ~= "restore" then
+								return start(args, opts, done)
+							end
+							captured = vim.deepcopy(opts)
+							if emulate then
+								---@diagnostic disable-next-line: duplicate-set-field
+								vim.fn.has = function(feature)
+									return feature == "win32" and 1 or has(feature)
+								end
+							end
+							local started, result = pcall(start, args, opts, done)
+							vim.fn.has = has
+							assert(started, result)
+							handle = result
+							return result
+						end
+						vim.cmd.edit(vim.fn.fnameescape(f.file))
+						owner = assert(require("lazyvcs").revert_buffer())
+						ctx.wait_for(function()
+							return vim.bo.buftype == "nofile"
+						end, "restore confirmation did not open", 15000)
+						vim.fn.maparg("1", "n", false, true).callback()
+						ctx.wait_for(function()
+							return p.pid(dir .. "/child.pid")
+						end, "restore filter child did not start", 15000)
+						assert(p.alive(p.pid(dir .. "/filter.pid")) and p.alive(p.pid(dir .. "/child.pid")))
+						assert(
+							captured and captured.preserve_on_shutdown == true,
+							"editor restore lost shutdown preservation"
+						)
+						handle:shutdown()
+						assert(
+							p.alive(p.pid(dir .. "/filter.pid"))
+								and p.alive(p.pid(dir .. "/child.pid"))
+								and tree_kills == 0,
+							"shutdown cancelled a preserved mutation"
+						)
+						owner:cancel()
+						assert(captured.scope == "mutation", "editor restore omitted mutation scope")
+						ctx.wait_for(function()
+							return p.dead(dir)
+						end, "cancelled restore left filter descendants alive", 5000)
+						assert(
+							not (windows or emulate) or tree_kills > 0,
+							"Windows cancellation did not request taskkill /T"
+						)
+					end, debug.traceback)
+					vim.system, vim.fn.has, util.system_start = system, has, start
+					if owner then
+						owner:cancel()
+					end
+					for _, pid in ipairs(p.pids(dir)) do
+						if p.alive(pid) then
+							pcall(vim.uv.kill, pid, 9)
+						end
+					end
+					if handle then
+						handle:force()
+					end
+					vim.wait(50)
+					assert(ok, err)
+				end
+			end,
+		},
+		{
 			"test_source_control_cancel_repo_stops_pull_sync_read_only_steps",
 			function()
 				cancel_flow(false)

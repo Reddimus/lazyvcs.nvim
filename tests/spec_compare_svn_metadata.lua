@@ -16,6 +16,274 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_svn_compare_directory_properties_are_pinned_and_shallow",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = h.make_svn_fixture()
+				h.exec({ "svn", "revert", f.file }, f.root)
+				h.exec({ "svn", "mkdir", "selected", "selected/child", "deleted" }, f.root)
+				local propfile = h.tempdir() .. "/property"
+				local function set(path, name, value)
+					local file = assert(io.open(propfile, "wb"))
+					file:write(value)
+					file:close()
+					h.exec({ "svn", "propset", name, "--file", propfile, path }, f.root)
+				end
+				set("selected", "custom:modified", "PINNED VALUE\n")
+				set("selected", "custom:deleted", "DELETE VALUE\n")
+				set("selected", "custom:empty", "NONEMPTY\n")
+				set("deleted", "custom:removed", "REMOVED DIRECTORY\n")
+				h.exec({ "svn", "commit", "-m", "pinned properties" }, f.root)
+				h.exec({ "svn", "update" }, f.root)
+				set("selected", "custom:modified", "WORKING PROBE\n")
+				local initial = assert(await(function(done)
+					provider.preview(
+						{ root = f.root, url = h.file_url(f.repo), revision = "2" },
+						{ relpath = "selected", kind = "dir", status = "M", property_only = true },
+						done
+					)
+				end))
+				assert(contains(initial.right, "WORKING PROBE"), "directory property preview was empty")
+				set("selected", "custom:modified", "WC BASE ONLY\n")
+				h.exec({ "svn", "commit", "-m", "advance BASE" }, f.root)
+				h.exec({ "svn", "update" }, f.root)
+				set("selected", "custom:modified", "WORKING VALUE\n")
+				set("selected", "custom:empty", "")
+				set("selected", "custom:escaped", "<&> \"quoted\" 'value'\n")
+				set("selected", "custom:binary", "a\0b\1")
+				set("selected/child", "custom:child", "CHILD MUST NOT APPEAR\n")
+				h.exec({ "svn", "propdel", "custom:deleted", "selected" }, f.root)
+				h.exec({ "svn", "mkdir", "added" }, f.root)
+				set("added", "custom:new", "ADDED DIRECTORY\n")
+				h.exec({ "svn", "delete", "deleted" }, f.root)
+				local snapshot = assert(await(function(done)
+					provider.resolve({ root = f.root }, h.file_url(f.repo) .. "@2", done)
+				end))
+				local items = assert(await(function(done)
+					provider.list(snapshot, false, done)
+				end))
+				local by_path = {}
+				for _, item in ipairs(items) do
+					by_path[item.relpath] = item
+				end
+				local function preview(item)
+					return await(function(done)
+						provider.preview(snapshot, item or by_path.selected, done)
+					end)
+				end
+				local result, err = preview()
+				assert(result, err)
+				assert(
+					contains(result.right, "-PINNED VALUE") and contains(result.right, "+WORKING VALUE"),
+					"directory patch did not compare pinned and working properties"
+				)
+				assert(
+					not contains(result.right, "WC BASE ONLY") and not contains(result.right, "CHILD MUST NOT APPEAR"),
+					"directory patch used BASE or descendants"
+				)
+				assert(
+					contains(result.right, "Deleted: custom:deleted")
+						and contains(result.right, "Modified: custom:empty")
+				)
+				assert(
+					contains(result.right, "<&> \"quoted\" 'value'")
+						and contains(result.right, "[base64] " .. vim.base64.encode("a\0b\1"))
+				)
+				assert(vim.deep_equal(result.right, result.properties), "directory metadata differs from text")
+				assert(contains(assert(preview(assert(by_path.added))).right, "ADDED DIRECTORY"))
+				assert(contains(assert(preview(assert(by_path.deleted))).right, "REMOVED DIRECTORY"))
+				for _, name in ipairs({ "dir &@%#" }) do
+					local path = f.root .. "/" .. name
+					vim.fn.mkdir(path, "p")
+					h.exec({ "svn", "add", path .. "@" }, f.root)
+					set(path .. "@", "custom:literal", "LITERAL DIRECTORY")
+					assert(
+						contains(
+							assert(preview({ relpath = name, kind = "dir", status = "A", property_only = true })).right,
+							"LITERAL DIRECTORY"
+						)
+					)
+				end
+				local common, util = require("lazyvcs.backends.comparison"), require("lazyvcs.util")
+				local command, start = common.command, util.system_start
+				local s
+				local ok, failure = xpcall(function()
+					s = assert(compare.open({ path = f.root, base = h.file_url(f.repo) .. "@2" }))
+					ctx.wait_for(function()
+						return s.preview_result
+					end, "directory comparison did not load", 15000)
+					api.nvim_set_current_win(s.sidewin)
+					api.nvim_win_set_cursor(s.sidewin, { assert(s.row_by_path.selected), 0 })
+					s.actions.preview()
+					ctx.wait_for(function()
+						return s.preview_result and s.shown_item.relpath == "selected"
+					end, "directory preview did not load", 15000)
+					assert(contains(api.nvim_buf_get_lines(s.right, 0, -1, false), "PINNED VALUE"))
+					s.actions.metadata()
+					assert(contains(api.nvim_buf_get_lines(s.left, 0, -1, false), "WORKING VALUE"))
+					compare.close(s)
+					s = nil
+					local held, delivered
+					---@diagnostic disable-next-line: duplicate-set-field
+					util.system_start = function(args, opts, done)
+						return start(args, opts, function(raw)
+							if vim.tbl_contains(args, "proplist") then
+								held = function()
+									done(raw)
+								end
+							else
+								done(raw)
+							end
+						end)
+					end
+					local task = provider.preview(snapshot, by_path.selected, function()
+						delivered = true
+					end)
+					ctx.wait_for(function()
+						return held
+					end, "directory property query did not run", 15000)
+					task:cancel()
+					held()
+					util.system_start = start
+					assert(not delivered, "cancelled property query delivered a result")
+					for _, raw in ipairs({
+						"<properties><target>",
+						'<properties><target path="wrong"></target></properties>',
+						'<properties><target path="wrong"></target><target path="wrong"></target></properties>',
+					}) do
+						---@diagnostic disable-next-line: duplicate-set-field
+						common.command = function(_, _, _, done)
+							done(raw)
+						end
+						result, err = preview()
+						assert(not result and err, "malformed property XML was accepted")
+					end
+					---@diagnostic disable-next-line: duplicate-set-field
+					common.command = function(_, _, _, done, opts)
+						assert(opts.output_limit_bytes == 16 * 1024 * 1024)
+						done(nil, "truncated", { stdout_truncated = true })
+					end
+					result, err = preview()
+					assert(not result and err and err:find("transport limit", 1, true))
+					common.command = command
+					set("selected", "custom:large", string.rep("x", 1024 * 1024 + 1))
+					result, err = preview()
+					assert(
+						not result and err and err:find("Decoded properties", 1, true),
+						"decoded property map exceeded its bound"
+					)
+					h.exec({ "svn", "propdel", "custom:large", "selected" }, f.root)
+					set("selected", "custom:expanded", string.rep("&", 700000))
+					result, err = preview()
+					assert(
+						result and contains(result.right, string.rep("&", 700000)),
+						"XML expansion reduced property budget: " .. tostring(err)
+					)
+					set("selected", "custom:expanded", string.rep("x", 1024 * 1024 - 250))
+					result, err = preview()
+					assert(
+						not result and err and err:find("Property patch", 1, true),
+						"rendered patch headers exceeded their bound"
+					)
+				end, debug.traceback)
+				common.command, util.system_start = command, start
+				if s then
+					compare.close(s)
+				end
+				assert(ok, failure)
+			end,
+		},
+		{
+			"test_svn_compare_property_only_file_metadata_actions",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = h.make_svn_fixture()
+				h.exec({ "svn", "revert", f.file }, f.root)
+				h.exec({ "svn", "propset", "custom:review", "changed value", f.file }, f.root)
+				local s = assert(compare.open({ path = f.root, base = h.file_url(f.repo) .. "@1" }))
+				local ok, err = xpcall(function()
+					ctx.wait_for(function()
+						return s.preview_result
+					end, "property-only preview did not load", 15000)
+					api.nvim_set_current_win(s.sidewin)
+					api.nvim_win_set_cursor(s.sidewin, { assert(s.row_by_path["sample.txt"]), 0 })
+					s.actions.preview()
+					ctx.wait_for(function()
+						return s.preview_result and s.shown_item.relpath == "sample.txt"
+					end, "file property preview did not load", 15000)
+					assert(
+						s.shown_item.property_only
+							and contains(api.nvim_buf_get_lines(s.right, 0, -1, false), "changed value")
+					)
+					api.nvim_set_current_win(s.sidewin)
+					vim.fn.maparg("p", "n", false, true).callback()
+					assert(
+						s.mode == "metadata" and contains(api.nvim_buf_get_lines(s.left, 0, -1, false), "custom:review"),
+						"property-only mapping showed empty metadata"
+					)
+					vim.cmd("LazyVCS compare metadata")
+					assert(
+						s.mode == "text" and contains(api.nvim_buf_get_lines(s.right, 0, -1, false), "changed value")
+					)
+					vim.cmd("LazyVCS compare metadata")
+					assert(
+						s.mode == "metadata" and contains(api.nvim_buf_get_lines(s.left, 0, -1, false), "changed value"),
+						"property-only command showed empty metadata"
+					)
+				end, debug.traceback)
+				compare.close(s)
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_svn_compare_property_patch_uses_full_byte_limit",
+			function()
+				local f = h.make_svn_fixture()
+				h.exec({ "svn", "revert", f.file }, f.root)
+				local snapshot = assert(await(function(done)
+					provider.resolve({ root = f.root }, h.file_url(f.repo) .. "@1", done)
+				end))
+				local property = h.tempdir() .. "/property"
+				local item =
+					{ relpath = "sample.txt", kind = "file", status = "M", property_only = true, properties = true }
+				local function preview()
+					return await(function(done)
+						provider.preview(snapshot, item, done)
+					end)
+				end
+				h.write_file(property, string.rep("x", 700000))
+				h.exec({ "svn", "propset", "custom:large", "--file", property, "sample.txt" }, f.root)
+				local patch = h.exec({
+					"svn",
+					"diff",
+					"--properties-only",
+					"--old",
+					snapshot.url .. "/sample.txt@1",
+					"--new",
+					f.file .. "@",
+				}, f.root)
+				assert(#patch > 512 * 1024 and #patch < 1024 * 1024, "fixture patch outside supported budget")
+				local result, err = preview()
+				assert(result, "supported property patch rejected: " .. tostring(err))
+				assert(
+					vim.deep_equal(result.right, require("lazyvcs.util").split_lines(patch)),
+					"property patch bytes changed"
+				)
+				h.write_file(property, string.rep("x", 1024 * 1024))
+				h.exec({ "svn", "propset", "custom:large", "--file", property, "sample.txt" }, f.root)
+				result, err = preview()
+				assert(not result and err and err:find("1 MiB", 1, true), "oversized property patch was accepted")
+				item.property_only = false
+				h.write_file(f.file, "edited text")
+				result, err = preview()
+				assert(result and result.right[1] == "edited text", err)
+				assert(
+					not result.properties and contains(result.details, "1 MiB"),
+					"optional property failure discarded text or its error"
+				)
+			end,
+		},
+		{
 			"test_svn_compare_added_file_metadata_includes_properties",
 			function()
 				local f = h.make_svn_fixture()

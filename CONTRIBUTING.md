@@ -129,6 +129,10 @@ the GitHub release.
   1 MiB per side; signs also honor `signs.max_file_bytes`. Profile changes
   invalidate decoded bases. Revalidate entry eligibility and the captured
   context before native replacement.
+- `backends/svn_properties.lua` loads only the selected directory's properties
+  at the pinned revision and in the working copy. XML transport has an 8 MiB
+  stdout limit, separate from each decoded property map's 1 MiB limit and the
+  rendered patch's 1 MiB limit, including headers.
 - `source_control/jobs.lua` bounds and profiles repository/comparison commands.
 - Source-control summaries own branch, upstream, and remote status. Details own
   local rows and counts. Merge each completion into the current repository

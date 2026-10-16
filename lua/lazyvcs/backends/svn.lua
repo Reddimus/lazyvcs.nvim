@@ -271,7 +271,7 @@ function M.is_versioned_async(path, on_done, opts)
 		if not relpath then
 			return task:finish(false, path_err)
 		end
-		task:add(process.start({ "svn", "info", literal_target(relpath) }, {
+		task:add(process.start({ "svn", "info", "--", literal_target(relpath) }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 		}, function(result, tracked_err, raw)
@@ -499,7 +499,7 @@ function M.revert_file_async(path, on_done, opts)
 		if not relpath then
 			return task:finish(nil, path_err)
 		end
-		task:add(process.start({ "svn", "info", literal_target(relpath) }, {
+		task:add(process.start({ "svn", "info", "--", literal_target(relpath) }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 		}, function(_, tracked_err, raw)
@@ -521,6 +521,7 @@ function M.revert_file_async(path, on_done, opts)
 				cwd = info.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 				preserve_on_shutdown = true,
+				scope = "mutation",
 			}, function(result, revert_err)
 				if not result then
 					return task:finish(nil, revert_err)
@@ -663,12 +664,7 @@ function M.resolve_diff_target(target)
 		property_only = property_only,
 	}
 
-	if section == "untracked" or change_kind == "untracked" or local_item == "unversioned" then
-		comparison.kind = "svn_untracked"
-		comparison.left = empty_side()
-		comparison.right = worktree_side(path)
-		comparison.editable_side = "right"
-	elseif section == "remote" then
+	if section == "remote" then
 		comparison.kind = "svn_remote"
 		if remote_item == "added" then
 			comparison.left = empty_side()
@@ -680,6 +676,11 @@ function M.resolve_diff_target(target)
 		else
 			comparison.right = svn_side("HEAD", "HEAD", path, true, false)
 		end
+	elseif section == "untracked" or change_kind == "untracked" or local_item == "unversioned" then
+		comparison.kind = "svn_untracked"
+		comparison.left = empty_side()
+		comparison.right = worktree_side(path)
+		comparison.editable_side = "right"
 	elseif section == "changes" or section == "local" then
 		comparison.kind = "svn_local"
 		if change_kind == "added" or local_item == "added" then

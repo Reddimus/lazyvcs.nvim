@@ -161,6 +161,14 @@ local function encoding_sync(root, relpath)
 	return index_encoding(result.stdout)
 end
 
+---@param payload table
+---@return table
+local function finalize_payload(payload)
+	payload.base_identity.content = vim.fn.sha256(vim.base64.encode(payload.base_bytes))
+	payload.base_identity.base_encoding = payload.base_encoding
+	return payload
+end
+
 local function finish_index_payload(task, root, relpath, payload, opts, oid)
 	task:add(
 		process.bytes(
@@ -174,7 +182,7 @@ local function finish_index_payload(task, root, relpath, payload, opts, oid)
 				payload.base_encoding = encoding.encoding
 				payload.base_identity.working_tree_encoding = encoding.attribute
 				if not encoding.checkout then
-					return task:finish(payload)
+					return task:finish(finalize_payload(payload))
 				end
 				task:add(process.bytes(index_command(relpath, oid or payload.base_identity.oid, encoding), {
 					cwd = root,
@@ -184,7 +192,7 @@ local function finish_index_payload(task, root, relpath, payload, opts, oid)
 						return task:finish(nil, filter_err)
 					end
 					payload.base_bytes = bytes
-					task:finish(payload)
+					task:finish(finalize_payload(payload))
 				end))
 			end
 		)
@@ -225,7 +233,7 @@ function M.load(path)
 		base_label = "INDEX"
 	end
 
-	return {
+	return finalize_payload({
 		name = M.name,
 		root = root,
 		relpath = relpath,
@@ -242,7 +250,7 @@ function M.load(path)
 			working_tree_encoding = encoding and encoding.attribute,
 		},
 		impl = M,
-	}
+	})
 end
 
 function M.root(path)
@@ -309,13 +317,13 @@ function M.load_base(path)
 		return nil, eligibility_err
 	end
 	if item.untracked then
-		return {
+		return finalize_payload({
 			root = root,
 			relpath = relpath,
 			base_label = "EMPTY",
 			base_bytes = "",
 			base_identity = { root = root, relpath = relpath, untracked = true },
-		}
+		})
 	end
 
 	local encoding, encoding_err = encoding_sync(root, relpath)
@@ -326,7 +334,7 @@ function M.load_base(path)
 	if not loaded then
 		return nil, load_err
 	end
-	return {
+	return finalize_payload({
 		root = root,
 		relpath = relpath,
 		base_label = "INDEX",
@@ -339,7 +347,7 @@ function M.load_base(path)
 			oid = item.oid,
 			working_tree_encoding = encoding.attribute,
 		},
-	}
+	})
 end
 
 local function load_payload_async(path, on_done, opts, base_only)
@@ -401,7 +409,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 								payload.name = M.name
 								payload.impl = M
 							end
-							return task:finish(payload)
+							return task:finish(finalize_payload(payload))
 						end
 
 						if raw and (raw.stdout_truncated or raw.stderr_truncated) then
@@ -483,7 +491,7 @@ local function conflict_base_async(path, root, relpath, callback, opts)
 					end
 					local identity = { root = root, relpath = relpath, index_stages = records }
 					if not ours then
-						return task:finish({ base_bytes = "", base_identity = identity })
+						return task:finish(finalize_payload({ base_bytes = "", base_identity = identity }))
 					end
 					task:add(process.bytes({ "git", "show", ours }, { cwd = root }, function(bytes, show_err)
 						if bytes == nil then
@@ -863,6 +871,7 @@ function M.revert_file_async(path, on_done, opts)
 				cwd = info.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 				preserve_on_shutdown = true,
+				scope = "mutation",
 			}, function(result, restore_err)
 				if not result then
 					return task:finish(nil, restore_err)

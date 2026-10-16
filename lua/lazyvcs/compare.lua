@@ -111,6 +111,9 @@ local function sidebar_options(s)
 		listchars = "extends:>,precedes:<",
 	})
 end
+local function layout_constraints()
+	return { min_width = vim.o.winminwidth, min_height = vim.o.winminheight, height = vim.o.lines - vim.o.cmdheight - 3 }
+end
 local function resize(s, manual_event)
 	if not alive(s) or vim.api.nvim_get_current_tabpage() ~= s.tab or s.resizing then
 		return
@@ -136,8 +139,17 @@ local function resize(s, manual_event)
 		s.manual_width = vim.api.nvim_win_get_width(s.sidewin)
 	end
 	s.resizing = true
-	local width, stacked =
-		view.layout(vim.o.columns, s.manual_width, s.auto_width, s.rows_cache and s.rows_cache.width or 0)
+	local width, stacked, err = view.layout(
+		vim.o.columns,
+		s.manual_width,
+		s.auto_width,
+		s.rows_cache and s.rows_cache.width or 0,
+		layout_constraints()
+	)
+	if err then
+		s.resizing = false
+		return
+	end
 	local focused = vim.api.nvim_get_current_win()
 	local left_view, right_view = capture(s.leftwin), capture(s.rightwin)
 	local right_focused = focused == s.rightwin
@@ -1081,48 +1093,28 @@ local function help(s)
 		end,
 	})
 end
-local function open_session(opts, origin)
-	local current_buf = vim.api.nvim_get_current_buf()
-	local path = opts.path or (util.is_real_file_buffer(current_buf) and util.buf_path(current_buf)) or vim.fn.getcwd()
-	path = util.canonical_path(vim.fn.fnamemodify(path, ":p"))
-	for _, existing in pairs(sessions) do
-		if
-			alive(existing)
-			and existing.origin_tab == origin.origin_tab
-			and (existing.path == path or existing.root == path)
-		then
-			vim.api.nvim_set_current_tabpage(existing.tab)
-			vim.api.nvim_set_current_win(existing.sidewin)
-			if opts.base then
-				existing.base, existing.explicit_base = opts.base, true
-			end
-			if opts.include_untracked ~= nil then
-				existing.include_untracked = opts.include_untracked
-			end
-			existing.choose_base_requested = opts.choose_base or nil
-			M.refresh(existing)
-			return existing
-		end
+local function construct_session(s)
+	local width, stacked, err = view.layout(vim.o.columns, s.manual_width, false, 0, layout_constraints())
+	if err then
+		error(err)
 	end
-	local s = vim.tbl_extend("force", origin, {
-		path = path,
-		base = opts.base,
-		explicit_base = opts.base ~= nil,
-		include_untracked = opts.include_untracked ~= false,
-		explicit_untracked = opts.include_untracked,
-		choose_base_requested = opts.choose_base,
-		items = {},
-		rows = {},
-		row_by_path = {},
-		mode = "message",
-		pane_epoch = 0,
-		manual_width = math.min(38, math.max(20, math.floor(vim.o.columns / 4))),
-	})
-	s.sidebar = buffers.scratch()
+	s.sidebar = buffers.scratch(s)
 	buffers.init(s)
-	vim.cmd("tab split")
-	util.show_win_buffer(vim.api.nvim_get_current_win(), s.sidebar)
-	s.tab, s.sidewin = vim.api.nvim_get_current_tabpage(), vim.api.nvim_get_current_win()
+	local previous_tab = vim.api.nvim_get_current_tabpage()
+	local opened, open_err = pcall(function()
+		vim.cmd("tab split")
+	end)
+	local tab = vim.api.nvim_get_current_tabpage()
+	if tab ~= previous_tab then
+		s.tab, s.sidewin = tab, vim.api.nvim_get_current_win()
+	end
+	if not opened then
+		error(open_err)
+	end
+	if not s.tab then
+		error("Comparison tab changed while opening")
+	end
+	util.show_win_buffer(s.sidewin, s.sidebar)
 	for label, buf in pairs({ files = s.sidebar, base = s.left, saved = s.right }) do
 		vim.api.nvim_buf_set_name(buf, "lazyvcs://compare/" .. s.buffer_id .. "/" .. label)
 	end
@@ -1130,8 +1122,9 @@ local function open_session(opts, origin)
 	vim.cmd("rightbelow vsplit")
 	s.leftwin = vim.api.nvim_get_current_win()
 	util.show_win_buffer(s.leftwin, s.left)
-	vim.cmd("rightbelow vsplit")
-	s.rightwin, s.stacked = vim.api.nvim_get_current_win(), false
+	vim.api.nvim_win_set_width(s.sidewin, width)
+	vim.cmd(stacked and "rightbelow split" or "rightbelow vsplit")
+	s.rightwin, s.stacked = vim.api.nvim_get_current_win(), stacked
 	util.show_win_buffer(s.rightwin, s.right)
 	preview_options(s, s.leftwin)
 	preview_options(s, s.rightwin)
@@ -1356,7 +1349,8 @@ local function open_session(opts, origin)
 			if intent and not s.resizing and (s.swapping or 0) == 0 then
 				local item = selected(s)
 				if
-					args.event ~= "CursorMoved" or (vim.api.nvim_get_current_win() == s.sidewin and item ~= intent.item)
+					args.event ~= "CursorMoved"
+					or (vim.api.nvim_get_current_win() == s.sidewin and item ~= intent.item)
 				then
 					navigation.cancel(s)
 				end
@@ -1392,6 +1386,76 @@ local function open_session(opts, origin)
 	vim.api.nvim_set_current_win(s.sidewin)
 	M.refresh(s)
 	return s
+end
+local function open_session(opts, origin)
+	local current_buf = vim.api.nvim_get_current_buf()
+	local path = opts.path or (util.is_real_file_buffer(current_buf) and util.buf_path(current_buf)) or vim.fn.getcwd()
+	path = util.canonical_path(vim.fn.fnamemodify(path, ":p"))
+	for _, existing in pairs(sessions) do
+		if
+			alive(existing)
+			and existing.origin_tab == origin.origin_tab
+			and (existing.path == path or existing.root == path)
+		then
+			vim.api.nvim_set_current_tabpage(existing.tab)
+			vim.api.nvim_set_current_win(existing.sidewin)
+			if opts.base then
+				existing.base, existing.explicit_base = opts.base, true
+			end
+			if opts.include_untracked ~= nil then
+				existing.include_untracked = opts.include_untracked
+			end
+			existing.choose_base_requested = opts.choose_base or nil
+			M.refresh(existing)
+			return existing
+		end
+	end
+	local s = vim.tbl_extend("force", origin, {
+		path = path,
+		base = opts.base,
+		explicit_base = opts.base ~= nil,
+		include_untracked = opts.include_untracked ~= false,
+		explicit_untracked = opts.include_untracked,
+		choose_base_requested = opts.choose_base,
+		items = {},
+		rows = {},
+		row_by_path = {},
+		mode = "message",
+		pane_epoch = 0,
+		manual_width = math.min(38, math.max(20, math.floor(vim.o.columns / 4))),
+	})
+
+	local ok, result = pcall(construct_session, s)
+	if ok then
+		return result
+	end
+	s.closed = true
+	for _, field in ipairs({ "job", "preview_job" }) do
+		pcall(cancel, s, field)
+	end
+	if s.router then
+		pcall(s.router.cancel)
+	end
+	if s.augroup then
+		pcall(vim.api.nvim_del_augroup_by_id, s.augroup)
+	end
+	if s.tab then
+		sessions[s.tab] = nil
+		if vim.api.nvim_tabpage_is_valid(s.tab) then
+			pcall(function()
+				vim.cmd("tabclose! " .. vim.api.nvim_tabpage_get_number(s.tab))
+			end)
+		end
+	end
+	for _, win in ipairs({ s.leftwin, s.rightwin }) do
+		pcall(highlighting.release, win)
+	end
+	buffers.abort(s)
+	if valid(s.origin_win) then
+		pcall(vim.api.nvim_set_current_win, s.origin_win)
+	end
+	util.notify("Could not open comparison: " .. tostring(result):gsub("%s+", " "), vim.log.levels.ERROR)
+	return nil
 end
 function M.action(name)
 	local found = false

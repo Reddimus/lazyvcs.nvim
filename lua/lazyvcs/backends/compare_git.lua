@@ -339,7 +339,7 @@ local function load_saved_side(task, snapshot, item, done)
 					end
 					done(blob, entry)
 				end)
-			end, { output_limit_bytes = common.max_file_bytes })
+			end, { output_limit_bytes = 2 * common.max_file_bytes })
 		end)
 	end)
 end

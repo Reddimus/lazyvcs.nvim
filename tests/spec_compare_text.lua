@@ -10,6 +10,69 @@ return function()
 	end
 	return {
 		{
+			"test_core_compare_text_bom_respects_effective_encoding",
+			function()
+				local text = require("lazyvcs.compare_text")
+				local legacy = assert(text.decode("\239\187\191alpha\n", profile("latin1"), 1024))
+				assert(
+					not legacy.bom and legacy.lines[1] == "ï»¿alpha",
+					"Latin-1 signature bytes were stripped as a BOM"
+				)
+				for _, item in ipairs({
+					{ "\239\187\191a\n", { "utf-8", "utf8", "UTF-8" } },
+					{ "\255\254a\0\n\0", { "utf-16le", "ucs-2le" } },
+					{ "\254\255\0a\0\n", { "utf-16", "utf-16be", "ucs-2", "ucs-2be" } },
+					{ "\255\254\0\0a\0\0\0\n\0\0\0", { "ucs-4le" } },
+					{ "\0\0\254\255\0\0\0a\0\0\0\n", { "ucs-4", "ucs-4be" } },
+				}) do
+					for _, encoding in ipairs(item[2]) do
+						for _, bomb in ipairs({ false, true }) do
+							local p = profile(encoding)
+							p.bomb = bomb
+							local decoded, err = text.decode(item[1], p, 1024)
+							assert(
+								decoded and decoded.bom and vim.deep_equal(decoded.lines, { "a" }),
+								encoding .. ": " .. tostring(err)
+							)
+						end
+					end
+				end
+				for _, item in ipairs({
+					{ "\255\254a\0\n\0", "utf-16be" },
+					{ "\254\255\0a\0\n", "utf-16le" },
+					{ "\255\254\0\0a\0\0\0", "ucs-4be" },
+					{ "\0\0\254\255\0\0\0a", "ucs-4le" },
+					{ "\255\254a\0", "utf-8" },
+				}) do
+					local decoded = text.decode(item[1], profile(item[2]), 1024)
+					assert(not decoded or not decoded.bom, "incompatible byte order was treated as a BOM")
+				end
+				local buf = vim.api.nvim_create_buf(false, true)
+				local ok, err = pcall(function()
+					vim.bo[buf].fileencoding = "latin1"
+					local doc = assert(
+						require("lazyvcs.diff").decode_base(
+							buf,
+							{ base_bytes = "\239\187\191a\n", base_encoding = "utf-8" },
+							1024
+						)
+					)
+					assert(doc.bom and doc.lines[1] == "a", "backend UTF-8 override lost its BOM")
+					vim.bo[buf].fileencoding = "utf-8"
+					doc = assert(
+						require("lazyvcs.diff").decode_base(
+							buf,
+							{ base_bytes = "\239\187\191a\n", base_encoding = "latin1" },
+							1024
+						)
+					)
+					assert(not doc.bom and doc.lines[1] == "ï»¿a", "backend legacy override lost content")
+				end)
+				vim.api.nvim_buf_delete(buf, { force = true })
+				assert(ok, err)
+			end,
+		},
+		{
 			"test_process_text_capture_normalizes_split_crlf",
 			function()
 				local system, util = vim.system, require("lazyvcs.util")
@@ -138,7 +201,7 @@ return function()
 						require("lazyvcs.util").buffer_text_options(buf),
 						api.nvim_buf_get_changedtick(buf),
 						vim.bo[buf].modified
-					assert(text.decode("\255\254a\0", assert(text.profile(buf)), 1024))
+					assert(text.decode("\255\254a\0", profile("utf-16le"), 1024))
 					assert(
 						vim.deep_equal(opts, require("lazyvcs.util").buffer_text_options(buf))
 							and tick == api.nvim_buf_get_changedtick(buf)

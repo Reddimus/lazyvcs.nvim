@@ -157,14 +157,32 @@ function M.decode(bytes, profile, limit_bytes)
 		return nil, "Binary buffers do not support editable hunks"
 	end
 	local source, bom = profile.fileencoding, false
+	local effective_codec, effective_width = codec(source)
 	for _, signature in ipairs(signatures) do
-		if bytes:sub(1, #signature[1]) == signature[1] then
+		local signature_codec, signature_width = codec(signature[2])
+		if
+			effective_codec == signature_codec
+			and effective_width == signature_width
+			and bytes:sub(1, #signature[1]) == signature[1]
+		then
 			bytes, source, bom = bytes:sub(#signature[1] + 1), signature[2], true
 			break
 		end
 	end
 	local conversion_source, width = codec(source)
 	local conversion_bytes = swap(bytes, width)
+	if conversion_source == "ucs-4le" then
+		if #conversion_bytes % 4 ~= 0 then
+			return nil, "Invalid UCS-4 base"
+		end
+		for i = 1, #conversion_bytes, 4 do
+			local a, b, c, d = conversion_bytes:byte(i, i + 3)
+			local value = a + b * 256 + c * 65536 + d * 16777216
+			if value > 0x10FFFF or (value >= 0xD800 and value <= 0xDFFF) then
+				return nil, "Invalid UCS-4 base"
+			end
+		end
+	end
 	local utf8 = conversion_source == "utf-8" or conversion_source == "utf8"
 	local ok = true
 	---@type string?

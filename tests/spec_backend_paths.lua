@@ -32,6 +32,92 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_svn_revert_root_dash_path",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = h.make_svn_fixture()
+				for _, name in ipairs({ "-notes.txt", "-notes@draft.txt" }) do
+					local path = f.root .. "/" .. name
+					h.write_file(path, "committed")
+					h.exec({ "svn", "add", "--", name .. "@" }, f.root)
+					h.exec({ "svn", "commit", "-m", "dash path", "--", name .. "@" }, f.root)
+					h.write_file(path, "edited")
+					assert(
+						await(function(cb)
+							require("lazyvcs.backends.svn").is_versioned_async(path, cb)
+						end),
+						"leading-dash path was not tracked"
+					)
+					vim.cmd.edit(vim.fn.fnameescape(path))
+					local buf = vim.api.nvim_get_current_buf()
+					local owner = assert(require("lazyvcs").revert_buffer())
+					ctx.wait_for(function()
+						return vim.bo.buftype == "nofile"
+					end, "discard confirmation did not open", 15000)
+					vim.fn.maparg("1", "n", false, true).callback()
+					ctx.wait_for(function()
+						return owner.active == false
+					end, "discard did not finish", 15000)
+					assert(vim.deep_equal(vim.fn.readfile(path), { "committed" }), "discard did not restore disk")
+					assert(
+						vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { "committed" }),
+						"discard did not reload buffer"
+					)
+				end
+			end,
+		},
+		{
+			"test_svn_source_control_remote_addition_collision",
+			function()
+				require("lazyvcs").setup({
+					use_gitsigns = false,
+					signs = { enabled = false },
+					source_control = { remote_refresh = "on_open" },
+				})
+				local f = h.make_svn_update_fixture()
+				for _, name in ipairs({ "collision", "incoming" }) do
+					h.write_file(f.peer .. "/" .. name, "REMOTE ONLY")
+					h.exec({ "svn", "add", name }, f.peer)
+				end
+				h.exec({ "svn", "commit", "-m", "incoming additions" }, f.peer)
+				h.write_file(f.root .. "/collision", "LOCAL ONLY")
+				local native = require("lazyvcs.source_control.native")
+				local s = native.open({ path = f.root })
+				local ok, err = xpcall(function()
+					ctx.wait_for(function()
+						local status = s.lazyvcs_repo_cache[f.root]
+						return status and not s.lazyvcs_discovering and not s.lazyvcs_hydration_active
+					end, "incoming rows did not load", 15000)
+					local remote
+					for _, section in ipairs(s.lazyvcs_repo_cache[f.root].sections) do
+						if section.id == "remote" then
+							remote = section
+						end
+					end
+					local additions = 0
+					for _, row in ipairs(assert(remote).items) do
+						if row.extra.repos_item == "added" then
+							additions = additions + 1
+							local target =
+								load(f, row.extra.relpath, vim.tbl_extend("force", row.extra, { section = "remote" }))
+							assert(
+								target.kind == "svn_remote" and not target.editable_side,
+								"incoming collision opened as editable local content"
+							)
+							assert(#target.left.lines == 0 and table.concat(target.right.lines, "\n") == "REMOTE ONLY")
+							assert(rendered(target) == "REMOTE ONLY")
+						end
+					end
+					assert(additions == 2)
+					local local_target = load(f, "collision", { section = "untracked", wc_item = "unversioned" })
+					assert(local_target.kind == "svn_untracked" and local_target.editable_side == "right")
+					assert(vim.deep_equal(vim.fn.readfile(f.root .. "/collision"), { "LOCAL ONLY" }))
+				end, debug.traceback)
+				native.close()
+				assert(ok, err)
+			end,
+		},
+		{
 			"test_svn_windows_remote_url_uses_path_segments",
 			function()
 				local has = vim.fn.has
@@ -57,7 +143,7 @@ return function(ctx)
 							args[#args - 2] == "file:///C:/escaped%20root/sub/a%2520b/caf%C3%A9%23%25.txt@1",
 							"property loader bypassed normalized URL encoding"
 						)
-						assert(opts.output_limit_bytes == 1024 * 1024, "property patch lost its 1 MiB bound")
+						assert(opts.output_limit_bytes == 2 * 1024 * 1024, "property patch lost its 1 MiB bound")
 						cb("property patch\n")
 					end
 					local result = await(function(cb)

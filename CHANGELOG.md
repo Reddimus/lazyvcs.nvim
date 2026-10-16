@@ -31,6 +31,21 @@ and this project adheres to
 - Retain known SVN incoming changes across sidebar reopening and tabs.
 - Cancel AI generation in commit inputs with repository work and allow retry.
 - Stop CopilotChat transport processes on cancellation and timeout.
+- Revert SVN files whose names begin with `-`, including names containing `@`.
+- Keep incoming SVN additions read-only when a local untracked file has the same
+  name.
+- Reject Git hunk reverts when attribute conversion changes the effective base
+  text.
+- Show pinned, nonrecursive SVN directory properties and property-only file
+  metadata.
+- Allow sparse Git previews and SVN property patches to use the full 1 MiB
+  limit.
+- Open feasible stacked Compare layouts and clean up failed construction.
+- Resolve sidebar directory symlinks before parent traversal.
+- Preserve BOM-shaped content in legacy encodings and reject invalid UCS-4
+  values safely.
+- Terminate editor restore descendants on explicit Windows cancellation while
+  preserving shutdown behavior.
 
 ## [0.11.3] - 2026-10-16
 

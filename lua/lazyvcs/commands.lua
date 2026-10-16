@@ -21,7 +21,7 @@ end
 -- Filesystem data and Lua API paths use util.normalize_literal_path instead.
 local function path_arg(args, expand)
 	local path = args[1]
-	return (path and path ~= "") and (expand and vim.fs.normalize(path) or path) or nil
+	return (path and path ~= "") and (expand and require("lazyvcs.util").expand_user_path(path) or path) or nil
 end
 
 local function show_profile(args)
