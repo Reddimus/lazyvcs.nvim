@@ -10,7 +10,6 @@ local function run()
 		"plenary.nvim",
 		"nui.nvim",
 		"neo-tree.nvim",
-		"resession.nvim",
 		"astrocore",
 		"AstroNvim",
 	}) do
@@ -19,17 +18,18 @@ local function run()
 		vim.opt.runtimepath:append(path)
 	end
 	if package.loaded.lazy then
-		require("lazy").load({ plugins = { "neo-tree.nvim", "resession.nvim", "lazyvcs.nvim" } })
+		require("lazy").load({ plugins = { "neo-tree.nvim", "lazyvcs.nvim" } })
 	end
 	local h = require("helpers")
 	local util, state = require("lazyvcs.util"), require("lazyvcs.state")
-	---@type table
-	---@diagnostic disable-next-line: different-requires
-	local resession = require("resession")
 	local options = dofile(plugins .. "/AstroNvim/lua/astronvim/plugins/resession.lua").opts
 	options.dir = "lazyvcs-integration"
 	options.options = { "diff", "scrollbind", "cursorbind", "foldmethod", "foldcolumn", "wrap", "winbar" }
-	resession.setup(options)
+	-- Let lazy.nvim configure Resession on its first require, as AstroNvim does.
+	local spec = assert(require("lazy.core.config").plugins["resession.nvim"], "missing lazy Resession spec")
+	assert(not package.loaded.resession, "Resession loaded before the live diff test")
+	spec.opts = options
+	spec.config = true
 	require("lazyvcs").setup({
 		use_gitsigns = false,
 		signs = { enabled = false },
@@ -47,23 +47,30 @@ local function run()
 	end
 	if mode == "load" then
 		local saved = vim.json.decode(table.concat(vim.fn.readfile(manifest), "\n"))
-		resession.load(name, { reset = true })
-		assert(#state.list() == 0, "load recreated a live diff session")
-		local found = 0
-		for _, win in ipairs(api.nvim_list_wins()) do
-			local buf = api.nvim_win_get_buf(win)
-			assert(not api.nvim_buf_get_name(buf):match("^lazyvcs://"), "temporary base was restored")
-			if vim.fs.normalize(api.nvim_buf_get_name(buf)) == saved.file then
-				found = found + 1
-				assert(vim.deep_equal(snapshot(win), saved.options), "restored editor has transient diff options")
-				assert(
-					vim.deep_equal(api.nvim_buf_get_lines(buf, 0, -1, false), saved.lines),
-					"restored contents changed"
-				)
+		for _, session_name in ipairs({ name .. "-first", name }) do
+			---@diagnostic disable-next-line: different-requires
+			require("resession").load(session_name, { reset = true })
+			assert(#state.list() == 0, "load recreated a live diff session")
+			local found = 0
+			for _, win in ipairs(api.nvim_list_wins()) do
+				local buf = api.nvim_win_get_buf(win)
+				assert(not api.nvim_buf_get_name(buf):match("^lazyvcs://"), "temporary base was restored")
+				if vim.fs.normalize(api.nvim_buf_get_name(buf)) == saved.file then
+					found = found + 1
+					assert(
+						not vim.wo[win].diff and not vim.wo[win].scrollbind,
+						session_name .. ": restored editor has diff or scrollbind enabled"
+					)
+					assert(vim.deep_equal(snapshot(win), saved.options), "restored editor has transient diff options")
+					assert(
+						vim.deep_equal(api.nvim_buf_get_lines(buf, 0, -1, false), saved.lines),
+						"restored contents changed"
+					)
+				end
 			end
+			assert(found == 1, "expected one restored file window")
+			print("PASS integration " .. backend .. " Resession fresh-process load " .. session_name)
 		end
-		assert(found == 1, "expected one restored file window")
-		print("PASS integration " .. backend .. " Resession fresh-process load")
 		return
 	end
 	assert(mode == "save", "invalid integration mode")
@@ -131,6 +138,7 @@ local function run()
 		end
 	end
 	native.render(sidebar)
+	assert(not package.loaded.resession, "Resession loaded before opening the live diff")
 	activate(function(node)
 		return node.type == "file"
 	end)
@@ -158,6 +166,13 @@ local function run()
 		vim.t[tab].bufs = { s.editable_bufnr }
 	end
 	local live = snapshot(editor)
+	-- This is the user's first require: save immediately, before LazyLoad can run.
+	---@diagnostic disable-next-line: different-requires
+	require("resession").save(name .. "-first", { notify = false })
+	assert(vim.deep_equal(snapshot(editor), live), "first-require save changed live diff options")
+	print("PASS integration " .. backend .. " real Resession first-require save")
+	---@diagnostic disable-next-line: different-requires
+	local resession = require("resession")
 	local save, save_tab, save_all = resession.save, resession.save_tab, resession.save_all
 	for _, base_focus in ipairs({ false, true }) do
 		api.nvim_set_current_win(base_focus and s.base_win or editor)

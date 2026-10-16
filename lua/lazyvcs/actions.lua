@@ -119,7 +119,7 @@ local function open_session(session)
 		)
 		state.register(session)
 		registered = true
-		require("lazyvcs.integrations.resession").setup()
+		require("lazyvcs.integrations.resession").setup(not session.readonly_comparison)
 		set_session_maps(session)
 		attach_session(session)
 		aerial.resume_win(session.editable_win)

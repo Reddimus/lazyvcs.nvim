@@ -47,9 +47,24 @@ local function post_save()
 	end
 end
 
-function M.setup()
+function M.setup(load_plugin)
 	if attached then
 		return true
+	end
+	-- Only a live diff may load a known lazy.nvim plugin. Ordinary setup stays lazy.
+	if load_plugin and package.loaded.resession == nil then
+		local ok, lazy = pcall(require, "lazy.core.config")
+		if ok and type(lazy) == "table" and type(lazy.plugins) == "table" then
+			for _, plugin in pairs(lazy.plugins) do
+				if
+					type(plugin) == "table"
+					and (plugin.name == "resession.nvim" or plugin.main == "resession" or plugin.module == "resession")
+				then
+					pcall(require, "resession")
+					break
+				end
+			end
+		end
 	end
 	local resession = package.loaded.resession
 	if
@@ -62,8 +77,8 @@ function M.setup()
 			vim.api.nvim_create_autocmd("User", {
 				group = group,
 				pattern = "LazyLoad",
-				callback = util.safe_callback(function(event)
-					if event.data == "resession.nvim" and package.loaded.resession then
+				callback = util.safe_callback(function()
+					if package.loaded.resession then
 						M.setup()
 					end
 				end),

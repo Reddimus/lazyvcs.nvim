@@ -60,6 +60,41 @@ return function(ctx)
 			assert(ok, err)
 		end
 	end
+	local function lazy_open(specs, expected)
+		local integration = require("lazyvcs.integrations.resession")
+		integration.teardown()
+		local stub, preload = package.loaded.resession, package.preload.resession
+		local config = package.loaded["lazy.core.config"]
+		package.loaded.resession = nil
+		package.loaded["lazy.core.config"] = specs and { plugins = specs } or nil
+		local loads = 0
+		package.preload.resession = function()
+			loads = loads + 1
+			return stub
+		end
+		local ok, err = xpcall(function()
+			require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+			assert(loads == 0, "setup loaded lazy Resession")
+			local s = open(false)
+			assert(loads == expected, "live diff loaded Resession " .. loads .. " times; expected " .. expected)
+			assert(#hooks.pre_save == expected and #hooks.post_save == expected, "live diff did not attach hooks")
+			if expected == 1 then
+				integration.setup()
+				assert(loads == 1 and #hooks.pre_save == 1, "repeated setup duplicated load or hooks")
+			else
+				-- Without a known lazy spec, a later open attaches an externally loaded plugin.
+				package.loaded.resession = stub
+			end
+			require("lazyvcs.actions").close(s.editable_bufnr)
+			s = open(false)
+			assert(loads == expected and #hooks.pre_save == 1, "next open did not attach exactly once")
+			require("lazyvcs.actions").close(s.editable_bufnr)
+		end, debug.traceback)
+		integration.teardown()
+		package.loaded["lazy.core.config"] = config
+		package.preload.resession, package.loaded.resession = preload, stub
+		assert(ok, err)
+	end
 	local cases = {
 		{
 			"test_live_diff_resession_setup_does_not_load_plugin",
@@ -78,7 +113,7 @@ return function(ctx)
 					assert(loads == 0 and package.loaded.resession == nil, "setup loaded lazy Resession")
 					package.loaded.resession = stub
 					api.nvim_exec_autocmds("User", { pattern = "LazyLoad", data = "neo-tree.nvim" })
-					assert(#hooks.pre_save == 0, "unrelated LazyLoad attached Resession")
+					assert(#hooks.pre_save == 1, "LazyLoad did not attach already-loaded Resession")
 					api.nvim_exec_autocmds("User", { pattern = "LazyLoad", data = "resession.nvim" })
 					assert(#hooks.pre_save == 1, "Resession LazyLoad did not attach")
 					integration.teardown()
@@ -87,6 +122,50 @@ return function(ctx)
 				end, debug.traceback)
 				package.preload.resession, package.loaded.resession = preload, stub
 				assert(ok, err)
+			end,
+		},
+		{
+			"test_live_diff_resession_open_loads_known_lazy_spec",
+			function()
+				for _, spec in ipairs({
+					{ name = "resession.nvim" },
+					{ name = "renamed", main = "resession" },
+					{ name = "renamed", module = "resession" },
+				}) do
+					lazy_open({ [spec.name] = spec }, 1)
+				end
+			end,
+		},
+		{
+			"test_live_diff_resession_open_does_not_load_without_lazy_spec",
+			function()
+				lazy_open(nil, 0)
+				lazy_open({}, 0)
+				lazy_open({ other = { name = "another.nvim", main = "another" } }, 0)
+			end,
+		},
+		{
+			"test_live_diff_resession_fold_restore_makes_progress",
+			function()
+				open(false)
+				dispatch("pre_save")
+				local foldclosed, foldend = vim.fn.foldclosed, vim.fn.foldclosedend
+				local calls = 0
+				-- Simulate zO silently failing to open the first fold.
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.foldclosed = function(line)
+					calls = calls + 1
+					assert(calls < 500, "fold restoration made no progress")
+					return line == 1 and 1 or -1
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.foldclosedend = function(line)
+					return line == 1 and 3 or foldend(line)
+				end
+				local ok, err = pcall(dispatch, "post_save")
+				vim.fn.foldclosed, vim.fn.foldclosedend = foldclosed, foldend
+				assert(ok, err)
+				assert(calls > 0 and calls < 500, "fold restoration made no progress")
 			end,
 		},
 		{

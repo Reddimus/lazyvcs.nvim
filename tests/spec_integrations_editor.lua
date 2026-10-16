@@ -94,6 +94,41 @@ return function(ctx)
 		},
 
 		{
+			"test_source_control_integrations_invalid_destination_ops_warns_once",
+			function()
+				local f = h.make_git_fixture()
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				local sidebar = require("lazyvcs.source_control.native").open({ path = f.root })
+				sidebar.lazyvcs_repo_cache[f.root] = { root = f.root, vcs = "git" }
+				local backends, target, util =
+					require("lazyvcs.backends"), require("lazyvcs.editor_target"), require("lazyvcs.util")
+				local loader, valid, notify = backends.load_diff_target_async, target.valid, util.notify
+				local messages, checks = {}, 0
+				---@diagnostic disable-next-line: duplicate-set-field
+				backends.load_diff_target_async = function(_, callback)
+					callback(comparison(f))
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				target.valid = function()
+					checks = checks + 1
+					return checks == 1 -- destination changes between ops validation and open_target
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.notify = function(message)
+					messages[#messages + 1] = message
+				end
+				local ok, err = pcall(
+					require("lazyvcs.source_control.ops").open_change,
+					sidebar,
+					{ type = "file", path = f.file, extra = { repo_root = f.root } }
+				)
+				backends.load_diff_target_async, target.valid, util.notify = loader, valid, notify
+				assert(ok, err)
+				assert(checks == 2 and #messages == 1, "ops duplicated invalid-destination warning")
+				assert(messages[1]:find("destination changed"), "wrong warning")
+			end,
+		},
+		{
 			"test_source_control_integrations_editor_eligibility",
 			function()
 				local f = h.make_git_fixture()
@@ -109,6 +144,8 @@ return function(ctx)
 				assert(api.nvim_win_get_buf(plugin) == special, "plugin buffer replaced")
 				local target = require("lazyvcs.editor_target")
 				local tab = api.nvim_get_current_tabpage()
+				assert(not require("lazyvcs.util").win_is_valid(nil), "nil window accepted")
+				assert(not target.eligible(nil, tab), "nil editor accepted")
 				assert(not target.eligible(s.base_win, tab), "live diff base accepted")
 				assert(target.capture(s.editable_win).winid == editor, "existing comparison was not reused")
 				actions.close(s.editable_bufnr)

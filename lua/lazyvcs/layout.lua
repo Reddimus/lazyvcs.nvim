@@ -301,7 +301,9 @@ local function restore_folds(win, closed)
 				line = line + 1
 			else
 				vim.api.nvim_win_set_cursor(win, { line, 0 })
+				local last = vim.fn.foldclosedend(line)
 				vim.cmd("silent! noautocmd keepjumps normal! zO")
+				line = math.max(line + 1, last + 1)
 			end
 		end
 		for _, first in ipairs(closed) do
