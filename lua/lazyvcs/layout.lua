@@ -22,7 +22,7 @@ end
 local function resolve_base_buffer_name(session)
 	local canonical = base_buffer_name(session)
 	local existing = vim.fn.bufnr(canonical)
-	if existing <= 0 or not util.buf_is_valid(existing) then
+	if existing == session.base_bufnr or existing <= 0 or not util.buf_is_valid(existing) then
 		return canonical
 	end
 
@@ -45,12 +45,12 @@ local function resolve_base_buffer_name(session)
 	end
 end
 
-local function resolve_base_width(width)
-	if width <= 1 then
-		return math.max(math.floor(vim.o.columns * width), 30)
-	end
-
-	return math.max(width, 30)
+local function resolve_base_width(session)
+	local total = vim.api.nvim_win_get_width(session.editable_win) + vim.api.nvim_win_get_width(session.base_win)
+	local width = session.opts.base_window.width
+	local requested = math.floor(width <= 1 and total * width or width)
+	local minimum = math.min(30, math.floor(total / 2))
+	return math.max(minimum, math.min(total - minimum, requested))
 end
 
 local function same_tab(win_a, win_b)
@@ -107,7 +107,7 @@ local function configure_base_buffer(session)
 end
 
 local function apply_diff(winid)
-	if util.win_is_valid(winid) then
+	if util.win_is_valid(winid) and not util.get_win_option(winid, "diff") then
 		vim.api.nvim_win_call(winid, function()
 			vim.cmd("silent diffthis")
 		end)
@@ -157,14 +157,110 @@ end
 
 ---Reset diff mode in one owned window without touching unrelated diff groups.
 function M.reset_tab_diff(winid)
-	local target = winid
-	if not util.win_is_valid(target) then
-		target = vim.api.nvim_get_current_win()
+	if util.win_is_valid(winid) then
+		util.diff_off(winid)
 	end
+end
 
-	if util.win_is_valid(target) then
-		util.diff_off(target)
+---Restore splits that inherited this session's diff options, leaving earlier diff windows alone.
+function M.release_derived_diff(session)
+	if not session.tabpage or not vim.api.nvim_tabpage_is_valid(session.tabpage) then
+		return
 	end
+	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(session.tabpage)) do
+		local buf = vim.api.nvim_win_get_buf(win)
+		if
+			win ~= session.editable_win
+			and win ~= session.base_win
+			and not (session.preexisting_diff_windows or {})[win]
+			and (buf == session.editable_bufnr or buf == session.base_bufnr)
+			and util.get_win_option(win, "diff")
+		then
+			util.diff_off(win)
+		end
+	end
+end
+
+function M.release_buffer_diff(session, bufnr)
+	if not util.win_is_valid(session.editable_win) or not util.buf_is_valid(bufnr) then
+		return
+	end
+	-- A pre-existing user diff window may still keep E in this tab's diff set.
+	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(session.tabpage)) do
+		if
+			win ~= session.editable_win
+			and vim.api.nvim_win_get_buf(win) == bufnr
+			and util.get_win_option(win, "diff")
+		then
+			return
+		end
+	end
+	vim.api.nvim_win_call(session.editable_win, function()
+		vim.api.nvim_buf_call(bufnr, function()
+			util.set_win_option(vim.api.nvim_get_current_win(), "diff", false)
+		end)
+	end)
+end
+
+local function valid_pair(session)
+	return session
+		and not session.closing
+		and same_tab(session.editable_win, session.base_win)
+		and vim.api.nvim_win_get_tabpage(session.editable_win) == session.tabpage
+		and vim.api.nvim_win_get_buf(session.editable_win) == session.editable_bufnr
+		and vim.api.nvim_win_get_buf(session.base_win) == session.base_bufnr
+end
+
+function M.bind_pair(session, source_win)
+	if not valid_pair(session) then
+		return false
+	end
+	for _, win in ipairs({ session.editable_win, session.base_win }) do
+		apply_diff(win)
+		highlighting.apply(win, session.opts.diff_highlighting)
+		util.set_win_options(win, { scrollbind = true, cursorbind = session.opts.base_window.cursor_sync })
+	end
+	if source_win ~= session.editable_win and source_win ~= session.base_win then
+		source_win = session.editable_win
+	end
+	vim.api.nvim_win_call(source_win, function()
+		vim.cmd("silent syncbind")
+	end)
+	require("lazyvcs.align").apply(session)
+	return true
+end
+
+function M.rebind(old, replacement)
+	for _, key in ipairs({
+		"editable_win",
+		"base_win",
+		"base_bufnr",
+		"tabpage",
+		"preexisting_diff_windows",
+		"base_had_diff",
+		"base_window_options",
+		"base_prev_winbar",
+		"aerial_base_state",
+		"owned_editor_win",
+	}) do
+		replacement[key] = old[key]
+	end
+	-- The target is now displayed in EW. Its FileType/window settings belong to
+	-- this session; restoring the previous buffer's snapshot would overwrite them.
+	util.diff_off(replacement.editable_win)
+	replacement.editable_window_options = capture_window_options(replacement.editable_win)
+	replacement.editable_prev_winbar = util.get_win_option(replacement.editable_win, "winbar")
+	replacement.editable_had_diff = util.get_win_option(replacement.editable_win, "diff")
+	util.diff_off(replacement.base_win)
+	local buf = replacement.base_bufnr
+	vim.bo[buf].modifiable = true
+	vim.bo[buf].readonly = false
+	vim.api.nvim_buf_set_lines(buf, 0, -1, false, replacement.base_lines)
+	vim.bo[buf].filetype = vim.bo[replacement.editable_bufnr].filetype
+	vim.api.nvim_buf_set_name(buf, resolve_base_buffer_name(replacement))
+	vim.bo[buf].modifiable = false
+	vim.bo[buf].readonly = true
+	set_window_labels(replacement)
 end
 
 function M.open(session)
@@ -177,6 +273,13 @@ function M.open(session)
 	end
 
 	session.editable_win = editable_win
+	session.tabpage = vim.api.nvim_win_get_tabpage(editable_win)
+	session.preexisting_diff_windows = {}
+	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(session.tabpage)) do
+		if util.get_win_option(win, "diff") then
+			session.preexisting_diff_windows[win] = true
+		end
+	end
 	session.editable_had_diff = vim.wo[editable_win].diff
 	session.editable_window_options = capture_window_options(editable_win)
 
@@ -203,28 +306,10 @@ function M.open(session)
 	util.set_win_option(session.base_win, "cursorline", false)
 	util.set_win_option(session.base_win, "winfixwidth", true)
 
-	local width = resolve_base_width(session.opts.base_window.width)
-	pcall(vim.api.nvim_win_set_width, session.base_win, width)
-
-	apply_diff(editable_win)
-	apply_diff(session.base_win)
-	highlighting.apply(editable_win, session.opts.diff_highlighting)
-	highlighting.apply(session.base_win, session.opts.diff_highlighting)
-
-	-- Reassert window-local binding after diffthis; buffer changes and ftplugins can reset
-	-- it.
-	local cursor_sync = session.opts.base_window.cursor_sync
-	for _, win in ipairs({ editable_win, session.base_win }) do
-		util.set_win_option(win, "scrollbind", true)
-		util.set_win_option(win, "cursorbind", cursor_sync)
-	end
-
-	vim.api.nvim_win_call(editable_win, function()
-		vim.cmd("silent syncbind")
-	end)
-
-	require("lazyvcs.align").apply(session)
 	session.tabpage = vim.api.nvim_win_get_tabpage(editable_win)
+	session.phase = "active"
+	pcall(vim.api.nvim_win_set_width, session.base_win, resolve_base_width(session))
+	M.bind_pair(session, editable_win)
 	set_window_labels(session)
 end
 
@@ -236,7 +321,7 @@ function M.panes_wrap(session)
 end
 
 function M.rebalance(session)
-	if not session or session.closing then
+	if not session or session.closing or session.phase ~= "active" then
 		return false
 	end
 
@@ -244,6 +329,15 @@ function M.rebalance(session)
 		return false
 	end
 
+	local ep, bp = vim.api.nvim_win_get_position(session.editable_win), vim.api.nvim_win_get_position(session.base_win)
+	if
+		ep[1] ~= bp[1]
+		or vim.api.nvim_win_get_height(session.editable_win) ~= vim.api.nvim_win_get_height(session.base_win)
+		or math.abs(ep[2] - bp[2])
+			~= vim.api.nvim_win_get_width(ep[2] < bp[2] and session.editable_win or session.base_win) + 1
+	then
+		return false
+	end
 	local editable_width = vim.api.nvim_win_get_width(session.editable_win)
 	local base_width = vim.api.nvim_win_get_width(session.base_win)
 	if editable_width <= 0 or base_width <= 0 then
@@ -255,7 +349,7 @@ function M.rebalance(session)
 	require("lazyvcs.align").schedule(session)
 
 	local total_width = editable_width + base_width
-	local target_base = math.max(math.floor(total_width / 2), 1)
+	local target_base = resolve_base_width(session)
 	local target_editable = math.max(total_width - target_base, 1)
 
 	if math.abs(editable_width - target_editable) <= 1 and math.abs(base_width - target_base) <= 1 then
@@ -283,7 +377,12 @@ function M.rebalance(session)
 end
 
 function M.sync_scroll(session, source_win)
-	if not session or session.closing or session.syncing_scroll then
+	if
+		not valid_pair(session)
+		or session.phase ~= "active"
+		or session.syncing_scroll
+		or require("lazyvcs.state").get(session.editable_bufnr) ~= session
+	then
 		return false
 	end
 
@@ -295,6 +394,11 @@ function M.sync_scroll(session, source_win)
 		return false
 	end
 
+	for _, win in ipairs({ session.editable_win, session.base_win }) do
+		if not util.get_win_option(win, "diff") or not util.get_win_option(win, "scrollbind") then
+			return false
+		end
+	end
 	session.syncing_scroll = true
 	local ok = pcall(vim.api.nvim_win_call, source_win, function()
 		vim.cmd("silent! syncbind")
@@ -303,7 +407,9 @@ function M.sync_scroll(session, source_win)
 	-- Keep the flag through the next tick to suppress the deferred WinScrolled echo from
 	-- this sync.
 	vim.schedule(function()
-		session.syncing_scroll = false
+		if require("lazyvcs.state").get(session.editable_bufnr) == session then
+			session.syncing_scroll = false
+		end
 	end)
 	return ok
 end
@@ -321,6 +427,7 @@ end
 function M.close(session, opts)
 	opts = opts or {}
 	local base_survived = false
+	M.release_derived_diff(session)
 	highlighting.release(session.editable_win)
 	highlighting.release(session.base_win)
 

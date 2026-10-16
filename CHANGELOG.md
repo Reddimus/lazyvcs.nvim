@@ -16,6 +16,15 @@ and this project adheres to
   preventing incorrect highlighting and E96 after reviewing several files.
 - Stop the blame split from leaving an empty listed buffer behind each time it
   opens.
+- Preserve live-diff bindings, folds, and views when focus moves between panes,
+  floats, or tabs. Follow buffer changes in the editable window in place,
+  including programmatic swaps and rapid selections.
+- Restore split windows from diff mode when a live diff closes or moves to
+  another buffer.
+- Keep configured base-pane widths after resize, using the combined pane width
+  for ratios and column counts for absolute values.
+- Restore Markdown editor guards after transfers and release closed sessions
+  without waiting for another buffer edit.
 
 ## [0.11.0] - 2026-10-09
 

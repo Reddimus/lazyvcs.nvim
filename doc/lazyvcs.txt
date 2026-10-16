@@ -213,9 +213,15 @@ Live diff buffer-local mappings:
     ]v           next hunk
     [v           previous hunk
 
-When the active editor window changes buffers, such as with AstroNvim ]b, [b,
-or tabline buffer picking, lazyvcs reopens live diff for supported Git/SVN
-buffers and closes the session cleanly for unsupported buffers.
+Only buffer changes in the session's editable window transfer live diff.
+Focus changes to the base pane, other splits, floats, or tabs preserve the
+session. Programmatic buffer changes in the editable window also transfer it,
+including changes made from another window or tab, without moving focus.
+Transfers reuse the window pair for supported Git/SVN buffers. Unsupported
+buffers close the session cleanly.
+Splits of the editable window share its diff while the session is active and
+leave diff mode when it closes or moves to another buffer, including a move
+that is abandoned before it completes.
 
 Source-control sidebar mappings. Unlike the live-diff mappings above, these are
 buffer-local and fixed; `config.keymaps` does not reach them.
@@ -406,7 +412,10 @@ Main options:
     use_gitsigns       Prefer `gitsigns.reset_hunk()` for Git hunks.
     set_winbar         Set simple winbar labels during live diff.
     session_keymaps    Add buffer-local live diff and Compare navigation mappings.
-    base_window.width  Left/base diff window width. Ratio when <= 1.
+    base_window.width  Left/base diff window width. Values <= 1 are a ratio
+                       of the combined pane width; values > 1 are columns.
+                       Reapplied on resize. Each pane keeps at least 30 columns
+                       when space permits. Sidebars are excluded.
     base_window.cursor_sync
                        Keep both diff cursors on corresponding lines.
                        Default true.

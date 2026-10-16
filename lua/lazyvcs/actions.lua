@@ -22,6 +22,8 @@ local scroll_event_source
 local session_sequence = 0
 local target_sequence = 0
 local pending_opens = {}
+local source_attachments = {}
+local transfer
 
 -- Collapse an error (often a multi-line Lua traceback) into a single short line.
 -- Multi-line messages overflow the command area and make interactive Neovim wait
@@ -74,7 +76,8 @@ end
 local function open_session(session)
 	session_sequence = session_sequence + 1
 	session.id = session_sequence
-	session.editor_state = editor.guard_markdown_buffer(session.editable_bufnr, session.source_path)
+	session.editor_state = session.editor_state
+		or editor.guard_markdown_buffer(session.editable_bufnr, session.source_path)
 	session.editable_aerial_state = aerial.disable_buffer(session.editable_bufnr, { detach = true })
 	local registered = false
 	local ok, err = xpcall(function()
@@ -114,30 +117,28 @@ local function close_session(session, opts)
 	end
 
 	session.closing = true
+	session.phase = "closed"
 	if session.refresh_job and type(session.refresh_job.kill) == "function" then
 		pcall(session.refresh_job.kill, session.refresh_job, 15)
 		session.refresh_job = nil
 	end
-	if not opts.keep_pending_transfer then
-		state.clear_pending_transfer(session.editable_win)
+	local cleanup_error
+	local function cleanup(fn, ...)
+		local ok, err = pcall(fn, ...)
+		if not ok then
+			cleanup_error = cleanup_error or err
+		end
 	end
-	clear_session_maps(session)
+	cleanup(state.clear_pending_transfer, session.editable_win)
+	cleanup(clear_session_maps, session)
 	if session.augroup then
 		pcall(vim.api.nvim_del_augroup_by_id, session.augroup)
 	end
-	aerial.resume_win(session.editable_win)
-	aerial.restore_buffer(session.aerial_transfer_state)
-	session.aerial_transfer_state = nil
 	state.unregister(session)
-	layout.close(session, opts)
-	editor.restore_buffer(session.editor_state)
+	cleanup(layout.close, session, opts)
+	cleanup(editor.restore_buffer, session.editor_state)
 	session.editor_state = nil
-	if
-		session.owned_editor_win
-		and not opts.keep_pending_transfer
-		and not opts.keep_editor_win
-		and util.win_is_valid(session.editable_win)
-	then
+	if session.owned_editor_win and not opts.keep_editor_win and util.win_is_valid(session.editable_win) then
 		pcall(vim.api.nvim_win_close, session.editable_win, true)
 	end
 	if session.owned_editable_buf then
@@ -153,205 +154,47 @@ local function close_session(session, opts)
 			pcall(vim.api.nvim_buf_delete, session.editable_bufnr, { force = true })
 		end
 	end
-end
-
-local function resume_transfer_aerial(pending)
-	if pending and pending.editable_win then
-		aerial.resume_win(pending.editable_win)
-	end
-	if pending and pending.aerial_transfer_state then
-		aerial.restore_buffer(pending.aerial_transfer_state)
+	if cleanup_error then
+		util.notify("lazyvcs: cleanup failed: " .. one_line(cleanup_error), vim.log.levels.ERROR)
 	end
 end
 
-local function close_failed_transfer_window(pending)
-	if not pending or not util.win_is_valid(pending.editable_win) then
-		return
+local function commit_transfer(old, replacement)
+	session_sequence = session_sequence + 1
+	replacement.id = session_sequence
+	replacement.phase = "committing"
+	clear_session_maps(old)
+	if old.augroup then
+		vim.api.nvim_del_augroup_by_id(old.augroup)
+		old.augroup = nil
 	end
-
-	local function cleanup()
-		if not vim.api.nvim_tabpage_is_valid(pending.tabpage) or not util.win_is_valid(pending.editable_win) then
-			return
-		end
-
-		local current_win = vim.api.nvim_get_current_win()
-		if pending.base_win ~= pending.editable_win and util.win_is_valid(pending.base_win) then
-			pcall(vim.api.nvim_win_close, pending.base_win, true)
-		end
-		if pending.owned_editor_win and util.win_is_valid(pending.editable_win) then
-			pcall(vim.api.nvim_win_close, pending.editable_win, true)
-		end
-		if util.buf_is_valid(pending.base_bufnr) and #vim.fn.win_findbuf(pending.base_bufnr) == 0 then
-			pcall(vim.api.nvim_buf_delete, pending.base_bufnr, { force = true })
-		end
-		if util.win_is_valid(current_win) and vim.api.nvim_get_current_win() ~= current_win then
-			pcall(vim.api.nvim_set_current_win, current_win)
-		end
+	if old.refresh_job and type(old.refresh_job.kill) == "function" then
+		pcall(old.refresh_job.kill, old.refresh_job, 15)
 	end
-
-	cleanup()
-	vim.schedule(cleanup)
+	require("lazyvcs.align").clear(old)
+	editor.restore_buffer(old.editor_state)
+	old.editor_state = nil
+	layout.rebind(old, replacement)
+	state.replace(old, replacement)
+	old.phase, old.closing = "closed", true
+	set_session_maps(replacement)
+	attach_session(replacement)
+	replacement.hunks = diff.compute_hunks(replacement.base_lines, util.get_buf_lines(replacement.editable_bufnr))
 end
 
-local function settle_aborted_transfer(pending)
-	resume_transfer_aerial(pending)
-	local live = pending and state.get(pending.editable_bufnr) or nil
-	if not live then
-		return
+transfer = require("lazyvcs.live_transfer").new({
+	build = build_session_async,
+	close = close_session,
+	commit = commit_transfer,
+})
+
+local function safe_callback(fn)
+	return function(...)
+		local ok, err = pcall(fn, ...)
+		if not ok then
+			util.notify("lazyvcs: " .. one_line(err), vim.log.levels.ERROR)
+		end
 	end
-	if
-		util.win_is_valid(pending.editable_win)
-		and vim.api.nvim_win_get_buf(pending.editable_win) == pending.editable_bufnr
-	then
-		pcall(vim.api.nvim_win_call, pending.editable_win, function()
-			vim.cmd("silent diffthis")
-		end)
-		return
-	end
-	pcall(close_session, live, { reset_tab_diff = true })
-	close_failed_transfer_window(pending)
-end
-
-local function handle_pending_transfer(target_bufnr)
-	local pending = state.peek_pending_transfer()
-	if not pending then
-		return
-	end
-
-	-- Scope every abort to pending.editable_win. A nil clear_pending_transfer argument
-	-- cancels all windows.
-	if pending.tabpage ~= vim.api.nvim_get_current_tabpage() then
-		state.clear_pending_transfer(pending.editable_win)
-		settle_aborted_transfer(pending)
-		return
-	end
-
-	if pending.editable_win ~= vim.api.nvim_get_current_win() then
-		state.clear_pending_transfer(pending.editable_win)
-		settle_aborted_transfer(pending)
-		return
-	end
-
-	if target_bufnr == pending.editable_bufnr or target_bufnr == pending.base_bufnr then
-		state.clear_pending_transfer(pending.editable_win)
-		settle_aborted_transfer(pending)
-		return
-	end
-
-	pending = state.take_pending_transfer()
-	vim.schedule(function()
-		local function pending_is_current()
-			return pending and not pending.cancelled and state.peek_pending_transfer(pending.editable_win) == pending
-		end
-
-		local function abort()
-			if pending and state.peek_pending_transfer(pending.editable_win) == pending then
-				state.clear_pending_transfer(pending.editable_win)
-			elseif pending and pending.handle and type(pending.handle.kill) == "function" then
-				local handle = pending.handle
-				pending.handle = nil
-				pcall(handle.kill, handle, 15)
-			end
-			settle_aborted_transfer(pending)
-		end
-
-		if not pending_is_current() then
-			return
-		end
-
-		if not state.get(pending.editable_bufnr) then
-			return abort()
-		end
-
-		if pending.tabpage ~= vim.api.nvim_get_current_tabpage() then
-			return abort()
-		end
-
-		if pending.editable_win ~= vim.api.nvim_get_current_win() then
-			return abort()
-		end
-
-		if vim.api.nvim_get_current_buf() ~= target_bufnr then
-			return abort()
-		end
-
-		-- Failures below are reported as a notification and always leave the
-		-- transfer cleaned up: an uncaught error inside a scheduled callback
-		-- blocks interactive Neovim on the hit-enter prompt.
-		local function fail_transfer(err)
-			close_failed_transfer_window(pending)
-			abort()
-			if err then
-				util.notify(
-					"lazyvcs: could not reopen diff after buffer change: " .. one_line(err),
-					vim.log.levels.ERROR
-				)
-			end
-		end
-
-		pending.handle = build_session_async(target_bufnr, function(replacement, build_err)
-			pending.handle = nil
-			if not pending_is_current() then
-				return
-			end
-			-- The user may have navigated again while the backend was loading, so
-			-- re-validate before touching any window.
-			local tab_ok = vim.api.nvim_tabpage_is_valid(pending.tabpage)
-				and pending.tabpage == vim.api.nvim_get_current_tabpage()
-			local win_ok = tab_ok and pending.editable_win == vim.api.nvim_get_current_win()
-
-			if not win_ok then
-				-- The user moved to another window or tab: the old session is still
-				-- coherent where it lives, so leave it alone.
-				return abort()
-			end
-
-			if vim.api.nvim_get_current_buf() ~= target_bufnr then
-				-- Same window, but it now holds a third buffer: the old session can
-				-- never be reached again. Tear it down instead of leaving an orphaned
-				-- lazyvcs:// window diffed against the wrong file.
-				local stale = state.get(pending.editable_bufnr)
-				if stale then
-					pcall(close_session, stale, { reset_tab_diff = true })
-				end
-				close_failed_transfer_window(pending)
-				return abort()
-			end
-
-			local ok, err = pcall(function()
-				local live = state.get(pending.editable_bufnr)
-				if not live or live.closing or not pending_is_current() then
-					return abort()
-				end
-				close_session(live, {
-					keep_pending_transfer = true,
-					reset_tab_diff = true,
-				})
-
-				if not replacement then
-					-- Close unsupported buffers quietly. Report backend failures so they are
-					-- distinguishable from unsupported files.
-					local unsupported = not build_err
-						or build_err:match("No Git or SVN working copy")
-						or build_err:match("not tracked")
-						or build_err:match("only opens on normal file buffers")
-					return fail_transfer(not unsupported and build_err or nil)
-				end
-
-				replacement.owned_editor_win = pending.owned_editor_win
-				local _, open_err = open_session(replacement)
-				if open_err then
-					fail_transfer(open_err)
-					return
-				end
-				state.finish_pending_transfer(pending.editable_win, pending)
-			end)
-
-			if not ok then
-				fail_transfer(err)
-			end
-		end)
-	end)
 end
 
 local function ensure_global_autocmds()
@@ -360,49 +203,43 @@ local function ensure_global_autocmds()
 	end
 
 	global_augroup = vim.api.nvim_create_augroup("lazyvcs_global", { clear = true })
-	vim.api.nvim_create_autocmd("BufEnter", {
+	vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter", "TabEnter" }, {
 		group = global_augroup,
-		callback = function(args)
-			-- Errors escaping an autocmd callback block interactive Neovim on the
-			-- hit-enter prompt; report them instead so navigation always continues.
-			local ok, err = pcall(handle_pending_transfer, args.buf)
-			if not ok then
-				-- Reset only the failed transfer window; other sessions may still be loading.
-				state.clear_pending_transfer(vim.api.nvim_get_current_win())
-				util.notify("lazyvcs: buffer transfer failed: " .. one_line(err), vim.log.levels.ERROR)
+		callback = safe_callback(function()
+			for _, session in ipairs(state.list()) do
+				transfer.schedule(session)
 			end
-		end,
+		end),
+	})
+	vim.api.nvim_create_autocmd("TabEnter", {
+		group = global_augroup,
+		callback = safe_callback(function()
+			rebalance_tab(vim.api.nvim_get_current_tabpage())
+		end),
 	})
 	vim.api.nvim_create_autocmd({ "BufReadPre", "BufNewFile" }, {
 		group = global_augroup,
-		callback = function(args)
-			local pending = state.peek_pending_transfer()
-			if not pending then
-				return
+		callback = safe_callback(function(args)
+			local win = vim.api.nvim_get_current_win()
+			local session = state.for_window(win)
+			if session and win == session.editable_win then
+				transfer.guard(session, args.buf, args.match)
 			end
-			if pending.tabpage ~= vim.api.nvim_get_current_tabpage() then
-				return
-			end
-			if pending.editable_win ~= vim.api.nvim_get_current_win() then
-				return
-			end
-			if args.buf == pending.editable_bufnr or args.buf == pending.base_bufnr then
-				return
-			end
-			editor.guard_markdown_buffer(args.buf, args.match)
-		end,
+		end),
 	})
 	vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, {
 		group = global_augroup,
-		callback = function()
-			rebalance_tab(vim.api.nvim_get_current_tabpage())
-		end,
+		callback = safe_callback(function()
+			for _, session in ipairs(state.list()) do
+				schedule_rebalance(session)
+			end
+		end),
 	})
 end
 
 refresh = function(bufnr)
 	local session = state.get(bufnr)
-	if not session or session.closing then
+	if not session or session.closing or session.phase ~= "active" then
 		return
 	end
 
@@ -412,7 +249,7 @@ end
 
 local function schedule_refresh(bufnr)
 	local session = state.get(bufnr)
-	if not session or session.closing then
+	if not session or session.closing or session.phase ~= "active" then
 		return
 	end
 
@@ -420,10 +257,10 @@ local function schedule_refresh(bufnr)
 	local tick = session.refresh_tick
 	vim.defer_fn(function()
 		local live = state.get(bufnr)
-		if not live or live.closing or live.refresh_tick ~= tick then
+		if not live or live ~= session or live.closing or live.phase ~= "active" or live.refresh_tick ~= tick then
 			return
 		end
-		refresh(bufnr)
+		safe_callback(refresh)(bufnr)
 	end, session.opts.debounce_ms)
 end
 
@@ -468,7 +305,7 @@ clear_session_maps = function(session)
 end
 
 schedule_rebalance = function(session)
-	if not session or session.closing then
+	if not session or session.closing or session.phase ~= "active" then
 		return
 	end
 
@@ -476,17 +313,17 @@ schedule_rebalance = function(session)
 	local tick = session.rebalance_tick
 	vim.defer_fn(function()
 		local live = state.get(session.editable_bufnr)
-		if not live or live.closing or live.rebalance_tick ~= tick then
+		if not live or live ~= session or live.closing or live.phase ~= "active" or live.rebalance_tick ~= tick then
 			return
 		end
-		layout.rebalance(live)
+		safe_callback(layout.rebalance)(live)
 	end, 20)
 end
 
 -- Coalesce scroll gestures, then sync 20 ms after the last event. Earlier syncs feed a
 -- moving relative offset back into scrollbind and misalign the panes.
 schedule_scroll_sync = function(session, source_win)
-	if not session or session.closing then
+	if not session or session.closing or session.phase ~= "active" then
 		return
 	end
 
@@ -494,10 +331,10 @@ schedule_scroll_sync = function(session, source_win)
 	local tick = session.scroll_sync_tick
 	vim.defer_fn(function()
 		local live = state.get(session.editable_bufnr)
-		if not live or live.closing or live.scroll_sync_tick ~= tick then
+		if not live or live ~= session or live.closing or live.phase ~= "active" or live.scroll_sync_tick ~= tick then
 			return
 		end
-		layout.sync_scroll(live, source_win)
+		safe_callback(layout.sync_scroll)(live, source_win)
 	end, 20)
 end
 
@@ -604,21 +441,21 @@ set_session_maps = function(session)
 end
 
 attach_session = function(session)
-	if not session.readonly_comparison then
-		vim.api.nvim_buf_attach(session.editable_bufnr, false, {
-			on_lines = function(_, bufnr)
+	if not session.readonly_comparison and not source_attachments[session.editable_bufnr] then
+		source_attachments[session.editable_bufnr] = vim.api.nvim_buf_attach(session.editable_bufnr, false, {
+			on_lines = safe_callback(function(_, bufnr)
 				local live = state.get(bufnr)
-				if not live or live ~= session or live.id ~= session.id or live.closing then
-					return true
+				if live and live.editable_bufnr == bufnr and not live.closing then
+					schedule_refresh(bufnr)
 				end
-				schedule_refresh(bufnr)
-			end,
-			on_detach = function(_, bufnr)
+			end),
+			on_detach = safe_callback(function(_, bufnr)
+				source_attachments[bufnr] = nil
 				local live = state.get(bufnr)
-				if live and live == session and live.id == session.id then
+				if live and live.editable_bufnr == bufnr then
 					M.close(bufnr)
 				end
-			end,
+			end),
 		})
 	end
 
@@ -626,9 +463,9 @@ attach_session = function(session)
 
 	vim.api.nvim_create_autocmd("WinScrolled", {
 		group = session.augroup,
-		callback = function()
+		callback = safe_callback(function()
 			local live = state.get(session.editable_bufnr)
-			if not live or live.closing or live.syncing_scroll then
+			if not live or live ~= session or live.closing or live.phase ~= "active" or live.syncing_scroll then
 				return
 			end
 
@@ -649,48 +486,38 @@ attach_session = function(session)
 			if source_win then
 				schedule_scroll_sync(live, source_win)
 			end
-		end,
+		end),
 	})
 
 	vim.api.nvim_create_autocmd("BufWipeout", {
 		group = session.augroup,
 		buffer = session.editable_bufnr,
-		callback = function()
+		callback = safe_callback(function()
 			if state.get(session.editable_bufnr) then
 				M.close(session.editable_bufnr)
 			end
-		end,
+		end),
 	})
 
 	vim.api.nvim_create_autocmd("BufWipeout", {
 		group = session.augroup,
 		buffer = session.base_bufnr,
-		callback = function()
+		callback = safe_callback(function()
 			-- Deleting a buffer during its BufWipeout raises E937. Mark it so layout.close skips
 			-- deletion.
 			session.base_wiping = true
 			if state.get(session.base_bufnr) then
 				M.close(session.base_bufnr)
 			end
-		end,
+		end),
 	})
 
 	if not session.readonly_comparison then
-		vim.api.nvim_create_autocmd("BufLeave", {
+		vim.api.nvim_create_autocmd("BufWinLeave", {
 			group = session.augroup,
 			buffer = session.editable_bufnr,
 			callback = function()
-				local live = state.get(session.editable_bufnr)
-				if not live or live.closing then
-					return
-				end
-				-- Remove the currently displayed buffer from Neovim's diff group
-				-- before the window swaps to the transfer target. Otherwise a
-				-- pre-diffed buffer can remain registered after it becomes hidden.
-				layout.reset_tab_diff(live.editable_win)
-				live.aerial_transfer_state = aerial.disable_buffer(live.editable_bufnr, { detach = true })
-				aerial.suspend_win(live.editable_win)
-				state.set_pending_transfer(live)
+				transfer.leave(session)
 			end,
 		})
 	end
@@ -698,25 +525,29 @@ attach_session = function(session)
 	vim.api.nvim_create_autocmd("WinClosed", {
 		group = session.augroup,
 		pattern = tostring(session.base_win),
-		callback = function()
-			vim.schedule(function()
-				if state.get(session.editable_bufnr) then
+		callback = safe_callback(function()
+			state.clear_pending_transfer(session.editable_win)
+			session.phase = "closed"
+			vim.schedule(safe_callback(function()
+				if state.get(session.editable_bufnr) == session then
 					M.close(session.editable_bufnr)
 				end
-			end)
-		end,
+			end))
+		end),
 	})
 
 	vim.api.nvim_create_autocmd("WinClosed", {
 		group = session.augroup,
 		pattern = tostring(session.editable_win),
-		callback = function()
-			vim.schedule(function()
-				if state.get(session.editable_bufnr) then
+		callback = safe_callback(function()
+			state.clear_pending_transfer(session.editable_win)
+			session.phase = "closed"
+			vim.schedule(safe_callback(function()
+				if state.get(session.editable_bufnr) == session then
 					M.close(session.editable_bufnr)
 				end
-			end)
-		end,
+			end))
+		end),
 	})
 end
 
@@ -976,7 +807,7 @@ function M.close(target)
 	end
 	local session = state.get(bufnr)
 	if not session then
-		local transfer = state.peek_pending_transfer()
+		local transfer = state.peek_pending_transfer(vim.api.nvim_get_current_win())
 		if
 			transfer
 			and transfer.editable_win == vim.api.nvim_get_current_win()
@@ -1095,7 +926,7 @@ end
 
 function M.refresh_current()
 	local session = state.current()
-	if not session or session.closing then
+	if not session or session.closing or session.phase ~= "active" then
 		return
 	end
 	if session.refresh_job and type(session.refresh_job.kill) == "function" then

@@ -1,12 +1,13 @@
 local M = {
 	sessions = {},
 	buffer_index = {},
+	window_index = {},
 	pending_transfers = {},
 	repo_jobs = {},
 }
 
 local function transfer_key(winid)
-	winid = winid or vim.api.nvim_get_current_win()
+	assert(type(winid) == "number" and winid ~= 0, "transfer requires an explicit window")
 	return tostring(winid)
 end
 
@@ -15,6 +16,7 @@ local function cancel_transfer(pending)
 		return
 	end
 	pending.cancelled = true
+	pending.phase = "closed"
 	if pending.handle and type(pending.handle.kill) == "function" then
 		local handle = pending.handle
 		pending.handle = nil
@@ -23,6 +25,8 @@ local function cancel_transfer(pending)
 end
 
 function M.register(session)
+	M.window_index[session.editable_win] = session
+	M.window_index[session.base_win] = session
 	M.sessions[session.editable_bufnr] = session
 	M.buffer_index[session.editable_bufnr] = session.editable_bufnr
 	M.buffer_index[session.base_bufnr] = session.editable_bufnr
@@ -33,6 +37,14 @@ function M.unregister(session)
 		return
 	end
 
+	if M.sessions[session.editable_bufnr] ~= session then
+		return
+	end
+	for _, win in ipairs({ session.editable_win, session.base_win }) do
+		if M.window_index[win] == session then
+			M.window_index[win] = nil
+		end
+	end
 	M.sessions[session.editable_bufnr] = nil
 	M.buffer_index[session.editable_bufnr] = nil
 	if session.base_bufnr then
@@ -61,36 +73,26 @@ function M.list()
 	return out
 end
 
-function M.set_pending_transfer(session)
-	if not session or not session.editable_win then
-		return
-	end
-	local key = transfer_key(session.editable_win)
+function M.for_window(winid)
+	return M.window_index[winid]
+end
+
+function M.replace(old, replacement)
+	assert(M.get(old.editable_bufnr) == old, "session lost ownership")
+	assert(not M.get(replacement.editable_bufnr), "target already owned")
+	M.unregister(old)
+	M.register(replacement)
+end
+
+function M.set_pending_transfer(winid, pending)
+	local key = transfer_key(winid)
 	cancel_transfer(M.pending_transfers[key])
-	M.pending_transfers[key] = {
-		tabpage = vim.api.nvim_get_current_tabpage(),
-		editable_bufnr = session.editable_bufnr,
-		base_bufnr = session.base_bufnr,
-		editable_win = session.editable_win,
-		base_win = session.base_win,
-		owned_editor_win = session.owned_editor_win,
-		aerial_transfer_state = session.aerial_transfer_state,
-		cancelled = false,
-		in_flight = false,
-	}
+	M.pending_transfers[key] = pending
+	return pending
 end
 
 function M.peek_pending_transfer(winid)
 	return M.pending_transfers[transfer_key(winid)]
-end
-
-function M.take_pending_transfer(winid)
-	local key = transfer_key(winid)
-	local pending = M.pending_transfers[key]
-	if pending then
-		pending.in_flight = true
-	end
-	return pending
 end
 
 function M.finish_pending_transfer(winid, pending)
@@ -103,16 +105,23 @@ function M.finish_pending_transfer(winid, pending)
 end
 
 function M.clear_pending_transfer(winid)
-	if winid then
-		local key = transfer_key(winid)
-		cancel_transfer(M.pending_transfers[key])
-		M.pending_transfers[key] = nil
-		return
+	local key = transfer_key(winid)
+	local pending = M.pending_transfers[key]
+	M.pending_transfers[key] = nil
+	cancel_transfer(pending)
+	if pending and pending.dispose then
+		pending.dispose()
 	end
+end
+
+function M.clear_all_pending_transfers()
+	local windows = {}
 	for _, pending in pairs(M.pending_transfers) do
-		cancel_transfer(pending)
+		windows[#windows + 1] = pending.editable_win
 	end
-	M.pending_transfers = {}
+	for _, win in ipairs(windows) do
+		M.clear_pending_transfer(win)
+	end
 end
 
 function M.set_repo_job(repo_root, job)
