@@ -791,7 +791,9 @@ function M.open(opts)
 		end
 		return owner
 	end
-	if owner and owner.editable_bufnr ~= bufnr then
+	-- A window whose session is mid-transfer keeps that owner. Buffers that already
+	-- have a session (including a session's base buffer) focus it below.
+	if owner and owner.editable_bufnr ~= bufnr and not state.get(bufnr) then
 		return owner
 	end
 	local existing = state.get(bufnr)

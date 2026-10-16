@@ -159,21 +159,28 @@ return function(ctx)
 				local target = api.nvim_get_current_buf()
 				assert(state.for_window(s.editable_win) == s and not state.get(target))
 				local messages = {}
+				local util = require("lazyvcs.util")
+				local notify = util.notify
 				---@diagnostic disable-next-line: duplicate-set-field
-				require("lazyvcs.util").notify = function(message)
+				util.notify = function(message)
 					messages[#messages + 1] = message
 				end
-				-- This earlier open finishes in EW before the new transfer can commit.
-				complete()
-				assert(not state.get(target) and state.for_window(s.editable_win) == s)
-				assert(#state.list() == 1 and #api.nvim_tabpage_list_wins(0) == 2)
-				assert(#messages == 1 and messages[1]:find("owned by another buffer"))
-				finish_transfer()()
-				ctx.wait_for(function()
-					local live = state.get(target)
-					return live and live.phase == "active"
-				end, "refused open stranded the window transfer")
-				assert(state.get(target).base_win == s.base_win)
+				local ok, err = xpcall(function()
+					-- This earlier open finishes in EW before the new transfer can commit.
+					complete()
+					assert(not state.get(target) and state.for_window(s.editable_win) == s)
+					assert(#state.list() == 1 and #api.nvim_tabpage_list_wins(0) == 2)
+					assert(#messages == 1 and messages[1]:find("owned by another buffer"))
+					finish_transfer()()
+					ctx.wait_for(function()
+						local live = state.get(target)
+						return live and live.phase == "active"
+					end, "refused open stranded the window transfer")
+					assert(state.get(target).base_win == s.base_win)
+				end, debug.traceback)
+				util.notify = notify
+				pcall(actions.close, target)
+				assert(ok, err)
 			end,
 		},
 		{
@@ -192,24 +199,45 @@ return function(ctx)
 					builds = builds + 1
 					return load(...)
 				end
-				vim.cmd.edit(vim.fn.fnameescape(other))
-				local target = api.nvim_get_current_buf()
-				assert(state.for_window(s.editable_win) == s and not state.get(target))
-				local before = builds
-				assert(actions.open() == s, "open did not return the pending window owner")
-				vim.cmd("LazyVCS diff open")
-				assert(builds == before, "immediate open started a competing backend build")
-				local complete = release()
-				assert(builds == 1, "transfer did not own the only build")
-				assert(actions.open() == s, "loading transfer lost its window owner")
-				complete()
-				ctx.wait_for(function()
-					local live = state.get(target)
-					return live and live.phase == "active"
-				end, "pending transfer did not finish")
-				local live = assert(state.get(target))
-				assert(live.base_win == s.base_win and live.base_bufnr == s.base_bufnr)
-				assert(#state.list() == 1 and #api.nvim_tabpage_list_wins(0) == 2)
+				local target
+				local ok, err = xpcall(function()
+					vim.cmd.edit(vim.fn.fnameescape(other))
+					target = api.nvim_get_current_buf()
+					assert(state.for_window(s.editable_win) == s and not state.get(target))
+					local before = builds
+					assert(actions.open() == s, "open did not return the pending window owner")
+					vim.cmd("LazyVCS diff open")
+					assert(builds == before, "immediate open started a competing backend build")
+					local complete = release()
+					assert(builds == 1, "transfer did not own the only build")
+					assert(actions.open() == s, "loading transfer lost its window owner")
+					complete()
+					ctx.wait_for(function()
+						local live = state.get(target)
+						return live and live.phase == "active"
+					end, "pending transfer did not finish")
+					local live = assert(state.get(target))
+					assert(live.base_win == s.base_win and live.base_bufnr == s.base_bufnr)
+					assert(#state.list() == 1 and #api.nvim_tabpage_list_wins(0) == 2)
+				end, debug.traceback)
+				backends.load_async = load
+				if target then
+					pcall(actions.close, target)
+				end
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_live_diff_open_from_base_pane_focuses_editable_pane",
+			function()
+				setup()
+				local s = opened()
+				api.nvim_set_current_win(s.base_win)
+				assert(actions.open() == s, "open from the base pane did not return its session")
+				assert(
+					api.nvim_get_current_win() == s.editable_win,
+					"open from the base pane did not focus the editable pane"
+				)
 			end,
 		},
 		{
