@@ -14,6 +14,8 @@ and this project adheres to
   opened windows do not inherit pane bindings.
 - Remove outgoing Compare snapshots from diff mode before switching files,
   preventing incorrect highlighting and E96 after reviewing several files.
+- Stop the blame split from leaving an empty listed buffer behind each time it
+  opens.
 
 ## [0.11.0] - 2026-10-09
 

@@ -33,8 +33,13 @@ function M.capture_win_options(winid, names)
 	return values
 end
 
+-- A second :diffoff restores the last saved pre-diff values, so skip windows that are
+-- not in diff mode; their current options may be newer than those values.
 ---@param winid integer
 function M.diff_off(winid)
+	if not M.get_win_option(winid, "diff") then
+		return
+	end
 	vim.api.nvim_win_call(winid, function()
 		vim.cmd("silent diffoff")
 	end)

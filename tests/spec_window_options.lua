@@ -111,6 +111,26 @@ return function(ctx)
 		layout.open(s)
 		return s, globals
 	end
+	-- A full live-diff session, so its buffer and window autocmds run during the test.
+	local function open_session()
+		local _, win = live()
+		local globals = snapshot(win, "global")
+		local buf = api.nvim_get_current_buf()
+		require("lazyvcs").open()
+		local state = require("lazyvcs.state")
+		ctx.wait_for(function()
+			local s = state.get(buf)
+			return s and s.base_win and api.nvim_win_is_valid(s.base_win)
+		end, "live diff did not open", 15000)
+		return assert(state.get(buf)), globals
+	end
+	local function session_intact(s)
+		local live_session = require("lazyvcs.state").get(s.editable_bufnr)
+		assert(live_session == s, "live diff session was replaced or closed")
+		for _, pane in ipairs({ s.editable_win, s.base_win }) do
+			assert(get(pane, "diff") and get(pane, "scrollbind"), "live diff pane lost its binding")
+		end
+	end
 	local function blame(svn)
 		require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false }, blame = { mode = "split" } })
 		local f = svn and h.make_svn_fixture() or h.make_git_fixture()
@@ -347,7 +367,7 @@ return function(ctx)
 		{
 			"test_source_control_sidebar_from_diff_is_unbound",
 			function()
-				local s, globals = open_layout()
+				local s, globals = open_session()
 				for _, pane in ipairs({ s.editable_win, s.base_win }) do
 					api.nvim_set_current_win(pane)
 					local native = require("lazyvcs.source_control.native")
@@ -355,10 +375,11 @@ return function(ctx)
 					unbound(sidebar.winid)
 					child(sidebar.winid)
 					equal_options(sidebar.winid, globals, "global")
-					assert(get(pane, "diff"))
 					native.close()
+					vim.wait(50)
+					session_intact(s)
 				end
-				layout.close(s)
+				require("lazyvcs").close()
 			end,
 		},
 		{
@@ -366,7 +387,9 @@ return function(ctx)
 			function()
 				local f, win = live()
 				set(win, "number", true, "global")
-				set(win, "wrap", true, "global")
+				set(win, "wrap", false, "global")
+				set(win, "foldmethod", "indent", "global")
+				set(win, "foldcolumn", "1", "global")
 				set(win, "winbar", "user bar", "global")
 				local globals = snapshot(win, "global")
 				local native = require("lazyvcs.source_control.native")
@@ -376,7 +399,11 @@ return function(ctx)
 				s.lazyvcs_open_file(s, f.root .. "/editor.txt")
 				win = api.nvim_get_current_win()
 				unbound(win)
-				assert(get(win, "number") and get(win, "wrap"))
+				assert(get(win, "number") and not get(win, "wrap"), "editor lost the user's wrap default")
+				assert(
+					get(win, "foldmethod") == "indent" and get(win, "foldcolumn") == "1",
+					"editor lost fold defaults"
+				)
 				assert(
 					get(win, "winbar") == "" and get(win, "statusline") == "" and not get(win, "winfixwidth"),
 					vim.inspect({
@@ -391,7 +418,8 @@ return function(ctx)
 				native.close()
 				win = api.nvim_get_current_win()
 				unbound(win)
-				assert(get(win, "number") and get(win, "wrap") and not get(win, "winfixwidth"))
+				assert(get(win, "number") and not get(win, "wrap") and not get(win, "winfixwidth"))
+				assert(get(win, "foldmethod") == "indent" and get(win, "foldcolumn") == "1")
 			end,
 		},
 		{
@@ -479,6 +507,59 @@ return function(ctx)
 				assert(get(s.editable_win, "diff") and get(s.base_win, "diff"))
 				api.nvim_win_close(win, true)
 				layout.close(s)
+			end,
+		},
+		{
+			"test_core_diff_off_keeps_options_after_diff_ended",
+			function()
+				vim.cmd.enew()
+				local win = api.nvim_get_current_win()
+				vim.cmd("vsplit")
+				vim.cmd.enew()
+				for _, w in ipairs({ win, api.nvim_get_current_win() }) do
+					set(w, "wrap", true)
+					set(w, "foldmethod", "manual")
+					set(w, "foldcolumn", "0")
+					api.nvim_win_call(w, function()
+						vim.cmd("diffthis")
+					end)
+				end
+				util.diff_off(win)
+				assert(not get(win, "diff"))
+				local prefs = { wrap = false, foldmethod = "indent", foldcolumn = "1" }
+				for name, value in pairs(prefs) do
+					set(win, name, value)
+				end
+				-- A second native :diffoff here would restore the pre-diff values saved above.
+				util.diff_off(win)
+				equal_options(win, prefs)
+				vim.cmd("diffoff!")
+			end,
+		},
+		{
+			"test_blame_split_does_not_leave_listed_buffers",
+			function()
+				require("lazyvcs").setup({
+					use_gitsigns = false,
+					signs = { enabled = false },
+					blame = { mode = "split", persist = false },
+				})
+				local f = h.make_git_fixture()
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				local buf = api.nvim_get_current_buf()
+				local before = vim.fn.getbufinfo({ buflisted = 1 })
+				for _ = 1, 3 do
+					assert(require("lazyvcs.blame").blame_split())
+					ctx.wait_for(function()
+						local view = require("lazyvcs.blame")._test_blame_views()[buf]
+						return view and view.winid and api.nvim_win_is_valid(view.winid)
+					end, "blame split did not load", 15000)
+					require("lazyvcs.blame").blame_split()
+					assert(not require("lazyvcs.blame")._test_blame_views()[buf], "blame split did not close")
+					-- Let the closed split's scheduled cleanup run, as it does between key presses.
+					vim.wait(20)
+				end
+				assert(#vim.fn.getbufinfo({ buflisted = 1 }) == #before, "blame split left listed buffers")
 			end,
 		},
 	}
