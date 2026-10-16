@@ -24,7 +24,8 @@ return function(ctx)
 				end
 				h.exec({ "svn", "add", "added.txt", "plain.txt" }, f.root)
 				h.exec({ "svn", "propset", "svn:eol-style", "native", "added.txt" }, f.root)
-				h.exec({ "svn", "propset", "svn:executable", "*", "added.txt" }, f.root)
+				-- SVN on Windows expands a "*" argument as a wildcard; it stores any svn:executable value as "*".
+				h.exec({ "svn", "propset", "svn:executable", "ON", "added.txt" }, f.root)
 				h.write_file(f.file, "one\ntwo\nthree\n")
 				h.exec({ "svn", "propset", "custom:file", "value", "sample.txt" }, f.root)
 				local snapshot = assert(await(function(done)
