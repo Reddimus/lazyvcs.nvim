@@ -844,13 +844,13 @@ local function revert_hunk(context)
 		return confirm.mutation(
 			{
 				prompt = "Revert hunk under cursor?",
-				before_confirm = function()
+				before_confirm = release_on_error(function()
 					local valid = context_is_unchanged()
 					if not valid then
 						release()
 					end
 					return valid
-				end,
+				end),
 			},
 			release_on_error(on_confirm),
 			function()

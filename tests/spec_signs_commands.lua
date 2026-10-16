@@ -248,7 +248,7 @@ return function(ctx)
 			end),
 		}
 	end
-	for _, failure in ipairs({ "validation_throw", "callback_throw", "before_false" }) do
+	for _, failure in ipairs({ "validation_throw", "callback_throw", "before_false", "before_throw" }) do
 		cases[#cases + 1] = {
 			"test_signs_confirmed_revert_" .. failure .. "_releases_native_hold",
 			s.guard(function()
@@ -282,9 +282,18 @@ return function(ctx)
 					end
 					if failure == "before_false" then
 						s.api.nvim_buf_set_lines(buf, 1, 2, false, { "edited during confirmation" })
+					elseif failure == "before_throw" then
+						---@diagnostic disable-next-line: duplicate-set-field
+						util.buffer_context_is_unchanged = function()
+							error("injected before_confirm error")
+						end
 					end
 					local accepted, why = pcall(accept)
-					if failure == "validation_throw" then
+					if failure == "before_throw" then
+						-- The confirmation modal turns a before_confirm error into a cancel.
+						util.buffer_context_is_unchanged = unchanged
+						assert(accepted, why)
+					elseif failure == "validation_throw" then
 						assert(
 							not accepted and tostring(why):find("injected", 1, true),
 							"validation error was swallowed"
