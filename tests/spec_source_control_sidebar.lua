@@ -97,7 +97,13 @@ return function(ctx)
 				h.exec({ "git", "stash", "push", "-m", "sidebar regression" }, f.root)
 				h.write_file(f.file, "one\nmodified after stash\nthree\n")
 				local raw = h.exec({ "git", "status", "--porcelain=v2", "-z" }, f.root)
-				assert(raw:find("# stash 1\0", 1, true), "fixture did not emit a stash header")
+				-- Git 2.35 added the porcelain v2 stash header; older Git only checks the load.
+				local major, minor = h.exec({ "git", "--version" }, f.root):match("(%d+)%.(%d+)")
+				local emits_header = tonumber(major) > 2 or (tonumber(major) == 2 and tonumber(minor) >= 35)
+				assert(
+					(raw:find("# stash 1\0", 1, true) ~= nil) == emits_header,
+					"fixture stash header did not match the Git version"
+				)
 				local s = open(f.root)
 				local summary = s.lazyvcs_repo_cache[f.root]
 				assert(summary and not summary.error, "sidebar summary did not load")
