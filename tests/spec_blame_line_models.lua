@@ -263,6 +263,45 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_blame_validation_ignores_small_signs_limit",
+			function()
+				local format = require("lazyvcs.backends.blame_format")
+				t.patch(require("lazyvcs.config").get().signs, "max_file_bytes", 1)
+				local opts = { text = { lines = { "one" } }, profile = { fileencoding = "utf-8", fileformat = "unix" } }
+				local rows, err = format.select(
+					{ string.rep("a", 40) .. " 1 1 1", "\tone" },
+					opts,
+					format.git_policy(opts, { filter = "strip" })
+				)
+				assert(rows, err or "small signs limit disabled filtered Git blame")
+			end,
+		},
+		{
+			"test_svn_blame_validation_ignores_small_signs_limit",
+			function()
+				local f, buf, _, backend = t.open(true, { signs = { max_file_bytes = 1 } })
+				local rows, err = result(f, backend, buf, 1)
+				assert(rows, err or "small signs limit disabled SVN blame")
+			end,
+		},
+		{
+			"test_blame_validation_reports_decode_size_error",
+			function()
+				local format = require("lazyvcs.backends.blame_format")
+				local line = string.rep("x", 1024 * 1024 + 1)
+				local opts = { text = { lines = { line } }, profile = { fileencoding = "utf-8", fileformat = "unix" } }
+				local rows, err = format.select(
+					{ string.rep("a", 40) .. " 1 1 1", "\t" .. line },
+					opts,
+					format.git_policy(opts, { filter = "strip" })
+				)
+				assert(
+					not rows and err and err:find("exceeds", 1, true),
+					"decode limit reported a line mismatch: " .. tostring(err)
+				)
+			end,
+		},
+		{
 			"test_svn_blame_decode_encoding_and_empty_base",
 			function()
 				local format, text = require("lazyvcs.backends.blame_format"), require("lazyvcs.compare_text")

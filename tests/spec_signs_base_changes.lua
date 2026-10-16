@@ -33,6 +33,28 @@ return function(ctx)
 	end
 	local cases = {
 		{
+			"test_signs_native_stage_then_growth_clears_stale_marks",
+			s.guard(function()
+				local f, buf = s.fixture(false, { signs = { max_file_bytes = 64 } })
+				s.refresh(buf, true)
+				local sidebar_state, node = sidebar(f)
+				ops.stage_file(sidebar_state, node)
+				finished(f)
+				hunk_count(buf, 0, "stage did not settle")
+				s.edit(buf, { "one", "post-stage edit", "three" })
+				s.wait(function()
+					return #s.marks(buf) > 0
+				end, "native edit signs absent")
+				s.edit(buf, { "one", string.rep("x", 80), "three" })
+				s.wait(function()
+					return #s.marks(buf) == 0
+				end, "oversized buffer retained stale marks")
+				local state = assert(s.signs.current_state(buf))
+				assert(state.skipped and not state.base_text and not state.current_text)
+				assert(not state.gitsigns_refresh_needed, "native stage set a gitsigns freshness mark")
+			end),
+		},
+		{
 			"test_signs_stage_reloads_index_before_hunk_actions",
 			s.guard(function()
 				local f, buf = s.fixture(false)

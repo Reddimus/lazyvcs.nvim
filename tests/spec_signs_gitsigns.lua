@@ -68,6 +68,126 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_signs_oversized_cleanup_preserves_delegated_freshness",
+			s.guard(function()
+				local f, buf = s.fixture(false, { use_gitsigns = true, signs = { max_file_bytes = 64 } })
+				s.refresh(buf, true)
+				assert(#s.marks(buf) > 0)
+				attach(buf, function() end)
+				local change = s.signs.begin_base_change(f.root, { f.file })
+				s.signs.finish_base_change(change)
+				s.edit(buf, { "one", string.rep("x", 80), "three" })
+				s.signs.refresh(buf, false)
+				local state = assert(s.signs.current_state(buf))
+				assert(state.skipped, "oversized delegated state was not marked skipped")
+				assert(not state.base_text and not state.current_text and not state.decorated_hunks)
+				assert(#s.marks(buf) == 0 and state.gitsigns_refresh_needed, "cleanup lost settlement freshness")
+				vim.cmd("LazyVCS hunk revert")
+				s.wait(function()
+					return state.gitsigns_waiters and next(state.gitsigns_waiters) ~= nil
+				end, "large revert bypassed freshness wait")
+				s.api.nvim_buf_delete(buf, { force = true })
+				assert((state.native_holds or 0) == 0 and not state.large_revert_pending)
+			end),
+		},
+		{
+			"test_signs_detach_during_confirmation_resumes_native_gutter",
+			s.guard(function()
+				for _, choice in ipairs({ "1", "3" }) do
+					local _, buf = s.fixture(false, {
+						use_gitsigns = true,
+						source_control = { confirm_mutations = true },
+					})
+					s.refresh(buf, true)
+					attach(buf, function()
+						error("detached gitsigns was invoked")
+					end)
+					vim.cmd("LazyVCS hunk revert")
+					s.wait(function()
+						return type(vim.fn.maparg(choice, "n", false, true).callback) == "function"
+					end, "confirmation absent", 15000)
+					-- Detach publishes an update before dropping its cached hunks.
+					s.api.nvim_exec_autocmds("User", { pattern = "GitSignsUpdate", data = { buffer = buf } })
+					---@diagnostic disable-next-line: duplicate-set-field
+					package.loaded.gitsigns.get_hunks = function()
+						return nil
+					end
+					vim.fn.maparg(choice, "n", false, true).callback()
+					s.wait(function()
+						return (s.signs.current_state(buf).native_holds or 0) == 0
+					end, "confirmation hold was not released", 15000)
+					s.edit(buf, { "one", "edited after detach", "three" })
+					s.wait(function()
+						return #s.marks(buf) > 0
+					end, "detached confirmation suppressed native signs")
+					assert(not s.signs.current_state(buf).delegate_after_command)
+				end
+			end),
+		},
+		{
+			"test_signs_confirmation_dismissals_release_command_ownership",
+			s.guard(function()
+				for _, large in ipairs({ false, true }) do
+					for _, dismissal in ipairs({ "q", "<Esc>", "window", "buffer" }) do
+						local _, buf = s.fixture(false, {
+							use_gitsigns = true,
+							signs = { max_file_bytes = large and 1 or 1024 },
+							source_control = { confirm_mutations = true },
+						})
+						local resets = 0
+						attach(buf, function()
+							resets = resets + 1
+						end)
+						vim.cmd("LazyVCS hunk revert")
+						s.wait(function()
+							return type(vim.fn.maparg("1", "n", false, true).callback) == "function"
+						end, "confirmation absent", 15000)
+						local state = s.signs.current_state(buf)
+						if dismissal == "window" then
+							s.api.nvim_win_close(0, true)
+						elseif dismissal == "buffer" then
+							s.api.nvim_buf_delete(0, { force = true })
+						else
+							vim.fn.maparg(dismissal, "n", false, true).callback()
+						end
+						s.wait(function()
+							return (state.native_holds or 0) == 0
+						end, "dismissal stranded hold")
+						assert(not state.large_revert_pending and resets == 0)
+						vim.cmd("LazyVCS hunk revert")
+						s.wait(function()
+							return type(vim.fn.maparg("3", "n", false, true).callback) == "function"
+						end, "dismissal blocked the next revert", 15000)
+						vim.fn.maparg("3", "n", false, true).callback()
+					end
+				end
+			end),
+		},
+		{
+			"test_signs_old_large_revert_release_preserves_new_command",
+			s.guard(function()
+				local _, buf = s.fixture(false, {
+					use_gitsigns = true,
+					signs = { max_file_bytes = 1 },
+					source_control = { confirm_mutations = true },
+				})
+				attach(buf, function() end)
+				vim.cmd("LazyVCS hunk revert")
+				s.wait(function()
+					return type(vim.fn.maparg("3", "n", false, true).callback) == "function"
+				end, "first confirmation absent", 15000)
+				local state = s.signs.current_state(buf)
+				local old_release = assert(state.large_revert_pending)
+				vim.fn.maparg("3", "n", false, true).callback()
+				vim.cmd("LazyVCS hunk revert")
+				local new_release = assert(state.large_revert_pending)
+				old_release()
+				assert(state.large_revert_pending == new_release, "old release cleared a newer command")
+				assert(state.native_holds == 1)
+				vim.fn.maparg("3", "n", false, true).callback()
+			end),
+		},
+		{
 			"test_signs_large_file_second_waiting_revert_is_rejected",
 			s.guard(function()
 				local notices = {}
@@ -320,6 +440,17 @@ return function(ctx)
 				assert(pending.resets == 0 and type(pending.confirmation()) ~= "function")
 				assert(s.api.nvim_buf_get_lines(pending.buf, 1, 2, false)[1] == "changed")
 				assert((s.signs.current_state(pending.buf).native_holds or 0) == 0)
+				assert(
+					not s.signs.current_state(pending.buf).gitsigns_refresh_needed,
+					"timeout retained freshness mark"
+				)
+				-- Retry must converge even when no update ever arrives.
+				vim.cmd("LazyVCS hunk revert")
+				s.wait(function()
+					return type(pending.confirmation()) == "function"
+				end, "retry waited again")
+				assert(pending.refreshes == 1 and #notices == 1)
+				vim.fn.maparg("3", "n", false, true).callback()
 				pending.publish(pending.buf)
 				vim.wait(50)
 				assert(#notices == 1 and pending.resets == 0 and type(pending.confirmation()) ~= "function")
@@ -619,42 +750,59 @@ return function(ctx)
 		{
 			"test_signs_delegated_confirmation_rejects_changed_base_generation",
 			s.guard(function()
-				local f, buf = s.fixture(false, { use_gitsigns = true, source_control = { confirm_mutations = true } })
-				s.refresh(buf, true)
-				local resets = 0
-				attach(buf, function()
-					resets = resets + 1
-				end)
-				vim.cmd("LazyVCS hunk revert")
-				s.wait(function()
-					return type(vim.fn.maparg("1", "n", false, true).callback) == "function"
-				end, "confirmation absent", 15000)
-				local state = s.signs.current_state(buf)
-				assert(#s.marks(buf) == 0, "native signs appeared while delegated confirmation was open")
-				local generation = state.base_generation
-				local config = require("lazyvcs.config").get()
-				config.source_control.confirm_mutations = false
-				local repo =
-					{ root = f.root, name = "fixture", vcs = "git", counts = { staged = 0, local_changes = 1 } }
-				require("lazyvcs.source_control.ops").stage_file({
-					path = f.root,
-					lazyvcs_repo_cache = { [f.root] = repo },
-					lazyvcs_render = function() end,
-				}, {
-					type = "file",
-					path = f.file,
-					extra = { repo_root = f.root, relpath = "sample.txt", section = "unstaged", status = " M" },
-				})
-				s.wait(function()
-					return state.base_generation >= generation + 2
-				end, "real staging did not settle", 15000)
-				config.source_control.confirm_mutations = true
-				assert(s.h.exec({ "git", "show", ":sample.txt" }, f.root) == "one\nchanged\nthree\n")
-				vim.fn.maparg("1", "n", false, true).callback()
-				vim.wait(30)
-				assert(resets == 0, "delegated confirmation ignored changed base generation")
-				assert(s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "changed")
-				assert((state.native_holds or 0) == 0)
+				for _, stage in ipairs({ true, false }) do
+					local f, buf =
+						s.fixture(false, { use_gitsigns = true, source_control = { confirm_mutations = true } })
+					s.refresh(buf, true)
+					local resets = 0
+					attach(buf, function()
+						resets = resets + 1
+					end)
+					vim.cmd("LazyVCS hunk revert")
+					s.wait(function()
+						return type(vim.fn.maparg("1", "n", false, true).callback) == "function"
+					end, "confirmation absent", 15000)
+					local state = s.signs.current_state(buf)
+					assert(#s.marks(buf) == 0, "native signs appeared while delegated confirmation was open")
+					local before = s.api.nvim_buf_get_lines(buf, 0, -1, false)
+					local generation = state.base_generation
+					local base = vim.deepcopy(state.base_text)
+					local config = require("lazyvcs.config").get()
+					config.source_control.confirm_mutations = false
+					local repo =
+						{ root = f.root, name = "fixture", vcs = "git", counts = { staged = 0, local_changes = 1 } }
+					require("lazyvcs.source_control.ops")[stage and "stage_file" or "unstage_file"]({
+						path = f.root,
+						lazyvcs_repo_cache = { [f.root] = repo },
+						lazyvcs_render = function() end,
+					}, {
+						type = "file",
+						path = f.file,
+						extra = { repo_root = f.root, relpath = "sample.txt", section = "unstaged", status = " M" },
+					})
+					s.wait(function()
+						return state.base_generation >= generation + 2
+					end, "real index operation did not settle", 15000)
+					-- A no-op unstage advances the generation without changing the base text.
+					s.signs.refresh(buf, true, nil, true)
+					s.wait(function()
+						return state.loaded
+					end, "native base did not reload", 15000)
+					assert(vim.deep_equal(base, state.base_text) == not stage)
+					config.source_control.confirm_mutations = true
+					assert(
+						s.h.exec({ "git", "show", ":sample.txt" }, f.root)
+							== (stage and "one\nchanged\nthree\n" or "one\ntwo\nthree\n")
+					)
+					vim.fn.maparg("1", "n", false, true).callback()
+					vim.wait(30)
+					assert(resets == 0, "delegated confirmation ignored changed base generation")
+					assert(
+						vim.deep_equal(before, s.api.nvim_buf_get_lines(buf, 0, -1, false)),
+						"stale confirmation changed buffer lines"
+					)
+					assert((state.native_holds or 0) == 0)
+				end
 			end),
 		},
 	}

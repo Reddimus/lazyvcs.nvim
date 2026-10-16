@@ -987,13 +987,9 @@ function M.blame_lines_async(path, on_done, opts)
 												return task:finish(nil, base_err)
 											end
 											if opts.profile then
+												local format = require("lazyvcs.backends.blame_format")
 												local decoded, decode_err =
-													require("lazyvcs.backends.blame_format").svn_base(
-														base,
-														opts.profile,
-														lines,
-														require("lazyvcs.config").get().signs.max_file_bytes
-													)
+													format.svn_base(base, opts.profile, lines, format.decode_limit())
 												if not decoded then
 													return task:finish(nil, decode_err)
 												end

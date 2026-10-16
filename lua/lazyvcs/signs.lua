@@ -165,7 +165,7 @@ local function hunk_rows(bufnr, hunk)
 end
 
 local function render_signs(bufnr, state)
-	if state.delegate_after_command then
+	if state.delegate_after_command and defers_to_gitsigns(state.backend or "git", bufnr) then
 		vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
 		state.decorated_hunks, state.decorated_enabled = nil, nil
 		return
@@ -215,6 +215,7 @@ end
 
 local delegate_to_gitsigns
 local threaded_diff
+local render
 
 local function delegate_after_command(bufnr, state)
 	if
@@ -223,7 +224,10 @@ local function delegate_after_command(bufnr, state)
 		and (state.native_holds or 0) == 0
 		and (state.notifying_waiters or 0) == 0
 	then
-		delegate_to_gitsigns(bufnr, state)
+		if not delegate_to_gitsigns(bufnr, state) then
+			state.delegate_after_command = nil
+			render(bufnr)
+		end
 	end
 end
 
@@ -259,7 +263,7 @@ local function hold_native(bufnr, state)
 	end
 end
 
-local function render(bufnr, on_ready)
+render = function(bufnr, on_ready)
 	local state = buffers[bufnr]
 	if not state or not vim.api.nvim_buf_is_loaded(bufnr) then
 		return false
@@ -479,7 +483,7 @@ function M.finish_base_change(change)
 		if matches_change(change, state) then
 			invalidate_base(buf, state, "base_changed")
 			if not changing_base(state) then
-				state.gitsigns_refresh_needed = true
+				state.gitsigns_refresh_needed = defers_to_gitsigns(state.backend or "git", buf) or nil
 				local waiters = state.base_waiters or {}
 				state.base_waiters = nil
 				local awaiting = #waiters > 0 or state.load_waiters ~= nil or state.compute_waiters ~= nil
@@ -515,6 +519,12 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 		then
 			-- A delegated revert shares the native command hold and settlement waiters,
 			-- but cannot load a native base. Preserve it across automatic refreshes.
+			if (state.native_holds or 0) == 0 then
+				invalidate_base(bufnr, state)
+				state.native, state.delegated, state.computing = nil, nil, nil
+				state.decorated_hunks, state.decorated_enabled = nil, nil
+				state.skipped = true
+			end
 			if changing_base(state) then
 				if on_ready then
 					state.base_waiters = state.base_waiters or {}
@@ -847,6 +857,7 @@ local function after_gitsigns_refresh(context, state, release, on_ready)
 		if finished then
 			return
 		end
+		state.gitsigns_refresh_needed = nil
 		cancel()
 		util.notify("gitsigns.nvim has not refreshed its hunks; retry the revert", vim.log.levels.WARN)
 	end
@@ -890,7 +901,9 @@ local function revert_large_gitsigns_hunk(context)
 	state.skipped = true
 	local release_native = hold_native(bufnr, state)
 	local function release()
-		state.large_revert_pending = nil
+		if state.large_revert_pending == release then
+			state.large_revert_pending = nil
+		end
 		release_native()
 	end
 	state.large_revert_pending = release

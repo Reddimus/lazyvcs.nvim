@@ -1,5 +1,9 @@
 local M = {}
 
+function M.decode_limit()
+	return math.max(1024 * 1024, require("lazyvcs.config").get().signs.max_file_bytes)
+end
+
 function M.full_file(opts)
 	local profile = opts.profile
 	if not profile or not opts.text then
@@ -58,12 +62,15 @@ function M.select(lines, opts, policy)
 				end
 			end
 		end
-		local decoded = require("lazyvcs.compare_text").decode(
+		local decoded, decode_err = require("lazyvcs.compare_text").decode(
 			table.concat(source, "\n") .. (#source > 0 and "\n" or ""),
 			policy.profile,
-			require("lazyvcs.config").get().signs.max_file_bytes
+			M.decode_limit()
 		)
-		if not decoded or #decoded.lines ~= #records then
+		if not decoded then
+			return nil, decode_err
+		end
+		if #decoded.lines ~= #records then
 			return nil, "Unsupported blame line format: Git and the editor use different lines"
 		end
 		for number, line in ipairs(decoded.lines) do
