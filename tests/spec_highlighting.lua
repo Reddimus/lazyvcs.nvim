@@ -1,9 +1,10 @@
 return function(ctx)
 	local api = vim.api
 	local function sample()
-		vim.cmd.enew()
+		local previous = api.nvim_get_current_win()
+		vim.cmd("new")
+		api.nvim_win_close(previous, true)
 		local buf, win = api.nvim_get_current_buf(), api.nvim_get_current_win()
-		api.nvim_win_set_hl_ns(win, -1)
 		vim.wo[win].winhighlight = ""
 		api.nvim_buf_set_lines(buf, 0, -1, false, { "return value" })
 		vim.bo[buf].filetype = "c"
@@ -47,7 +48,6 @@ return function(ctx)
 				set("winhighlight", "Normal:ErrorMsg", { win = win, scope = "local" })
 				local expected = attr(win)
 				guard.apply(win, "syntax")
-				local managed = api.nvim_get_hl_ns({ winid = win })
 				-- Keep a second managed window so release cannot remove the OptionSet listener.
 				vim.cmd.vsplit()
 				local other = api.nvim_get_current_win()
@@ -57,7 +57,10 @@ return function(ctx)
 					guard.release(win)
 					api.nvim_exec_autocmds("OptionSet", { pattern = "winhighlight" })
 					vim.wait(50)
-					assert(api.nvim_get_hl_ns({ winid = win }) ~= managed, "released namespace reacquired")
+					assert(
+						not vim.wo[win].winhighlight:find("LazyVcsSemanticHidden", 1, true),
+						"released overlay reacquired"
+					)
 					assert(attr(win) == expected, "mapping colors not restored")
 					assert(
 						api.nvim_get_option_value("winhighlight", { win = win, scope = "local" }) == "Normal:ErrorMsg"
@@ -114,16 +117,15 @@ return function(ctx)
 				api.nvim_set_hl(0, "Comment", { bg = "#ff00ff" })
 				api.nvim_set_hl(0, "ErrorMsg", { bg = "#00ff00" })
 				vim.wo[win].winhighlight = "Normal:Comment,Comment:ErrorMsg"
-				api.nvim_win_set_hl_ns(win, api.nvim_get_hl_ns({ winid = win }))
 				local expected = attr(win, true)
 				overlay(buf, marks)
 				guard.apply(win, "syntax")
 				assert(attr(win, true) == expected, "winhighlight links changed their targets")
-				assert(api.nvim_get_hl(api.nvim_get_hl_ns({ winid = win }), { name = "Normal" }).bg == 0xff00ff)
+				assert(api.nvim_get_hl(api.nvim_get_hl_ns({ winid = win }), { name = "Normal" }).link == "Comment")
 				vim.wo[win].winhighlight = "Normal:ErrorMsg"
 				api.nvim_exec_autocmds("OptionSet", { pattern = "winhighlight" })
 				ctx.wait_for(function()
-					return api.nvim_get_hl(api.nvim_get_hl_ns({ winid = win }), { name = "Normal" }).bg == 0x00ff00
+					return api.nvim_get_hl(api.nvim_get_hl_ns({ winid = win }), { name = "Normal" }).link == "ErrorMsg"
 				end, "new mapping not applied")
 				guard.release(win)
 				assert(vim.wo[win].winhighlight == "Normal:ErrorMsg")
@@ -137,13 +139,13 @@ return function(ctx)
 			function()
 				local guard = require("lazyvcs.highlighting")
 				local _, win = sample()
-				local previous = api.nvim_get_hl_ns({ winid = win })
+				local previous = vim.wo[win].winhighlight
 				guard.apply(win, "syntax")
 				vim.cmd.enew()
-				assert(api.nvim_get_hl_ns({ winid = win }) == previous, "guard leaked into another buffer")
+				assert(vim.wo[win].winhighlight == previous, "guard leaked into another buffer")
 				guard.apply(win, "syntax")
 				guard.apply(win, "editor")
-				assert(api.nvim_get_hl_ns({ winid = win }) == previous)
+				assert(vim.wo[win].winhighlight == previous)
 				assert(not pcall(require("lazyvcs.config").setup, { diff_highlighting = "invalid" }))
 			end,
 		},
@@ -153,7 +155,6 @@ return function(ctx)
 				local guard = require("lazyvcs.highlighting")
 				local buf, win, marks = sample()
 				vim.wo[win].winhighlight = "Normal:LazyVCSTestSyntax"
-				api.nvim_win_set_hl_ns(win, api.nvim_get_hl_ns({ winid = win }))
 				local syntax = attr(win, true)
 				guard.apply(win, "syntax")
 				assert(attr(win, true) == syntax)
@@ -238,7 +239,8 @@ return function(ctx)
 				local pooled = api.nvim_get_hl_ns({ winid = win })
 				guard.release(win)
 				assert(api.nvim_get_hl_ns({ winid = win }) == original)
-				api.nvim_win_set_hl_ns(win, -1)
+				local fresh = api.nvim_create_namespace("lazyvcs-test-fresh-theme")
+				api.nvim_win_set_hl_ns(win, fresh)
 				local global = attr(win)
 				guard.apply(win, "syntax")
 				assert(api.nvim_get_hl_ns({ winid = win }) == pooled, "namespace was not reused")
@@ -254,18 +256,19 @@ return function(ctx)
 		{
 			"test_core_diff_highlighting_live_layout_cleanup",
 			function()
+				sample()
 				local fixture = ctx.helpers.make_git_fixture()
 				vim.cmd.edit(vim.fn.fnameescape(fixture.file))
 				local win = api.nvim_get_current_win()
-				local original = api.nvim_get_hl_ns({ winid = win })
+				local original = vim.wo[win].winhighlight
 				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
 				require("lazyvcs").open()
 				ctx.wait_for(function()
 					return require("lazyvcs.state").get(api.nvim_get_current_buf())
 				end, "diff did not open")
-				assert(api.nvim_get_hl_ns({ winid = win }) ~= original)
+				assert(vim.wo[win].winhighlight:find("LazyVcsSemanticHidden", 1, true))
 				require("lazyvcs").close()
-				assert(api.nvim_get_hl_ns({ winid = win }) == original)
+				assert(vim.wo[win].winhighlight == original)
 			end,
 		},
 	}

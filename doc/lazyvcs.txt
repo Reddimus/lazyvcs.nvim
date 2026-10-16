@@ -105,6 +105,14 @@ Git uses the common ancestor of HEAD and the chosen base. Its net comparison
 includes committed, staged, and saved working-tree changes. SVN compares the
 chosen repository revision to the saved working copy. Neither includes unsaved
 buffers. Nonignored untracked files are included by default.
+Omitted sparse-checkout files use a read-only INDEX (sparse checkout) snapshot
+when Git confirms a stage-zero, regular skip-worktree entry. Present files
+still use saved filesystem contents. A preview never materializes omitted files.
+
+SVN metadata includes properties on added versioned files, even when SVN's summary
+reports no property changes. Property patches are limited to 1 MiB per selected
+path. If optional properties are unavailable, metadata shows the reason and the
+text preview remains available.
 
 A base choice is remembered per worktree and branch, or per SVN working-copy URL.
 Detached Git choices last only for the comparison session. Each refresh pins
@@ -153,7 +161,8 @@ base, edit, files, help, and close are also available as commands.
 
 File and grep pickers, including AstroNvim <leader>ff and <leader>fw, can open
 files from any Compare window. Selections open actual editable files in the
-original editor and preserve search positions. Compare keeps its current file.
+original editor and preserve search positions, including while a preview loads.
+Compare keeps its current file.
 A split is created when needed to preserve unsaved buffers or winfixbuf.
 Editing from a text pane maps the review position through saved and unsaved
 changes. Above 1 MiB of editing contents, it clamps the position instead.
@@ -553,7 +562,14 @@ Unknown or removed configuration keys are reported once at startup with
 |vim.notify_once()| rather than being ignored silently.
 
 Diff highlighting is window-local. Other views of the same buffer keep their
-colors, and closing the comparison restores the previous highlight namespace.
+colors. For inherited window colors, LazyVCS adds semantic-group mappings to
+'winhighlight' and removes them on release, preserving mappings you change
+while the diff is open. Statuslines and other raw option readers see this overlay
+while the window is managed. New splits and floats keep only your mappings.
+Explicit custom highlight namespaces use a reusable namespace that resolves
+links through the source theme; closing restores the previous namespace.
+The internal overlay is bounded to 4096 entries and 256 KiB, plus your mappings.
+Excess semantic groups retain editor colors if either bound is reached.
 Syntax comments, diff backgrounds, diagnostics, signs, and blame remain visible.
 LSP clients stay attached. This also prevents inactive-code dimming when a
 language server cannot resolve build flags. It does not fix missing build flags.

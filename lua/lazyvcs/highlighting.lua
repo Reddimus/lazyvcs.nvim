@@ -3,9 +3,90 @@ local api = vim.api
 local M = {}
 local windows, pool = {}, {}
 local group
+local hidden = "LazyVcsSemanticHidden"
+local writing = false
+local max_overlay_bytes = 256 * 1024
+
+local function explicit(win)
+	local ns = api.nvim_get_hl_ns({ winid = win })
+	local source = ns == -1 and api.nvim_get_hl_ns({}) or ns
+	for _, named in pairs(api.nvim_get_namespaces()) do
+		if named == source then
+			return true
+		end
+	end
+	if source > 0 then
+		local mappings = {}
+		for from, to in tostring(util.get_win_option(win, "winhighlight")):gmatch("([^,:]+):([^,]+)") do
+			mappings[from] = to
+		end
+		for name, value in pairs(api.nvim_get_hl(source, {})) do
+			if not value.link or value.link ~= mappings[name] then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+local function user_mappings(value, state)
+	if state and value == state.overlay then
+		return state.user
+	end
+	local entries = {}
+	for entry in value:gmatch("[^,]+") do
+		if entry:match(":([^:]+)$") ~= hidden then
+			entries[#entries + 1] = entry
+		end
+	end
+	return table.concat(entries, ",")
+end
+
+local function write_mapping(win, value)
+	writing = true
+	local ok, err = pcall(util.set_win_option, win, "winhighlight", value)
+	writing = false
+	if not ok then
+		error(err)
+	end
+end
+
+local function strip_window(win)
+	if not windows[win] then
+		local value = util.get_win_option(win, "winhighlight")
+		---@cast value string
+		if value:find(hidden, 1, true) then
+			write_mapping(win, user_mappings(value))
+		end
+	end
+end
+
+local function strip_unowned()
+	for _, win in ipairs(api.nvim_list_wins()) do
+		strip_window(win)
+	end
+end
+
+local function overlay(win, state)
+	local entries = state.user == "" and {} or { state.user }
+	local names = vim.tbl_keys(state.suppressed)
+	table.sort(names)
+	for _, name in ipairs(names) do
+		entries[#entries + 1] = name .. ":" .. hidden
+	end
+	state.overlay = table.concat(entries, ",")
+	if util.get_win_option(win, "winhighlight") ~= state.overlay then
+		write_mapping(win, state.overlay)
+	end
+	state.native_ns = api.nvim_get_hl_ns({ winid = win })
+end
 
 local function owned(win, state)
-	return api.nvim_win_is_valid(win) and api.nvim_get_hl_ns({ winid = win }) == state.slot.ns
+	return api.nvim_win_is_valid(win)
+		and (
+			state.native and (api.nvim_get_hl_ns({ winid = win }) == state.native_ns or not explicit(win))
+			or state.slot and api.nvim_get_hl_ns({ winid = win }) == state.slot.ns
+		)
 end
 
 local function semantic(name)
@@ -13,16 +94,33 @@ local function semantic(name)
 end
 
 local function define(slot, name, value)
-	api.nvim_set_hl(slot.ns, name, value)
-	slot.names[name] = true
+	if slot.native then
+		if slot.suppressed[name] then
+			return false
+		end
+		local bytes = #name + #hidden + 2
+		if slot.bytes + bytes <= max_overlay_bytes and slot.count < 4096 then
+			slot.suppressed[name] = true
+			slot.bytes, slot.count = slot.bytes + bytes, slot.count + 1
+			return true
+		end
+		return false
+	else
+		api.nvim_set_hl(slot.ns, name, value)
+		slot.names[name] = true
+		return true
+	end
 end
 
 local function suppress(slot, token, ft)
+	local added = false
 	local function empty(name)
 		for _, qualified in ipairs({ name, name .. "." .. ft }) do
-			if not slot.suppressed[qualified] then
-				define(slot, qualified, {})
-				slot.suppressed[qualified] = true
+			if not slot.suppressed[qualified] and define(slot, qualified, {}) then
+				added = true
+				if not slot.native then
+					slot.suppressed[qualified] = true
+				end
 			end
 		end
 	end
@@ -31,6 +129,7 @@ local function suppress(slot, token, ft)
 		empty("@lsp.mod." .. modifier)
 		empty("@lsp.typemod." .. token.type .. "." .. modifier)
 	end
+	return added
 end
 
 function M.refresh(win)
@@ -38,82 +137,65 @@ function M.refresh(win)
 	if not state or not owned(win, state) then
 		return
 	end
-	local slot = state.slot
-	slot.suppressed = {}
+	local slot = state.native and state or state.slot
+	slot.suppressed, slot.bytes, slot.count = {}, 0, 0
+	if state.native then
+		state.user = user_mappings(util.get_win_option(win, "winhighlight"), state)
+		api.nvim_set_hl(0, hidden, {})
+	end
 	local global = api.nvim_get_hl(0, {})
-	local resolved = {}
-	local function inherited(name)
-		if not resolved[name] then
-			-- Effective API lookups follow the active window namespace. Resolve raw globals.
-			local current, seen, value = name, {}, {}
-			while not seen[current] do
-				if resolved[current] then
-					value = resolved[current]
-					break
-				end
-				seen[current] = true
-				value = api.nvim_get_hl(0, { name = current, create = false })
-				if not value.link then
-					break
-				end
-				current, value = value.link, {}
-			end
-			for visited in pairs(seen) do
-				resolved[visited] = value
-			end
-		end
-		return resolved[name]
-	end
-	-- Namespaces cannot delete definitions. Reset pooled names before reuse.
-	for name in pairs(slot.names) do
-		local fallback = name
-		while not global[fallback] and fallback:sub(1, 1) == "@" and fallback:find("%.") do
-			fallback = fallback:gsub("%.[^.]+$", "")
-		end
-		api.nvim_set_hl(slot.ns, name, inherited(fallback))
-	end
 	local source = state.previous == -1 and api.nvim_get_hl_ns({}) or state.previous
-	local theme = source > 0 and api.nvim_get_hl(source, {}) or {}
-	local mappings = {}
-	for from, to in vim.wo[win].winhighlight:gmatch("([^,:]+):([^,]+)") do
-		mappings[from] = to
-	end
-	local mapped = source > 0 and next(mappings) ~= nil
-	for _, ns in pairs(api.nvim_get_namespaces()) do
-		if ns == source then
-			mapped = false
-			break
+	local theme = source and source > 0 and api.nvim_get_hl(source, {}) or {}
+	if not state.native then
+		local resolved, resolving = {}, {}
+		local function inherited(name)
+			if resolved[name] then
+				return resolved[name]
+			end
+			if resolving[name] then
+				return {}
+			end
+			resolving[name] = true
+			local value = theme[name] or global[name]
+			if not value and name:sub(1, 1) == "@" and name:find("%.") then
+				value = inherited((name:gsub("%.[^.]+$", "")))
+			elseif value and value.link then
+				if value.link == name then
+					value = global[name] or {}
+					if value.link and value.link ~= name then
+						value = inherited(value.link)
+					elseif value.link then
+						value = {}
+					end
+				else
+					value = inherited(value.link)
+				end
+			end
+			resolved[name], resolving[name] = value or {}, nil
+			return resolved[name]
 		end
-	end
-	for name, value in pairs(theme) do
-		if value.link ~= (mappings[name] or name) then
-			mapped = false
-			break
+		-- Namespaces cannot delete definitions. Reset through the new owner's graph.
+		for name in pairs(slot.names) do
+			api.nvim_set_hl(slot.ns, name, inherited(name))
 		end
-	end
-	if state.mapping_source == nil then
-		state.mapping_source = mapped
-	end
-	-- An explicit namespace overrides winhighlight, so carry its mappings over.
-	if state.mapping_source or (source == 0 and state.previous == -1) then
-		for from, to in pairs(mappings) do
-			define(slot, from, inherited(to))
-		end
-	else
-		for name, value in pairs(theme) do
-			define(slot, name, value.link == name and inherited(name) or value)
+		for name in pairs(theme) do
+			define(slot, name, inherited(name))
 		end
 	end
 	for name in pairs(global) do
 		if semantic(name) then
 			define(slot, name, {})
-			slot.suppressed[name] = true
+			if not slot.native then
+				slot.suppressed[name] = true
+			end
 		end
 	end
 	for name in pairs(theme) do
 		if semantic(name) then
 			define(slot, name, {})
-			slot.suppressed[name] = true
+			if not slot.native then
+				slot.suppressed[name] = true
+			end
 		end
 	end
 	local buf = api.nvim_win_get_buf(win)
@@ -131,7 +213,11 @@ function M.refresh(win)
 			end
 		end
 	end
-	api.nvim_win_set_hl_ns(win, slot.ns)
+	if state.native then
+		overlay(win, state)
+	else
+		api.nvim_win_set_hl_ns(win, slot.ns)
+	end
 end
 
 function M.release(win)
@@ -140,39 +226,61 @@ function M.release(win)
 		return
 	end
 	windows[win] = nil
-	if owned(win, state) then
-		if state.mapping_source then
-			api.nvim_win_set_hl_ns(win, -1)
-			util.set_win_option(win, "winhighlight", util.get_win_option(win, "winhighlight"))
-		else
-			api.nvim_win_set_hl_ns(win, state.previous)
+	if state.native then
+		if api.nvim_win_is_valid(win) then
+			write_mapping(win, user_mappings(util.get_win_option(win, "winhighlight"), state))
 		end
+	elseif owned(win, state) then
+		api.nvim_win_set_hl_ns(win, state.previous)
 	end
-	state.slot.busy = false
+	if state.slot then
+		state.slot.busy = false
+	end
+	strip_unowned()
 	if not next(windows) and group then
 		api.nvim_del_augroup_by_id(group)
 		group = nil
 	end
 end
 
+local function protected(callback)
+	return function(...)
+		local ok, err = pcall(callback, ...)
+		if not ok then
+			util.notify("Diff highlighting: " .. tostring(err):gsub("%s+", " "), vim.log.levels.WARN)
+		end
+	end
+end
+
+-- Buffer-local window-option records can restore an overlay after its session
+-- has closed. Keep this cheap cleanup alive independently of active owners.
+local cleanup_group = api.nvim_create_augroup("LazyVCSDiffHighlightCleanup", { clear = true })
+api.nvim_create_autocmd({ "BufWinEnter", "WinEnter", "WinNew" }, {
+	group = cleanup_group,
+	callback = protected(function()
+		strip_window(api.nvim_get_current_win())
+	end),
+})
+
 local function listen()
 	if group then
 		return
 	end
 	group = api.nvim_create_augroup("LazyVCSDiffHighlighting", { clear = true })
+	api.nvim_create_autocmd({ "WinEnter", "WinNew" }, { group = group, callback = protected(strip_unowned) })
 	local function schedule(win, state, mapping_changed)
 		state.mapping_changed = state.mapping_changed or mapping_changed
 		if state.pending then
 			return
 		end
 		state.pending = true
-		vim.schedule(function()
+		vim.schedule(protected(function()
 			state.pending = false
 			if windows[win] == state then
-				if state.mapping_changed and api.nvim_win_is_valid(win) then
+				if not state.native and state.mapping_changed and api.nvim_win_is_valid(win) then
 					state.mapping_changed = false
 					-- OptionSet runs before Neovim finishes replacing the namespace.
-					if not owned(win, state) then
+					if not owned(win, state) and not explicit(win) then
 						state.previous = api.nvim_get_hl_ns({ winid = win })
 						api.nvim_win_set_hl_ns(win, state.slot.ns)
 					end
@@ -186,28 +294,28 @@ local function listen()
 					)
 				end
 			end
-		end)
+		end))
 	end
 	api.nvim_create_autocmd("OptionSet", {
 		group = group,
 		pattern = "winhighlight",
-		callback = function()
+		callback = protected(function()
 			local win = api.nvim_get_current_win()
 			local state = windows[win]
-			if state then
+			if state and not writing then
 				schedule(win, state, true)
 			end
-		end,
+		end),
 	})
 	api.nvim_create_autocmd("WinClosed", {
 		group = group,
-		callback = function(event)
+		callback = protected(function(event)
 			M.release(tonumber(event.match))
-		end,
+		end),
 	})
 	api.nvim_create_autocmd("BufWipeout", {
 		group = group,
-		callback = function(event)
+		callback = protected(function(event)
 			local release = {}
 			for win, state in pairs(windows) do
 				if state.buf == event.buf then
@@ -217,25 +325,28 @@ local function listen()
 			for _, win in ipairs(release) do
 				M.release(win)
 			end
-		end,
+		end),
 	})
 	api.nvim_create_autocmd("LspTokenUpdate", {
 		group = group,
-		callback = function(event)
+		callback = protected(function(event)
 			local token = event.data and event.data.token
 			if not token then
 				return
 			end
 			for win, state in pairs(windows) do
 				if owned(win, state) and api.nvim_win_get_buf(win) == event.buf then
-					suppress(state.slot, token, vim.bo[event.buf].filetype)
+					local added = suppress(state.native and state or state.slot, token, vim.bo[event.buf].filetype)
+					if state.native and added then
+						overlay(win, state)
+					end
 				end
 			end
-		end,
+		end),
 	})
 	api.nvim_create_autocmd({ "ColorScheme", "FileType", "LspAttach", "BufWinEnter" }, {
 		group = group,
-		callback = function(event)
+		callback = protected(function(event)
 			for win, state in pairs(windows) do
 				if
 					event.event == "BufWinEnter"
@@ -252,7 +363,7 @@ local function listen()
 					schedule(win, state)
 				end
 			end
-		end,
+		end),
 	})
 end
 
@@ -266,6 +377,14 @@ function M.apply(win, policy)
 	end
 	if windows[win] then
 		M.refresh(win)
+		return
+	end
+	if not explicit(win) then
+		local state =
+			{ native = true, user = util.get_win_option(win, "winhighlight"), buf = api.nvim_win_get_buf(win) }
+		windows[win] = state
+		M.refresh(win)
+		listen()
 		return
 	end
 	local slot

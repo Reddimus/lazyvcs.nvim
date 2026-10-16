@@ -2,8 +2,21 @@ local common = require("lazyvcs.backends.comparison")
 local xml = require("lazyvcs.backends.xml")
 local M = {}
 
-local function command(task, repo, args, callback)
-	common.command(task, repo, vim.list_extend({ "svn", "--non-interactive" }, args), callback)
+local function command(task, repo, args, callback, opts)
+	common.command(task, repo, vim.list_extend({ "svn", "--non-interactive" }, args), callback, opts)
+end
+
+local function schedule(task, callback)
+	vim.schedule(function()
+		if not task:is_active() then
+			return
+		end
+		local ok, err = pcall(callback)
+		if not ok then
+			task:kill()
+			require("lazyvcs.util").notify("SVN comparison: " .. tostring(err):gsub("%s+", " "), vim.log.levels.ERROR)
+		end
+	end)
 end
 
 function M.context(repo, callback)
@@ -25,7 +38,7 @@ function M.resolve(repo, base, callback)
 		url, revision = base, "HEAD"
 	end
 	if not url:match("^%a[%w+.-]*://") or not (revision:match("^%d+$") or revision == "HEAD") then
-		vim.schedule(function()
+		schedule(task, function()
 			task:finish(nil, "Use a repository URL@revision, with a numeric revision or HEAD")
 		end)
 		return task
@@ -50,6 +63,26 @@ local function encode_path(path)
 	return (path:gsub("[^%w%-%._~/]", function(char)
 		return string.format("%%%02X", char:byte())
 	end))
+end
+
+local function load_property_patch(task, snapshot, item, done)
+	local path = snapshot.root .. "/" .. item.relpath
+	local url = snapshot.url .. (item.relpath == "." and "" or "/" .. encode_path(item.relpath))
+	command(task, snapshot, {
+		"diff",
+		"--properties-only",
+		"--depth",
+		item.kind == "dir" and "empty" or "files",
+		"--old",
+		url .. "@" .. snapshot.revision,
+		"--new",
+		path .. "@",
+	}, function(raw, err, result)
+		if result and result.stdout_truncated then
+			err = "Property patch exceeds the 1 MiB preview limit"
+		end
+		done(raw and raw ~= "" and require("lazyvcs.util").split_lines(raw) or nil, err)
+	end, { output_limit_bytes = common.max_file_bytes })
 end
 
 function M.list(snapshot, include_untracked, callback)
@@ -119,7 +152,7 @@ function M.list(snapshot, include_untracked, callback)
 					return finish()
 				end
 				vim.uv.fs_lstat(path, function(stat_err, stat)
-					vim.schedule(function()
+					schedule(task, function()
 						if not task:is_active() then
 							return
 						end
@@ -168,9 +201,9 @@ function M.list(snapshot, include_untracked, callback)
 											return
 										end
 									end
-									vim.schedule(consume)
+									schedule(task, consume)
 								end
-								vim.schedule(consume)
+								schedule(task, consume)
 							end)
 							return
 						end
@@ -204,41 +237,23 @@ function M.preview(snapshot, item, callback)
 	local url = snapshot.url .. (item.relpath == "." and "" or "/" .. encode_path(item.relpath))
 	local result = { left_label = snapshot.url .. " @ r" .. snapshot.revision, right_label = "SAVED WORKTREE" }
 	local function finish()
-		if not item.properties then
+		if not item.properties and not (item.status == "A" and not item.untracked) then
 			return task:finish(result)
 		end
-		command(task, snapshot, {
-			"diff",
-			"--properties-only",
-			"--depth",
-			item.kind == "dir" and "empty" or "files",
-			"--old",
-			url .. "@" .. snapshot.revision,
-			"--new",
-			path .. "@",
-		}, function(raw, err)
-			if not raw then
-				return task:finish(nil, err)
+		load_property_patch(task, snapshot, item, function(lines, err)
+			result.properties = lines
+			if err then
+				result.details = { "Properties unavailable: " .. err }
 			end
-			result.properties = require("lazyvcs.util").split_lines(raw)
 			task:finish(result)
 		end)
 	end
 	if item.property_only then
-		command(task, snapshot, {
-			"diff",
-			"--properties-only",
-			"--depth",
-			item.kind == "dir" and "empty" or "files",
-			"--old",
-			url .. "@" .. snapshot.revision,
-			"--new",
-			path .. "@",
-		}, function(raw, err)
-			if not raw then
+		load_property_patch(task, snapshot, item, function(lines, err)
+			if err then
 				return task:finish(nil, err)
 			end
-			result.left, result.right = {}, require("lazyvcs.util").split_lines(raw)
+			result.left, result.right = {}, lines or {}
 			result.right_label = "PROPERTY PATCH"
 			task:finish(result)
 		end)

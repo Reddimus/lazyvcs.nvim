@@ -63,6 +63,8 @@ closes it.
 Run `:LazyVCS compare` and choose a Git branch/commit or SVN `URL@revision`. The
 choice is remembered for the current worktree and branch.
 
+Omitted sparse-checkout files use read-only index snapshots.
+
 Git compares the common ancestor with your saved working tree, including
 committed, staged, unstaged, and nonignored untracked changes. SVN compares the
 selected repository revision with the working copy. Save buffers before

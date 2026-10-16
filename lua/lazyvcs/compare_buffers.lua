@@ -125,8 +125,13 @@ function M.setup()
 			local resource = resources[args.buf]
 			if resource and resource.session then
 				vim.schedule(function()
-					if not resource.session.closed then
-						M.trim(resource.session)
+					local ok, err = pcall(function()
+						if not resource.session.closed then
+							M.trim(resource.session)
+						end
+					end)
+					if not ok then
+						util.notify(tostring(err):gsub("%s+", " "), vim.log.levels.ERROR)
 					end
 				end)
 			end
@@ -152,31 +157,12 @@ function M.init(s)
 	sequence = sequence + 1
 	s.buffer_id = namespace .. "-" .. sequence
 	s.buffer_cache = { pairs = {}, count = 0, sequence = 0 }
+	s.stale_pairs = {}
 	s.message_left, s.message_right = M.scratch(), M.scratch()
 	s.left, s.right = s.message_left, s.message_right
 	resources[s.sidebar] = { session = s, presentation = "sidebar" }
 	resources[s.message_left] = { session = s, presentation = "message" }
 	resources[s.message_right] = { session = s, presentation = "message" }
-end
-
-function M.swap(s, left, right)
-	s.swapping = (s.swapping or 0) + 1
-	s.left, s.right = left, right
-	local ok, err = pcall(function()
-		for _, slot in ipairs({ { s.leftwin, left }, { s.rightwin, right } }) do
-			if vim.api.nvim_win_is_valid(slot[1]) and vim.api.nvim_win_get_buf(slot[1]) ~= slot[2] then
-				util.show_win_buffer(slot[1], slot[2])
-			end
-		end
-	end)
-	s.swapping = s.swapping - 1
-	if not ok then
-		error(err)
-	end
-end
-
-function M.presentation(s)
-	M.swap(s, s.message_left, s.message_right)
 end
 
 local function unlink(cache, pair)
@@ -218,6 +204,7 @@ local function discard(s, pair)
 		pair.reload_job:cancel()
 	end
 	local cache = s.buffer_cache
+	s.stale_pairs[pair] = nil
 	unlink(cache, pair)
 	cache.pairs[pair.path], cache.count = nil, cache.count - 1
 	for _, buf in ipairs({ pair.left, pair.right }) do
@@ -239,6 +226,11 @@ end
 
 function M.trim(s)
 	local cache = s.buffer_cache
+	for pair in pairs(s.stale_pairs) do
+		if s.left ~= pair.left and s.right ~= pair.right then
+			discard(s, pair)
+		end
+	end
 	local limit = require("lazyvcs.config").get().compare.max_cached_files
 	if limit == 0 then
 		return
@@ -316,7 +308,12 @@ end
 function M.store(s, item, result)
 	local cache = s.buffer_cache
 	local pair = cache.pairs[item.relpath]
-	if not pair or not vim.api.nvim_buf_is_valid(pair.left) or not vim.api.nvim_buf_is_valid(pair.right) then
+	if
+		not pair
+		or not vim.api.nvim_buf_is_valid(pair.left)
+		or not vim.api.nvim_buf_is_valid(pair.right)
+		or pair.stale
+	then
 		if pair then
 			discard(s, pair)
 		end
@@ -398,10 +395,12 @@ function M.reconcile(s, snapshot, items)
 		local next_pair = pair.next
 		local item = paths[pair.path]
 		if changed or not item or item.old_path ~= pair.old_path then
-			if s.left == pair.left or s.right == pair.right then
-				M.presentation(s)
+			pair.stale = true
+			if s.left ~= pair.left and s.right ~= pair.right then
+				discard(s, pair)
+			else
+				s.stale_pairs[pair] = true
 			end
-			discard(s, pair)
 		end
 		pair = next_pair
 	end

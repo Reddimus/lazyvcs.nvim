@@ -143,7 +143,11 @@ the GitHub release.
   guards before spawning the mutation; never enqueue preflight into the same
   queue.
 - `compare.lua` owns review tabs, source-control navigation, and read-only
-  previews.
+  previews. Its `set_panes()` transition installs both panes before publishing
+  their slots and defers results while the picker router owns a borrowed buffer.
+  Failed installations restore the preceding display or invalidate the session.
+  Pane closure advances an epoch synchronously; asynchronous results must check
+  that epoch and all pane windows before installation.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_buffers.lua` owns snapshot identity, reload guards, and bounded
@@ -166,9 +170,10 @@ the GitHub release.
   backend loader.
 - `actions.lua`, `layout.lua`, and `state.lua` own editable per-file diff
   sessions.
-- `highlighting.lua` scopes syntax-only presentation to diff windows and
-  restores their previous namespaces. Its namespace pool grows with concurrent
-  windows.
+- `highlighting.lua` uses native `winhighlight` overlays for inherited colors
+  and strips copied overlays from unowned windows. Only explicit theme
+  namespaces use its pool, which grows with concurrently managed custom
+  namespaces.
 - `signs.lua` and `blame.lua` own buffer state and cancel stale generations.
 - New regression cases belong in sibling `tests/spec_*.lua` modules. The main
   spec is near LuaJIT's local-variable limit.
