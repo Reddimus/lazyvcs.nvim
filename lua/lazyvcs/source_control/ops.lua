@@ -414,12 +414,11 @@ local function start_command(repo, kind, args, on_done, opts)
 		or opts.branch_ref
 		or opts.svn_discard
 		or opts.git_untracked_delete
-		or repo.vcs == "svn" and not read_only_commands[kind]
 	then
 		process_start = function(command, process_opts, on_exit)
 			local signs, change
 			local guards = vim.tbl_extend("force", {}, opts)
-			if base_mutation or repo.vcs == "svn" then
+			if base_mutation then
 				local paths
 				if kind == "git_stage_file" or kind == "git_unstage_file" or kind == "discard_staged" then
 					paths = {}

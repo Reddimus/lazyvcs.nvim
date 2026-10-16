@@ -5,6 +5,72 @@ return function(ctx)
 	local fixture = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h") .. "/fixtures/ai_transport.lua"
 	return {
 		{
+			"test_source_control_popup_context_survives_sidebar_close",
+			function()
+				require("lazyvcs").setup({
+					use_gitsigns = false,
+					signs = { enabled = false },
+					source_control = { remote_refresh = "manual" },
+					ai = { commit_message = { provider = "codex", confirm_privacy = false } },
+				})
+				ai._test_set_executable_checker(function()
+					return true
+				end)
+				local f = h.make_git_fixture()
+				local native = require("lazyvcs.source_control.native")
+				local state = native.open({ path = f.root })
+				wait(function()
+					return not state.lazyvcs_discovering and not state.lazyvcs_hydration_active
+				end, "sidebar did not load", 15000)
+				local start, held, popup, killed, provider_calls = util.system_start, nil, nil, 0, 0
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.system_start = function(args, _, done)
+					if args[1] == "git" then
+						held = done
+						return {
+							kill = function()
+								killed = killed + 1
+								done(nil, "cancelled", { cancelled = true })
+							end,
+						}
+					end
+					provider_calls = provider_calls + 1
+					done({ code = 0, stdout = "Generated after sidebar close", stderr = "" })
+					return {}
+				end
+				local ok, err = xpcall(function()
+					popup = input.open(state, state.lazyvcs_repo_cache[f.root], "", function() end)
+					popup.generate()
+					wait(function()
+						return held ~= nil
+					end, "popup context did not start")
+					native.close()
+					assert(vim.api.nvim_win_is_valid(popup.winid), "sidebar closure closed commit popup")
+					assert(killed == 0, "sidebar closure cancelled live popup context")
+					assert(held)({ code = 0, stdout = "staged diff", stderr = "" })
+					wait(function()
+						return vim.api.nvim_buf_get_lines(popup.bufnr, 0, 1, false)[1]
+							== "Generated after sidebar close"
+					end, "live popup lost generation after sidebar closure")
+					held = nil
+					popup.generate()
+					wait(function()
+						return held ~= nil
+					end, "popup retry context did not start")
+					popup.close()
+					assert(killed == 1, "popup closure left its context job alive")
+					assert(held)({ code = 0, stdout = "late context", stderr = "" })
+					assert(provider_calls == 1, "closed popup started a late provider")
+				end, debug.traceback)
+				util.system_start = start
+				if popup then
+					popup.close()
+				end
+				pcall(native.close)
+				assert(ok, err)
+			end,
+		},
+		{
 			"test_source_control_popup_ai_repository_cancel_stops_provider",
 			function()
 				require("lazyvcs").setup({
@@ -120,12 +186,13 @@ return function(ctx)
 					held({ code = 0, stdout = "late context" })
 					assert(#processes == 5, "cancelled context started provider")
 					pending.close()
-					local cancelled, done, cancel_hook = 0, nil, nil
+					local cancelled, done, cancel_hook, generations = 0, nil, nil, 0
 					local sync = input.open_text({
 						can_generate = true,
 						on_generate = function(callback, on_cancel)
 							done, cancel_hook = callback, on_cancel
-							callback("synchronous")
+							generations = generations + 1
+							callback(generations == 1 and "synchronous" or "second")
 							return {
 								cancel = function()
 									cancelled = cancelled + 1
@@ -175,14 +242,27 @@ return function(ctx)
 					util.system_start = function()
 						error("fixture spawn failure")
 					end
-					local failed
-					ai.generate(repo, function(_, failure)
-						failed = failure
+					local failed, failed_provider
+					ai.generate(repo, function(_, failure, provider)
+						failed, failed_provider = failure, provider
 					end, { owner = state })
 					wait(function()
 						return failed ~= nil
 					end, "spawn failure did not settle")
+					assert(failed:find("fixture spawn failure", 1, true))
 					assert(ops.cancel(root, { owner = state }) == 0, "spawn failure retained registration")
+					config.confirm_privacy = true
+					ai._test_reset_privacy()
+					vim.ui.select = function()
+						error("fixture guarded failure\nsecond line")
+					end
+					failed = nil
+					ai.generate(repo, function(_, failure, provider)
+						failed, failed_provider = failure, provider
+					end, { owner = state })
+					assert(failed and not failed:find("[\r\n]"), "guarded error did not settle with sanitized text")
+					assert(failed_provider == nil, "guarded error passed a replacement count as provider")
+					assert(ops.cancel(root, { owner = state }) == 0, "guarded failure retained registration")
 				end, debug.traceback)
 				for _, p in ipairs(processes) do
 					p.handle:kill(15)

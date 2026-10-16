@@ -36,12 +36,14 @@ return function(ctx)
 					win,
 					{ foldenable = true, foldmethod = "indent", foldlevel = 0 }
 				)
-				vim.bo.shiftwidth = 2
 				local s = native.open({ path = f.root })
 				ctx.wait_for(function()
 					return not s.lazyvcs_discovering and not s.lazyvcs_hydration_active
 				end, "sidebar did not load", 15000)
-				assert(not vim.wo[s.winid].foldenable, "sidebar inherited enabled native folds")
+				vim.bo[s.bufnr].shiftwidth = 2
+				vim.bo[s.bufnr].tabstop = 2
+				vim.wo[s.winid].foldmethod = "indent"
+				vim.wo[s.winid].foldlevel = 0
 				assert(vim.wo[win].foldenable and vim.wo[win].foldmethod == "indent", "editor folding changed")
 				local enter
 				for _, map in ipairs(api.nvim_buf_get_keymap(s.bufnr, "n")) do
@@ -59,6 +61,7 @@ return function(ctx)
 						end
 					end)
 				end
+				assert(not vim.wo[s.winid].foldenable, "sidebar inherited enabled native folds")
 				vim.cmd.only()
 				local survivor = s.winid
 				native.close()

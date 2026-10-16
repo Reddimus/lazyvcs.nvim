@@ -7,7 +7,191 @@ return function(ctx)
 			return not s.lazyvcs_discovering and not s.lazyvcs_hydration_active
 		end, "SVN summary did not finish", 15000)
 	end
+	local cache = require("lazyvcs.source_control.remote_refresh")
+	local function guard(fn)
+		return function()
+			require("lazyvcs").setup({
+				use_gitsigns = false,
+				signs = { enabled = false },
+				source_control = {
+					remote_refresh = "manual",
+					width = 64,
+					show_action_button = true,
+					show_clean = false,
+					auto_expand_width = false,
+					confirm_mutations = false,
+				},
+			})
+			local f = h.make_svn_fixture()
+			h.exec({ "svn", "revert", f.file }, f.root)
+			local loader, original_start = model.load_repo_summary_async, util.system_start
+			local signs = require("lazyvcs.signs")
+			local begin_base = signs.begin_base_change
+			local ok, err = xpcall(function()
+				fn(f)
+			end, debug.traceback)
+			model.load_repo_summary_async, signs.begin_base_change = loader, begin_base
+			util.system_start = original_start
+			pcall(native.close)
+			vim.cmd("silent! tabonly!")
+			pcall(native.close)
+			assert(ok, err)
+		end
+	end
+	local function open(root)
+		local state = native.open({ path = root })
+		settled(state)
+		return state
+	end
+	local function incoming_items(f)
+		return {
+			{
+				id = f.root .. "::incoming",
+				type = "file",
+				name = "sample.txt",
+				path = f.file,
+				extra = { repo_root = f.root, relpath = "sample.txt", section = "remote", status = "M" },
+			},
+		}
+	end
+	local function displayed(state, root, sync, label)
+		state.lazyvcs_expanded[model.repo_changes_id(root)] = true
+		native.render(state)
+		local found_badge, found_action = false, false
+		for row, node in pairs(state.lazyvcs_line_nodes) do
+			if node.extra and node.extra.repo_root == root then
+				if node.extra.sync then
+					assert(node.extra.sync.status == sync, "displayed wrong sync status: " .. node.extra.sync.status)
+					found_badge = true
+					assert(
+						vim.api
+							.nvim_buf_get_lines(state.bufnr, row - 1, row, false)[1]
+							:find(node.extra.sync.text, 1, true)
+					)
+				end
+				if node.type == "commit_input" then
+					assert(
+						node.extra.primary_label == label,
+						"displayed wrong primary action: " .. node.extra.primary_label
+					)
+				end
+				if node.type == "action_button" then
+					assert(
+						vim.api.nvim_buf_get_lines(state.bufnr, row - 1, row, false)[1]:find(label, 1, true),
+						"primary action missing from sidebar buffer"
+					)
+					found_action = true
+				end
+			end
+		end
+		assert(found_badge and found_action, "repository status or primary action hidden")
+	end
 	return {
+		{
+			"test_svn_source_control_oversized_publish_keeps_incoming_action",
+			guard(function(f)
+				local state = open(f.root)
+				local items = incoming_items(f)
+				items[1].padding = string.rep("x", 4 * 1024 * 1024)
+				---@diagnostic disable-next-line: duplicate-set-field
+				model.load_repo_summary_async = function(_, _, _, done)
+					done(model.with_remote_snapshot(state.lazyvcs_repo_cache[f.root], { items = items, version = 1 }))
+				end
+				native.refresh(true)
+				settled(state)
+				assert(not cache.read(f.root), "oversized snapshot retained")
+				displayed(state, f.root, "incoming", "Update")
+				vim.cmd.tabnew()
+				local second = open(f.root)
+				displayed(second, f.root, "unknown", "Commit")
+			end),
+		},
+		{
+			"test_svn_source_control_eviction_notifies_and_stays_unknown",
+			guard(function(f)
+				local state = open(f.root)
+				cache.publish(cache.begin(f.root), incoming_items(f))
+				displayed(state, f.root, "incoming", "Update")
+				for index = 1, 513 do
+					cache.publish(cache.begin(f.root .. "/evict-" .. index), {})
+				end
+				assert(state.lazyvcs_repo_cache[f.root].sync.status == "unknown", "eviction did not notify live tab")
+				displayed(state, f.root, "unknown", "Commit")
+				native.refresh(false)
+				settled(state)
+				displayed(state, f.root, "unknown", "Commit")
+				native.close()
+				state = open(f.root)
+				displayed(state, f.root, "unknown", "Commit")
+				-- Tombstones are bounded too: enough newer drops forget this root.
+				for index = 1, 513 do
+					cache.publish(cache.begin(f.root .. "/drop-" .. index), {})
+				end
+				assert(not cache.is_dropped(f.root), "dropped-root metadata exceeded its bound")
+			end),
+		},
+		{
+			"test_svn_source_control_manual_clean_tab_stays_clean_after_mutation",
+			guard(function(f)
+				local clean = open(f.root)
+				vim.cmd.tabnew()
+				local checked = open(f.root)
+				-- Keep the manual tab unchecked while the other tab has checked status.
+				checked.lazyvcs_repo_cache[f.root] =
+					model.with_remote_snapshot(checked.lazyvcs_repo_cache[f.root], { items = {}, version = 1 })
+				local clean_unknown, checked_unknown
+				local start = util.system_start
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.system_start = function(args, opts, done)
+					if args[1] == "svn" and args[2] == "update" then
+						clean_unknown = clean.lazyvcs_repo_cache[f.root].remote_unknown == true
+						checked_unknown = checked.lazyvcs_repo_cache[f.root].remote_unknown == true
+					end
+					return start(args, opts, done)
+				end
+				local node = { type = "repo", path = f.root, extra = { repo_root = f.root, action = "update" } }
+				require("lazyvcs.source_control.ops").run_primary_action(checked, node)
+				wait(function()
+					local job = require("lazyvcs.state").get_repo_job(f.root)
+					return not job or job.status ~= "running"
+				end, "SVN update did not finish", 15000)
+				assert(clean_unknown == false, "unchecked manual tab became unknown")
+				assert(checked_unknown == true, "checked tab did not become unknown")
+				settled(checked)
+				native.render(clean)
+				assert(clean.lazyvcs_repo_cache[f.root].sync.status == "synced", "manual tab did not settle cleanly")
+				assert(not clean.lazyvcs_repo_visibility[f.root], "clean manual repository became visible")
+			end),
+		},
+		{
+			"test_svn_source_control_revert_preserves_incoming_and_signs_base",
+			guard(function(f)
+				local state = open(f.root)
+				cache.publish(cache.begin(f.root), incoming_items(f))
+				vim.cmd.tabnew()
+				local second = open(f.root)
+				h.write_file(f.file, "local edit\n")
+				local signs, base_changes = require("lazyvcs.signs"), 0
+				local begin_base = signs.begin_base_change
+				---@diagnostic disable-next-line: duplicate-set-field
+				signs.begin_base_change = function(...)
+					base_changes = base_changes + 1
+					return begin_base(...)
+				end
+				require("lazyvcs.source_control.ops").revert_file(second, {
+					type = "file",
+					path = f.file,
+					extra = { repo_root = f.root, relpath = "sample.txt", section = "changes", status = "M" },
+				})
+				wait(function()
+					local job = require("lazyvcs.state").get_repo_job(f.root)
+					return vim.fn.readfile(f.file)[1] == "one" and (not job or job.status ~= "running")
+				end, "SVN revert did not finish", 15000)
+				assert(base_changes == 0, "SVN revert started a whole-repository signs base change")
+				assert(cache.read(f.root), "SVN revert invalidated incoming snapshot")
+				displayed(state, f.root, "incoming", "Update")
+			end),
+		},
 		{
 			"test_svn_source_control_incoming_survives_reopen_and_tabs",
 			function()
@@ -187,7 +371,8 @@ return function(ctx)
 					)
 					cache.publish(cache.begin(f.root), first.remote_snapshot)
 					native.open({ path = h.tempdir() })
-					assert(not cache.read(f.root), "project change retained incoming snapshot")
+					assert(cache.read(f.root), "project change erased shared incoming snapshot")
+					incoming(s)
 					local manual = h.make_svn_fixture()
 					h.exec({ "svn", "revert", manual.file }, manual.root)
 					require("lazyvcs.config").get().source_control.remote_refresh = "manual"

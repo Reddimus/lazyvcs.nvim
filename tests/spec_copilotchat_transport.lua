@@ -14,6 +14,7 @@ return function(ctx)
 					"plenary.async",
 					"plenary.job",
 				}
+				local defer = vim.defer_fn
 				local previous = {}
 				for _, name in ipairs(names) do
 					previous[name] = package.loaded[name]
@@ -74,11 +75,25 @@ return function(ctx)
 					end, "second transport survived cancellation", 3000)
 					assert(second_job.job.is_shutdown, "Job shutdown was not called")
 					local timeout_count, timeout_error = 0, nil
+					local timeout_timer, timeout_callback
+					-- Hold only this deadline until the child is ready; startup can be slow.
+					---@diagnostic disable-next-line: duplicate-set-field
+					vim.defer_fn = function(callback, delay)
+						assert(delay == 250)
+						timeout_timer = assert(vim.uv.new_timer())
+						timeout_callback = callback
+						return timeout_timer
+					end
 					request(250, function(_, failure)
 						timeout_count = timeout_count + 1
 						timeout_error = failure
 					end)
+					vim.defer_fn = defer
+					-- Exercise readiness observed later than the configured deadline.
+					vim.wait(300)
 					local _, timeout_pid = ready(3)
+					assert(timeout_count == 0 and process.alive(timeout_pid), "deadline fired before child readiness")
+					assert(timeout_timer):start(250, 0, vim.schedule_wrap(assert(timeout_callback)))
 					wait(function()
 						return timeout_count == 1
 					end, "timeout callback missing")
@@ -226,6 +241,7 @@ return function(ctx)
 					end, "missing transport error not reported")
 					assert(not called and requirement:find("requires"), "missing transport started client")
 				end, debug.traceback)
+				vim.defer_fn = defer
 				for _, handle in ipairs(requests) do
 					handle:cancel()
 				end

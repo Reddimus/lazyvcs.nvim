@@ -24,6 +24,8 @@ end
 
 local snapshots, pending = {}, setmetatable({}, { __mode = "v" })
 local serial, clock, retained_bytes = 0, 0, 0
+-- Remember bounded-cache losses separately from roots that have never been checked.
+local dropped = {}
 local listener
 
 local function remove(root)
@@ -32,6 +34,24 @@ local function remove(root)
 		retained_bytes = retained_bytes - old.bytes
 		snapshots[root] = nil
 	end
+end
+
+local function mark_dropped(root)
+	clock = clock + 1
+	dropped[root] = clock
+	if vim.tbl_count(dropped) > 512 then
+		local oldest, used
+		for key, stamp in pairs(dropped) do
+			if not used or stamp < used then
+				oldest, used = key, stamp
+			end
+		end
+		dropped[oldest] = nil
+	end
+end
+
+function M.is_dropped(root)
+	return dropped[root] ~= nil
 end
 
 function M.read(root)
@@ -58,9 +78,12 @@ function M.publish(token, items)
 	remove(token.root)
 	local bytes = #vim.json.encode(items)
 	if bytes <= 4 * 1024 * 1024 then
+		dropped[token.root] = nil
 		clock = clock + 1
 		snapshots[token.root] = { items = vim.deepcopy(items), version = token.version, bytes = bytes, used = clock }
 		retained_bytes = retained_bytes + bytes
+	else
+		mark_dropped(token.root)
 	end
 	local count = vim.tbl_count(snapshots)
 	while count > 512 or retained_bytes > 4 * 1024 * 1024 do
@@ -71,6 +94,10 @@ function M.publish(token, items)
 			end
 		end
 		remove(oldest)
+		mark_dropped(oldest)
+		if listener then
+			listener(oldest)
+		end
 		count = count - 1
 	end
 	if listener then

@@ -204,11 +204,6 @@ local function reset_for_path(state, path)
 	if state.lazyvcs_invalidate_hydration then
 		state.lazyvcs_invalidate_hydration(state, nil, "source path changed")
 	end
-	for _, repo in ipairs(state.lazyvcs_repo_specs or {}) do
-		if repo.vcs == "svn" then
-			remote_admission.invalidate(repo.root)
-		end
-	end
 	ops.cancel_commit_generations(state)
 	ops.cancel_diff_target(state, "source path changed")
 	reset_discovery(state)
@@ -593,7 +588,11 @@ remote_admission.set_listener(function(root)
 		for _, state in pairs(states) do
 			local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[root]
 			if cached and cached.vcs == "svn" then
-				state.lazyvcs_repo_cache[root] = model.with_remote_snapshot(cached, remote_admission.read(root), true)
+				state.lazyvcs_repo_cache[root] = model.with_remote_snapshot(
+					cached,
+					remote_admission.read(root),
+					(cached.remote_snapshot ~= nil or cached.remote_unknown) and true or nil
+				)
 				M.schedule_render(state)
 			end
 		end
@@ -676,8 +675,14 @@ local function start_summary_hydration(state, remote_refresh)
 			if summary_generation(state, current_repo.root) ~= generation then
 				return
 			end
+			local published = false
 			if token and summary and not err and not summary.remote_error then
-				remote_admission.publish(token, summary.remote_snapshot or {})
+				published = remote_admission.publish(token, summary.remote_snapshot or {})
+			end
+			local snapshot = remote_admission.read(current_repo.root)
+			if published and token and summary and not snapshot then
+				-- The shared cache can reject a large result; its producer still owns it.
+				snapshot = { items = summary.remote_snapshot or {}, version = token.version }
 			end
 			local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[current_repo.root] or nil
 			state.lazyvcs_repo_cache[current_repo.root] = model.with_remote_snapshot(
@@ -685,7 +690,7 @@ local function start_summary_hydration(state, remote_refresh)
 					cached,
 					summary or model.make_error(current_repo, cached, err, { remote_refresh = remote_refresh })
 				),
-				remote_admission.read(current_repo.root)
+				snapshot
 			)
 			update_hydration_counts(state)
 			M.schedule_render(state)

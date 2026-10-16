@@ -120,7 +120,8 @@ local function start_context_command(request, command, callback)
 	local id = jobs.command(request.repo, "ai_context", command.args, {
 		cwd = command.cwd,
 		timeout_ms = command.timeout,
-		owner = request.owner,
+		-- A commit popup can outlive its sidebar; its request owns this work.
+		owner = request,
 		scope = "ai_context",
 		priority = 10,
 	}, function(result, err)
@@ -466,7 +467,7 @@ function M.generate(repo, callback, opts)
 		return function(...)
 			local ok, err = pcall(fn, ...)
 			if not ok then
-				request:finish(nil, tostring(err):gsub("[\r\n]+", " "))
+				request:finish(nil, (tostring(err):gsub("[\r\n]+", " ")))
 			end
 		end
 	end

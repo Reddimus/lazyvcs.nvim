@@ -3,6 +3,7 @@ local runtime_state = require("lazyvcs.state")
 local util = require("lazyvcs.util")
 local Task = require("lazyvcs.backends.task")
 local svn_xml = require("lazyvcs.backends.xml")
+local remote_snapshots = require("lazyvcs.source_control.remote_refresh")
 
 ---@class lazyvcs.RepositoryStatus
 ---@field root string
@@ -1055,7 +1056,12 @@ function M.with_remote_snapshot(status, snapshot, unknown)
 	status = vim.tbl_extend("force", {}, status)
 	status.remote_snapshot = snapshot and snapshot.items or nil
 	status.remote_version = snapshot and snapshot.version or nil
-	status.remote_unknown = not snapshot and (unknown == true or unknown == nil and status.remote_unknown == true)
+	status.remote_unknown = not snapshot
+		and (
+			remote_snapshots.is_dropped(status.root)
+			or unknown == true
+			or unknown == nil and status.remote_unknown == true
+		)
 	status.counts = vim.tbl_extend("force", status.counts, { remote = snapshot and #snapshot.items or 0 })
 	status = compose_status(status)
 	if status.remote_unknown and status.sync.status == "synced" then
