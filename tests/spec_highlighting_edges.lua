@@ -14,6 +14,114 @@ return function(ctx)
 
 	return {
 		{
+			"test_core_highlighting_remembered_overlay_window",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = ctx.helpers.make_git_fixture()
+				local other = f.root .. "/other.txt"
+				ctx.helpers.write_file(other, "other\n")
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				local buf, win = api.nvim_get_current_buf(), api.nvim_get_current_win()
+				require("lazyvcs.util").set_win_option(win, "winhighlight", "")
+				require("lazyvcs").open()
+				ctx.wait_for(function()
+					local session = require("lazyvcs.state").get(buf)
+					return session and session.base_win and api.nvim_win_is_valid(session.base_win)
+				end, "live diff did not open", 15000)
+				api.nvim_set_current_win(win)
+				assert(vim.wo[win].winhighlight:find("LazyVcsSemanticHidden", 1, true), "overlay missing")
+				vim.cmd.edit(vim.fn.fnameescape(other))
+				require("lazyvcs.actions").close(buf)
+				vim.cmd("buffer #")
+				assert(api.nvim_get_current_buf() == buf, "alternate buffer did not return")
+				assert(
+					not vim.wo.winhighlight:find("LazyVcsSemanticHidden", 1, true),
+					"remembered overlay survived session close"
+				)
+			end,
+		},
+
+		{
+			"test_core_highlighting_remembered_overlay_split",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = ctx.helpers.make_git_fixture()
+				local other = f.root .. "/other.txt"
+				ctx.helpers.write_file(other, "other\n")
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				local buf, win = api.nvim_get_current_buf(), api.nvim_get_current_win()
+				require("lazyvcs.util").set_win_option(win, "winhighlight", "")
+				require("lazyvcs").open()
+				ctx.wait_for(function()
+					local session = require("lazyvcs.state").get(buf)
+					return session and session.base_win and api.nvim_win_is_valid(session.base_win)
+				end, "live diff did not open", 15000)
+				api.nvim_set_current_win(win)
+				assert(vim.wo[win].winhighlight:find("LazyVcsSemanticHidden", 1, true), "overlay missing")
+				vim.cmd.edit(vim.fn.fnameescape(other))
+				require("lazyvcs.actions").close(buf)
+				vim.cmd.split()
+				local child = api.nvim_get_current_win()
+				vim.cmd("buffer #")
+				assert(api.nvim_get_current_buf() == buf, "alternate buffer did not return")
+				assert(
+					not vim.wo.winhighlight:find("LazyVcsSemanticHidden", 1, true),
+					"remembered overlay survived session close"
+				)
+				api.nvim_win_close(child, true)
+				api.nvim_set_current_win(win)
+				vim.cmd("buffer #")
+				assert(not vim.wo.winhighlight:find("LazyVcsSemanticHidden", 1, true), "original window leaked")
+			end,
+		},
+
+		{
+			"test_core_highlighting_reapply_user_mapping_uses_native_namespace",
+			function()
+				vim.cmd.new()
+				local win = api.nvim_get_current_win()
+				local util = require("lazyvcs.util")
+				util.set_win_option(win, "winhighlight", "Normal:ErrorMsg")
+				for _ = 1, 2 do
+					guard.apply(win, "syntax")
+					assert(vim.wo[win].winhighlight:find("LazyVcsSemanticHidden", 1, true), "native overlay missing")
+					local ns = api.nvim_get_hl_ns({ winid = win })
+					assert(api.nvim_get_hl(ns, { name = "Normal" }).link == "ErrorMsg", "native mapping disabled")
+					assert(
+						api.nvim_get_hl(ns, { name = "@lsp.type.variable" }).link == "LazyVcsSemanticHidden",
+						"apply selected a pooled namespace"
+					)
+					guard.release(win)
+					assert(vim.wo[win].winhighlight == "Normal:ErrorMsg", "user mapping not restored")
+					assert(not api.nvim_get_hl(ns, {})["@lsp.type.variable"], "shrunk mapping retained stale entry")
+				end
+				api.nvim_win_close(win, true)
+			end,
+		},
+		{
+			"test_core_highlighting_noautocmd_float_cleans_on_entry",
+			function()
+				local win = api.nvim_get_current_win()
+				guard.apply(win, "syntax")
+				local float = api.nvim_open_win(0, false, {
+					relative = "editor",
+					row = 1,
+					col = 1,
+					width = 20,
+					height = 3,
+					noautocmd = true,
+				})
+				api.nvim_set_current_win(float)
+				assert(
+					not vim.wo[float].winhighlight:find("LazyVcsSemanticHidden", 1, true),
+					"float overlay survived entry"
+				)
+				api.nvim_win_close(float, true)
+				guard.release(win)
+			end,
+		},
+
+		{
 			"test_core_highlighting_repeated_tokens_do_not_rebuild_native_overlay",
 			function()
 				local util = require("lazyvcs.util")
@@ -136,7 +244,20 @@ return function(ctx)
 				local anonymous = api.nvim_create_namespace("")
 				api.nvim_set_hl(anonymous, "LazyVCSEdgeChild", { fg = "#1234ee" })
 				api.nvim_win_set_hl_ns(win, anonymous)
+				api.nvim_set_hl(anonymous, "@lsp.type.lazyvcsAnonymous", { fg = "#ee1234", italic = true })
+				local token = api.nvim_buf_set_extmark(buf, marks, 0, 0, {
+					end_col = 6,
+					hl_group = "@lsp.type.lazyvcsAnonymous",
+					priority = 200,
+				})
 				guard.apply(win, "syntax")
+				assert(foreground(win) == 0x1234ee, "anonymous namespace did not suppress semantic color")
+				local pos = vim.fn.win_screenpos(win)
+				assert(
+					not api.nvim__inspect_cell(1, pos[1] - 1, pos[2] - 1)[2].italic,
+					"anonymous namespace did not suppress semantic italic"
+				)
+				api.nvim_buf_del_extmark(buf, marks, token)
 				assert(foreground(win) == 0x1234ee, "anonymous custom namespace lost its colors")
 				guard.release(win)
 				assert(api.nvim_get_hl_ns({ winid = win }) == anonymous, "anonymous namespace not restored")

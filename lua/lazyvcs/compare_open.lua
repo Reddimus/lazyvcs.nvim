@@ -53,7 +53,14 @@ function M.setup(s, actions)
 		callback = protected(function(args)
 			local win, buf = vim.api.nvim_get_current_win(), args.buf
 			local owned = slots()[win]
-			if not valid() or s.resizing or (s.swapping or 0) > 0 or not owned or buf == owned then
+			if not valid() or s.resizing or (s.swapping or 0) > 0 or not owned then
+				return
+			end
+			if buf == owned then
+				if pending[win] then
+					pending[win] = nil
+					actions.resume()
+				end
 				return
 			end
 			local request = pending[win]
@@ -117,7 +124,8 @@ function M.setup(s, actions)
 	return {
 		busy = function()
 			for win, buf in pairs(slots()) do
-				if pending[win] or vim.api.nvim_win_get_buf(win) ~= buf then
+				local current = vim.api.nvim_win_get_buf(win)
+				if (pending[win] and current == pending[win].buf) or current ~= buf then
 					return true
 				end
 			end

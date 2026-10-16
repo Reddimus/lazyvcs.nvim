@@ -48,14 +48,158 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_core_compare_picker_return_resumes_deferred_preview",
+			guarded(function(errors)
+				local f = h.make_git_transfer_fixture()
+				vim.cmd.edit(vim.fn.fnameescape(f.file1))
+				local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+				ready(s)
+				local deliver = held_preview(s)
+				local owned = s.right
+				local borrowed = vim.fn.bufadd(f.file1)
+				vim.fn.bufload(borrowed)
+				api.nvim_set_current_win(s.sidewin)
+				api.nvim_win_set_buf(s.rightwin, borrowed)
+				vim.wait(30)
+				assert(s.router.busy(), "unfocused borrowed buffer did not defer")
+				deliver()
+				assert(s.deferred_display, "preview was not deferred")
+				-- A separate picker command restores its original buffer.
+				api.nvim_win_set_buf(s.rightwin, owned)
+				assert(not s.router.busy(), "restored picker left the router busy")
+				assert(not s.deferred_display and s.preview_result and s.mode == "text", "owned buffer did not resume")
+				assert(vim.deep_equal(api.nvim_buf_get_lines(s.right, 0, -1, false), vim.fn.readfile(f.file1)))
+				api.nvim_win_set_cursor(s.sidewin, { s.row_by_path["beta.txt"], 0 })
+				s.actions.preview()
+				ready(s)
+				assert(not s.deferred_display and s.shown_item.relpath == "beta.txt", "later preview remained stuck")
+				assert(vim.deep_equal(api.nvim_buf_get_lines(s.right, 0, -1, false), vim.fn.readfile(f.file2)))
+				assert(#errors == 0, table.concat(errors, "\n"))
+			end),
+		},
+		{
+			"test_core_compare_routing_restore_updates_diff",
+			guarded(function(errors)
+				local f = h.make_git_fixture()
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+				ready(s)
+				local borrowed = vim.fn.bufadd(f.file)
+				vim.fn.bufload(borrowed)
+				local updates = 0
+				local command = vim.cmd
+				vim.cmd = setmetatable({}, {
+					__index = command,
+					__call = function(_, cmd)
+						if cmd == "diffupdate" then
+							updates = updates + 1
+						end
+						return command(cmd)
+					end,
+				})
+				api.nvim_set_current_win(s.rightwin)
+				api.nvim_win_set_buf(s.rightwin, borrowed)
+				vim.wait(100)
+				vim.cmd = command
+				assert(updates > 0, "routing restore did not update the diff")
+				assert(#errors == 0, table.concat(errors, "\n"))
+				compare.close(s)
+			end),
+		},
+		{
+			"test_core_compare_metadata_reload_preserves_text_views_and_review",
+			guarded(function(errors)
+				local f = h.make_git_fixture()
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+				ready(s)
+				api.nvim_win_set_cursor(s.rightwin, { 3, 1 })
+				s.navigation.reviewed = true
+				local resource = assert(require("lazyvcs.compare_buffers").resource(s.right))
+				s.actions.metadata()
+				local saved = vim.deepcopy(s.text_views)
+				-- Avoid remembered file views masking a recapture from the message panes.
+				s.file_views = {}
+				s.reload(resource)
+				ctx.wait_for(function()
+					return not resource.pair.reload_job
+				end, "reload did not finish", 15000)
+				assert(s.navigation.reviewed, "metadata reload lost the reviewed flag")
+				assert(vim.deep_equal(s.text_views, saved), "metadata reload recaptured message pane views")
+				assert(s.mode == "metadata", "reload left metadata mode")
+				s.actions.metadata()
+				assert(vim.deep_equal(api.nvim_win_get_cursor(s.rightwin), { 3, 1 }), "text position was not restored")
+				assert(#errors == 0, table.concat(errors, "\n"))
+			end),
+		},
+		{
+			"test_core_compare_late_reload_cannot_replace_newer_deferred_preview",
+			guarded(function(errors)
+				for _, reload_first in ipairs({ false, true }) do
+					local f = h.make_git_transfer_fixture()
+					vim.cmd.edit(vim.fn.fnameescape(f.file1))
+					local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+					ready(s)
+					local resource = assert(require("lazyvcs.compare_buffers").resource(s.right))
+					local original, deliver = s.provider.preview, nil
+					---@diagnostic disable-next-line: duplicate-set-field
+					s.provider.preview = function(snapshot, item, callback)
+						return original(snapshot, item, function(result, err)
+							deliver = function()
+								callback(result, err)
+							end
+						end)
+					end
+					local hold = s.provider.preview
+					s.provider.preview = original
+					local function start_reload()
+						s.provider.preview = hold
+						s.reload(resource)
+						ctx.wait_for(function()
+							return deliver ~= nil
+						end, "reload did not complete", 15000)
+						s.provider.preview = original
+					end
+					if reload_first then
+						start_reload()
+					end
+					local borrowed = vim.fn.bufadd(f.file1)
+					vim.fn.bufload(borrowed)
+					api.nvim_set_current_win(s.sidewin)
+					api.nvim_win_set_buf(s.rightwin, borrowed)
+					vim.wait(30)
+					api.nvim_win_set_cursor(s.sidewin, { s.row_by_path["beta.txt"], 0 })
+					s.actions.preview()
+					ctx.wait_for(function()
+						return not s.preview_job and s.deferred_display and s.deferred_display.result
+					end, "new preview was not deferred", 15000)
+					local deferred = s.deferred_display
+					if not reload_first then
+						start_reload()
+					end
+					assert(deliver)()
+					assert(s.deferred_display == deferred, "older reload replaced the newer deferred preview")
+					api.nvim_set_current_win(s.rightwin)
+					vim.wait(100)
+					assert(s.mode == "text" and s.shown_item.relpath == "beta.txt", "resume lost the latest preview")
+					assert(vim.deep_equal(api.nvim_buf_get_lines(s.right, 0, -1, false), vim.fn.readfile(f.file2)))
+					assert(#errors == 0, table.concat(errors, "\n"))
+					compare.close(s)
+				end
+			end),
+		},
+
+		{
 			"test_core_compare_picker_preview_completion_routes_latest_selection",
 			guarded(function(errors)
 				for _, modified in ipairs({ false, true }) do
 					local f = h.make_git_fixture()
-					h.write_file(f.root .. "/picked.txt", "first\nsecond\nthird\nfourth\n")
+					h.write_file(f.root .. "/z-picked.txt", "first\nsecond\nthird\nfourth\n")
 					vim.cmd.edit(vim.fn.fnameescape(f.file))
 					local origin = api.nvim_get_current_win()
-					local picked = vim.fn.bufadd(f.root .. "/picked.txt")
+					local first = vim.fn.bufadd(f.file)
+					vim.fn.bufload(first)
+					local picked = vim.fn.bufadd(f.root .. "/z-picked.txt")
 					vim.fn.bufload(picked)
 					if modified then
 						api.nvim_buf_set_lines(picked, 0, 1, false, { "unsaved" })
@@ -67,6 +211,7 @@ return function(ctx)
 					local deliver = held_preview(s)
 					vim.o.hidden = false
 					api.nvim_set_current_win(s.rightwin)
+					api.nvim_win_set_buf(s.rightwin, first)
 					api.nvim_win_set_buf(s.rightwin, picked)
 					api.nvim_win_set_cursor(s.rightwin, { 4, 2 })
 					local ok = pcall(deliver)
@@ -83,6 +228,11 @@ return function(ctx)
 					assert(
 						api.nvim_win_get_buf(s.leftwin) == s.left and api.nvim_win_get_buf(s.rightwin) == s.right,
 						"displayed slots disagree"
+					)
+					assert(s.preview_result and s.mode == "text", "deferred preview was not applied")
+					assert(
+						vim.deep_equal(api.nvim_buf_get_lines(s.right, 0, -1, false), vim.fn.readfile(f.file)),
+						"resumed pane has the wrong preview contents"
 					)
 					assert(#errors == 0, table.concat(errors, "\n"))
 					compare.close(s)

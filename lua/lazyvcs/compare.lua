@@ -276,6 +276,11 @@ local function set_panes(s, next_display)
 				preview_options(s, win)
 			end
 			bind(s, buf)
+			if s.mode == "text" then
+				vim.api.nvim_win_call(s.leftwin, function()
+					vim.cmd("diffupdate")
+				end)
+			end
 			local saved = next_display.views or {}
 			for index, pane in ipairs({ s.leftwin, s.rightwin, s.sidewin }) do
 				if vim.api.nvim_win_get_buf(pane) == ({ s.left, s.right, s.sidebar })[index] then
@@ -288,7 +293,7 @@ local function set_panes(s, next_display)
 		local left, right = s.message_left, s.message_right
 		local result, item = d.result, d.item
 		local text_views = d.text_views
-		if d.mode == "metadata" then
+		if d.mode == "metadata" and s.mode == "text" then
 			text_views = { capture(s.leftwin), capture(s.rightwin) }
 		end
 		for _, win in ipairs({ s.leftwin, s.rightwin }) do
@@ -354,6 +359,8 @@ local function set_panes(s, next_display)
 				if remembered then
 					navigation.restore(s, remembered, d.stamp)
 				end
+			end
+			if (d.saved_views and s.mode == "text") or d.saved_reviewed ~= nil then
 				s.navigation.reviewed = d.saved_reviewed == true
 			end
 		end
@@ -1252,6 +1259,7 @@ local function open_session(opts, origin)
 			pair.reload_job:cancel()
 		end
 		local generation, item, version = s.generation, s.items[index], pair.version
+		local preview_generation = s.preview_generation
 		local epoch = s.pane_epoch or 0
 		local path = s.root .. "/" .. item.relpath
 		local stamp = file_stamp(path)
@@ -1284,7 +1292,14 @@ local function open_session(opts, origin)
 					then
 						buffers.store(s, item, result)
 					end
-					if s.preview_result and s.shown_item and s.shown_item.relpath == item.relpath then
+					if
+						preview_generation == s.preview_generation
+						and s.display
+						and s.display.preview_generation == preview_generation
+						and s.preview_result
+						and s.shown_item
+						and s.shown_item.relpath == item.relpath
+					then
 						local reviewed = s.navigation and s.navigation.reviewed
 						local d = result_display(s, result, item, s.mode)
 						d.stamp, d.load_navigation = stamp, true

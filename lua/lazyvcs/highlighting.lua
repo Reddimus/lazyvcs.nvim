@@ -21,7 +21,7 @@ local function explicit(win)
 			mappings[from] = to
 		end
 		for name, value in pairs(api.nvim_get_hl(source, {})) do
-			if value.link ~= mappings[name] then
+			if not value.link or value.link ~= mappings[name] then
 				return true
 			end
 		end
@@ -51,15 +51,19 @@ local function write_mapping(win, value)
 	end
 end
 
+local function strip_window(win)
+	if not windows[win] then
+		local value = util.get_win_option(win, "winhighlight")
+		---@cast value string
+		if value:find(hidden, 1, true) then
+			write_mapping(win, user_mappings(value))
+		end
+	end
+end
+
 local function strip_unowned()
 	for _, win in ipairs(api.nvim_list_wins()) do
-		if not windows[win] then
-			local value = util.get_win_option(win, "winhighlight")
-			local clean = user_mappings(value)
-			if clean ~= value then
-				write_mapping(win, clean)
-			end
-		end
+		strip_window(win)
 	end
 end
 
@@ -248,6 +252,16 @@ local function protected(callback)
 	end
 end
 
+-- Buffer-local window-option records can restore an overlay after its session
+-- has closed. Keep this cheap cleanup alive independently of active owners.
+local cleanup_group = api.nvim_create_augroup("LazyVCSDiffHighlightCleanup", { clear = true })
+api.nvim_create_autocmd({ "BufWinEnter", "WinEnter", "WinNew" }, {
+	group = cleanup_group,
+	callback = protected(function()
+		strip_window(api.nvim_get_current_win())
+	end),
+})
+
 local function listen()
 	if group then
 		return
@@ -291,10 +305,6 @@ local function listen()
 				schedule(win, state, true)
 			end
 		end),
-	})
-	api.nvim_create_autocmd({ "WinNew", "WinEnter" }, {
-		group = group,
-		callback = protected(strip_unowned),
 	})
 	api.nvim_create_autocmd("WinClosed", {
 		group = group,

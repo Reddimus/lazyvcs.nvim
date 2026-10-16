@@ -171,8 +171,9 @@ the GitHub release.
 - `actions.lua`, `layout.lua`, and `state.lua` own editable per-file diff
   sessions.
 - `highlighting.lua` uses native `winhighlight` overlays for inherited colors
-  and strips copied overlays from unowned windows. Only explicit theme namespaces
-  use its pool, which grows with concurrently managed custom namespaces.
+  and strips copied overlays from unowned windows. Only explicit theme
+  namespaces use its pool, which grows with concurrently managed custom
+  namespaces.
 - `signs.lua` and `blame.lua` own buffer state and cancel stale generations.
 - New regression cases belong in sibling `tests/spec_*.lua` modules. The main
   spec is near LuaJIT's local-variable limit.
