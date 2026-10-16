@@ -6,8 +6,7 @@ function M.full_file(opts)
 		return false
 	end
 	local encoding = profile.fileencoding:lower()
-	return profile.fileformat == "mac"
-		or not vim.tbl_contains({ "utf-8", "utf8", "latin1", "iso-8859-1", "ascii" }, encoding)
+	return profile.fileformat == "mac" or encoding:match("^utf%-16") ~= nil or encoding:match("^ucs%-[24]") ~= nil
 end
 
 function M.select(lines, opts)

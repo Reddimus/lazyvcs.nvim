@@ -31,6 +31,32 @@ return function(ctx)
 	end
 	return t.cases({
 		{
+			"test_blame_inline_ignores_hidden_buffer_load_and_modify",
+			function()
+				local f, _, _, backend = t.open(false)
+				assert(blame.blame())
+				t.loaded(api.nvim_get_current_buf())
+				local path = f.root .. "/hidden.txt"
+				t.h.write_file(path, "hidden\n")
+				local requests = 0
+				t.patch(backend, "blame_lines_async", function()
+					requests = requests + 1
+					return { kill = function() end }
+				end)
+				local buf = vim.fn.bufadd(path)
+				vim.fn.bufload(buf)
+				vim.wait(100)
+				local after_load = requests
+				api.nvim_buf_set_lines(buf, 0, -1, false, { "modified" })
+				api.nvim_exec_autocmds("BufModifiedSet", { buffer = buf })
+				vim.wait(100)
+				assert(
+					after_load == 0 and requests == 0 and not blame._test_inline_state().views[buf],
+					"hidden buffer started blame: load=" .. after_load .. ", after modify=" .. requests
+				)
+			end,
+		},
+		{
 			"test_blame_inline_refreshes_after_unload_and_reload",
 			function()
 				local f, buf = alice()

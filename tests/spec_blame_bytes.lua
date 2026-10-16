@@ -65,10 +65,109 @@ return function(ctx)
 
 	return t.cases({
 		{
+			"test_svn_blame_undecodable_base_keeps_unchanged_attribution",
+			function()
+				local f, buf, _, backend = fixture(formats[1], true)
+				vim.bo[buf].fileencoding = "utf-8"
+				vim.cmd.write()
+				local entries, err = backend_entries(f, backend, source_capture(buf))
+				assert(entries, err)
+				assert(
+					entries[1].uncommitted and not entries[2].uncommitted and not entries[3].uncommitted,
+					"undecodable SVN BASE lost unchanged ASCII attribution"
+				)
+			end,
+		},
+		{
+			"test_blame_ascii_compatible_encodings_keep_bounded_ranges",
+			function()
+				local f, buf, _, backend = t.open(false)
+				local process = require("lazyvcs.backends.process")
+				local run, requests = process.lines, {}
+				t.patch(process, "lines", function(args, opts, callback)
+					if args[2] == "blame" then
+						requests[#requests + 1] = vim.deepcopy(args)
+					end
+					return run(args, opts, callback)
+				end)
+				for _, encoding in ipairs({ "cp1252", "sjis", "euc-jp", "koi8-r" }) do
+					vim.bo[buf].fileencoding = encoding
+					local entries, err =
+						backend_entries(f, backend, source_capture(buf), { line_start = 2, line_end = 2 })
+					assert(entries and #entries == 1, err)
+				end
+				for _, args in ipairs(requests) do
+					assert(
+						vim.tbl_contains(args, "-L") and vim.tbl_contains(args, "2,2"),
+						"ASCII-compatible blame requested full file: " .. table.concat(args, " ")
+					)
+				end
+				assert(#requests == 4)
+			end,
+		},
+		{
+			"test_blame_snapshot_validates_line_models",
+			function()
+				local f = t.open(false)
+				local process = require("lazyvcs.backends.process")
+				local run, requests = process.lines, {}
+				t.patch(process, "lines", function(args, opts, callback)
+					if args[2] == "blame" then
+						requests[#requests + 1] = vim.deepcopy(args)
+					end
+					return run(args, opts, callback)
+				end)
+				for _, format in ipairs({
+					{ "ascii", "one\nsecond\nlast\n", 2, true },
+					{ "mac", "one\rsecond\rlast\r", 1, false },
+					{ "utf16", "\255\254o\0n\0e\0\n\0", 1, false },
+				}) do
+					write(f.file, format[2])
+					t.h.exec({ "git", "commit", "-am", format[1] }, f.root)
+					local head = vim.trim(t.h.exec({ "git", "rev-parse", "HEAD" }, f.root))
+					for _, side in ipairs({ "base", "saved" }) do
+						requests = {}
+						local done, entries, err
+						require("lazyvcs.backends.blame_selection").load(
+							{
+								snapshot = { vcs = "git", root = f.root, revision = head, head = head },
+								item = { relpath = "sample.txt" },
+								path = f.file,
+								side = side,
+								bytes = format[2],
+								first = format[3],
+								last = format[3],
+							},
+							format[2],
+							function(value, why)
+								entries, err, done = value, why, true
+							end
+						)
+						t.wait(function()
+							return done
+						end, "snapshot blame did not finish", 15000)
+						if format[1] == "utf16" then
+							assert(not entries and err, "binary snapshot was assigned editor attribution")
+						else
+							assert(entries and entries[format[3]] and not entries[format[3]].uncommitted, err)
+							assert(#requests > 0)
+						end
+						for _, args in ipairs(requests) do
+							assert(
+								vim.tbl_contains(args, "-L") == format[4],
+								format[1] .. " snapshot used the wrong Git line model: " .. table.concat(args, " ")
+							)
+						end
+					end
+				end
+			end,
+		},
+		{
 			"test_blame_file_encoder_preserves_exact_bytes",
 			function()
 				for _, item in ipairs({
 					{ "café\nlast", profile("utf-8") },
+					{ "caf\233\n", profile("latin1", "unix", true) },
 					{ "caf\233\r\nlast\r\n", profile("latin1", "dos") },
 					{ "\239\187\191café\n", profile("utf-8", "unix", true) },
 					{ "\239\187\191", profile("utf-8", "unix", true) },

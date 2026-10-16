@@ -100,12 +100,21 @@ return function(ctx)
 		{
 			"test_blame_split_normalizes_and_restores_source_row_heights",
 			function()
+				local failures = {}
 				for _, cleanup in ipairs({ "close", "unload", "replace" }) do
 					local buf, win = source()
 					util.set_win_options(win, { wrap = true, foldenable = true, foldmethod = "manual" })
 					vim.cmd("3,5fold")
 					vim.cmd("normal! ggzt")
 					local options = util.capture_win_options(win, { "wrap", "foldenable", "scrollbind", "cursorbind" })
+					local other = api.nvim_create_buf(false, true)
+					util.show_win_buffer(win, other)
+					util.set_win_options(
+						win,
+						{ wrap = false, foldenable = false, scrollbind = false, cursorbind = false }
+					)
+					local other_options = util.capture_win_options(win, vim.tbl_keys(options))
+					util.show_win_buffer(win, buf)
 					local globals = {}
 					for name in pairs(options) do
 						globals[name] = api.nvim_get_option_value(name, { win = win, scope = "global" })
@@ -126,18 +135,23 @@ return function(ctx)
 					if cleanup == "close" then
 						blame.blame_split()
 					elseif cleanup == "unload" then
-						util.show_win_buffer(win, api.nvim_create_buf(false, true))
+						util.show_win_buffer(win, other)
 						api.nvim_buf_delete(buf, { unload = true })
 					else
-						util.show_win_buffer(win, api.nvim_create_buf(false, true))
+						util.show_win_buffer(win, other)
 					end
 					t.wait(function()
 						return not blame._test_blame_views()[buf]
 					end, "split cleanup did not finish")
-					assert(
-						vim.deep_equal(options, util.capture_win_options(win, vim.tbl_keys(options))),
-						"source options were not restored on " .. cleanup
-					)
+					if cleanup ~= "close" then
+						if not vim.deep_equal(other_options, util.capture_win_options(win, vim.tbl_keys(options))) then
+							failures[#failures + 1] = "other buffer options changed on " .. cleanup
+						end
+						util.show_win_buffer(win, buf)
+					end
+					if not vim.deep_equal(options, util.capture_win_options(win, vim.tbl_keys(options))) then
+						failures[#failures + 1] = "source options were not restored on " .. cleanup
+					end
 					for name, value in pairs(globals) do
 						assert(
 							value == api.nvim_get_option_value(name, { win = win, scope = "global" }),
@@ -148,6 +162,7 @@ return function(ctx)
 						assert(vim.fn.foldclosed(3) == 3, "fold definition was lost")
 					end
 				end
+				assert(#failures == 0, table.concat(failures, "; "))
 			end,
 		},
 		{

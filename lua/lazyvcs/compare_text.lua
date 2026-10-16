@@ -324,10 +324,8 @@ function M.encode_file(text, profile, limit_bytes)
 				break
 			end
 		end
-		if not signature then
-			return nil, "Buffer encoding does not support a byte order mark"
-		end
-		bytes = signature .. bytes
+		-- Like Neovim's writer, ignore 'bomb' for encodings without a BOM.
+		bytes = (signature or "") .. bytes
 	end
 	if #bytes > limit_bytes then
 		return nil, "Encoded text exceeds the file size limit"

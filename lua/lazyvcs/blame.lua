@@ -56,6 +56,38 @@ local function supported_blame_buffer(bufnr)
 	return path, backend
 end
 
+-- Window-local values are saved per buffer. If the source has left this window,
+-- wait for it to return rather than changing the replacement buffer's options.
+local function restore_source_options(source_bufnr, view)
+	local win = view.source_winid
+	if not view.source_options or not util.win_is_valid(win) then
+		return
+	end
+	if vim.api.nvim_win_get_buf(win) == source_bufnr then
+		apply_win_options(win, view.source_options)
+		return
+	end
+	if not util.buf_is_valid(source_bufnr) then
+		return
+	end
+	local group = vim.api.nvim_create_augroup("lazyvcs_blame_restore_" .. source_bufnr .. "_" .. win, { clear = true })
+	local function clear()
+		pcall(vim.api.nvim_del_augroup_by_id, group)
+	end
+	vim.api.nvim_create_autocmd("BufWinEnter", {
+		group = group,
+		buffer = source_bufnr,
+		callback = protect(function()
+			if util.win_is_valid(win) and vim.api.nvim_win_get_buf(win) == source_bufnr then
+				clear()
+				apply_win_options(win, view.source_options)
+			end
+		end, clear),
+	})
+	vim.api.nvim_create_autocmd("BufWipeout", { group = group, buffer = source_bufnr, callback = clear })
+	vim.api.nvim_create_autocmd("WinClosed", { group = group, pattern = tostring(win), callback = clear })
+end
+
 local function close_blame(source_bufnr, expected, deferred)
 	local view = blame_views[source_bufnr]
 	if not view or (expected and view ~= expected) then
@@ -76,9 +108,7 @@ local function close_blame(source_bufnr, expected, deferred)
 		view.handle = nil
 		pcall(handle.kill, handle, 15)
 	end
-	if view.source_options and util.win_is_valid(view.source_winid) then
-		apply_win_options(view.source_winid, view.source_options)
-	end
+	restore_source_options(source_bufnr, view)
 	local function dispose()
 		if util.win_is_valid(view.winid) and vim.api.nvim_win_get_buf(view.winid) == view.bufnr then
 			pcall(vim.api.nvim_win_close, view.winid, true)
@@ -1008,6 +1038,16 @@ function M.refresh(bufnr)
 	invalidate_inline(bufnr or vim.api.nvim_get_current_buf())
 end
 
+local function shown_in_window(bufnr)
+	-- bufload() uses a temporary autocommand window and fires BufWinEnter too.
+	for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
+		if vim.fn.win_gettype(win) ~= "autocmd" then
+			return true
+		end
+	end
+	return false
+end
+
 function M.setup()
 	if augroup then
 		pcall(vim.api.nvim_del_augroup_by_id, augroup)
@@ -1034,7 +1074,9 @@ function M.setup()
 	vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "WinEnter", "BufWinEnter" }, {
 		group = augroup,
 		callback = protect(function(args)
-			update_inline(args.buf)
+			if inline_views[args.buf] or shown_in_window(args.buf) then
+				update_inline(args.buf)
+			end
 		end),
 	})
 	vim.api.nvim_create_autocmd(
@@ -1042,7 +1084,10 @@ function M.setup()
 		{
 			group = augroup,
 			callback = protect(function(args)
-				if inline_enabled then
+				local hidden_load = (args.event == "BufReadPost" or args.event == "BufModifiedSet")
+					and not inline_views[args.buf]
+					and not shown_in_window(args.buf)
+				if inline_enabled and not hidden_load then
 					invalidate_inline(args.buf)
 				end
 			end),

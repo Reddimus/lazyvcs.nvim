@@ -122,11 +122,11 @@ the GitHub release.
   `encode_file()` and `capture_file()` preserve file bytes for blame. Encoding
   requires an exact reverse conversion. Clean captures preserve read EOF state,
   while modified nonempty captures honor `fixendofline`. The module depends only
-  on Neovim APIs. Native editable hunks use full documents, including empty-content
-  and EOF state. Live diff bounds
-  both raw and decoded content to 1 MiB per side; signs also honor
-  `signs.max_file_bytes`. Profile changes invalidate decoded bases. Revalidate
-  entry eligibility and the captured context before native replacement.
+  on Neovim APIs. Native editable hunks use full documents, including
+  empty-content and EOF state. Live diff bounds both raw and decoded content to
+  1 MiB per side; signs also honor `signs.max_file_bytes`. Profile changes
+  invalidate decoded bases. Revalidate entry eligibility and the captured
+  context before native replacement.
 - `source_control/jobs.lua` bounds and profiles repository/comparison commands.
 - Source-control summaries own branch, upstream, and remote status. Details own
   local rows and counts. Merge each completion into the current repository

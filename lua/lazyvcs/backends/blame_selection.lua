@@ -1,6 +1,8 @@
 local Task = require("lazyvcs.backends.task")
 local process = require("lazyvcs.backends.process")
 local util = require("lazyvcs.util")
+local format = require("lazyvcs.backends.blame_format")
+local comparison = require("lazyvcs.backends.comparison")
 local M = {}
 local legacy_git = {}
 
@@ -41,6 +43,22 @@ function M.load(target, contents, callback, capture)
 			}))
 		elseif snapshot.vcs == "git" then
 			contents = target.bytes or contents
+			local snapshot_lines, lines_err = comparison.lines(contents)
+			if not snapshot_lines then
+				return task:finish(nil, lines_err)
+			end
+			-- Compare preserves raw bytes and displays LF-delimited lines. CR-only
+			-- snapshots still need full-file validation; binary previews are rejected above.
+			local opts = {
+				profile = {
+					fileencoding = "utf-8",
+					fileformat = contents:find("\r", 1, true) and not contents:find("\n", 1, true) and "mac" or "unix",
+				},
+				text = { lines = snapshot_lines },
+				line_start = target.first,
+				line_end = target.last,
+			}
+			local full_file = format.full_file(opts)
 			local base = target.side == "base"
 			local revision = base and snapshot.revision or snapshot.head
 			local path = base and (item.old_path or item.relpath) or item.relpath
@@ -83,7 +101,7 @@ function M.load(target, contents, callback, capture)
 							local mapped = require("lazyvcs.backends.blame_mapping").map(
 								indices,
 								base_lines,
-								require("lazyvcs.backends.comparison").lines(contents),
+								snapshot_lines,
 								false
 							)
 							local ranges, wanted, entries = {}, {}, {}
@@ -112,10 +130,14 @@ function M.load(target, contents, callback, capture)
 								local args = { "git", "blame", "--encoding=UTF-8", "--line-porcelain" }
 								-- Bound argv size on Windows when deletions split the selected history.
 								local ending = math.min(#ranges, next_range + 127)
-								for i = next_range, ending do
-									vim.list_extend(args, { "-L", ranges[i][1] .. "," .. ranges[i][2] })
+								if full_file then
+									next_range = #ranges + 1
+								else
+									for i = next_range, ending do
+										vim.list_extend(args, { "-L", ranges[i][1] .. "," .. ranges[i][2] })
+									end
+									next_range = ending + 1
 								end
-								next_range = ending + 1
 								vim.list_extend(args, { revision, "--", relpath })
 								task:add(process.lines(args, { cwd = root }, function(raw, blame_err)
 									if not task:is_active() then
@@ -124,7 +146,16 @@ function M.load(target, contents, callback, capture)
 									if not raw then
 										return task:finish(nil, blame_err)
 									end
-									for old, entry in pairs(index_git_entries(raw, backend.parse_blame_entries(raw))) do
+									local validated, format_err = format.select(raw, {
+										profile = opts.profile,
+										text = { lines = base_lines },
+									})
+									if not validated then
+										return task:finish(nil, format_err)
+									end
+									for old, entry in
+										pairs(index_git_entries(validated, backend.parse_blame_entries(validated)))
+									do
 										if wanted[old] then
 											entries[wanted[old]] = entry
 										end
@@ -141,8 +172,10 @@ function M.load(target, contents, callback, capture)
 				if not base and legacy_git[executable] then
 					return historical(relpath, retry)
 				end
-				local args =
-					{ "git", "blame", "--encoding=UTF-8", "--line-porcelain", "-L", target.first .. "," .. target.last }
+				local args = { "git", "blame", "--encoding=UTF-8", "--line-porcelain" }
+				if not full_file then
+					vim.list_extend(args, { "-L", target.first .. "," .. target.last })
+				end
 				if not base then
 					vim.list_extend(args, { "--contents", "-" })
 				end
@@ -166,7 +199,11 @@ function M.load(target, contents, callback, capture)
 						end
 						return uncommitted()
 					end
-					finish(raw, err)
+					if not raw then
+						return finish(nil, err)
+					end
+					local selected, format_err = format.select(raw, opts)
+					finish(selected, format_err)
 				end))
 			end
 			blame(path, false)
