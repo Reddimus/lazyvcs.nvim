@@ -462,7 +462,11 @@ return function(ctx)
 				end
 				assert(escaped_newline_rows == 2, "newline and literal-backslash filenames must keep separate rows")
 				for _, name in ipairs(names) do
-					assert(paths[name] == f.root .. "/" .. name, "raw action path changed")
+					-- Actions use the raw name. Windows treats a backslash in it as a separator.
+					assert(
+						paths[name] == require("lazyvcs.util").normalize_literal_path(f.root .. "/" .. name),
+						"raw action path changed"
+					)
 				end
 				assert(
 					require("lazyvcs.source_control.display").label("C:\\work\\sample.txt") == "C:\\work\\sample.txt"

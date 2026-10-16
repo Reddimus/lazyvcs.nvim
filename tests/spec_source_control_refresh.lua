@@ -154,8 +154,9 @@ return function(ctx)
 					return state.lazyvcs_repo_cache[f.root] == nil
 				end, "Unicode commit did not finish", 15000)
 				assert(state.lazyvcs_commit_drafts[f.root] == "", "successful Unicode commit must clear the draft")
+				-- svn log text uses the console code page on Windows; --xml is always UTF-8.
 				assert(
-					h.exec({ "svn", "log", "-l", "1", h.file_url(f.repo) }, f.root)
+					h.exec({ "svn", "log", "--xml", "-l", "1", h.file_url(f.repo) }, f.root)
 						:find("Unicode café commit", 1, true)
 				)
 			end,

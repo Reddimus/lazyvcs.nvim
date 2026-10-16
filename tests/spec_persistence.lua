@@ -118,7 +118,12 @@ vim.cmd("qa!")
 					local denied = false
 					---@diagnostic disable-next-line: duplicate-set-field
 					vim.uv.fs_open = function(file, flags, mode, ...)
-						if case[1] == "unreadable" and file == path and flags == "r" then
+						-- Windows spells the same path with different separators.
+						if
+							case[1] == "unreadable"
+							and vim.fs.normalize(file) == vim.fs.normalize(path)
+							and flags == "r"
+						then
 							denied = true
 							return nil, "EACCES: permission denied"
 						end
