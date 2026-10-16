@@ -341,7 +341,11 @@ local function run_provider(request, provider, repo, prompt, callback)
 				return
 			end
 			request.handle = nil
-			callback(message and clean_message(message), err)
+			local cleaned = message and clean_message(message)
+			if message and cleaned == "" then
+				return callback(nil, "CopilotChat returned an empty commit message")
+			end
+			callback(cleaned, err)
 		end)
 		request:set_handle(handle)
 		return

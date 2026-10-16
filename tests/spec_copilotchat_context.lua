@@ -133,6 +133,31 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_source_control_copilotchat_fence_only_reply_is_an_error",
+			function()
+				fixture(function(_, client)
+					require("lazyvcs").setup({
+						ai = { commit_message = { provider = "copilotchat", confirm_privacy = false } },
+					})
+					client.ask = function()
+						return { message = { content = "```\n```" } }
+					end
+					local f = h.make_git_fixture()
+					local completed, generated, failure = false, nil, nil
+					require("lazyvcs.source_control.ai").generate({ root = f.root, vcs = "git" }, function(message, err)
+						generated, failure, completed = message, err, true
+					end)
+					ctx.wait_for(function()
+						return completed
+					end, "fence-only CopilotChat request did not complete", 15000)
+					assert(
+						(generated == nil or generated == "") and failure and failure:find("empty commit message"),
+						"a reply that cleans to nothing must be reported as an empty commit message"
+					)
+				end)
+			end,
+		},
+		{
 			"test_source_control_copilotchat_rejects_unsupported_interface",
 			function()
 				fixture(function(_, client)

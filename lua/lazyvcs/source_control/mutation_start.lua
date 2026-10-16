@@ -5,7 +5,8 @@ local M = {}
 
 -- Preflight and mutation share a worker and one deadline.
 function M.start(repo, args, opts, guards, on_exit)
-	local deadline = opts.timeout and (vim.uv.hrtime() / 1e6 + opts.timeout) or nil
+	-- A zero timeout means unbounded, as in the scheduler.
+	local deadline = (opts.timeout and opts.timeout > 0) and (vim.uv.hrtime() / 1e6 + opts.timeout) or nil
 	local child, terminal, done
 	local serial = 0
 	local handle = {}

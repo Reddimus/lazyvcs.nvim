@@ -58,6 +58,35 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_source_control_mutation_zero_timeout_is_unbounded",
+			function()
+				local starter = require("lazyvcs.source_control.mutation_start")
+				local f = h.make_git_fixture()
+				local repo = { root = f.root, vcs = "git" }
+				local ref = util.trim(h.exec({ "git", "symbolic-ref", "HEAD" }, f.root))
+				local done, failure = false, nil
+				starter.start(
+					repo,
+					{ "git", "update-ref", "refs/heads/unbounded", "HEAD" },
+					{ cwd = f.root, timeout = 0 },
+					{
+						branch_ref = ref,
+					},
+					function(_, err)
+						failure, done = err, true
+					end
+				)
+				ctx.wait_for(function()
+					return done
+				end, "zero-timeout mutation did not complete", 15000)
+				assert(not failure, "a zero timeout must not expire immediately: " .. tostring(failure))
+				assert(
+					h.exec({ "git", "rev-parse", "unbounded" }, f.root)
+						== h.exec({ "git", "rev-parse", "HEAD" }, f.root)
+				)
+			end,
+		},
+		{
 			"test_source_control_mutation_preflight_with_all_workers_busy",
 			function()
 				local starter = require("lazyvcs.source_control.mutation_start")
