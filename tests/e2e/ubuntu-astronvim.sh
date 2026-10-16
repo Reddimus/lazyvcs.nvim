@@ -509,13 +509,17 @@ buffer_nav_smoke() {
 
 run_logged buffer-nav-smoke buffer_nav_smoke
 
+# -l skips normal init.lua startup. Source AstroNvim with installers disabled
+# before exercising its preinstalled lazy plugin specs.
 for backend in git svn; do
 	export LAZYVCS_INTEGRATION_BACKEND="${backend}"
 	export LAZYVCS_INTEGRATION_STATE="/tmp/lazyvcs-integration-${backend}.json"
 	run_logged "integrations-${backend}-save" env LAZYVCS_INTEGRATION_MODE=save \
-		timeout 180s nvim --headless -l /work/lazyvcs.nvim/tests/e2e/integrations.lua
+		timeout 180s nvim --headless -u /work/lazyvcs.nvim/tests/e2e/integrations_init.lua \
+		-l /work/lazyvcs.nvim/tests/e2e/integrations.lua
 	run_logged "integrations-${backend}-load" env LAZYVCS_INTEGRATION_MODE=load \
-		timeout 180s nvim --headless -l /work/lazyvcs.nvim/tests/e2e/integrations.lua
+		timeout 180s nvim --headless -u /work/lazyvcs.nvim/tests/e2e/integrations_init.lua \
+		-l /work/lazyvcs.nvim/tests/e2e/integrations.lua
 done
 
 

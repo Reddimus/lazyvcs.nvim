@@ -17,9 +17,20 @@ local function run()
 		assert(vim.fn.isdirectory(path) == 1, "missing preinstalled integration plugin: " .. name)
 		vim.opt.runtimepath:append(path)
 	end
-	if package.loaded.lazy then
-		require("lazy").load({ plugins = { "neo-tree.nvim", "lazyvcs.nvim" } })
-	end
+	assert(
+		package.loaded.lazy and vim.g.lazy_did_setup,
+		"lazy.nvim is unavailable; start with -u tests/e2e/integrations_init.lua"
+	)
+	local available, lazy_config = pcall(require, "lazy.core.config")
+	assert(available, "lazy.nvim configuration is unavailable; AstroNvim startup failed")
+	assert(lazy_config.plugins.AstroNvim and lazy_config.plugins.AstroNvim._.loaded, "AstroNvim did not finish startup")
+	assert(
+		not lazy_config.options.install.missing
+			and not lazy_config.options.checker.enabled
+			and not lazy_config.options.change_detection.enabled,
+		"integration startup must disable plugin installation and update checks"
+	)
+	require("lazy").load({ plugins = { "neo-tree.nvim", "lazyvcs.nvim" } })
 	local h = require("helpers")
 	local util, state = require("lazyvcs.util"), require("lazyvcs.state")
 	local options = dofile(plugins .. "/AstroNvim/lua/astronvim/plugins/resession.lua").opts
@@ -27,7 +38,9 @@ local function run()
 	options.options =
 		{ "diff", "scrollbind", "cursorbind", "foldmethod", "foldcolumn", "wrap", "winbar", "winhighlight" }
 	-- Let lazy.nvim configure Resession on its first require, as AstroNvim does.
-	local spec = assert(require("lazy.core.config").plugins["resession.nvim"], "missing lazy Resession spec")
+	local spec = assert(lazy_config.plugins["resession.nvim"], "missing lazy Resession spec")
+	assert(spec._.installed, "missing preinstalled integration plugin: resession.nvim")
+	assert(spec.lazy, "AstroNvim Resession spec must be lazy")
 	assert(not package.loaded.resession, "Resession loaded before the live diff test")
 	spec.opts = options
 	spec.config = true
@@ -170,6 +183,7 @@ local function run()
 	end
 	local live = snapshot(editor)
 	assert(tostring(live.winhighlight):find("LazyVcsSemanticHidden", 1, true), "fixture has no active semantic overlay")
+	assert(spec._.loaded, "lazy.nvim did not load Resession for the live diff")
 	-- This is the user's first require: save immediately, before LazyLoad can run.
 	---@diagnostic disable-next-line: different-requires
 	require("resession").save(name .. "-first", { notify = false })
