@@ -139,6 +139,8 @@ return function(ctx)
 			function()
 				local f = h.make_git_fixture()
 				local s = open(f.root)
+				-- Auto-fit would resize both renders alike and hide the bug.
+				s.lazyvcs_auto_expand_width = false
 				vim.cmd.edit(vim.fn.fnameescape(f.file))
 				api.nvim_win_set_width(s.winid, 25)
 				assert(native.render(s))
