@@ -1,12 +1,15 @@
 local util = require("lazyvcs.util")
+local text = require("lazyvcs.compare_text")
 local M = {}
+
+M.options = { "fileencoding", "fileformat", "bomb", "endofline", "fixendofline", "binary" }
 
 ---@class lazyvcs.BlameContext
 ---@field bufnr integer
 ---@field winid integer
 ---@field name string
 ---@field changedtick integer
----@field fileformat string
+---@field identity LazyVcsTextIdentity
 
 ---@param bufnr integer
 ---@param winid integer
@@ -25,7 +28,7 @@ function M.capture(bufnr, winid)
 		winid = winid,
 		name = vim.api.nvim_buf_get_name(bufnr),
 		changedtick = vim.api.nvim_buf_get_changedtick(bufnr),
-		fileformat = vim.bo[bufnr].fileformat,
+		identity = text.identity(bufnr),
 	}
 end
 
@@ -37,8 +40,7 @@ function M.valid(captured, require_window)
 		and vim.api.nvim_buf_is_loaded(captured.bufnr)
 		and vim.api.nvim_buf_get_name(captured.bufnr) == captured.name
 		and vim.api.nvim_buf_get_changedtick(captured.bufnr) == captured.changedtick
-		-- Changing 'fileformat' changes the bytes sent to the backend but not the tick.
-		and vim.bo[captured.bufnr].fileformat == captured.fileformat
+		and vim.deep_equal(text.identity(captured.bufnr), captured.identity)
 		and (
 			not require_window
 			or (util.win_is_valid(captured.winid) and vim.api.nvim_win_get_buf(captured.winid) == captured.bufnr)
@@ -49,13 +51,18 @@ end
 ---@param max_bytes integer
 ---@return string? contents
 ---@return string? error
+---@return LazyVcsBufferCapture? capture
 function M.contents(captured, max_bytes)
 	if not M.valid(captured, true) then
 		return nil, "Blame source changed"
 	end
-	if util.buffer_size(captured.bufnr) > max_bytes then
-		return nil, "Blame source exceeds the file size limit"
+	local capture, err = text.capture_file(captured.bufnr, max_bytes)
+	if not capture then
+		return nil, err
 	end
-	return util.join_lines(util.get_buf_lines(captured.bufnr))
+	if not M.valid(captured, true) then
+		return nil, "Blame source changed"
+	end
+	return capture.bytes, nil, capture
 end
 return M

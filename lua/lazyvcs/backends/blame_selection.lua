@@ -16,7 +16,7 @@ local function index_git_entries(raw, entries)
 	return indexed
 end
 
-function M.load(target, contents, callback)
+function M.load(target, contents, callback, capture)
 	local task = Task.new(callback)
 	local backends = require("lazyvcs.backends")
 	local function load(backend, root)
@@ -34,11 +34,13 @@ function M.load(target, contents, callback)
 			task:add(backend.blame_lines_async(target.path, finish, {
 				root = root,
 				contents = contents,
-				fileformat = target.fileformat,
+				text = capture and capture.text,
+				profile = capture and capture.profile,
 				line_start = target.first,
 				line_end = target.last,
 			}))
 		elseif snapshot.vcs == "git" then
+			contents = target.bytes or contents
 			local base = target.side == "base"
 			local revision = base and snapshot.revision or snapshot.head
 			local path = base and (item.old_path or item.relpath) or item.relpath
@@ -81,7 +83,7 @@ function M.load(target, contents, callback)
 							local mapped = require("lazyvcs.backends.blame_mapping").map(
 								indices,
 								base_lines,
-								util.split_lines(contents),
+								require("lazyvcs.backends.comparison").lines(contents),
 								false
 							)
 							local ranges, wanted, entries = {}, {}, {}
@@ -186,7 +188,8 @@ function M.load(target, contents, callback)
 			task:add(backend.blame_lines_async(target.path, finish, {
 				root = root,
 				contents = contents,
-				fileformat = target.fileformat,
+				text = capture and capture.text,
+				profile = capture and capture.profile,
 				line_start = target.first,
 				line_end = target.last,
 			}))

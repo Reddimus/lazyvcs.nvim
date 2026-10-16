@@ -76,8 +76,8 @@ local function is_unversioned_error(err, raw)
 		or err:match("W155010") ~= nil
 end
 
-local function uncommitted_blame_lines(path, contents)
-	local ok, lines = true, contents and util.split_lines(contents)
+local function uncommitted_blame_lines(path, contents, text)
+	local ok, lines = true, text and text.lines or contents and util.split_lines(contents)
 	if not lines then
 		ok, lines = pcall(vim.fn.readfile, path)
 	end
@@ -882,7 +882,7 @@ function M.blame_lines_async(path, on_done, opts)
 									return task:finish(nil, nil, root)
 								end
 								if line ~= "" and line:sub(1, 1) == "A" then
-									local blame, read_err = uncommitted_blame_lines(path, opts.contents)
+									local blame, read_err = uncommitted_blame_lines(path, opts.contents, opts.text)
 									return task:finish(blame, read_err, root)
 								end
 							end
@@ -897,36 +897,58 @@ function M.blame_lines_async(path, on_done, opts)
 												return task:finish(nil, nil, root)
 											end
 											if is_added_base_error(blame_err) then
-												local blame, read_err = uncommitted_blame_lines(path)
+												local blame, read_err =
+													uncommitted_blame_lines(path, opts.contents, opts.text)
 												return task:finish(blame, read_err, root)
 											end
 											return task:finish(nil, blame_err)
 										end
-										task:add(process.lines({ "svn", "cat", "-r", "BASE", literal_target(path) }, {
-											cwd = root,
-											timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-										}, function(base, base_err)
-											if not base then
-												return task:finish(nil, base_err)
-											end
-											local ok, current = true, opts.contents and util.split_lines(opts.contents)
-											if not current then
-												ok, current = pcall(vim.fn.readfile, path)
-											end
-											if not ok then
-												return task:finish(nil, tostring(current))
-											end
-											task:finish(
-												require("lazyvcs.backends.blame_mapping").map(
-													lines,
-													base,
-													current,
-													"     - - -"
-												),
-												nil,
-												root
+										task:add(
+											(opts.profile and process.bytes or process.lines)(
+												{ "svn", "cat", "-r", "BASE", literal_target(path) },
+												{
+													cwd = root,
+													timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+												},
+												function(base, base_err)
+													if not base then
+														return task:finish(nil, base_err)
+													end
+													if opts.profile then
+														local decoded, decode_err =
+															require("lazyvcs.compare_text").decode(
+																base,
+																opts.profile,
+																1024 * 1024
+															)
+														if not decoded then
+															return task:finish(nil, decode_err)
+														end
+														base = decoded.lines
+													end
+													local ok, current =
+														true,
+														opts.text and opts.text.lines
+															or opts.contents and util.split_lines(opts.contents)
+													if not current then
+														ok, current = pcall(vim.fn.readfile, path)
+													end
+													if not ok then
+														return task:finish(nil, tostring(current))
+													end
+													task:finish(
+														require("lazyvcs.backends.blame_mapping").map(
+															lines,
+															base,
+															current,
+															"     - - -"
+														),
+														nil,
+														root
+													)
+												end
 											)
-										end))
+										)
 									end
 								)
 							)

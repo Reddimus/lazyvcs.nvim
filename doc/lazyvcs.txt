@@ -283,12 +283,28 @@ Commands:
     :LazyVCS revert          revert the current file
     :LazyVCS files           pick from changed files
 
+Editor blame includes unsaved contents and preserves the buffer's file encoding,
+line endings, and BOM. Clean buffers preserve a missing final newline. Modified
+nonempty buffers include a final separator when 'fixendofline' is enabled;
+otherwise they follow 'endofline'. Binary buffers and lossy conversions are
+unsupported. Git applies its normal attributes and clean filters to these bytes.
+If Git and the editor use different lines, such as raw UTF-16 or Mac separators,
+blame reports an unsupported line format instead of assigning incorrect history.
+UTF-16 files normalized by Git's working-tree-encoding attribute are supported.
+
+Inline blame refreshes after a buffer is unloaded and reopened or reread with
+:edit!. Cursor movement reuses cached attribution between changes.
+
 The blame split reloads from unsaved buffer contents after edits. Reloads use
-blame.delay_ms and discard results from earlier edits. The split stays aligned
-with its source and closes when the source window changes buffers, the source
-is unloaded, or either window closes. Line history uses the current buffer
-contents and has no committed revision for newly inserted lines. Pending history
-is cancelled when its source changes or closes.
+blame.delay_ms and discard results from earlier edits or format changes. The split
+aligns its initial viewport and subsequent reloads with the source. While it is
+open, the source window has wrapping and folding disabled so each source line
+occupies one row. Closing the split restores the source's previous window-local
+wrap, foldenable, scrollbind, and cursorbind values, preserving fold definitions.
+The split closes when the source window changes buffers, the source is unloaded,
+or either window closes. Line history uses the current buffer contents and has
+no committed revision for newly inserted lines. Pending history is cancelled
+when its source changes or closes.
 
 Hunk commands work in normal Git and SVN buffers too:
 
@@ -389,15 +405,18 @@ arguments it uses the active visual selection or cursor line. An optional map: >
     vim.keymap.set("x", "<leader>vb", "<Plug>(LazyVCSBlameSelection)")
 <
 Replacing a selection report cancels its request and releases its window.
-Late results do not change the replacement buffer.
+Late results do not change the replacement buffer. Backend failures remain in a
+readonly report with separate diagnostic lines until you close it.
 
 Editor blame includes unsaved contents. Compare base panes use the pinned
 revision and original rename path. Git saved panes use the captured HEAD and
-saved preview contents; SVN saved panes map working-copy BASE to those contents.
+saved preview bytes, including their original encoding and line endings. SVN
+saved panes map working-copy BASE to those contents.
 Older Git versions map saved lines to the pinned blob before requesting blame.
-Metadata and directory previews have no line attribution. Modern Git requests only the
-selected range; SVN loads file blame once. Files are limited to 1 MiB and command
-output is bounded. Changed or closed source buffers invalidate pending results.
+Metadata and directory previews have no line attribution. Modern Git normally
+requests only the selected range. Representations that may use a different Git
+line model require bounded full-file validation. SVN loads file blame once.
+Files are limited to 1 MiB and command output is bounded. Changed or closed source buffers invalidate pending results.
 
 ==============================================================================
 CONFIGURATION                                           *lazyvcs-configuration*

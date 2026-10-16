@@ -1,6 +1,7 @@
 return function(ctx)
 	local h, api = ctx.helpers, vim.api
 	local actions, signs = require("lazyvcs.actions"), require("lazyvcs.signs")
+	local text = require("lazyvcs.compare_text")
 	local cases = {}
 	local function write(path, value)
 		local f = assert(io.open(path, "wb"))
@@ -80,9 +81,9 @@ return function(ctx)
 					backend.blame_lines_async(f.file, function(value, why)
 						rows, err, done = value, why, true
 					end, {
-						fileformat = vim.bo[buf].fileformat,
-						contents = contents and table.concat(api.nvim_buf_get_lines(buf, 0, -1, false), "\n") .. "\n"
-							or nil,
+						text = assert(text.capture_file(buf, 1024)).text,
+						profile = assert(text.profile(buf)),
+						contents = contents and assert(text.capture_file(buf, 1024)).bytes or nil,
 					})
 					ctx.wait_for(function()
 						return done
@@ -103,7 +104,11 @@ return function(ctx)
 				local done, edited, failure
 				backend.blame_lines_async(f.file, function(rows, err)
 					edited, failure, done = rows and backend.parse_blame_entries(rows), err, true
-				end, { contents = "x\nb\n", fileformat = vim.bo[buf].fileformat })
+				end, {
+					contents = "x\r\nb\r\n",
+					text = { lines = { "x", "b" } },
+					profile = assert(text.profile(buf)),
+				})
 				ctx.wait_for(function()
 					return done
 				end, "edited CRLF blame")
