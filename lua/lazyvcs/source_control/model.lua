@@ -21,7 +21,7 @@ end
 -- Normalize changed paths without resolving symlinks. The versioned entry is the link
 -- itself; per-file realpath calls also slow status parsing.
 local function normalize(path)
-	return vim.fs.normalize(path)
+	return util.normalize_literal_path(path)
 end
 
 -- Canonicalize repository roots once at identity boundaries, not for every scanned
@@ -66,12 +66,12 @@ local function svn_branch_from_info(raw)
 end
 
 local function resolve_svn_entry_path(repo_root, entry_path)
-	local normalized = normalize(entry_path)
-	if normalized == repo_root or normalized:sub(1, #repo_root + 1) == repo_root .. "/" then
-		return normalized, util.relpath(repo_root, normalized) or normalized
+	local absolute = entry_path:sub(1, 1) == "/"
+	if vim.fn.has("win32") == 1 then
+		absolute = absolute or entry_path:match("^%a:[/\\]") ~= nil or entry_path:sub(1, 1) == "\\"
 	end
-	local absolute = normalize(join(repo_root, entry_path))
-	return absolute, util.relpath(repo_root, absolute) or entry_path
+	local path = normalize(absolute and entry_path or join(repo_root, entry_path))
+	return path, util.relative_literal_path(repo_root, path) or entry_path
 end
 
 local function repo_kind(path)
@@ -220,7 +220,7 @@ local function annotate_repos(root, repos)
 	end
 
 	for _, repo in ipairs(repos) do
-		repo.relpath = util.relpath(root, repo.root) or repo.name
+		repo.relpath = util.relative_literal_path(root, repo.root) or repo.name
 		if name_counts[repo.name] > 1 then
 			repo.path_label = repo.relpath
 		else

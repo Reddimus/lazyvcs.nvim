@@ -79,7 +79,7 @@ function M.load(task, repo, callback)
 					if path:match("^%a[%w+.-]*://") then
 						global[#global + 1] = xml.decode(content)
 					else
-						inherited[vim.fs.normalize(path)] = xml.decode(content)
+						inherited[util.normalize_literal_path(path)] = xml.decode(content)
 					end
 				end
 			end

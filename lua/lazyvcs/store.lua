@@ -1,3 +1,4 @@
+local util = require("lazyvcs.util")
 -- Persist UI preferences atomically under stdpath("state"). Per-workspace sidebar layouts
 -- live separately in source_control/persist.lua.
 
@@ -12,7 +13,7 @@ local function state_dir()
 	if override_dir then
 		return override_dir
 	end
-	return vim.fs.normalize(vim.fn.stdpath("state") .. "/lazyvcs")
+	return util.normalize_literal_path(vim.fn.stdpath("state") .. "/lazyvcs")
 end
 
 local function state_path()
@@ -76,7 +77,7 @@ end
 -- Test seam: redirect the backing directory and drop the in-memory cache so
 -- specs can exercise persistence against a throwaway tempdir.
 function M._test_set_dir(dir)
-	override_dir = dir and vim.fs.normalize(dir) or nil
+	override_dir = dir and util.normalize_literal_path(dir) or nil
 	cache = nil
 end
 

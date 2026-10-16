@@ -471,80 +471,138 @@ end
 function M.dir_of(path)
 	local stat = path and vim.uv.fs_stat(path)
 	if stat and stat.type == "directory" then
-		return vim.fs.normalize(path)
+		return M.normalize_literal_path(path)
 	end
 	return vim.fs.dirname(path)
 end
 
+---Normalize filesystem data literally. Join repository entries to their root first.
+---Unlike user-input expansion, this also preserves a leading tilde in a filename.
+---@param path string
+---@return string
+function M.normalize_literal_path(path)
+	return vim.fs.normalize(path:sub(1, 1) == "~" and ("./" .. path) or path, { expand_env = false })
+end
+
+local function relative_normalized_path(root, path, ignorecase)
+	local base, target = root, path
+	if ignorecase then
+		base, target = base:lower(), target:lower()
+	end
+	if base == target then
+		return "."
+	end
+	local prefix = base:sub(-1) == "/" and base or (base .. "/")
+	if target:sub(1, #prefix) == prefix then
+		return path:sub(#prefix + 1)
+	end
+	return nil
+end
+
+---Lexical membership only: no environment expansion, realpath, or per-file I/O.
+---Use Neovim's filename case convention for display and buffer matching.
+---@param root string
+---@param path string
+---@return string? relative
+function M.relative_literal_path(root, path)
+	if root == "" or path == "" then
+		return nil
+	end
+	return relative_normalized_path(
+		M.normalize_literal_path(root),
+		M.normalize_literal_path(path),
+		vim.o.fileignorecase
+	)
+end
+
 -- Canonicalize root identities by resolving symlinks. Missing paths retain their
--- normalized spelling.
+-- normalized spelling; verified membership uses relpath instead.
 ---@param path string|nil
 ---@return string
 function M.canonical_path(path)
 	if not path or path == "" then
 		return path or ""
 	end
-	local normalized = vim.fs.normalize(path)
+	local normalized = M.normalize_literal_path(path)
 	local resolved = vim.uv.fs_realpath(normalized)
-	return resolved and vim.fs.normalize(resolved) or normalized
+	return resolved and M.normalize_literal_path(resolved) or normalized
 end
 
----Resolve a repository entry without following its final symlink.
----Intermediate directory symlinks still resolve, so membership checks use the
----real checkout while a tracked symlink remains identified by its own path.
+---Resolve existing ancestors, retaining missing suffixes and the final symlink entry.
+---Strict callers reject inaccessible, dangling, or non-directory parents.
 ---@param path string?
----@return string
-function M.canonical_entry_path(path)
+---@param strict? boolean
+---@return string? entry, string? err
+function M.canonical_entry_path(path, strict)
 	if not path or path == "" then
+		if strict then
+			return nil, "Cannot resolve an empty repository entry path"
+		end
 		return path or ""
 	end
-	local normalized = vim.fs.normalize(path)
+	local normalized = M.normalize_literal_path(path)
 	local parent = vim.fs.dirname(normalized)
-	local name = vim.fs.basename(normalized)
-	local resolved_parent = vim.uv.fs_realpath(parent)
-	if not resolved_parent then
-		return normalized
+	local suffix = { vim.fs.basename(normalized) }
+	while parent do
+		local resolved, err, code = vim.uv.fs_realpath(parent)
+		if resolved then
+			local stat = vim.uv.fs_stat(resolved)
+			if stat and stat.type == "directory" then
+				local parts = { resolved }
+				for i = #suffix, 1, -1 do
+					parts[#parts + 1] = suffix[i]
+				end
+				return M.normalize_literal_path(table.concat(parts, "/"))
+			end
+			break
+		end
+		-- ENOENT can mean a missing directory or a dangling symlink. Only the
+		-- former has a knowable entry identity beneath an existing ancestor.
+		if code ~= "ENOENT" or vim.uv.fs_lstat(parent) then
+			if strict then
+				return nil, "Cannot resolve repository entry parent: " .. tostring(err):gsub("[%c]", " ")
+			end
+			return normalized
+		end
+		suffix[#suffix + 1] = vim.fs.basename(parent)
+		local next_parent = vim.fs.dirname(parent)
+		if next_parent == parent then
+			break
+		end
+		parent = next_parent
 	end
-	return vim.fs.normalize(resolved_parent .. "/" .. name)
+	if strict then
+		return nil, "Cannot resolve repository entry parent"
+	end
+	return normalized
 end
 
----@return string
+---Verified repository entry, never a guessed basename. Resolve roots and ancestors
+---again at mutation start; retain the final component even when it is a symlink.
+---@param root string?
+---@param path string?
+---@return string? relative, string? err
 function M.relpath(root, path)
-	if not root or root == "" then
-		return path
+	local err = "Cannot place path in repository"
+	if not root or root == "" or not path or path == "" then
+		return nil, err .. ": missing root or entry"
 	end
-
-	local rel = vim.fs.relpath and vim.fs.relpath(root, path)
-	if rel then
-		return rel
+	local real_root = vim.uv.fs_realpath(M.normalize_literal_path(root))
+	local stat = real_root and vim.uv.fs_stat(real_root)
+	if not real_root or not stat or stat.type ~= "directory" then
+		return nil, err .. ": unresolved root"
 	end
-
-	local function strip_prefix(base, target)
-		if target:sub(1, #base) == base then
-			local out = target:sub(#base + 2)
-			if out ~= "" then
-				return out
-			end
-		end
-		return nil
+	local entry, entry_err = M.canonical_entry_path(path, true)
+	if not entry then
+		return nil, entry_err
 	end
-
-	-- Resolve symlinks and short names, then retry.
-	local real_root = vim.uv.fs_realpath(root)
-	local real_path = vim.uv.fs_realpath(path)
-	if real_root and real_path then
-		real_root, real_path = vim.fs.normalize(real_root), vim.fs.normalize(real_path)
-		rel = vim.fs.relpath and vim.fs.relpath(real_root, real_path)
-		if rel then
-			return rel
-		end
-		rel = strip_prefix(real_root, real_path)
-		if rel then
-			return rel
-		end
+	-- realpath supplies filesystem casing for existing ancestors. A user-set
+	-- 'fileignorecase' must never authorize a different case-sensitive checkout.
+	local relative = relative_normalized_path(M.normalize_literal_path(real_root), entry, false)
+	if not relative then
+		return nil, err .. ": entry is outside root"
 	end
-
-	return strip_prefix(root, path) or vim.fs.basename(path)
+	return relative
 end
 
 function M.slice(lines, start_line, count)
@@ -583,7 +641,7 @@ function M.buf_path(bufnr)
 	if name == "" then
 		return nil
 	end
-	return vim.fs.normalize(name)
+	return M.normalize_literal_path(name)
 end
 
 function M.buffer_size(bufnr)

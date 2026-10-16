@@ -162,6 +162,11 @@ function M.load(path)
 		return nil, err or "Not an SVN working copy"
 	end
 
+	local relpath, path_err = util.relpath(root, path)
+	if not relpath then
+		return nil, path_err
+	end
+
 	local tracked = is_versioned(path)
 	if not tracked then
 		return nil, "File is not tracked by SVN"
@@ -180,7 +185,7 @@ function M.load(path)
 	return {
 		name = M.name,
 		root = root,
-		relpath = util.relpath(root, path),
+		relpath = relpath,
 		tracked = tracked,
 		base_label = base_label,
 		base_lines = base_lines,
@@ -210,7 +215,11 @@ function M.is_versioned_async(path, on_done, opts)
 		if not info then
 			return task:finish(false, err)
 		end
-		task:add(process.start({ "svn", "info", literal_target(path) }, {
+		local relpath, path_err = util.relpath(info.root, path)
+		if not relpath then
+			return task:finish(false, path_err)
+		end
+		task:add(process.start({ "svn", "info", literal_target(relpath) }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 		}, function(result, tracked_err, raw)
@@ -232,6 +241,11 @@ function M.load_base(path)
 		return nil, err or "Not an SVN working copy"
 	end
 
+	local relpath, path_err = util.relpath(root, path)
+	if not relpath then
+		return nil, path_err
+	end
+
 	if not is_versioned(path) then
 		return nil, "File is not tracked by SVN"
 	end
@@ -242,7 +256,7 @@ function M.load_base(path)
 	end
 	return {
 		root = root,
-		relpath = util.relpath(root, path),
+		relpath = relpath,
 		base_label = base_label,
 		base_lines = lines,
 	}
@@ -259,10 +273,10 @@ local function load_payload_async(path, on_done, opts, base_only)
 	end
 
 	local cwd = util.dir_of(path)
-	local function payload(root, tracked, base_label, base_lines)
+	local function payload(root, relpath, tracked, base_label, base_lines)
 		local value = {
 			root = root,
-			relpath = util.relpath(root, path),
+			relpath = relpath,
 			tracked = tracked,
 			base_label = base_label,
 			base_lines = base_lines,
@@ -286,6 +300,10 @@ local function load_payload_async(path, on_done, opts, base_only)
 			return task:finish(nil, err)
 		end
 		local root = util.canonical_path(util.trim(result.stdout))
+		local relpath, path_err = util.relpath(root, path)
+		if not relpath then
+			return task:finish(nil, path_err)
+		end
 		task:add(process.start({ "svn", "info", literal_target(path) }, {
 			cwd = cwd,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
@@ -320,7 +338,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 						end
 
 						if code == "A" then
-							return task:finish(payload(root, true, "EMPTY", {}))
+							return task:finish(payload(root, relpath, true, "EMPTY", {}))
 						end
 
 						task:add(
@@ -330,11 +348,11 @@ local function load_payload_async(path, on_done, opts, base_only)
 								function(lines, cat_err)
 									if not lines then
 										if is_added_base_error(cat_err) then
-											return task:finish(payload(root, true, "EMPTY", {}))
+											return task:finish(payload(root, relpath, true, "EMPTY", {}))
 										end
 										return task:finish(nil, cat_err)
 									end
-									task:finish(payload(root, true, "BASE", lines))
+									task:finish(payload(root, relpath, true, "BASE", lines))
 								end
 							)
 						)
@@ -355,10 +373,15 @@ function M.load_base_async(path, on_done, opts)
 end
 
 function M.revert_file(path)
-	if not svn_available() then
-		return nil, "svn executable not found"
+	local root, err = get_root(path)
+	if not root then
+		return nil, err
 	end
-	return util.system({ "svn", "revert", literal_target(path) }, { cwd = util.dir_of(path) })
+	local relpath, path_err = util.relpath(root, path)
+	if not relpath then
+		return nil, path_err
+	end
+	return util.system({ "svn", "revert", "--", literal_target(relpath) }, { cwd = root })
 end
 
 function M.revert_file_async(path, on_done, opts)
@@ -371,7 +394,11 @@ function M.revert_file_async(path, on_done, opts)
 		if not info then
 			return task:finish(nil, err or "Not an SVN working copy")
 		end
-		task:add(process.start({ "svn", "info", literal_target(path) }, {
+		local relpath, path_err = util.relpath(info.root, path)
+		if not relpath then
+			return task:finish(nil, path_err)
+		end
+		task:add(process.start({ "svn", "info", literal_target(relpath) }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 		}, function(_, tracked_err, raw)
@@ -384,8 +411,12 @@ function M.revert_file_async(path, on_done, opts)
 				end
 				return task:finish(nil, tracked_err)
 			end
+			local current, current_err = util.relpath(info.root, path)
+			if current ~= relpath or util.canonical_path(info.root) ~= info.root then
+				return task:finish(nil, current_err or "Repository entry changed before discard; retry the action")
+			end
 			local start = opts.start or util.system_start
-			task:add(start({ "svn", "revert", literal_target(path) }, {
+			task:add(start({ "svn", "revert", "--", literal_target(relpath) }, {
 				cwd = info.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 			}, function(result, revert_err)
@@ -410,7 +441,7 @@ function M.parse_status_lines(lines, root)
 					status = code,
 					label = status_label(code),
 					path = path,
-					absolute_path = root and vim.fs.normalize(root .. "/" .. path) or path,
+					absolute_path = root and util.normalize_literal_path(root .. "/" .. path) or path,
 				}
 			end
 		end
@@ -489,7 +520,7 @@ function M.resolve_diff_target(target)
 	target = target or {}
 	local root = target.root or target.repo_root
 	local relpath = target.relpath
-	local path = target.path or (root and relpath and vim.fs.normalize(root .. "/" .. relpath))
+	local path = target.path or (root and relpath and util.normalize_literal_path(root .. "/" .. relpath))
 	if not root or not relpath then
 		return nil, "SVN diff target requires root and relpath"
 	end

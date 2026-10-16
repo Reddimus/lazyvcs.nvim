@@ -13,7 +13,7 @@ local function current_path()
 	if util.is_real_file_buffer(bufnr) then
 		return util.buf_path(bufnr)
 	end
-	return vim.fs.normalize(vim.fn.getcwd())
+	return util.normalize_literal_path(vim.fn.getcwd())
 end
 
 function M.files()

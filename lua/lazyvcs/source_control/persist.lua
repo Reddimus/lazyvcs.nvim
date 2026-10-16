@@ -1,3 +1,4 @@
+local util = require("lazyvcs.util")
 local json_file = require("lazyvcs.json_file")
 
 local M = {}
@@ -5,7 +6,7 @@ local M = {}
 local cache
 
 local function state_path()
-	return vim.fs.normalize(vim.fn.stdpath("state") .. "/lazyvcs/source_control.json")
+	return util.normalize_literal_path(vim.fn.stdpath("state") .. "/lazyvcs/source_control.json")
 end
 
 local function load_cache()
@@ -61,7 +62,7 @@ local function serialize_state(state)
 end
 
 function M.load(root)
-	root = vim.fs.normalize(root)
+	root = util.normalize_literal_path(root)
 	local all = load_cache()
 	local entry = all[root]
 	if type(entry) ~= "table" then
@@ -71,7 +72,7 @@ function M.load(root)
 end
 
 function M.save(root, value)
-	root = vim.fs.normalize(root)
+	root = util.normalize_literal_path(root)
 	local all = load_cache()
 	all[root] = vim.deepcopy(value or {})
 	save_cache()

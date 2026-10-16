@@ -7,7 +7,7 @@ local M = {}
 local departed_buffers = {}
 
 local function sanitize_root(text)
-	return (vim.fs.normalize(text or ""):gsub("[%c]", " "))
+	return (util.normalize_literal_path(text or ""):gsub("[%c]", " "))
 end
 
 local function sanitize_relative(text)

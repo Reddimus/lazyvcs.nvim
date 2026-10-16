@@ -6,7 +6,7 @@ local function path_is_in_root(root, path)
 	if root == path then
 		return true
 	end
-	return vim.fs.relpath(root, path) ~= nil
+	return util.relative_literal_path(root, path) ~= nil
 end
 
 function M.modified(repo_root, paths)
@@ -46,6 +46,14 @@ function M.modified(repo_root, paths)
 end
 
 function M.error(repo_root, paths)
+	if paths then
+		for _, path in ipairs(paths) do
+			local relative, err = util.relpath(repo_root, path)
+			if not relative then
+				return err
+			end
+		end
+	end
 	local modified = M.modified(repo_root, paths)
 	if #modified == 0 then
 		return nil
