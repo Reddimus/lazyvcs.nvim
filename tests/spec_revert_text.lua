@@ -118,6 +118,8 @@ return function(ctx)
 			vim.bo[buf].fixendofline = true
 			accept()
 			assert(vim.bo[buf].endofline ~= base_eol, "EOF option change did not invalidate confirmation")
+			-- Restore the no-newline write profile before retrying the EOF-only revert.
+			vim.bo[buf].fixendofline = false
 			revert(live)
 			vim.fn.maparg("1", "n", false, true).callback()
 			ctx.wait_for(function()
@@ -309,5 +311,155 @@ return function(ctx)
 			typed_refresh_transfer(true)
 		end,
 	}
+	do
+		local h, api = ctx.helpers, vim.api
+		local text, diff = require("lazyvcs.compare_text"), require("lazyvcs.diff")
+		local function write(path, bytes)
+			local f = assert(io.open(path, "wb"))
+			f:write(bytes)
+			f:close()
+		end
+		cases[#cases + 1] = {
+			"test_sign_fixendofline_matches_written_bytes",
+			function()
+				local f = h.make_git_fixture()
+				write(f.file, "alpha")
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				local buf = api.nvim_get_current_buf()
+				assert(not vim.bo.endofline and vim.bo.fixendofline)
+				api.nvim_buf_set_lines(buf, 0, -1, false, { "beta" })
+				vim.cmd.write()
+				local file = assert(io.open(f.file, "rb"))
+				local bytes = file:read("*a")
+				file:close()
+				local captured = assert(text.capture(buf, 1024))
+				assert(
+					text.serialize(captured) == bytes,
+					"endofline="
+						.. tostring(vim.bo.endofline)
+						.. " fixendofline="
+						.. tostring(vim.bo.fixendofline)
+						.. " disk="
+						.. vim.inspect(bytes)
+						.. " capture="
+						.. vim.inspect(text.serialize(captured))
+				)
+				h.exec({ "git", "add", "sample.txt" }, f.root)
+				local base =
+					assert(diff.decode_base(buf, assert(require("lazyvcs.backends.git").load_base(f.file)), 1024))
+				assert(#diff.compute_text_hunks(base, captured) == 0, "clean file has EOF hunk")
+			end,
+		}
+		cases[#cases + 1] = {
+			"test_live_diff_working_tree_encoding_uses_utf8_index",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = h.make_git_fixture()
+				write(f.root .. "/.gitattributes", "*.txt working-tree-encoding=UTF-16LE-BOM\n")
+				local expected = "alpha\nbeta!\n"
+				write(f.file, "\255\254" .. vim.iconv(expected, "utf-8", "utf-16le"))
+				h.exec({ "git", "add", "." }, f.root)
+				h.exec({ "git", "commit", "-m", "encoding" }, f.root)
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				local buf = api.nvim_get_current_buf()
+				assert(vim.bo.fileencoding == "utf-16le" and vim.bo.bomb)
+				local backend = require("lazyvcs.backends.git")
+				for _, method in ipairs({ "load", "load_base", "load_async", "load_base_async" }) do
+					local payload, err, done
+					if method:find("async") then
+						backend[method](f.file, function(value, why)
+							payload, err, done = value, why, true
+						end)
+						ctx.wait_for(function()
+							return done
+						end, "encoding load")
+					else
+						payload, err = backend[method](f.file)
+					end
+					assert(payload, err)
+					local base = assert(diff.decode_base(buf, payload, 1024))
+					assert(text.serialize(base) == expected, method .. " decoded=" .. vim.inspect(text.serialize(base)))
+				end
+				local actions = require("lazyvcs.actions")
+				local task = actions.open({ silent = true })
+				ctx.wait_for(function()
+					return task.done
+				end, "open encoding")
+				local s = assert(require("lazyvcs.state").get(buf))
+				assert(#s.hunks == 0)
+				api.nvim_buf_set_lines(buf, 0, 1, false, { "EDIT" })
+				api.nvim_win_set_cursor(0, { 1, 0 })
+				actions.revert_hunk()
+				vim.fn.maparg("1", "n", false, true).callback()
+				ctx.wait_for(function()
+					return api.nvim_buf_get_lines(buf, 0, 1, false)[1] == "alpha"
+				end, "encoding revert")
+				vim.cmd.write()
+				assert(h.exec({ "git", "status", "--porcelain" }, f.root) == "", "encoded revert corrupted disk")
+			end,
+		}
+		cases[#cases + 1] = {
+			"test_staged_crlf_to_lf_comparison_keeps_cr_bytes",
+			function()
+				local f = h.make_git_fixture()
+				h.exec({ "git", "config", "core.autocrlf", "false" }, f.root)
+				write(f.file, "a\r\nb\r\n")
+				h.exec({ "git", "add", "." }, f.root)
+				h.exec({ "git", "commit", "-m", "CRLF" }, f.root)
+				write(f.file, "a\nb\n")
+				h.exec({ "git", "add", "." }, f.root)
+				local comparison, err, done
+				require("lazyvcs.backends.git").load_diff_target_async(
+					{ section = "staged", root = f.root, path = f.file, relpath = "sample.txt" },
+					function(value, why)
+						comparison, err, done = value, why, true
+					end
+				)
+				ctx.wait_for(function()
+					return done
+				end, "staged compare")
+				assert(comparison, err)
+				assert(
+					vim.deep_equal(comparison.left.lines, { "a\r", "b\r" })
+						and vim.deep_equal(comparison.right.lines, { "a", "b" }),
+					vim.inspect({ left = comparison.left.lines, right = comparison.right.lines })
+				)
+				local hunks = diff.compute_hunks(comparison.left.lines, comparison.right.lines)
+				assert(
+					#hunks == 1 and hunks[1].base_count == 2 and hunks[1].current_count == 2,
+					"line-ending-only change hidden"
+				)
+			end,
+		}
+		cases[#cases + 1] = {
+			"test_svn_readonly_objects_preserve_crlf_changes",
+			function()
+				local f = h.make_svn_fixture()
+				write(f.file, "a\r\nb\r\n")
+				h.exec({ "svn", "commit", "-m", "CRLF", f.file }, f.root)
+				write(f.file, "a\nb\n")
+				h.exec({ "svn", "commit", "-m", "LF", f.file }, f.root)
+				local done, value, err
+				require("lazyvcs.backends.svn").load_diff_target_async({
+					root = f.root,
+					path = f.file,
+					relpath = "sample.txt",
+					left = { label = "CRLF", source = { kind = "svn_object", path = f.file, revision = "2" } },
+					right = { label = "LF", source = { kind = "svn_object", path = f.file, revision = "3" } },
+				}, function(v, e)
+					done, value, err = true, v, e
+				end)
+				ctx.wait_for(function()
+					return done
+				end, "SVN objects")
+				assert(value, err)
+				assert(
+					vim.deep_equal(value.left.lines, { "a\r", "b\r" })
+						and vim.deep_equal(value.right.lines, { "a", "b" }),
+					vim.inspect({ left = value.left.lines, right = value.right.lines })
+				)
+			end,
+		}
+	end
 	return cases
 end

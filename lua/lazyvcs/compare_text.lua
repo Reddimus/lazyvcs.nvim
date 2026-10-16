@@ -195,7 +195,7 @@ function M.capture(bufnr, limit_bytes)
 	end
 	local result = {
 		lines = lines,
-		eol = not empty and vim.bo[bufnr].endofline,
+		eol = not empty and (vim.bo[bufnr].endofline or (vim.bo[bufnr].fixendofline and not profile.binary)),
 		empty = empty,
 		encoding = profile.fileencoding,
 		bom = profile.bomb,

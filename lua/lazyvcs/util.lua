@@ -703,7 +703,7 @@ function M.capture_buffer_context(winid)
 	}
 end
 
-function M.buffer_context_is_unchanged(context)
+function M.buffer_context_is_unchanged(context, opts)
 	if
 		not context
 		or not M.win_is_valid(context.winid)
@@ -716,8 +716,7 @@ function M.buffer_context_is_unchanged(context)
 	return M.buf_path(context.bufnr) == context.path
 		and vim.api.nvim_buf_get_changedtick(context.bufnr) == context.changedtick
 		and vim.deep_equal(require("lazyvcs.compare_text").identity(context.bufnr), context.text_identity)
-		and cursor[1] == context.cursor[1]
-		and cursor[2] == context.cursor[2]
+		and ((opts and opts.ignore_cursor) or (cursor[1] == context.cursor[1] and cursor[2] == context.cursor[2]))
 end
 
 ---Truncate to a byte budget without ever splitting a UTF-8 sequence.

@@ -128,6 +128,45 @@ function M.probe_async(path, on_done, opts)
 	return task
 end
 
+-- Index blobs use UTF-8 when Git applies working-tree-encoding. Query only the
+-- attribute: running filters here can execute user smudge drivers.
+local function index_encoding(records)
+	local value = records:match("^[^%z]*%zworking%-tree%-encoding%z([^%z]*)%z$")
+	if value and value ~= "unspecified" and value ~= "unset" then
+		return "utf-8", value
+	end
+end
+
+local function encoding_sync(root, relpath)
+	local result, err = util.system(
+		{ "git", "check-attr", "-z", "working-tree-encoding", "--", relpath },
+		{ cwd = root, text = false }
+	)
+	if not result then
+		return nil, err
+	end
+	local encoding, attribute = index_encoding(result.stdout)
+	return { encoding = encoding, attribute = attribute }
+end
+
+local function finish_index_payload(task, root, relpath, payload)
+	task:add(
+		process.bytes(
+			{ "git", "check-attr", "-z", "working-tree-encoding", "--", relpath },
+			{ cwd = root },
+			function(records, err)
+				if not records then
+					return task:finish(nil, err)
+				end
+				local encoding, attribute = index_encoding(records)
+				payload.base_encoding = encoding
+				payload.base_identity.working_tree_encoding = attribute
+				task:finish(payload)
+			end
+		)
+	)
+end
+
 function M.load(path)
 	local root, err = get_root(path)
 	if not root then
@@ -143,6 +182,13 @@ function M.load(path)
 		return nil, eligibility_err
 	end
 	local tracked = not item.untracked
+	local encoding, encoding_err
+	if tracked then
+		encoding, encoding_err = encoding_sync(root, relpath)
+		if not encoding then
+			return nil, encoding_err
+		end
+	end
 	local base_bytes = ""
 	local base_label = "EMPTY"
 
@@ -162,7 +208,15 @@ function M.load(path)
 		tracked = tracked,
 		base_label = base_label,
 		base_bytes = base_bytes,
-		base_identity = { root = root, relpath = relpath, mode = item.mode, oid = item.oid, untracked = item.untracked },
+		base_encoding = encoding and encoding.encoding,
+		base_identity = {
+			root = root,
+			relpath = relpath,
+			mode = item.mode,
+			oid = item.oid,
+			untracked = item.untracked,
+			working_tree_encoding = encoding and encoding.attribute,
+		},
 		impl = M,
 	}
 end
@@ -240,6 +294,10 @@ function M.load_base(path)
 		}
 	end
 
+	local encoding, encoding_err = encoding_sync(root, relpath)
+	if not encoding then
+		return nil, encoding_err
+	end
 	local loaded, load_err = util.system({ "git", "show", item.oid }, { cwd = root, text = false })
 	if not loaded then
 		return nil, load_err
@@ -249,7 +307,14 @@ function M.load_base(path)
 		relpath = relpath,
 		base_label = "INDEX",
 		base_bytes = loaded.stdout,
-		base_identity = { root = root, relpath = relpath, mode = item.mode, oid = item.oid },
+		base_encoding = encoding.encoding,
+		base_identity = {
+			root = root,
+			relpath = relpath,
+			mode = item.mode,
+			oid = item.oid,
+			working_tree_encoding = encoding.attribute,
+		},
 	}
 end
 
@@ -345,7 +410,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 								payload.name = M.name
 								payload.impl = M
 							end
-							task:finish(payload)
+							finish_index_payload(task, root, relpath, payload)
 						end))
 					end
 				)
@@ -399,7 +464,7 @@ local function conflict_base_async(path, root, relpath, callback)
 						if bytes == nil then
 							return task:finish(nil, show_err)
 						end
-						task:finish({ base_bytes = bytes, base_identity = identity })
+						finish_index_payload(task, root, relpath, { base_bytes = bytes, base_identity = identity })
 					end))
 				end
 			)
@@ -562,6 +627,7 @@ function M.load_diff_target_async(target, on_done, opts)
 					return task:finish(nil, err)
 				end
 				comparison.base_identity = payload.base_identity
+				comparison.left.base_encoding = payload.base_encoding
 				comparison.left.bytes, comparison.left.lines = payload.base_bytes, nil
 				task:finish(comparison)
 			end
@@ -581,7 +647,7 @@ function M.load_diff_target_async(target, on_done, opts)
 		elseif source.kind == "git_object" then
 			pending = pending + 1
 			local raw_side = comparison.editable_side == "right" and side == comparison.left
-			local loader = raw_side and process.bytes or process.lines
+			local loader = process.bytes
 			task:add(loader({ "git", "show", "--no-ext-diff", source.object }, {
 				cwd = comparison.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
@@ -615,7 +681,7 @@ function M.load_diff_target_async(target, on_done, opts)
 				if raw_side then
 					side.bytes, side.lines = lines, nil
 				else
-					side.lines = lines
+					side.lines = util.split_lines(lines)
 				end
 				complete()
 			end))

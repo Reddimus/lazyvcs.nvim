@@ -13,6 +13,7 @@ local util = require("lazyvcs.util")
 local M = {}
 local global_augroup
 local refresh
+local reload_session
 local clear_session_maps
 local set_session_maps
 local attach_session
@@ -54,6 +55,10 @@ local function build_session_async(bufnr, on_done)
 		return on_done(nil, "Current buffer has no file path")
 	end
 
+	local captured, capture_err = compare_text.capture(bufnr, TEXT_LIMIT)
+	if not captured then
+		return on_done(nil, capture_err)
+	end
 	local profile, profile_err = compare_text.profile(bufnr)
 	if not profile then
 		return on_done(nil, profile_err)
@@ -67,6 +72,10 @@ local function build_session_async(bufnr, on_done)
 			local live_profile = compare_text.profile(bufnr)
 			if not live_profile or live_profile.key ~= profile.key or util.buf_path(bufnr) ~= path then
 				return on_done(nil, "Buffer decoding context changed while loading")
+			end
+			local current, current_err = compare_text.capture(bufnr, TEXT_LIMIT)
+			if not current then
+				return on_done(nil, current_err)
 			end
 			local document, decode_err = diff.decode_base(bufnr, result, TEXT_LIMIT)
 			if not document then
@@ -198,8 +207,14 @@ local function commit_transfer(old, replacement)
 	old.phase, old.closing = "closed", true
 	set_session_maps(replacement)
 	attach_session(replacement)
-	local current = assert(compare_text.capture(replacement.editable_bufnr, TEXT_LIMIT))
-	replacement.hunks = diff.compute_text_hunks(replacement.base_text, current)
+	local current, err = compare_text.capture(replacement.editable_bufnr, TEXT_LIMIT)
+	if current then
+		replacement.hunks = diff.compute_text_hunks(replacement.base_text, current)
+	else
+		replacement.hunks = {}
+		replacement.capture_error = err
+		util.notify(err, vim.log.levels.WARN)
+	end
 end
 
 transfer = require("lazyvcs.live_transfer").new({
@@ -277,28 +292,33 @@ refresh = function(bufnr)
 
 	if not session.readonly_comparison then
 		local profile = compare_text.profile(session.editable_bufnr)
+		if session.failed_profile_key and profile and session.failed_profile_key == profile.key then
+			session.hunks = {}
+			return
+		end
 		if
-			not profile
+			session.base_invalid
+			or not profile
 			or not session.base_text
 			or session.base_text.profile_key ~= profile.key
 			or util.buf_path(session.editable_bufnr) ~= session.source_path
 		then
 			session.hunks, session.base_invalid = {}, true
 			if not session.refresh_job then
-				M.refresh_current()
+				reload_session(session)
 			end
-			return
-		end
-		if session.base_invalid then
-			session.hunks = {}
 			return
 		end
 		local current, err = compare_text.capture(session.editable_bufnr, TEXT_LIMIT)
 		if not current then
 			session.hunks = {}
-			util.notify(err, vim.log.levels.WARN)
+			if session.capture_error ~= err then
+				session.capture_error = err
+				util.notify(err, vim.log.levels.WARN)
+			end
 			return
 		end
+		session.capture_error = nil
 		session.current_text = current
 		session.hunks = diff.compute_text_hunks(session.base_text, current)
 	else
@@ -850,6 +870,7 @@ local function open_target_impl(comparison, failure_context)
 			base_bytes = comparison.left.bytes
 				or (comparison.left.source and comparison.left.source.kind == "empty" and "" or nil),
 			base_lines = comparison.left.lines,
+			base_encoding = comparison.left.base_encoding,
 		}, TEXT_LIMIT)
 		if not document then
 			error(decode_err)
@@ -1013,9 +1034,13 @@ function M.revert_hunk()
 			context.path,
 			session.base_identity,
 			util.safe_callback(function(valid, err)
+				if state.get(session.editable_bufnr) ~= session or session.closing then
+					return
+				end
 				if not valid then
 					session.hunks = {}
 					session.base_invalid = true
+					reload_session(session)
 					return util.notify(err or "Hunk base is no longer editable", vim.log.levels.WARN)
 				end
 				reset()
@@ -1053,8 +1078,7 @@ function M.prev_hunk()
 	M.jump_to_hunk("prev")
 end
 
-function M.refresh_current()
-	local session = state.current()
+reload_session = function(session)
 	if not session or session.closing or session.phase ~= "active" then
 		return
 	end
@@ -1089,6 +1113,7 @@ function M.refresh_current()
 			live.comparison = result
 			result.base_label = result.left.label
 			result.base_lines = result.left.lines or {}
+			result.base_encoding = result.left.base_encoding
 			result.base_bytes = result.left.bytes
 				or (result.left.source and result.left.source.kind == "empty" and "" or nil)
 			if live.readonly_comparison and util.buf_is_valid(live.editable_bufnr) then
@@ -1106,6 +1131,7 @@ function M.refresh_current()
 			local document, decode_err = diff.decode_base(live.editable_bufnr, result, TEXT_LIMIT)
 			if not document then
 				live.hunks, live.base_invalid = {}, true
+				live.failed_profile_key = profile.key
 				util.notify(decode_err, vim.log.levels.WARN)
 				return
 			end
@@ -1114,6 +1140,7 @@ function M.refresh_current()
 				live.comparison.left.bytes = nil
 			end
 			live.base_invalid = false
+			live.failed_profile_key = nil
 		else
 			live.base_lines = result.base_lines
 		end
@@ -1137,6 +1164,10 @@ function M.refresh_current()
 	else
 		session.refresh_job = backends.load_base_async(session.source_path, loaded)
 	end
+end
+
+function M.refresh_current()
+	return reload_session(state.current())
 end
 
 function M.rebalance(target)

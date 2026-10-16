@@ -36,7 +36,9 @@ function M.decode_base(bufnr, payload, limit)
 	end
 	local document
 	if payload.base_bytes ~= nil then
-		document, err = text.decode(payload.base_bytes, profile, limit)
+		local decode_profile =
+			vim.tbl_extend("force", profile, { fileencoding = payload.base_encoding or profile.fileencoding })
+		document, err = text.decode(payload.base_bytes, decode_profile, limit)
 	else
 		local lines = payload.base_lines or {}
 		local size = 0

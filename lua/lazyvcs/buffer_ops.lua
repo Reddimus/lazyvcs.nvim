@@ -91,7 +91,7 @@ function M.revert_buffer()
 	local owner = request_owner()
 	local function unchanged(require_current)
 		if
-			util.buffer_context_is_unchanged(context)
+			util.buffer_context_is_unchanged(context, { ignore_cursor = true })
 			and (not require_current or vim.api.nvim_get_current_win() == context.winid)
 		then
 			return true
