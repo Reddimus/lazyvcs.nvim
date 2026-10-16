@@ -47,6 +47,17 @@ and this project adheres to
 - Align blame splits when they open and reload. Temporarily disable source
   wrapping and folding, then restore their previous settings on close.
 - Keep multiline selection-blame errors readable in a protected report.
+- Preserve linked colors when diff panes reuse a custom highlight namespace.
+- Keep window color mappings active after closing a diff and remove semantic
+  overlays copied into other windows.
+- Keep Compare picker selections and pane contents consistent when a preview
+  finishes or a pane replacement fails.
+- Ignore previews after a Compare pane closes and report file-read callback
+  errors without interrupting the editor.
+- Preview omitted sparse-checkout files from the Git index without creating
+  working-tree files.
+- Show properties on added SVN files and keep text previews available when
+  optional property patches exceed the preview limit.
 
 ## [0.11.2] - 2026-10-16
 

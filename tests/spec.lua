@@ -7169,6 +7169,14 @@ vim.list_extend(cases, require("spec_blame_reload")({ helpers = helpers, wait_fo
 vim.list_extend(cases, require("spec_blame_viewport")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_errors")({ helpers = helpers, wait_for = wait_for }))
 
+vim.list_extend(cases, require("spec_highlighting_edges")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_compare_transitions")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_compare_sparse")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_compare_svn_metadata")({ helpers = helpers, wait_for = wait_for }))
+
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,
 }

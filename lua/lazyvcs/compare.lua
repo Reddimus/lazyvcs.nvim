@@ -13,6 +13,21 @@ local M = {}
 local sessions = {}
 local write, display = view.write, view.display
 
+local function protected(callback)
+	return function(...)
+		local ok, err = pcall(callback, ...)
+		if not ok then
+			util.notify("Comparison: " .. tostring(err):gsub("%s+", " "), vim.log.levels.ERROR)
+		end
+	end
+end
+local function schedule(callback)
+	vim.schedule(protected(callback))
+end
+local function autocmd(events, opts)
+	opts.callback = protected(opts.callback)
+	return vim.api.nvim_create_autocmd(events, opts)
+end
 local function valid(win)
 	return win and vim.api.nvim_win_is_valid(win)
 end
@@ -176,75 +191,290 @@ local function labels(s, left, right)
 		util.set_win_option(s.rightwin, "winbar", "%<" .. s.right_label)
 	end
 end
+local function panes_usable(s, epoch)
+	if not alive(s) or sessions[s.tab] ~= s or s.panes_invalid or epoch ~= (s.pane_epoch or 0) then
+		return false
+	end
+	for _, win in ipairs({ s.sidewin, s.leftwin, s.rightwin }) do
+		if not valid(win) or vim.api.nvim_win_get_tabpage(win) ~= s.tab then
+			return false
+		end
+	end
+	return true
+end
+
+local function invalidate_panes(s)
+	if s.panes_invalid then
+		return
+	end
+	s.panes_invalid, s.pane_epoch = true, (s.pane_epoch or 0) + 1
+	s.preview_generation = (s.preview_generation or 0) + 1
+	s.deferred_display = nil
+	navigation.cancel(s)
+	if s.router then
+		s.router.cancel()
+	end
+	cancel(s, "job")
+	cancel(s, "preview_job")
+	for _, pair in pairs(s.buffer_cache.pairs) do
+		pair.reload_generation = (pair.reload_generation or 0) + 1
+		cancel(pair, "reload_job")
+	end
+end
+
+local function pane_request(s, value)
+	value.generation, value.preview_generation, value.pane_epoch = s.generation, s.preview_generation, s.pane_epoch or 0
+	return value
+end
+
+local function set_panes(s, next_display)
+	if
+		not panes_usable(s, next_display.pane_epoch)
+		or next_display.generation ~= s.generation
+		or next_display.preview_generation ~= s.preview_generation
+	then
+		return "stale"
+	end
+	if not next_display.routing_win and (s.transitioning or s.router and s.router.busy()) then
+		s.deferred_display = next_display
+		return "deferred"
+	end
+	local before = {
+		left = s.left,
+		right = s.right,
+		mode = s.mode,
+		result = s.preview_result,
+		item = s.shown_item,
+		stamp = s.preview_stamp,
+		text_views = s.text_views,
+		display = s.display,
+		navigation = s.navigation,
+		intent = s.navigation_intent,
+		left_label = s.left_label,
+		right_label = s.right_label,
+		views = { capture(s.leftwin), capture(s.rightwin) },
+	}
+	local presentation = {}
+	for _, buf in ipairs({ s.message_left, s.message_right }) do
+		presentation[buf] = { lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false), ft = vim.bo[buf].filetype }
+	end
+	local function check()
+		assert(panes_usable(s, next_display.pane_epoch), "Comparison panes changed during installation")
+	end
+	s.transitioning, s.swapping = true, (s.swapping or 0) + 1
+	local ok, err = pcall(function()
+		check()
+		if next_display.routing_win then
+			local win = next_display.routing_win
+			local buf = win == s.sidewin and s.sidebar or win == s.leftwin and s.left or s.right
+			util.show_win_buffer(win, buf)
+			check()
+			assert(vim.api.nvim_win_get_buf(win) == buf, "Comparison restoration was redirected")
+			if win == s.sidewin then
+				sidebar_options(s)
+			else
+				preview_options(s, win)
+			end
+			bind(s, buf)
+			local saved = next_display.views or {}
+			for index, pane in ipairs({ s.leftwin, s.rightwin, s.sidewin }) do
+				if vim.api.nvim_win_get_buf(pane) == ({ s.left, s.right, s.sidebar })[index] then
+					restore(pane, saved[index])
+				end
+			end
+			return
+		end
+		local d = next_display
+		local left, right = s.message_left, s.message_right
+		local result, item = d.result, d.item
+		local text_views = d.text_views
+		if d.mode == "metadata" then
+			text_views = { capture(s.leftwin), capture(s.rightwin) }
+		end
+		for _, win in ipairs({ s.leftwin, s.rightwin }) do
+			highlighting.release(win)
+			util.diff_off(win)
+		end
+		if
+			d.mode == "text"
+			and result
+			and not (item.kind == "dir" or item.property_only or result.right_label == "SUBMODULE / DIRECTORY")
+		then
+			local pair = buffers.store(s, item, result)
+			left, right = pair.left, pair.right
+		end
+		for _, slot in ipairs({ { s.leftwin, left }, { s.rightwin, right } }) do
+			util.show_win_buffer(slot[1], slot[2])
+			check()
+			assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2], "Comparison installation was redirected")
+		end
+		check()
+		if left == s.message_left then
+			write(left, d.left or {})
+			write(right, d.right or {})
+			vim.bo[left].filetype, vim.bo[right].filetype = d.left_ft or "", d.right_ft or ""
+			check()
+		end
+		s.left, s.right, s.mode = left, right, d.mode
+		s.preview_result, s.shown_item, s.preview_stamp, s.text_views = result, item, d.stamp, text_views
+		if not d.keep_labels then
+			labels(s, d.left_label or "", d.right_label or "")
+		end
+		preview_options(s, s.leftwin)
+		preview_options(s, s.rightwin)
+		bind(s, left)
+		bind(s, right)
+		if d.mode == "text" then
+			vim.api.nvim_win_call(s.leftwin, function()
+				vim.cmd("diffupdate")
+			end)
+			if s.text_views then
+				restore(s.leftwin, s.text_views[1])
+				restore(s.rightwin, s.text_views[2])
+				s.text_views = nil
+			end
+		end
+		check()
+		s.display = d
+		if d.load_navigation then
+			navigation.load(s, result, item)
+			local remembered = s.file_views and s.file_views[item.relpath]
+			if not d.saved_views and remembered and remembered.old_path == item.old_path then
+				if s.mode == "metadata" then
+					s.text_views = vim.deepcopy(remembered.views)
+				else
+					restore(s.leftwin, remembered.views[1])
+					restore(s.rightwin, remembered.views[2])
+				end
+				navigation.restore(s, remembered, d.stamp)
+			end
+			if d.saved_views and s.mode == "text" then
+				restore(s.leftwin, d.saved_views[1])
+				restore(s.rightwin, d.saved_views[2])
+				if remembered then
+					navigation.restore(s, remembered, d.stamp)
+				end
+				s.navigation.reviewed = d.saved_reviewed == true
+			end
+		end
+		view.marker(s)
+		buffers.trim(s)
+	end)
+	if not ok then
+		local rolled_back = pcall(function()
+			check()
+			for _, slot in ipairs({ { s.leftwin, before.left }, { s.rightwin, before.right } }) do
+				util.show_win_buffer(slot[1], slot[2])
+				check()
+				assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2], "Comparison rollback was redirected")
+			end
+			local previous_pair = before.item and s.buffer_cache.pairs[before.item.relpath]
+			if
+				before.result
+				and previous_pair
+				and previous_pair.left == before.left
+				and previous_pair.right == before.right
+			then
+				buffers.store(s, before.item, before.result)
+			end
+			for buf, value in pairs(presentation) do
+				write(buf, value.lines)
+				vim.bo[buf].filetype = value.ft
+			end
+			s.left, s.right, s.mode = before.left, before.right, before.mode
+			s.preview_result, s.shown_item, s.preview_stamp = before.result, before.item, before.stamp
+			s.text_views, s.display = before.text_views, before.display
+			s.navigation, s.navigation_intent = before.navigation, before.intent
+			-- Labels are already escaped for the winbar.
+			s.left_label, s.right_label = before.left_label, before.right_label
+			util.set_win_option(s.leftwin, "winbar", "%<" .. (before.left_label or ""))
+			util.set_win_option(s.rightwin, "winbar", "%<" .. (before.right_label or ""))
+			preview_options(s, s.leftwin)
+			preview_options(s, s.rightwin)
+			restore(s.leftwin, before.views[1])
+			restore(s.rightwin, before.views[2])
+		end)
+		if not rolled_back then
+			invalidate_panes(s)
+			s.preview_result, s.mode = nil, "message"
+			schedule(function()
+				local closed, close_err = pcall(M.close, s)
+				if not closed then
+					util.notify(tostring(close_err):gsub("%s+", " "), vim.log.levels.ERROR)
+				end
+			end)
+		end
+	end
+	s.transitioning, s.swapping = false, s.swapping - 1
+	if not ok then
+		util.notify("Could not update comparison: " .. tostring(err):gsub("%s+", " "), vim.log.levels.ERROR)
+		return "stale", tostring(err)
+	end
+	if next_display.load_navigation then
+		s.navigation_intent = next_display.intent
+		navigation.complete(s, next_display.intent)
+	end
+	if s.deferred_display and not s.pending_transition then
+		s.pending_transition = true
+		schedule(function()
+			s.pending_transition = false
+			if s.closed or not s.deferred_display then
+				return
+			end
+			if not s.transitioning and (not s.router or not s.router.busy()) then
+				local deferred = s.deferred_display
+				s.deferred_display = nil
+				if deferred then
+					set_panes(s, deferred)
+				end
+			end
+		end)
+	end
+	return "installed"
+end
+
 local function failure(s, err)
 	navigation.cancel(s)
 	s.navigation = nil
-	s.preview_result, s.shown_item, s.mode = nil, nil, "message"
 	message(s, "Comparison unavailable")
-	buffers.presentation(s)
-	preview_options(s, s.leftwin)
-	preview_options(s, s.rightwin)
-	vim.bo[s.left].filetype, vim.bo[s.right].filetype = "", ""
-	bind(s, s.left)
-	bind(s, s.right)
-	labels(s, "Comparison unavailable", "Recovery")
-	write(s.left, util.split_lines(tostring(err)))
-	write(s.right, s.context and {
-		":LazyVCS compare base: choose another base",
-		":LazyVCS compare refresh: retry",
-		":LazyVCS compare close: close",
-	} or { ":LazyVCS compare refresh: retry", ":LazyVCS compare close: close" })
+	set_panes(
+		s,
+		pane_request(s, {
+			mode = "message",
+			left_label = "Comparison unavailable",
+			right_label = "Recovery",
+			left = util.split_lines(tostring(err)),
+			right = s.context and {
+				":LazyVCS compare base: choose another base",
+				":LazyVCS compare refresh: retry",
+				":LazyVCS compare close: close",
+			} or { ":LazyVCS compare refresh: retry", ":LazyVCS compare close: close" },
+		})
+	)
 end
 local function file_stamp(path)
 	local stat = vim.uv.fs_lstat(path)
 	return stat and table.concat({ stat.type, stat.size, stat.mtime.sec, stat.mtime.nsec, stat.mode }, ":") or "missing"
 end
-local function show_result(s, mode)
-	local result, item = s.preview_result, s.shown_item
-	if not result or not item then
-		return
-	end
-	s.mode = mode or "text"
-	local path = s.root .. "/" .. item.relpath
-	if s.mode == "metadata" then
-		s.text_views = { capture(s.leftwin), capture(s.rightwin) }
-		buffers.presentation(s)
-		write(s.left, result.properties or result.details or { "No metadata or property changes for this path." })
-		write(s.right, { ":LazyVCS compare metadata: return to text" })
-		vim.bo[s.left].filetype, vim.bo[s.right].filetype = result.properties and "diff" or "", ""
-		labels(s, "METADATA / PROPERTIES: " .. item.relpath, "Return to text")
+local function result_display(s, result, item, mode)
+	local d =
+		{ mode = mode or "text", result = result, item = item, text_views = s.text_views, stamp = s.preview_stamp }
+	if d.mode == "metadata" then
+		d.left = result.properties or result.details or { "No metadata or property changes for this path." }
+		d.right = { ":LazyVCS compare metadata: return to text" }
+		d.left_ft = result.properties and "diff" or ""
+		d.left_label, d.right_label = "METADATA / PROPERTIES: " .. item.relpath, "Return to text"
 	else
-		if item.kind == "dir" or item.property_only or result.right_label == "SUBMODULE / DIRECTORY" then
-			buffers.presentation(s)
-			write(s.left, result.left)
-			write(s.right, result.right)
-			vim.bo[s.left].filetype, vim.bo[s.right].filetype = "diff", ""
-		else
-			local pair = buffers.store(s, item, result)
-			buffers.swap(s, pair.left, pair.right)
-		end
-		labels(
-			s,
-			result.left_label .. " | " .. (item.old_path or item.relpath),
-			result.right_label .. " | " .. item.relpath
-		)
+		d.left, d.right, d.left_ft = result.left, result.right, "diff"
+		d.left_label = result.left_label .. " | " .. (item.old_path or item.relpath)
+		d.right_label = result.right_label .. " | " .. item.relpath
 	end
-	preview_options(s, s.leftwin)
-	preview_options(s, s.rightwin)
-	bind(s, s.left)
-	bind(s, s.right)
-	if s.mode == "text" then
-		vim.api.nvim_win_call(s.leftwin, function()
-			vim.cmd("diffupdate")
-		end)
-		if s.text_views then
-			restore(s.leftwin, s.text_views[1])
-			restore(s.rightwin, s.text_views[2])
-			s.text_views = nil
-		end
+	return pane_request(s, d)
+end
+local function show_result(s, mode)
+	if s.preview_result and s.shown_item then
+		set_panes(s, result_display(s, s.preview_result, s.shown_item, mode))
 	end
-	view.marker(s)
-	buffers.trim(s)
 end
 local function preview(s, item, mode, saved_views, intent, saved_reviewed)
 	item = item or selected(s)
@@ -256,23 +486,23 @@ local function preview(s, item, mode, saved_views, intent, saved_reviewed)
 	cancel(s, "preview_job")
 	navigation.cancel(s)
 	s.navigation, s.preview_mode = nil, mode or "text"
-	local generation = s.preview_generation
-	s.preview_result, s.text_views, s.shown_item, s.mode = nil, nil, item, "message"
+	local generation, epoch = s.preview_generation, s.pane_epoch or 0
 	local path = s.root .. "/" .. item.relpath
 	local stamp = file_stamp(path)
-	buffers.presentation(s)
-	preview_options(s, s.leftwin)
-	preview_options(s, s.rightwin)
-	vim.bo[s.left].filetype, vim.bo[s.right].filetype = "", ""
-	bind(s, s.left)
-	bind(s, s.right)
-	labels(s, "Loading: " .. item.relpath, "SAVED WORKTREE")
-	write(s.left, { "Loading " .. display(item.relpath) .. "..." })
-	write(s.right, {})
-	view.marker(s)
+	set_panes(
+		s,
+		pane_request(s, {
+			mode = "message",
+			item = item,
+			left_label = "Loading: " .. item.relpath,
+			right_label = "SAVED WORKTREE",
+			left = { "Loading " .. display(item.relpath) .. "..." },
+			right = {},
+		})
+	)
 	s.navigation_intent = intent
 	s.preview_job = s.provider.preview(s.snapshot, item, function(result, err)
-		if not alive(s) or generation ~= s.preview_generation then
+		if not panes_usable(s, epoch) or generation ~= s.preview_generation then
 			return
 		end
 		s.preview_job = nil
@@ -281,38 +511,24 @@ local function preview(s, item, mode, saved_views, intent, saved_reviewed)
 		end
 		if not result then
 			navigation.cancel(s)
-			labels(s, "Preview unavailable: " .. item.relpath, "SAVED WORKTREE")
-			write(s.left, vim.list_extend({ "Preview unavailable" }, util.split_lines(tostring(err))))
-			write(s.right, {})
+			set_panes(
+				s,
+				pane_request(s, {
+					mode = "message",
+					item = item,
+					left_label = "Preview unavailable: " .. item.relpath,
+					right_label = "SAVED WORKTREE",
+					left = vim.list_extend({ "Preview unavailable" }, util.split_lines(tostring(err))),
+					right = {},
+				})
+			)
 			return
 		end
-		s.preview_result, s.preview_stamp = result, stamp
-		navigation.load(s, result, item)
-		-- nvim_win_call emits window events while configuring and restoring panes.
-		-- Those internal visits must not cancel an explicit review request.
-		local pending = s.navigation_intent
+		local d = result_display(s, result, item, s.preview_mode)
+		d.stamp, d.load_navigation, d.intent = stamp, true, s.navigation_intent
+		d.saved_views, d.saved_reviewed = saved_views, saved_reviewed
 		s.navigation_intent = nil
-		show_result(s, s.preview_mode)
-		local remembered = s.file_views and s.file_views[item.relpath]
-		if not saved_views and remembered and remembered.old_path == item.old_path then
-			if s.mode == "metadata" then
-				s.text_views = vim.deepcopy(remembered.views)
-			else
-				restore(s.leftwin, remembered.views[1])
-				restore(s.rightwin, remembered.views[2])
-			end
-			navigation.restore(s, remembered, stamp)
-		end
-		if saved_views and s.mode == "text" then
-			restore(s.leftwin, saved_views[1])
-			restore(s.rightwin, saved_views[2])
-			if remembered then
-				navigation.restore(s, remembered, stamp)
-			end
-			s.navigation.reviewed = saved_reviewed == true
-		end
-		s.navigation_intent = pending
-		navigation.complete(s, s.navigation_intent)
+		set_panes(s, d)
 	end)
 end
 local function request_preview(s, kind)
@@ -390,14 +606,14 @@ function M.refresh(s, context_checked)
 		cancel(s, "preview_job")
 		s.preview_result, s.text_views, s.snapshot = nil, nil, nil
 	end
-	local generation = s.generation
+	local generation, epoch = s.generation, s.pane_epoch or 0
 	if not s.provider then
 		if s.resolution_failed then
 			backends.invalidate()
 		end
 		message(s, "Finding repository...")
 		s.job = backends.resolve_async(s.path, function(backend, root, err)
-			if not alive(s) or generation ~= s.generation then
+			if not panes_usable(s, epoch) or generation ~= s.generation then
 				return
 			end
 			s.job = nil
@@ -429,7 +645,7 @@ function M.refresh(s, context_checked)
 	if not context_checked then
 		message(s, "Loading saved changes...")
 		s.job = s.provider.context(s, function(context, err)
-			if not alive(s) or generation ~= s.generation then
+			if not panes_usable(s, epoch) or generation ~= s.generation then
 				return
 			end
 			s.job = nil
@@ -453,15 +669,19 @@ function M.refresh(s, context_checked)
 		message(s, "Select a comparison base")
 		return choose_base(s)
 	end
-	s.items, s.snapshot, s.uncounted, s.shown_item, s.mode = {}, nil, nil, nil, "message"
+	s.items, s.snapshot, s.uncounted = {}, nil, nil
 	message(s, "Loading saved changes...")
-	buffers.presentation(s)
-	preview_options(s, s.leftwin)
-	preview_options(s, s.rightwin)
-	write(s.left, {})
-	write(s.right, {})
+	set_panes(
+		s,
+		pane_request(s, {
+			mode = "message",
+			left = {},
+			right = {},
+			keep_labels = true,
+		})
+	)
 	s.job = s.provider.resolve(s, s.base, function(snapshot, err)
-		if not alive(s) or generation ~= s.generation then
+		if not panes_usable(s, epoch) or generation ~= s.generation then
 			return
 		end
 		if not snapshot then
@@ -469,7 +689,7 @@ function M.refresh(s, context_checked)
 			return failure(s, err)
 		end
 		s.job = s.provider.list(snapshot, s.include_untracked, function(items, list_err)
-			if not alive(s) or generation ~= s.generation then
+			if not panes_usable(s, epoch) or generation ~= s.generation then
 				return
 			end
 			s.job = nil
@@ -512,8 +732,16 @@ function M.refresh(s, context_checked)
 				local shown = saved and saved.shown and s.rows_cache.by_path[saved.shown]
 				preview(s, shown and items[shown] or item, "text", saved and saved.views, nil, saved and saved.reviewed)
 			else
-				buffers.presentation(s)
-				labels(s, "No saved changes", "SAVED WORKTREE")
+				set_panes(
+					s,
+					pane_request(s, {
+						mode = "message",
+						left = {},
+						right = {},
+						left_label = "No saved changes",
+						right_label = "SAVED WORKTREE",
+					})
+				)
 			end
 		end)
 	end)
@@ -651,6 +879,11 @@ function M.close(s, return_focus)
 		return
 	end
 	s.closed = true
+	invalidate_panes(s)
+	if s.router then
+		s.router.cancel()
+	end
+	s.deferred_display = nil
 	navigation.cancel(s)
 	highlighting.release(s.leftwin)
 	highlighting.release(s.rightwin)
@@ -829,11 +1062,11 @@ local function help(s)
 		end, { buffer = buf, silent = true })
 	end
 	local helpwin = s.helpwin
-	vim.api.nvim_create_autocmd("WinLeave", {
+	autocmd("WinLeave", {
 		buffer = buf,
 		once = true,
 		callback = function()
-			vim.schedule(function()
+			schedule(function()
 				if valid(helpwin) then
 					vim.api.nvim_win_close(helpwin, true)
 				end
@@ -875,6 +1108,7 @@ local function open_session(opts, origin)
 		rows = {},
 		row_by_path = {},
 		mode = "message",
+		pane_epoch = 0,
 		manual_width = math.min(38, math.max(20, math.floor(vim.o.columns / 4))),
 	})
 	s.sidebar = buffers.scratch()
@@ -1018,6 +1252,7 @@ local function open_session(opts, origin)
 			pair.reload_job:cancel()
 		end
 		local generation, item, version = s.generation, s.items[index], pair.version
+		local epoch = s.pane_epoch or 0
 		local path = s.root .. "/" .. item.relpath
 		local stamp = file_stamp(path)
 		pair.reload_generation = (pair.reload_generation or 0) + 1
@@ -1027,7 +1262,7 @@ local function open_session(opts, origin)
 				return
 			end
 			pair.reload_job = nil
-			if not alive(s) or s.generation ~= generation or s.buffer_cache.pairs[pair.path] ~= pair then
+			if not panes_usable(s, epoch) or s.generation ~= generation or s.buffer_cache.pairs[pair.path] ~= pair then
 				return
 			end
 			local ok, update_err = pcall(function()
@@ -1039,15 +1274,23 @@ local function open_session(opts, origin)
 					result, err = nil, "File changed during reload; use :LazyVCS compare refresh"
 				end
 				if result then
-					buffers.store(s, item, result)
+					if
+						not (
+							s.preview_result
+							and s.shown_item
+							and s.shown_item.relpath == item.relpath
+							and s.mode == "text"
+						)
+					then
+						buffers.store(s, item, result)
+					end
 					if s.preview_result and s.shown_item and s.shown_item.relpath == item.relpath then
 						local reviewed = s.navigation and s.navigation.reviewed
-						s.preview_result, s.preview_stamp = result, stamp
-						navigation.load(s, result, item)
-						s.navigation.reviewed = reviewed
-						if s.mode == "text" then
-							show_result(s, "text")
-						end
+						local d = result_display(s, result, item, s.mode)
+						d.stamp, d.load_navigation = stamp, true
+						d.saved_views = { capture(s.leftwin), capture(s.rightwin) }
+						d.saved_reviewed = reviewed
+						set_panes(s, d)
 					end
 				else
 					util.notify(err, vim.log.levels.WARN)
@@ -1060,24 +1303,21 @@ local function open_session(opts, origin)
 		end)
 	end
 	s.augroup = vim.api.nvim_create_augroup("lazyvcs_compare_" .. s.tab, { clear = true })
-	require("lazyvcs.compare_open").setup(s, {
+	s.router = require("lazyvcs.compare_open").setup(s, {
 		remember = navigation.remember,
-		restore = function(views)
-			views = views or {}
-			sidebar_options(s)
-			preview_options(s, s.leftwin)
-			preview_options(s, s.rightwin)
-			for _, buf in ipairs({ s.sidebar, s.left, s.right }) do
-				bind(s, buf)
+		restore = function(win, views)
+			local status = set_panes(s, pane_request(s, { routing_win = win, views = views }))
+			if status == "installed" then
+				resize(s)
 			end
-			if s.mode == "text" then
-				vim.api.nvim_win_call(s.leftwin, function()
-					vim.cmd("diffupdate")
-				end)
+			return status
+		end,
+		resume = function()
+			local deferred = s.deferred_display
+			s.deferred_display = nil
+			if deferred then
+				set_panes(s, deferred)
 			end
-			restore(s.leftwin, views[1])
-			restore(s.rightwin, views[2])
-			restore(s.sidewin, views[3])
 			resize(s)
 		end,
 		snapshot = function(resource, position)
@@ -1094,7 +1334,7 @@ local function open_session(opts, origin)
 			edit_buffer(s, buf, position)
 		end,
 	})
-	vim.api.nvim_create_autocmd({ "WinLeave", "TabLeave", "CursorMoved" }, {
+	autocmd({ "WinLeave", "TabLeave", "CursorMoved" }, {
 		group = s.augroup,
 		callback = function(args)
 			local intent = s.navigation_intent
@@ -1108,7 +1348,7 @@ local function open_session(opts, origin)
 			end
 		end,
 	})
-	vim.api.nvim_create_autocmd("TabClosed", {
+	autocmd("TabClosed", {
 		group = s.augroup,
 		callback = function()
 			if not vim.api.nvim_tabpage_is_valid(s.tab) then
@@ -1116,20 +1356,22 @@ local function open_session(opts, origin)
 			end
 		end,
 	})
-	vim.api.nvim_create_autocmd({ "VimResized", "TabEnter", "WinResized" }, {
+	autocmd({ "VimResized", "TabEnter", "WinResized" }, {
 		group = s.augroup,
 		callback = function(args)
 			resize(s, args.event == "WinResized")
 		end,
 	})
-	vim.api.nvim_create_autocmd("WinClosed", {
+	autocmd("WinClosed", {
 		group = s.augroup,
-		callback = function()
-			vim.schedule(function()
-				if alive(s) and not (valid(s.sidewin) and valid(s.leftwin) and valid(s.rightwin)) then
+		callback = function(event)
+			local win = tonumber(event.match)
+			if win == s.sidewin or win == s.leftwin or win == s.rightwin then
+				invalidate_panes(s)
+				schedule(function()
 					M.close(s)
-				end
-			end)
+				end)
+			end
 		end,
 	})
 	vim.api.nvim_set_current_win(s.sidewin)

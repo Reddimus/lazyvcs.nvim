@@ -64,7 +64,12 @@ function M.setup(s, actions)
 			end
 			local saved, generation, preview_generation = request.views, request.generation, request.preview_generation
 			vim.schedule(protected(function()
+				if pending[win] ~= request then
+					return
+				end
 				if not valid() or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= buf then
+					pending[win] = nil
+					actions.resume()
 					return
 				end
 				local focused = vim.api.nvim_get_current_win() == win
@@ -80,18 +85,15 @@ function M.setup(s, actions)
 					-- Keep it loaded while restoring the preview, without discarding it.
 					local hidden = vim.bo[buf].bufhidden
 					vim.bo[buf].bufhidden = "hide"
-					s.swapping = (s.swapping or 0) + 1
-					local restored, restore_error = pcall(util.show_win_buffer, win, owned)
-					s.swapping = s.swapping - 1
+					local current = generation == s.generation and preview_generation == s.preview_generation
+					local restored, status = pcall(actions.restore, win, current and saved or nil)
 					if vim.api.nvim_buf_is_valid(buf) then
 						vim.bo[buf].bufhidden = hidden
 					end
 					if not restored then
-						error(restore_error)
+						error(status)
 					end
-					local current = generation == s.generation and preview_generation == s.preview_generation
-					actions.restore(current and saved or nil)
-					if not focused or generation ~= s.generation or preview_generation ~= s.preview_generation then
+					if status ~= "installed" or not focused then
 						return
 					end
 					if buffers.is_presentation(buf) or buf == s.left or buf == s.right then
@@ -102,6 +104,7 @@ function M.setup(s, actions)
 					end
 					actions.edit(buf, position)
 				end)
+				actions.resume()
 				if not ok then
 					util.notify(
 						"Could not open selected file: " .. tostring(err):gsub("[\r\n]+", " "),
@@ -111,6 +114,19 @@ function M.setup(s, actions)
 			end))
 		end),
 	})
+	return {
+		busy = function()
+			for win, buf in pairs(slots()) do
+				if pending[win] or vim.api.nvim_win_get_buf(win) ~= buf then
+					return true
+				end
+			end
+			return false
+		end,
+		cancel = function()
+			pending = {}
+		end,
+	}
 end
 
 return M

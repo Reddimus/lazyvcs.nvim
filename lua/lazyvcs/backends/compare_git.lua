@@ -2,10 +2,10 @@ local common = require("lazyvcs.backends.comparison")
 local util = require("lazyvcs.util")
 local M = {}
 
-local function command(task, repo, args, cb)
+local function command(task, repo, args, cb, opts)
 	local argv = { "git", "--literal-pathspecs" }
 	vim.list_extend(argv, args)
-	common.command(task, repo, argv, cb)
+	common.command(task, repo, argv, cb, opts)
 end
 
 function M.context(repo, callback)
@@ -263,6 +263,57 @@ function M.list(snapshot, include_untracked, callback)
 	return task
 end
 
+local function index_entry(task, snapshot, path, done)
+	command(task, snapshot, { "ls-files", "--stage", "-t", "-z", "--", path }, function(raw, err)
+		if not raw then
+			return done(nil, err)
+		end
+		local entry
+		for record in raw:gmatch("([^%z]+)%z") do
+			local tag, mode, oid, stage, name = record:match("^(%a) (%d+) (%x+) (%d)\t(.*)$")
+			if name == path then
+				if entry or tag ~= "S" or stage ~= "0" or (mode ~= "100644" and mode ~= "100755") then
+					return done(nil)
+				end
+				entry = { kind = "index", oid = oid, mode = mode, path = path }
+			end
+		end
+		done(entry)
+	end)
+end
+
+local function load_saved_side(task, snapshot, item, done)
+	common.read_file(task, snapshot.root .. "/" .. item.relpath, function(data, err)
+		if data or not tostring(err):match("^ENOENT[:%s]") then
+			return done(data, nil, err)
+		end
+		local missing = err
+		index_entry(task, snapshot, item.relpath, function(entry, entry_err)
+			if not entry then
+				return done(nil, nil, entry_err or missing)
+			end
+			command(task, snapshot, { "cat-file", "blob", entry.oid }, function(blob, blob_err, raw)
+				if not blob then
+					if raw and raw.stdout_truncated then
+						blob_err = "File exceeds the 1 MiB preview limit"
+					end
+					return done(nil, nil, blob_err)
+				end
+				index_entry(task, snapshot, item.relpath, function(current, current_err)
+					if not current or not vim.deep_equal(current, entry) then
+						return done(
+							nil,
+							nil,
+							current_err or "Index changed during preview; use :LazyVCS compare refresh"
+						)
+					end
+					done(blob, entry)
+				end)
+			end, { output_limit_bytes = common.max_file_bytes })
+		end)
+	end)
+end
+
 function M.preview(snapshot, item, callback)
 	local task = common.task(callback)
 	local result =
@@ -306,7 +357,7 @@ function M.preview(snapshot, item, callback)
 			result.right = {}
 			return finish()
 		end
-		common.read_file(task, snapshot.root .. "/" .. item.relpath, function(data, err)
+		load_saved_side(task, snapshot, item, function(data, source, err)
 			if not data then
 				return task:finish(nil, err)
 			end
@@ -314,7 +365,10 @@ function M.preview(snapshot, item, callback)
 			if not lines then
 				return task:finish(nil, line_err)
 			end
-			result.right, result.right_bytes = lines, data
+			result.right, result.right_bytes, result.right_source = lines, data, source
+			if source then
+				result.right_label = "INDEX (sparse checkout)"
+			end
 			finish()
 		end)
 	end

@@ -50,9 +50,22 @@ function M.command(task, repo, args, callback, opts)
 	end))
 end
 
+local function schedule_read(task, callback)
+	vim.schedule(function()
+		if not task:is_active() then
+			return
+		end
+		local ok, err = pcall(callback)
+		if not ok then
+			task:kill()
+			util.notify("Comparison read: " .. tostring(err):gsub("%s+", " "), vim.log.levels.ERROR)
+		end
+	end)
+end
+
 function M.read_file(task, path, callback)
 	vim.uv.fs_lstat(path, function(err, stat)
-		vim.schedule(function()
+		schedule_read(task, function()
 			if not task:is_active() then
 				return
 			end
@@ -61,7 +74,7 @@ function M.read_file(task, path, callback)
 			end
 			if stat.type == "link" then
 				vim.uv.fs_readlink(path, function(link_err, target)
-					vim.schedule(function()
+					schedule_read(task, function()
 						if task:is_active() then
 							callback(target, link_err)
 						end
@@ -77,24 +90,36 @@ function M.read_file(task, path, callback)
 			end
 			vim.uv.fs_open(path, "r", 0, function(open_err, fd)
 				if not fd then
-					return vim.schedule(function()
+					return schedule_read(task, function()
 						if task:is_active() then
 							callback(nil, open_err)
 						end
 					end)
 				end
-				vim.uv.fs_read(fd, M.max_file_bytes + 1, 0, function(read_err, data)
-					vim.uv.fs_close(fd)
-					vim.schedule(function()
-						if not task:is_active() then
-							return
-						end
-						if data and #data > M.max_file_bytes then
-							return callback(nil, "File exceeds the 1 MiB preview limit")
-						end
-						callback(data, read_err)
+				local ok, request, start_err = pcall(
+					vim.uv.fs_read,
+					fd,
+					M.max_file_bytes + 1,
+					0,
+					function(read_err, data)
+						pcall(vim.uv.fs_close, fd)
+						schedule_read(task, function()
+							if not task:is_active() then
+								return
+							end
+							if data and #data > M.max_file_bytes then
+								return callback(nil, "File exceeds the 1 MiB preview limit")
+							end
+							callback(data, read_err)
+						end)
+					end
+				)
+				if not ok or not request then
+					pcall(vim.uv.fs_close, fd)
+					schedule_read(task, function()
+						callback(nil, ok and start_err or request)
 					end)
-				end)
+				end
 			end)
 		end)
 	end)
