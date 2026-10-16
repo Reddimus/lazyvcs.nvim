@@ -46,7 +46,13 @@ function M.command(task, repo, args, callback, opts)
 		if result and (result.stdout_truncated or result.stderr_truncated) then
 			return callback(nil, "Comparison output was truncated; narrow the comparison", raw)
 		end
-		callback(result and result.stdout, err, raw)
+		local stdout = result and result.stdout
+		if stdout and args[1] == "svn" and vim.tbl_contains(args, "--xml") and vim.fn.has("win32") == 1 then
+			-- Only XML uses text-mode stdout on Windows, including LFs in values.
+			-- Undo that translation. Diff and cat write binary value/content bytes.
+			stdout = stdout:gsub("\r\n", "\n")
+		end
+		callback(stdout, err, raw)
 	end))
 end
 

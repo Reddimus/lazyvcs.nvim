@@ -30,45 +30,180 @@ return function(ctx)
 			)
 		end)
 	end
+	-- Diff writes binary value/content bytes, with native endings only on SVN's syntax.
+	local function windows_diff(raw)
+		local lines, in_hunk = vim.split(raw, "\n", { plain = true }), false
+		for index = 1, #lines - 1 do
+			local line = lines[index]
+			if line:match("^Index: ") or line:match("^Property changes on: ") then
+				in_hunk = false
+			elseif line:match("^## ") or line:match("^@@ ") then
+				in_hunk = true
+			end
+			local generated = not in_hunk or not line:match("^[ +%-]")
+			if line:match("^\\ No newline at end of ") then
+				-- SVN adds a native newline after an unterminated value/content line.
+				lines[index - 1] = lines[index - 1] .. "\r"
+			end
+			lines[index] = line .. (generated and "\r" or "")
+		end
+		return table.concat(lines, "\n")
+	end
+	-- XML uses text-mode stdout, which translates every LF, including value bytes.
+	local function with_windows_stdout(check, capture)
+		local util = require("lazyvcs.util")
+		local start, has = util.system_start, vim.fn.has
+		local native_windows = has("win32") == 1
+		local seen = {}
+		---@diagnostic disable-next-line: duplicate-set-field
+		vim.fn.has = function(feature)
+			return feature == "win32" and 1 or has(feature)
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.system_start = function(args, opts, done)
+			return start(args, opts, function(raw, err, result)
+				if args[1] == "svn" and opts.text == false and raw and raw.stdout then
+					local subcommand = args[2] == "--non-interactive" and args[3] or args[2]
+					seen[subcommand] = true
+					if not native_windows then
+						if vim.tbl_contains(args, "--xml") then
+							raw.stdout = raw.stdout:gsub("\n", "\r\n")
+						elseif subcommand == "diff" then
+							raw.stdout = windows_diff(raw.stdout)
+						end
+					end
+					if capture then
+						capture(args, raw.stdout)
+					end
+				end
+				done(raw, err, result)
+			end)
+		end
+		local ok, err = xpcall(check, debug.traceback)
+		util.system_start, vim.fn.has = start, has
+		assert(ok, err)
+		return seen
+	end
+	local function property_value_line_endings()
+		local f = h.make_svn_fixture()
+		h.exec({ "svn", "revert", f.file }, f.root)
+		h.exec({ "svn", "mkdir", "folder" }, f.root)
+		for index, case in ipairs({
+			{
+				before = "one\ntwo\n",
+				changes = {
+					{ "one\r\ntwo\r\n", { "-one", "-two", "+one\r", "+two\r" } },
+					{ "one\ntwo\nlast", { " one", " two", "+last" } },
+					{ "one\ntwo\nlast\r", { " one", " two", "+last\r" } },
+					{ "one\r\ntwo\r\nlast", { "-one", "-two", "+one\r", "+two\r", "+last" } },
+				},
+			},
+			{
+				before = "one\r\ntwo\r\n",
+				changes = { { "one\ntwo\n", { "-one\r", "-two\r", "+one", "+two" } } },
+			},
+		}) do
+			for _, path in ipairs({ "sample.txt", "folder" }) do
+				set_property(f, path, "custom:lines", case.before)
+			end
+			h.exec({ "svn", "commit", "-m", "property line endings" }, f.root)
+			h.exec({ "svn", "update" }, f.root)
+			local snapshot = assert(await(function(done)
+				return provider.resolve({ root = f.root }, h.file_url(f.repo) .. "@" .. (index + 1), done)
+			end))
+			for _, values in ipairs(case.changes) do
+				for _, path in ipairs({ "sample.txt", "folder" }) do
+					set_property(f, path, "custom:lines", values[1])
+					local result, err = await(function(done)
+						provider.preview(snapshot, {
+							relpath = path,
+							kind = path == "folder" and "dir" or "file",
+							status = "M",
+							property_only = true,
+						}, done)
+					end)
+					assert(result, err)
+					local content = {}
+					for _, line in ipairs(result.right) do
+						if line:match("^[ +%-]") and not line:match("^%-%-%- ") and not line:match("^%+%+%+ ") then
+							content[#content + 1] = line
+						end
+					end
+					assert(vim.deep_equal(content, values[2]), path .. ": " .. vim.inspect(content))
+				end
+			end
+		end
+	end
 	return {
 		{
 			"test_svn_compare_property_value_line_endings",
+			property_value_line_endings,
+		},
+		{
+			"test_svn_compare_windows_property_value_line_endings",
+			function()
+				local seen = with_windows_stdout(property_value_line_endings)
+				assert(seen.info and seen.diff and seen.proplist, "Windows stdout hook missed a property read")
+			end,
+		},
+		{
+			"test_svn_compare_windows_raw_xml_diff_and_cat",
 			function()
 				local f = h.make_svn_fixture()
-				h.exec({ "svn", "revert", f.file }, f.root)
-				h.exec({ "svn", "mkdir", "folder" }, f.root)
-				for _, path in ipairs({ "sample.txt", "folder" }) do
-					set_property(f, path, "custom:lines", "one\ntwo\n")
+				local bytes = "one\r\r\ntwo\r\nlast\r"
+				local file = assert(io.open(f.file, "wb"))
+				file:write(bytes)
+				file:close()
+				set_property(f, "sample.txt", "custom:lines", "one\ntwo\r\nlast\r")
+				h.exec({ "svn", "commit", "-m", "binary stdout and XML" }, f.root)
+				set_property(f, "sample.txt", "custom:lines", "changed\nvalue\r\n")
+				file = assert(io.open(f.file, "wb"))
+				file:write("changed\r\nvalue\r\nlast\r")
+				file:close()
+				local cases = {
+					{ "info", "--xml", "." },
+					{ "ls", "--xml", "." },
+					{ "status", "--xml", "." },
+					{ "log", "--xml", "-r", "2", "." },
+					{ "proplist", "--xml", "--verbose", "sample.txt" },
+					{ "propget", "--xml", "custom:lines", "sample.txt" },
+					{ "diff", "--properties-only", "sample.txt" },
+					{ "diff", "--summarize", "--xml", "sample.txt" },
+					{ "diff", "sample.txt" },
+					{ "cat", "-r", "2", "sample.txt" },
+				}
+				for _, args in ipairs(cases) do
+					table.insert(args, 1, "svn")
 				end
-				h.exec({ "svn", "commit", "-m", "LF properties" }, f.root)
-				h.exec({ "svn", "update" }, f.root)
-				local snapshot = assert(await(function(done)
-					return provider.resolve({ root = f.root }, h.file_url(f.repo) .. "@2", done)
-				end))
-				for _, values in ipairs({
-					{ "one\r\ntwo\r\n", { "-one", "-two", "+one\r", "+two\r" } },
-					{ "one\ntwo\nlast", { " one", " two", "+last" } },
-					{ "one\r\ntwo\r\nlast", { "-one", "-two", "+one\r", "+two\r", "+last" } },
-				}) do
-					for _, path in ipairs({ "sample.txt", "folder" }) do
-						set_property(f, path, "custom:lines", values[1])
-						local result, err = await(function(done)
-							provider.preview(snapshot, {
-								relpath = path,
-								kind = path == "folder" and "dir" or "file",
-								status = "M",
-								property_only = true,
-							}, done)
+				local expected
+				local common = require("lazyvcs.backends.comparison")
+				local seen = with_windows_stdout(function()
+					for _, args in ipairs(cases) do
+						local actual = await(function(done)
+							local task = common.task(done)
+							common.command(task, { root = f.root }, args, function(raw, err)
+								task:finish(raw, err)
+							end)
 						end)
-						assert(result, err)
-						local content = {}
-						for _, line in ipairs(result.right) do
-							if line:match("^[ +%-]") and not line:match("^%-%-%- ") and not line:match("^%+%+%+ ") then
-								content[#content + 1] = line
+						assert(actual, args[2] .. " returned no raw stdout")
+						assert(actual == expected, args[2] .. " changed raw stdout bytes")
+						if args[2] == "diff" and not vim.tbl_contains(args, "--xml") then
+							assert(actual:find("Index: sample.txt\r\n", 1, true), "missing native diff header ending")
+							assert(actual:find("+value\r\n", 1, true), "diff value lost its CR byte")
+							if not vim.tbl_contains(args, "--properties-only") then
+								assert(actual:find("+changed\r\n", 1, true), "diff content bytes changed")
 							end
 						end
-						assert(vim.deep_equal(content, values[2]), path .. ": " .. vim.inspect(content))
+						if args[2] == "cat" then
+							assert(actual == bytes, "svn cat changed committed bytes")
+						end
 					end
+				end, function(args, raw)
+					-- Compare against this invocation: SVN XML attribute order can vary.
+					expected = vim.tbl_contains(args, "--xml") and raw:gsub("\r\n", "\n") or raw
+				end)
+				for _, args in ipairs(cases) do
+					assert(seen[args[2]], args[2] .. " missed the raw stdout hook")
 				end
 			end,
 		},
@@ -414,28 +549,15 @@ return function(ctx)
 				}, f.root)
 				assert(#patch > 512 * 1024 and #patch < 1024 * 1024, "fixture patch outside supported budget")
 				assert(patch:find("\\ No newline at end of property", 1, true), "fixture value gained a newline")
-				-- helpers.exec uses text=true, so patch has normalized transport endings.
-				-- Exercise the raw preview path with Windows CRLF transport on every host.
-				local util = require("lazyvcs.util")
-				local start = util.system_start
-				local fired, captured_text = false, nil
-				---@diagnostic disable-next-line: duplicate-set-field
-				util.system_start = function(args, opts, done)
-					return start(args, opts, function(raw)
-						if vim.tbl_contains(args, "--properties-only") and raw.stdout then
-							fired, captured_text = true, opts.text
-							-- This fixture's value has no newlines; all LF bytes are generated by SVN.
-							raw.stdout = raw.stdout:gsub("\r?\n", "\r\n")
-						end
-						done(raw)
-					end)
-				end
-				local ok, result, err = pcall(preview)
-				util.system_start = start
-				assert(ok, result)
-				assert(fired, "CRLF transport hook did not run")
-				assert(captured_text == false, "property preview must capture raw bytes")
+				local result, err = preview()
 				assert(result, "supported property patch rejected: " .. tostring(err))
+				local windows_result
+				local seen = with_windows_stdout(function()
+					windows_result, err = preview()
+					assert(windows_result, "Windows property patch rejected: " .. tostring(err))
+				end)
+				assert(seen.diff, "Windows stdout hook missed the large property patch")
+				assert(vim.deep_equal(result.right, windows_result.right), "Windows changed large patch bytes")
 				-- Header lines name the target, and Windows spells the test's path differently.
 				local function body(lines)
 					local kept = {}

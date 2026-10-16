@@ -2,6 +2,8 @@ local common = require("lazyvcs.backends.comparison")
 local util = require("lazyvcs.util")
 local M = {}
 
+-- Git writes LF on Windows too; splitting its output must preserve literal CR bytes.
+
 local function command(task, repo, args, cb, opts)
 	local argv = { "git", "--literal-pathspecs" }
 	vim.list_extend(argv, args)
@@ -23,7 +25,7 @@ function M.context(repo, callback)
 					return task:finish(nil, refs_err)
 				end
 				local context = { branch = branch and util.trim(branch), candidates = {}, suggestion = nil }
-				for _, line in ipairs(util.split_text_lines(refs)) do
+				for _, line in ipairs(util.split_lines(refs)) do
 					local name, target = line:match("^(.-)\t(.*)$")
 					if name and target == "" then
 						context.candidates[#context.candidates + 1] = name:gsub("^refs/heads/", "")
@@ -65,7 +67,7 @@ function M.resolve(repo, base, callback)
 						"No common ancestor; check unrelated or shallow history: " .. tostring(base_err)
 					)
 				end
-				local values = util.split_text_lines(bases)
+				local values = util.split_lines(bases)
 				if #values ~= 1 then
 					return task:finish(nil, "Multiple merge bases; select a specific ancestor commit as the base")
 				end
@@ -271,7 +273,7 @@ function M.list(snapshot, include_untracked, callback)
 						if not hashes then
 							return task:finish(nil, hash_err)
 						end
-						local values = util.split_text_lines(hashes)
+						local values = util.split_lines(hashes)
 						if #values ~= #eligible then
 							return task:finish(nil, "Invalid Git hash output")
 						end
@@ -358,7 +360,7 @@ function M.preview(snapshot, item, callback)
 				return task:finish(nil, err)
 			end
 			if raw ~= "" then
-				result.details = util.split_text_lines(raw)
+				result.details = util.split_lines(raw)
 			end
 			task:finish(result)
 		end)
@@ -374,7 +376,7 @@ function M.preview(snapshot, item, callback)
 					return task:finish(nil, err)
 				end
 				result.left = {}
-				result.right = raw ~= "" and util.split_text_lines(raw)
+				result.right = raw ~= "" and util.split_lines(raw)
 					or { "Nested repository; open its sidebar to inspect internal changes" }
 				result.right_label = "SUBMODULE / DIRECTORY"
 				task:finish(result)

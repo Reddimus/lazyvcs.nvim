@@ -14,8 +14,14 @@ return function(ctx)
 		return assert(value, failure)
 	end
 	-- Feed bytes through the real capture layer, including a CRLF split across chunks.
-	local function with_output(output, check)
-		local system = vim.system
+	local function with_output(output, check, windows)
+		local system, has = vim.system, vim.fn.has
+		if windows ~= nil then
+			---@diagnostic disable-next-line: duplicate-set-field
+			vim.fn.has = function(feature)
+				return feature == "win32" and (windows and 1 or 0) or has(feature)
+			end
+		end
 		---@diagnostic disable-next-line: duplicate-set-field
 		vim.system = function(args, opts, exit)
 			local bytes, code = output(args)
@@ -30,7 +36,7 @@ return function(ctx)
 			return { kill = function() end }
 		end
 		local ok, err = xpcall(check, debug.traceback)
-		vim.system = system
+		vim.system, vim.fn.has = system, has
 		assert(ok, err)
 	end
 	local function clean(lines, expected)
@@ -201,13 +207,13 @@ return function(ctx)
 			end,
 		},
 		{
-			"test_core_git_compare_crlf_refs",
+			"test_core_git_compare_lf_refs",
 			function()
 				with_output(function(args)
 					if vim.tbl_contains(args, "symbolic-ref") then
-						return "topic\r\n"
+						return "topic\n"
 					end
-					return "refs/heads/main\t\r\nrefs/remotes/origin/HEAD\trefs/remotes/origin/main\r\n"
+					return "refs/heads/main\t\nrefs/remotes/origin/HEAD\trefs/remotes/origin/main\n"
 				end, function()
 					local value = await(function(done)
 						git.context({ root = h.tempdir() }, done)
@@ -218,10 +224,10 @@ return function(ctx)
 			end,
 		},
 		{
-			"test_core_git_compare_crlf_merge_base",
+			"test_core_git_compare_lf_merge_base",
 			function()
 				with_output(function()
-					return oid .. "\r\n"
+					return oid .. "\n"
 				end, function()
 					local value = await(function(done)
 						git.resolve({ root = h.tempdir() }, "main", done)
@@ -231,7 +237,7 @@ return function(ctx)
 			end,
 		},
 		{
-			"test_core_git_compare_crlf_recreated_hashes",
+			"test_core_git_compare_lf_recreated_hashes",
 			function()
 				local root = h.tempdir()
 				h.write_file(root .. "/sample.txt", "one")
@@ -243,7 +249,7 @@ return function(ctx)
 					elseif vim.tbl_contains(args, "ls-tree") then
 						return "100644 blob " .. oid .. "\tsample.txt\0"
 					elseif vim.tbl_contains(args, "hash-object") then
-						return oid .. "\r\n"
+						return oid .. "\n"
 					end
 					return ""
 				end, function()
@@ -255,11 +261,11 @@ return function(ctx)
 			end,
 		},
 		{
-			"test_core_git_compare_crlf_summary",
+			"test_core_git_compare_lf_summary",
 			function()
 				with_output(function(args)
 					assert(vim.tbl_contains(args, "--summary"))
-					return " mode change 100644 => 100755 sample.txt\r\n\r\n"
+					return " mode change 100644 => 100755 sample.txt\n\n"
 				end, function()
 					local value = await(function(done)
 						git.preview(
@@ -273,18 +279,18 @@ return function(ctx)
 			end,
 		},
 		{
-			"test_core_git_compare_crlf_submodule_log",
+			"test_core_git_compare_lf_submodule_log",
 			function()
 				local root = h.tempdir()
 				vim.fn.mkdir(root .. "/nested")
 				with_output(function(args)
 					assert(vim.tbl_contains(args, "--submodule=log"))
-					return "Submodule nested aaaaaaa..bbbbbbb:\r\n  > message\r\n"
+					return "Submodule nested aaaaaaa..bbbbbbb:\n  > message\r\n"
 				end, function()
 					local value = await(function(done)
 						git.preview(snapshot(root), { relpath = "nested", status = "M" }, done)
 					end)
-					clean(value.right, { "Submodule nested aaaaaaa..bbbbbbb:", "  > message" })
+					assert(vim.deep_equal(value.right, { "Submodule nested aaaaaaa..bbbbbbb:", "  > message\r" }))
 				end)
 			end,
 		},
@@ -357,7 +363,7 @@ return function(ctx)
 						vim.inspect(value.right)
 					)
 					assert(vim.deep_equal(value.right, value.properties))
-				end)
+				end, true)
 			end,
 		},
 		{
