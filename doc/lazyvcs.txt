@@ -278,9 +278,17 @@ Commands:
     :LazyVCS blame split     toggle aligned full-file blame audit split
     :LazyVCS blame clear     disable global inline blame
     :LazyVCS blame log       show Git/SVN log for the current line
+
     :LazyVCS preview         preview the current buffer diff
     :LazyVCS revert          revert the current file
     :LazyVCS files           pick from changed files
+
+The blame split reloads from unsaved buffer contents after edits. Reloads use
+blame.delay_ms and discard results from earlier edits. The split stays aligned
+with its source and closes when the source window changes buffers, the source
+is unloaded, or either window closes. Line history uses the current buffer
+contents and has no committed revision for newly inserted lines. Pending history
+is cancelled when its source changes or closes.
 
 Hunk commands work in normal Git and SVN buffers too:
 
@@ -329,6 +337,9 @@ The Lua API blame_selection(first, last) accepts inclusive line numbers. With no
 arguments it uses the active visual selection or cursor line. An optional map: >lua
     vim.keymap.set("x", "<leader>vb", "<Plug>(LazyVCSBlameSelection)")
 <
+Replacing a selection report cancels its request and releases its window.
+Late results do not change the replacement buffer.
+
 Editor blame includes unsaved contents. Compare base panes use the pinned
 revision and original rename path. Git saved panes use the captured HEAD and
 saved preview contents; SVN saved panes map working-copy BASE to those contents.
@@ -492,8 +503,10 @@ Git/SVN blame options:
 
     blame.mode         `inline`, `split`, or `off` for :LazyVCS blame.
     blame.persist      Remember the inline blame toggle across sessions.
-    blame.delay_ms     Debounce before the first blame fetch; the
-                       overlay then tracks the cursor instantly.
+    blame.delay_ms     Debounce before inline fetches and split reloads; the
+                       overlay then tracks the cursor instantly. When a buffer
+                       appears in multiple windows, it follows the active cursor.
+                       The annotation is shared by those windows.
     blame.loading_delay_ms
                        Delay before showing slow-load feedback.
     blame.loading_text Muted text shown while slow blame is still loading.
@@ -511,6 +524,8 @@ Terminal Neovim cannot apply true per-text opacity. lazyvcs uses muted,
 theme-aware Comment highlights for blame text. Inline blame stays quiet during
 fast loads, shows `Blame loading...` only for slow SVN calls, and labels local
 SVN rows as `Uncommitted line` instead of displaying raw `- - -` placeholders.
+SVN attribution preserves full author names, including spaces. Git blame metadata
+is UTF-8 even when i18n.logOutputEncoding requests another encoding.
 
 Source-control options:
 

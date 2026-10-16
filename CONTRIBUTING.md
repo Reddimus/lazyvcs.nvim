@@ -124,6 +124,8 @@ the GitHub release.
 - `compare_actions.lua` shares action names across mappings, commands, and help.
 - `compare_view.lua` builds file rows, highlights, and cached width
   measurements.
+- `blame_context.lua` captures source identity and changedtick for blame
+  requests.
 - `blame_selection.lua` presents selected-line reports through a cancellable
   backend loader.
 - `actions.lua`, `layout.lua`, and `state.lua` own editable per-file diff

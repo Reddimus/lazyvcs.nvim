@@ -15,6 +15,16 @@ and this project adheres to
   repository entry cannot be verified.
 - Preserve literal `$NAME` text in repository paths when opening and saving
   changes, including paths inside repository roots that contain dollar signs.
+- Recover inline blame after directory changes, follow the active cursor when a
+  file appears in multiple windows, and expand the default revision label.
+- Reload open blame splits after unsaved edits and keep reopened splits alive
+  when cleanup from the previous split finishes.
+- Resolve line history from unsaved contents, bound Git blame to the current
+  line, and cancel pending history when its source changes or closes.
+- Cancel replaced selection reports and preserve windows reused for other
+  buffers.
+- Preserve SVN author names containing spaces and display Git blame metadata as
+  UTF-8 regardless of the repository log-output encoding.
 
 ## [0.11.1] - 2026-10-16
 
