@@ -1,3 +1,4 @@
+local runtime = require("lazyvcs.process_runtime")
 local M = {}
 
 ---@param winid integer
@@ -86,9 +87,17 @@ end
 local function command_options(args, opts)
 	opts = vim.tbl_extend("force", {}, opts or {})
 	if args[1] == "git" then
-		opts.env = vim.tbl_extend("force", opts.env or {}, { GIT_LITERAL_PATHSPECS = "1", LC_ALL = "C" })
+		opts.env = vim.tbl_extend(
+			"force",
+			{ GIT_TERMINAL_PROMPT = "0" },
+			opts.env or {},
+			{ GIT_LITERAL_PATHSPECS = "1", LC_ALL = "C" }
+		)
 	end
-	return opts
+	if args[1] == "svn" and not vim.tbl_contains(args, "--non-interactive") then
+		args = vim.list_extend({ "svn", "--non-interactive" }, vim.list_slice(args, 2))
+	end
+	return opts, args
 end
 
 function M.show_text(title, lines)
@@ -109,11 +118,19 @@ function M.notify(msg, level)
 	vim.notify(tostring(msg):gsub("%s*\n%s*", " "), level or vim.log.levels.INFO, { title = "lazyvcs.nvim" })
 end
 
+runtime.setup(M.notify)
+
 function M.safe_callback(fn)
 	return function(...)
 		local ok, result = pcall(fn, ...)
 		if not ok then
-			M.notify(result, vim.log.levels.ERROR)
+			if vim.in_fast_event() then
+				vim.schedule(function()
+					M.notify(result, vim.log.levels.ERROR)
+				end)
+			else
+				M.notify(result, vim.log.levels.ERROR)
+			end
 			return nil
 		end
 		return result
@@ -161,7 +178,8 @@ function M.spawn_error(args, err)
 end
 
 function M.system_result(args, opts)
-	opts = vim.tbl_extend("keep", command_options(args, opts), { text = true })
+	opts, args = command_options(args, opts)
+	opts = vim.tbl_extend("keep", opts, { text = true })
 	local timeout_ms = opts.timeout or M.SYNC_TIMEOUT_MS
 	opts.timeout = nil
 
@@ -201,12 +219,17 @@ function M.system(args, opts)
 end
 
 function M.system_start(args, opts, on_exit)
-	opts = command_options(args, opts)
+	if runtime.is_shutting_down() then
+		return nil
+	end
+	opts, args = command_options(args, opts)
 	local text_mode = opts.text ~= false
 	local timeout_ms = opts.timeout_ms or opts.timeout
 	local output_limit = math.max(256, math.floor(opts.output_limit_bytes or opts.output_limit or 4 * 1024 * 1024))
 	local kill_grace_ms = math.max(0, math.floor(opts.kill_grace_ms or 1000))
 	local on_terminate = opts.on_terminate
+	local shutdown_exit = opts.on_exit_during_shutdown
+	opts.on_exit_during_shutdown = nil
 	opts.timeout = nil
 	opts.timeout_ms = nil
 	opts.output_limit = nil
@@ -218,7 +241,47 @@ function M.system_start(args, opts, on_exit)
 	local timeout_timer
 	local kill_timer
 	local forced_result
+	local exited_result
+	local force_sent = false
+	local complete_exit
+	local windows = vim.fn.has("win32") == 1
 	local wrapper = {}
+	opts.detach = not windows
+
+	local function group_alive()
+		return not windows and process and process.pid and process.pid > 0 and vim.uv.kill(-process.pid, 0) ~= nil
+	end
+
+	local function signal_scope(signal)
+		if not process then
+			return
+		end
+		if not windows then
+			if process.pid and process.pid > 0 then
+				pcall(vim.uv.kill, -process.pid, signal)
+			else
+				pcall(process.kill, process, signal)
+			end
+		else
+			-- taskkill can find descendants only while their parent is still alive.
+			if not exited_result and process.pid and not process:is_closing() then
+				local ok = pcall(vim.system, { "taskkill", "/T", "/F", "/PID", tostring(process.pid) }, {
+					stdout = false,
+					stderr = false,
+				}, function()
+					pcall(process.kill, process, signal)
+				end)
+				if not ok then
+					pcall(process.kill, process, signal)
+				end
+			else
+				pcall(process.kill, process, signal)
+			end
+		end
+		if signal == 9 then
+			force_sent = true
+		end
+	end
 
 	local function close_timer(timer)
 		if not timer then
@@ -261,8 +324,8 @@ function M.system_start(args, opts, on_exit)
 			end
 			stream.omitted = stream.omitted + math.max(0, #data - remaining)
 		end
-		if type(stream.callback) == "function" then
-			pcall(stream.callback, err, data)
+		if not runtime.is_shutting_down() and type(stream.callback) == "function" then
+			M.safe_callback(stream.callback)(err, data)
 		end
 	end
 	opts.stdout = function(err, data)
@@ -319,23 +382,27 @@ function M.system_start(args, opts, on_exit)
 		if done then
 			return
 		end
-		if not process or kill_grace_ms <= 0 then
-			if process then
-				pcall(process.kill, process, 9)
-			end
+		if kill_grace_ms <= 0 then
+			signal_scope(9)
 			return
 		end
-		kill_timer = vim.defer_fn(function()
-			kill_timer = nil
-			if process and not done then
-				pcall(process.kill, process, 9)
-			end
-		end, kill_grace_ms)
+		kill_timer = vim.defer_fn(
+			M.safe_callback(function()
+				kill_timer = nil
+				if not done then
+					signal_scope(9)
+					if exited_result then
+						complete_exit(exited_result)
+					end
+				end
+			end),
+			kill_grace_ms
+		)
 	end
 
 	local function notify_termination(result)
-		if type(on_terminate) == "function" then
-			pcall(on_terminate, result.result, result.err, result.raw)
+		if not runtime.is_shutting_down() and type(on_terminate) == "function" then
+			M.safe_callback(on_terminate)(result.result, result.err, result.raw)
 		end
 	end
 
@@ -377,7 +444,7 @@ function M.system_start(args, opts, on_exit)
 			raw = raw,
 		}
 		if process then
-			pcall(process.kill, process, signal or 15)
+			signal_scope(signal or 15)
 			if signal ~= 9 then
 				schedule_kill()
 			end
@@ -396,9 +463,19 @@ function M.system_start(args, opts, on_exit)
 		timeout_timer = nil
 		kill_timer = nil
 		if type(on_exit) == "function" then
+			runtime.track(wrapper)
 			vim.schedule(function()
-				M.safe_callback(on_exit)(result, err, raw)
+				if shutdown_exit and runtime.is_shutting_down() and not forced_result then
+					result, err = nil, "Cancelled: editor shutdown"
+					raw = { code = 130, stdout = "", stderr = err, cancelled = true, reason = "editor shutdown" }
+				end
+				if shutdown_exit or not runtime.is_shutting_down() then
+					M.safe_callback(on_exit)(result, err, raw)
+				end
+				runtime.untrack(wrapper)
 			end)
+		else
+			runtime.untrack(wrapper)
 		end
 		return true
 	end
@@ -414,6 +491,29 @@ function M.system_start(args, opts, on_exit)
 		return begin_termination("cancelled", 15, reason)
 	end
 
+	function wrapper:force()
+		if done then
+			return false
+		end
+		signal_scope(9)
+		if exited_result then
+			complete_exit(exited_result)
+		end
+		return true
+	end
+
+	function wrapper:shutdown()
+		if not begin_termination("cancelled", 15, "editor shutdown") and not done then
+			signal_scope(15)
+		end
+	end
+
+	function wrapper:close_timers()
+		close_timer(timeout_timer)
+		close_timer(kill_timer)
+		timeout_timer, kill_timer = nil, nil
+	end
+
 	if type(opts.cwd) == "string" and opts.cwd ~= "" and not vim.uv.fs_stat(opts.cwd) then
 		local result = {
 			code = 127,
@@ -425,8 +525,12 @@ function M.system_start(args, opts, on_exit)
 		return wrapper
 	end
 
-	local ok, proc = pcall(vim.system, args, vim.tbl_extend("keep", opts, { text = true }), function(result)
+	complete_exit = function(result)
 		if done then
+			return
+		end
+		exited_result = result
+		if forced_result and not force_sent and group_alive() then
 			return
 		end
 		local bounded_raw = bounded_result(result)
@@ -443,7 +547,9 @@ function M.system_start(args, opts, on_exit)
 			return
 		end
 		complete(bounded_raw, nil, bounded_raw)
-	end)
+	end
+	local ok, proc =
+		pcall(vim.system, args, vim.tbl_extend("keep", opts, { text = true }), M.safe_callback(complete_exit))
 	if not ok then
 		local result = { code = 127, stdout = "", stderr = M.spawn_error(args, proc) }
 		result = bounded_result(result)
@@ -452,14 +558,20 @@ function M.system_start(args, opts, on_exit)
 	end
 	process = proc
 	wrapper.process = proc
-	if timeout_ms and timeout_ms > 0 then
-		timeout_timer = vim.defer_fn(function()
-			timeout_timer = nil
-			if done then
-				return
-			end
-			begin_termination("timeout", 15)
-		end, timeout_ms)
+	if not done then
+		runtime.track(wrapper)
+	end
+	if not done and timeout_ms and timeout_ms > 0 then
+		timeout_timer = vim.defer_fn(
+			M.safe_callback(function()
+				timeout_timer = nil
+				if done then
+					return
+				end
+				begin_termination("timeout", 15)
+			end),
+			timeout_ms
+		)
 	end
 	return wrapper
 end

@@ -89,6 +89,10 @@ and this project adheres to
 - Keep Neo-tree and other plugin windows intact when choosing sidebar diff
   destinations.
 - Save original editor window options through Resession while live diff is open.
+- Terminate command descendants after timeout or cancellation so inherited
+  output pipes cannot strand scheduler workers.
+- Stop running commands and discard queued work when Neovim exits.
+- Fail Git and SVN commands without waiting for terminal credential prompts.
 
 ## [0.11.2] - 2026-10-16
 
