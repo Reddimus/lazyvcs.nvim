@@ -713,7 +713,8 @@ revert, push, publish, and delete untracked) are untracked without a termination
 signal. Multi-step actions (Pull, Sync, Push, Publish) are preserved only once
 they reach their mutating step. This avoids interrupting writes that could leave
 an index.lock or a locked SVN working copy. Preserved commands lose their output
-pipes at exit.
+pipes at exit. On Windows, Neovim's process runtime terminates its child
+processes when Neovim exits, so running mutations are not preserved there.
 A hook or helper that writes output afterwards can fail and abort the mutation.
 Git aborts cleanly in this case without leaving an index.lock.
 Commit message files survive exit in stdpath("cache")/lazyvcs/commit, with a
