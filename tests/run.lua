@@ -21,6 +21,11 @@ if not vim.env.LAZYVCS_TEST_GROUP or vim.env.LAZYVCS_TEST_GROUP == "" then
 			"--headless",
 			"-u",
 			"NONE",
+			-- Preserve the parent settings when exercising Windows-style defaults.
+			"--cmd",
+			"set fileformats=" .. vim.o.fileformats,
+			"--cmd",
+			vim.o.shellslash and "set shellslash" or "set noshellslash",
 			"-l",
 			run_file,
 		}, {

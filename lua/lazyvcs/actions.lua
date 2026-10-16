@@ -1144,6 +1144,12 @@ reload_session = function(session)
 				vim.bo[live.editable_bufnr].readonly = true
 			end
 		end
+		if not live.comparison then
+			local backend = backends.resolve_cached(live.source_path)
+			if backend then
+				live.backend, live.backend_impl = backend.name, backend
+			end
+		end
 		live.root = result.root
 		live.relpath = result.relpath
 		live.base_label = result.base_label
@@ -1187,7 +1193,11 @@ reload_session = function(session)
 end
 
 function M.refresh_current()
-	return reload_session(state.current())
+	local session = state.current()
+	if session and not session.comparison then
+		backends.invalidate(session.source_path)
+	end
+	return reload_session(session)
 end
 
 function M.rebalance(target)

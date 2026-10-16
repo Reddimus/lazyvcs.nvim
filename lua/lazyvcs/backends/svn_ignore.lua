@@ -1,6 +1,7 @@
 local common = require("lazyvcs.backends.comparison")
 local xml = require("lazyvcs.backends.xml")
 local util = require("lazyvcs.util")
+local glob = require("lazyvcs.backends.svn_glob")
 local M = {}
 local defaults =
 	"*.o *.lo *.la *.al .libs *.so *.so.[0-9]* *.a *.pyc *.pyo __pycache__ *.rej *~ #*# .#* .*.swp .DS_Store [Tt]humbs.db"
@@ -26,7 +27,7 @@ local function parse(raw, sections)
 	end
 end
 
-function M.load(task, repo, callback)
+function M.load(task, repo, callback, switched)
 	local sections = { miscellany = {} }
 	local sources
 	if vim.fn.has("win32") == 1 then
@@ -70,7 +71,14 @@ function M.load(task, repo, callback)
 			if not raw then
 				return callback(nil, err)
 			end
-			local inherited, global = {}, {}
+			local inherited, global, boundaries_at = {}, {}, {}
+			local function local_path(path)
+				path = xml.local_path(path)
+				if path:sub(1, 1) == "/" or (vim.fn.has("win32") == 1 and path:match("^%a:")) then
+					return util.normalize_literal_path(path)
+				end
+				return util.normalize_literal_path(repo.root .. "/" .. path)
+			end
 			for attrs, body in raw:gmatch("<target%s+([^>]+)>(.-)</target>") do
 				local path = xml.attributes(attrs).path
 				local content = body:match('<property%s+name="svn:global%-ignores"[^>]*>(.-)</property>')
@@ -79,50 +87,92 @@ function M.load(task, repo, callback)
 					if path:match("^%a[%w+.-]*://") then
 						global[#global + 1] = xml.decode(content)
 					else
-						inherited[util.normalize_literal_path(path)] = xml.decode(content)
+						inherited[local_path(path)] = xml.decode(content)
 					end
 				end
 			end
-			local cache = {}
-			local function matches(text, name, property)
-				for pattern in text:gmatch(property and "[^\r\n]+" or "%S+") do
-					pattern = util.trim(pattern)
-					local regex = cache[pattern]
-					if not regex then
-						local ok, compiled = pcall(vim.regex, vim.fn.glob2regpat(pattern))
-						if ok then
-							regex = compiled
-							cache[pattern] = regex
+			local function finish_properties()
+				local cache = {}
+				local function matches(text, name, property)
+					for pattern in text:gmatch(property and "[^\r\n]+" or "%S+") do
+						pattern = util.trim(pattern)
+						local compiled = cache[pattern]
+						if not compiled then
+							compiled = glob.compile(pattern)
+							cache[pattern] = compiled
+						end
+						if glob.matches(compiled, name) then
+							return true
 						end
 					end
-					if regex and regex:match_str(name) then
+					return false
+				end
+				callback(function(path, name)
+					if matches(value, name) then
 						return true
 					end
-				end
-				return false
+
+					local parent = vim.fs.dirname(local_path(path))
+					while parent do
+						if inherited[parent] and matches(inherited[parent], name, true) then
+							return true
+						end
+						if boundaries_at[parent] then
+							return false
+						end
+						local next_parent = vim.fs.dirname(parent)
+						if next_parent == parent then
+							break
+						end
+						parent = next_parent
+					end
+					for _, text in ipairs(global) do
+						if matches(text, name, true) then
+							return true
+						end
+					end
+					return false
+				end)
 			end
-			callback(function(path, name)
-				if matches(value, name) then
-					return true
+			-- Status already reports clean switched nodes. Avoid an info dump of
+			-- every versioned file and URL-encoding differences in boundary detection.
+			local boundaries = {}
+			for _, path in ipairs(switched or {}) do
+				boundaries[#boundaries + 1] = local_path(path)
+			end
+			local index = 0
+			local function next_boundary()
+				index = index + 1
+				local path = boundaries[index]
+				if not path then
+					return finish_properties()
 				end
-				for _, text in ipairs(global) do
-					if matches(text, name, true) then
-						return true
+				common.command(task, repo, {
+					"svn",
+					"propget",
+					"--xml",
+					"--show-inherited-props",
+					"svn:global-ignores",
+					util.svn_target(path),
+				}, function(props, props_err)
+					if not props then
+						return callback(nil, props_err)
 					end
-				end
-				local parent = vim.fs.dirname(path)
-				while parent do
-					if inherited[parent] and matches(inherited[parent], name, true) then
-						return true
+					local values = {}
+					for content in
+						props:gmatch('<inherited_property%s+name="svn:global%-ignores"[^>]*>(.-)</inherited_property>')
+					do
+						values[#values + 1] = xml.decode(content)
 					end
-					local next_parent = vim.fs.dirname(parent)
-					if next_parent == parent then
-						break
+					for content in props:gmatch('<property%s+name="svn:global%-ignores"[^>]*>(.-)</property>') do
+						values[#values + 1] = xml.decode(content)
 					end
-					parent = next_parent
-				end
-				return false
-			end)
+					inherited[path] = table.concat(values, "\n")
+					boundaries_at[path] = true
+					next_boundary()
+				end)
+			end
+			next_boundary()
 		end)
 	end
 	local next_source
@@ -151,7 +201,7 @@ function M.load(task, repo, callback)
 			end)
 		else
 			vim.uv.fs_realpath(source.path, function(path_err, resolved)
-				vim.schedule(function()
+				vim.schedule(util.safe_callback(function()
 					if not task:is_active() then
 						return
 					end
@@ -170,7 +220,7 @@ function M.load(task, repo, callback)
 						parse(raw, sections)
 						next_source()
 					end)
-				end)
+				end))
 			end)
 		end
 	end

@@ -179,8 +179,10 @@ end
 
 function M.refresh()
 	local bufnr = vim.api.nvim_get_current_buf()
-	require("lazyvcs.blame").refresh(bufnr)
-	return signs.refresh(bufnr, true)
+	return backends.resolve_async(current_path(), function()
+		require("lazyvcs.blame").refresh(bufnr)
+		signs.refresh(bufnr, true)
+	end, { force_resolve = true })
 end
 
 return M

@@ -175,11 +175,15 @@ local function render_signs(bufnr, state)
 			or (kind == "delete" or kind == "topdelete") and "LazyVcsSignDelete"
 			or "LazyVcsSignChange"
 		for _, row in ipairs(hunk_rows(bufnr, hunk)) do
-			pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_id, row, 0, {
+			local ok, err = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_id, row, 0, {
 				sign_text = sign_text,
 				sign_hl_group = hl_group,
 				priority = opts().sign_priority,
 			})
+			if not ok and state.sign_error_generation ~= state.generation then
+				state.sign_error_generation = state.generation
+				util.notify("Could not render native sign: " .. tostring(err), vim.log.levels.WARN)
+			end
 		end
 	end
 end

@@ -1091,6 +1091,11 @@ function M.refresh(remote_refresh)
 		return compare.source_control("refresh", nil)
 	end
 	local state = states[tabid()]
+	require("lazyvcs.backends").resolve_async(
+		state and state.path or normalize(),
+		function() end,
+		{ force_resolve = true }
+	)
 	if not state then
 		return M.open()
 	end

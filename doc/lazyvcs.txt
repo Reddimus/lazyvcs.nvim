@@ -29,6 +29,11 @@ the right. Git compares against the index. SVN uses BASE with
 `svn cat -r BASE path`. Git untracked files and SVN added files use an empty
 base. See |lazyvcs-inline-signs| for Git attribute handling.
 
+Explicit live-diff, signs, and sidebar refresh commands
+redetect repository ownership. BufEnter and BufWritePost also revalidate the
+buffer directory asynchronously, at most once per five seconds. Cursor movement
+uses cached resolution.
+
 The source-control sidebar is native Neovim UI. Neo-tree is not required.
 
 ==============================================================================
@@ -75,7 +80,9 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
                       Reload the VCS base and refresh gutter signs for the
                       current buffer.
 
-:LazyVCS files        Pick from the changed files in the current working copy.
+:LazyVCS files        Pick individual changed and nonignored untracked files.
+                     SVN property changes are included; clean external markers
+                     are excluded.
 
 :LazyVCS preview      Preview the current buffer diff in a floating window.
 
@@ -104,7 +111,8 @@ TOTAL COMPARISON                                           *lazyvcs-comparison*
 Git uses the common ancestor of HEAD and the chosen base. Its net comparison
 includes committed, staged, and saved working-tree changes. SVN compares the
 chosen repository revision to the saved working copy. Neither includes unsaved
-buffers. Nonignored untracked files are included by default.
+buffers. Nonignored untracked files are included by default. SVN ignore matching
+follows SVN wildcard rules, including inherited rules in switched subtrees.
 Omitted sparse-checkout files use a read-only INDEX (sparse checkout) snapshot
 when Git confirms a stage-zero, regular skip-worktree entry. Present files
 still use saved filesystem contents. A preview never materializes omitted files.
@@ -599,10 +607,12 @@ Native gutter signs options:
     signs.enabled      Enable native Git and SVN gutter decorations.
     signs.debounce_ms  Delay sign refresh after buffer edits.
     signs.sign_priority
-                       Sign-column priority.
+                       Sign-column priority, clamped to 1..65535.
     signs.max_file_bytes
                        Skip files exceeding the limit on disk or in memory.
     signs.text         Sign glyphs for add/change/delete/topdelete/changedelete.
+                       Each glyph must be empty or printable text occupying
+                       one or two display cells. Controls and tabs are rejected.
 
 Git/SVN blame options:
 
@@ -670,7 +680,7 @@ Background scheduling options, under source_control.background:
     switch_timeout_ms  Timeout for branch and ref switching.
     mutation_timeout_ms
                        Timeout for stage, commit, push, and other
-                       mutations. Must be greater than zero.
+                       mutations. Must remain at least 1 ms after flooring.
     history_limit      Entries retained for :LazyVCS profile.
 
 Editor requests use two additional Git workers and one additional SVN worker.
@@ -678,7 +688,7 @@ Sidebar cancellation does not cancel editor requests.
 
 Every scheduled command is cancellable and bounded. A mutation that hangs
 forever cannot be distinguished from one still in progress, so
-mutation_timeout_ms rejects 0. Cancel in-flight work with :LazyVCS sidebar
+mutation_timeout_ms rejects values below 1 ms. Cancel in-flight work with :LazyVCS sidebar
 cancel, with `X` in the sidebar, or with
 require("lazyvcs").source_control_cancel().
 
