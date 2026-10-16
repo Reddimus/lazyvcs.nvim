@@ -18,6 +18,7 @@ function M.setup(opts)
 	require("lazyvcs.commands").setup()
 	require("lazyvcs.signs").setup()
 	require("lazyvcs.blame").setup()
+	require("lazyvcs.integrations.resession").setup()
 	return resolved
 end
 

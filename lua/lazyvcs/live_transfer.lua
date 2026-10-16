@@ -98,7 +98,7 @@ function M.new(lifecycle)
 		return p
 	end
 	function api.reconcile(s)
-		if not current(s) or s.phase == "committing" or s.readonly_comparison then
+		if not current(s) or s.phase == "saving" or s.phase == "committing" or s.readonly_comparison then
 			return
 		end
 		if
@@ -247,6 +247,7 @@ function M.new(lifecycle)
 				not current(s)
 				or s.readonly_comparison
 				or s.phase == "committing"
+				or s.phase == "saving"
 				or bufnr == s.editable_bufnr
 				or bufnr == s.base_bufnr
 			then

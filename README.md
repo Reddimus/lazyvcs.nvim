@@ -32,6 +32,9 @@ With lazy.nvim:
 
 For AstroNvim, put `return { ... }` around this spec and save it as
 `lua/plugins/lazyvcs.lua`. Restart Neovim and run `:checkhealth lazyvcs`.
+Sidebar diffs use your editing window alongside Neo-tree. With Resession
+installed, session saves preserve the editor's pre-diff window options without
+restoring temporary LazyVCS panes.
 
 Without a plugin manager, clone the repository into
 `stdpath("data")/site/pack/plugins/start/lazyvcs.nvim` and add

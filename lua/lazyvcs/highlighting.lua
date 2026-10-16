@@ -89,6 +89,15 @@ local function owned(win, state)
 		)
 end
 
+---Return user mappings without the native semantic-token overlay.
+---@param win integer
+---@return string
+function M.user_winhighlight(win)
+	local value = util.get_win_option(win, "winhighlight")
+	---@cast value string
+	return user_mappings(value, windows[win])
+end
+
 local function semantic(name)
 	return name:match("^@lsp%.type%.") or name:match("^@lsp%.mod%.") or name:match("^@lsp%.typemod%.")
 end
@@ -182,16 +191,17 @@ function M.refresh(win)
 			define(slot, name, inherited(name))
 		end
 	end
-	for name in pairs(global) do
-		if semantic(name) then
+	-- Cleared definitions remain in nvim_get_hl's enumeration.
+	for name, value in pairs(global) do
+		if semantic(name) and next(value) ~= nil then
 			define(slot, name, {})
 			if not slot.native then
 				slot.suppressed[name] = true
 			end
 		end
 	end
-	for name in pairs(theme) do
-		if semantic(name) then
+	for name, value in pairs(theme) do
+		if semantic(name) and next(value) ~= nil then
 			define(slot, name, {})
 			if not slot.native then
 				slot.suppressed[name] = true
@@ -279,7 +289,8 @@ local function listen()
 			if windows[win] == state then
 				if not state.native and state.mapping_changed and api.nvim_win_is_valid(win) then
 					state.mapping_changed = false
-					-- OptionSet runs before Neovim finishes replacing the namespace.
+					-- Recheck ownership after coalescing mapping changes. An explicit
+					-- window namespace survives winhighlight writes on Neovim 0.11/0.12.
 					if not owned(win, state) and not explicit(win) then
 						state.previous = api.nvim_get_hl_ns({ winid = win })
 						api.nvim_win_set_hl_ns(win, state.slot.ns)

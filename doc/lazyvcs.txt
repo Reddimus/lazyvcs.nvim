@@ -768,6 +768,15 @@ runs a fixed-size `pexpect` terminal smoke test for the sidebar.
 NOTES                                                           *lazyvcs-notes*
 
 - The Neo-tree adapter has been removed. Use |:LazyVCS| or `:LazyVCS sidebar`.
+  Sidebar diffs prefer the recorded editor. Otherwise they prefer an ordinary
+  non-diff editor in the originating tab. Special plugin buffers, floats,
+  preview windows, fixed-buffer windows, Compare panes, and live-diff bases are
+  excluded. A user diff window remains eligible when no non-diff editor exists.
+  A pending open is cancelled if its captured destination changes.
+- With Resession installed, saving an active live diff serializes the editable
+  window's pre-session options. The live panes resume after saving. Options
+  changed by the user during the session are preserved. Temporary bases and
+  LazyVCS sessions are not restored in a new process. No dependency is required.
 - Git compares live diff buffers against the index.
 - SVN compares live diff buffers against working-copy BASE.
 - Git untracked files and SVN added files show an empty base.

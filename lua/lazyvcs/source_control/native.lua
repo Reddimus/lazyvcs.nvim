@@ -981,8 +981,10 @@ local function prepare_state(path)
 	state.lazyvcs_get_node = current_node
 	state.lazyvcs_open_file = function(_, path_to_open)
 		local created = false
-		if valid_win(state.editor_winid) and state.editor_winid ~= state.winid then
-			vim.api.nvim_set_current_win(state.editor_winid)
+		local destination = require("lazyvcs.editor_target").capture(state.editor_winid, state.winid)
+		if not destination.fallback then
+			state.editor_winid = destination.winid
+			vim.api.nvim_set_current_win(destination.winid)
 		else
 			vim.cmd("wincmd l")
 			if vim.api.nvim_get_current_win() == state.winid then

@@ -161,7 +161,7 @@ return function(ctx)
 				util.set_win_option(win, "winhighlight", "")
 				-- Seed the qualified new type so its first event adds exactly one mapping.
 				for _, name in ipairs({ "lazyvcsBurstKnown", "lazyvcsBurstKnown.lua", "lazyvcsBurstNew.lua" }) do
-					api.nvim_set_hl(0, "@lsp.type." .. name, {})
+					api.nvim_set_hl(0, "@lsp.type." .. name, { fg = 0xff0000 })
 				end
 				guard.apply(win, "syntax")
 				local before = vim.wo[win].winhighlight
@@ -211,6 +211,9 @@ return function(ctx)
 				util.get_win_option, util.set_win_option = get_option, set_option
 				guard.release(win)
 				api.nvim_win_close(win, true)
+				for _, name in ipairs({ "lazyvcsBurstKnown", "lazyvcsBurstKnown.lua", "lazyvcsBurstNew.lua" }) do
+					api.nvim_set_hl(0, "@lsp.type." .. name, {})
+				end
 				assert(ok, err)
 			end,
 		},

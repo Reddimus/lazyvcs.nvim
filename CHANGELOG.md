@@ -86,6 +86,9 @@ and this project adheres to
   that round down to zero.
 - Show multiline job errors in the profile, escape directory completion paths,
   and keep forced Git color codes out of revision logs.
+- Keep Neo-tree and other plugin windows intact when choosing sidebar diff
+  destinations.
+- Save original editor window options through Resession while live diff is open.
 
 ## [0.11.2] - 2026-10-16
 

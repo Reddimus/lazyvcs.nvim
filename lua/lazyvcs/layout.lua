@@ -77,11 +77,8 @@ local function set_window_labels(session)
 	if util.win_is_valid(session.base_win) then
 		session.base_prev_winbar = session.base_prev_winbar or util.get_win_option(session.base_win, "winbar")
 		local left_label = session.left_label or session.base_label
-		util.set_win_option(
-			session.base_win,
-			"winbar",
-			string.format(" lazyvcs %s %s [left]", session.backend, left_label:lower())
-		)
+		session.base_label_winbar = string.format(" lazyvcs %s %s [left]", session.backend, left_label:lower())
+		util.set_win_option(session.base_win, "winbar", session.base_label_winbar)
 	end
 end
 
@@ -267,8 +264,163 @@ local function valid_pair(session)
 		and vim.api.nvim_win_get_buf(session.base_win) == session.base_bufnr
 end
 
+local function save_owned(token)
+	local s = token.session
+	return require("lazyvcs.state").get(token.buf) == s
+		and s.id == token.id
+		and s.editable_bufnr == token.buf
+		and s.editable_win == token.win
+		and s.base_win == token.base_win
+		and s.base_bufnr == token.base_buf
+		and valid_pair(s)
+end
+
+-- Changing diff/foldmethod can recompute folds in every diff window in the tab.
+-- winsaveview does not include which folds the user opened.
+local function capture_folds(win)
+	return vim.api.nvim_win_call(win, function()
+		local closed, line = {}, 1
+		while line <= vim.api.nvim_buf_line_count(0) do
+			local first = vim.fn.foldclosed(line)
+			if first == -1 then
+				line = line + 1
+			else
+				closed[#closed + 1] = first
+				line = vim.fn.foldclosedend(line) + 1
+			end
+		end
+		return closed
+	end)
+end
+
+local function restore_folds(win, closed)
+	vim.api.nvim_win_call(win, function()
+		local line = 1
+		while line <= vim.api.nvim_buf_line_count(0) do
+			if vim.fn.foldclosed(line) == -1 then
+				line = line + 1
+			else
+				vim.api.nvim_win_set_cursor(win, { line, 0 })
+				local last = vim.fn.foldclosedend(line)
+				vim.cmd("silent! noautocmd keepjumps normal! zO")
+				line = math.max(line + 1, last + 1)
+			end
+		end
+		for _, first in ipairs(closed) do
+			vim.api.nvim_win_set_cursor(win, { first, 0 })
+			vim.cmd("silent! noautocmd keepjumps normal! zc")
+		end
+	end)
+end
+
+function M.prepare_session_save(session, tokens)
+	if session.phase ~= "active" or session.readonly_comparison or not valid_pair(session) then
+		return
+	end
+	local token = {
+		session = session,
+		id = session.id,
+		win = session.editable_win,
+		buf = session.editable_bufnr,
+		base_win = session.base_win,
+		base_buf = session.base_bufnr,
+		windows = {},
+		views = {},
+		changedtick = vim.api.nvim_buf_get_changedtick(session.editable_bufnr),
+	}
+	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(session.tabpage)) do
+		local buf = vim.api.nvim_win_get_buf(win)
+		local diff = util.get_win_option(win, "diff")
+		if win == session.editable_win or win == session.base_win or diff then
+			token.views[win] = {
+				buf = buf,
+				view = vim.api.nvim_win_call(win, vim.fn.winsaveview),
+				folds = capture_folds(win),
+			}
+		end
+		if
+			win == session.editable_win
+			or (buf == session.editable_bufnr and diff and not (session.preexisting_diff_windows or {})[win])
+		then
+			token.windows[win] = {
+				options = capture_window_options(win),
+				winbar = util.get_win_option(win, "winbar"),
+			}
+		end
+	end
+	tokens[#tokens + 1] = token
+	session.phase = "saving"
+	for win, record in pairs(token.windows) do
+		for name, value in pairs(session.editable_window_options) do
+			if record.options[name] == session.editable_applied_options[name] then
+				util.set_win_option_noautocmd(win, name, value)
+			end
+		end
+		if session.editable_label and record.winbar == session.editable_label then
+			util.set_win_option_noautocmd(win, "winbar", session.editable_prev_winbar)
+		end
+		local user = highlighting.user_winhighlight(win)
+		local live = util.get_win_option(win, "winhighlight")
+		if user ~= live then
+			record.winhighlight, record.projected = live, user
+			util.set_win_option_noautocmd(win, "winhighlight", user)
+		end
+	end
+end
+
+function M.finish_session_save(token)
+	local session = token.session
+	if not save_owned(token) then
+		if session.phase == "saving" then
+			session.phase = "active"
+			require("lazyvcs.actions").resume_session_save(session)
+		end
+		return
+	end
+	local failure
+	local function restore(fn, ...)
+		local ok, err = pcall(fn, ...)
+		if not ok then
+			failure = failure or err
+		end
+	end
+	for win, record in pairs(token.windows) do
+		if util.win_is_valid(win) and vim.api.nvim_win_get_buf(win) == token.buf then
+			for name, value in pairs(record.options) do
+				restore(util.set_win_option_noautocmd, win, name, value)
+			end
+			restore(util.set_win_option_noautocmd, win, "winbar", record.winbar)
+			if record.winhighlight ~= nil and util.get_win_option(win, "winhighlight") == record.projected then
+				restore(util.set_win_option_noautocmd, win, "winhighlight", record.winhighlight)
+			end
+		end
+	end
+	restore(vim.api.nvim_win_call, token.win, function()
+		vim.cmd("silent! noautocmd diffupdate")
+	end)
+	for win, record in pairs(token.views) do
+		if util.win_is_valid(win) and vim.api.nvim_win_get_buf(win) == record.buf then
+			restore(restore_folds, win, record.folds)
+		end
+	end
+	for win, record in pairs(token.views) do
+		if util.win_is_valid(win) and vim.api.nvim_win_get_buf(win) == record.buf then
+			restore(vim.api.nvim_win_call, win, function()
+				vim.fn.winrestview(record.view)
+			end)
+		end
+	end
+	session.phase = "active"
+	if vim.api.nvim_buf_get_changedtick(session.editable_bufnr) ~= token.changedtick then
+		require("lazyvcs.actions").resume_session_save(session)
+	end
+	if failure then
+		error(failure)
+	end
+end
+
 function M.bind_pair(session, source_win)
-	if not valid_pair(session) then
+	if not valid_pair(session) or session.phase == "saving" then
 		return false
 	end
 	for _, win in ipairs({ session.editable_win, session.base_win }) do
@@ -297,6 +449,7 @@ function M.rebind(old, replacement)
 		"base_had_diff",
 		"base_window_options",
 		"base_prev_winbar",
+		"base_prev_winfixwidth",
 		"aerial_base_state",
 		"owned_editor_win",
 	}) do
@@ -336,13 +489,20 @@ end
 
 function M.open(session)
 	local current_win = vim.api.nvim_get_current_win()
-	local editable_win = vim.api.nvim_win_get_buf(current_win) == session.editable_bufnr and current_win
-		or vim.fn.bufwinid(session.editable_bufnr)
+	local editable_win = session.editable_win
+		or (
+			vim.api.nvim_win_get_buf(current_win) == session.editable_bufnr and current_win
+			or vim.fn.bufwinid(session.editable_bufnr)
+		)
 	if editable_win == -1 then
 		vim.cmd.buffer(session.editable_bufnr)
 		editable_win = vim.api.nvim_get_current_win()
 	end
 
+	assert(
+		util.win_is_valid(editable_win) and vim.api.nvim_win_get_buf(editable_win) == session.editable_bufnr,
+		"Editor destination changed while opening"
+	)
 	session.editable_win = editable_win
 	session.tabpage = vim.api.nvim_win_get_tabpage(editable_win)
 	session.preexisting_diff_windows = {}
@@ -364,8 +524,10 @@ function M.open(session)
 	vim.cmd("leftabove vsplit")
 	session.base_win = vim.api.nvim_get_current_win()
 	session.base_window_options = capture_window_options(session.base_win)
+	session.base_prev_winfixwidth = util.get_win_option(session.base_win, "winfixwidth")
 	session.base_prev_winbar = util.get_win_option(session.base_win, "winbar")
 	util.show_win_buffer(session.base_win, session.base_bufnr)
+	assert(valid_pair(session), "Comparison panes changed while opening")
 	session.base_had_diff = false
 
 	vim.cmd.wincmd("p")
@@ -521,18 +683,20 @@ function M.close(session, opts)
 	end
 
 	if util.win_is_valid(session.base_win) then
-		pcall(vim.api.nvim_win_call, session.base_win, function()
-			if not session.base_had_diff then
-				vim.cmd("silent diffoff")
-			end
-		end)
-		if session.opts.set_winbar then
+		local owns_buffer = vim.api.nvim_win_get_buf(session.base_win) == session.base_bufnr
+		if not session.base_had_diff then
+			util.diff_off(session.base_win)
+		end
+		if session.opts.set_winbar and util.get_win_option(session.base_win, "winbar") == session.base_label_winbar then
 			restore_winbar(session.base_win, session.base_prev_winbar)
 		end
-		if not pcall(vim.api.nvim_win_close, session.base_win, true) then
-			-- The base window survived -- it was the last one in the tab. It now
-			-- shows the user's own file, so put back everything we changed.
-			base_survived = true
+		if owns_buffer then
+			if not pcall(vim.api.nvim_win_close, session.base_win, true) then
+				base_survived = true
+			end
+		else
+			util.set_win_options(session.base_win, { scrollbind = false, cursorbind = false })
+			util.set_win_option(session.base_win, "winfixwidth", session.base_prev_winfixwidth or false)
 		end
 	end
 
@@ -547,7 +711,7 @@ function M.close(session, opts)
 
 	if base_survived and util.win_is_valid(session.base_win) then
 		restore_window_options(session.base_win, session.base_window_options)
-		util.set_win_option(session.base_win, "winfixwidth", false)
+		util.set_win_option(session.base_win, "winfixwidth", session.base_prev_winfixwidth or false)
 		if session.opts.set_winbar then
 			restore_winbar(session.base_win, session.base_prev_winbar)
 		end

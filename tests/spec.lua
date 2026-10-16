@@ -7150,6 +7150,8 @@ vim.list_extend(cases, require("spec_signs_base_changes")({ helpers = helpers, w
 vim.list_extend(cases, require("spec_signs_commits")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_signs_commands")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_signs_lifecycle")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_integrations_resession")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_integrations_editor")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_window_options")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_integrity")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_text")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))
