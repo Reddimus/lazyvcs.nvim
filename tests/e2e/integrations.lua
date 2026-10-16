@@ -184,11 +184,11 @@ local function run()
 	local live = snapshot(editor)
 	assert(tostring(live.winhighlight):find("LazyVcsSemanticHidden", 1, true), "fixture has no active semantic overlay")
 	assert(spec._.loaded, "lazy.nvim did not load Resession for the live diff")
-	-- This is the user's first require: save immediately, before LazyLoad can run.
+	-- The live diff already loaded Resession through lazy.nvim; save on the first explicit user call.
 	---@diagnostic disable-next-line: different-requires
 	require("resession").save(name .. "-first", { notify = false })
-	assert(vim.deep_equal(snapshot(editor), live), "first-require save changed live diff options")
-	print("PASS integration " .. backend .. " real Resession first-require save")
+	assert(vim.deep_equal(snapshot(editor), live), "first user save changed live diff options")
+	print("PASS integration " .. backend .. " real Resession first user save after live-diff load")
 	---@diagnostic disable-next-line: different-requires
 	local resession = require("resession")
 	local save, save_tab, save_all = resession.save, resession.save_tab, resession.save_all
@@ -243,12 +243,13 @@ local function run()
 		tostring(snapshot(readonly.editable_win).winhighlight):find("LazyVcsSemanticHidden", 1, true),
 		"readonly fixture has no semantic overlay"
 	)
+	local buf_filter = options.buf_filter or resession.default_buf_filter
 	for _, win in ipairs({ readonly.editable_win, readonly.base_win }) do
 		local buf = api.nvim_win_get_buf(win)
 		assert(vim.bo[buf].buftype == "nofile" and not vim.bo[buf].buflisted, "readonly pane is not scratch")
-		assert(not resession.default_buf_filter(buf), "default Resession filter accepts readonly pane")
+		assert(not buf_filter(buf), "configured Resession filter accepts readonly pane")
 	end
-	print("PASS integration " .. backend .. " readonly overlay panes rejected by default Resession filter")
+	print("PASS integration " .. backend .. " readonly overlay panes rejected by configured Resession filter")
 end
 
 local ok, err = xpcall(run, debug.traceback)

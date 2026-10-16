@@ -362,7 +362,7 @@ function M.prepare_session_save(session, tokens)
 		local user = highlighting.user_winhighlight(win)
 		local live = util.get_win_option(win, "winhighlight")
 		if user ~= live then
-			record.winhighlight = live
+			record.winhighlight, record.projected = live, user
 			util.set_win_option_noautocmd(win, "winhighlight", user)
 		end
 	end
@@ -390,7 +390,7 @@ function M.finish_session_save(token)
 				restore(util.set_win_option_noautocmd, win, name, value)
 			end
 			restore(util.set_win_option_noautocmd, win, "winbar", record.winbar)
-			if record.winhighlight ~= nil then
+			if record.winhighlight ~= nil and util.get_win_option(win, "winhighlight") == record.projected then
 				restore(util.set_win_option_noautocmd, win, "winhighlight", record.winhighlight)
 			end
 		end

@@ -391,6 +391,52 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_live_diff_resession_fallback_preserves_refreshed_overlay",
+			function()
+				local s = open(false)
+				local win = s.editable_win
+				local user, old = semantic_overlay(win)
+				local name = "@lsp.type.lazyvcs_resession_refresh"
+				cleanups[#cleanups + 1] = function()
+					api.nvim_set_hl(0, name, {})
+				end
+				api.nvim_set_hl(0, name, { fg = 0x00ff00 })
+				-- Queue a real highlighting refresh ahead of the interrupted save's fallback.
+				api.nvim_exec_autocmds("ColorScheme", {})
+				local refreshed
+				vim.schedule(function()
+					refreshed = util.get_win_option(win, "winhighlight")
+				end)
+				dispatch("pre_save")
+				equal(util.get_win_option(win, "winhighlight"), user, "save did not project user mappings")
+				ctx.wait_for(function()
+					return s.phase == "active"
+				end, "interrupted save was not resumed")
+				assert(refreshed ~= old and refreshed:find(name .. ":LazyVcsSemanticHidden", 1, true))
+				equal(util.get_win_option(win, "winhighlight"), refreshed, "fallback overwrote refreshed overlay")
+				util.set_win_option_noautocmd(win, "winhighlight", user)
+				require("lazyvcs.highlighting").refresh(win)
+				equal(util.get_win_option(win, "winhighlight"), refreshed, "fallback lost highlighting ownership")
+				require("lazyvcs.actions").close(s.editable_bufnr)
+				equal(util.get_win_option(win, "winhighlight"), user, "close lost user mappings")
+			end,
+		},
+		{
+			"test_live_diff_resession_cleared_highlight_is_not_enumerated_into_overlay",
+			function()
+				local s = open(false)
+				semantic_overlay(s.editable_win)
+				local name = "@lsp.type.lazyvcs_resession"
+				api.nvim_set_hl(0, name, {})
+				assert(vim.tbl_isempty(api.nvim_get_hl(0, {})[name]), "cleared group fixture is not enumerated")
+				require("lazyvcs.highlighting").refresh(s.editable_win)
+				local live = util.get_win_option(s.editable_win, "winhighlight")
+				---@cast live string
+				assert(not live:find(name .. ":LazyVcsSemanticHidden", 1, true), "overlay includes cleared group")
+				assert(live:find(name .. ":Comment", 1, true), "refresh lost user's semantic mapping")
+			end,
+		},
+		{
 			"test_live_diff_resession_preserves_slot_namespace_and_ownership",
 			function()
 				local user = "Normal:ErrorMsg"
