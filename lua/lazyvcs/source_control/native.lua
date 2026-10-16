@@ -1,9 +1,11 @@
 local config = require("lazyvcs.config")
 local compat = require("lazyvcs.compat")
+local display = require("lazyvcs.source_control.display")
 local jobs = require("lazyvcs.source_control.jobs")
 local model = require("lazyvcs.source_control.model")
 local ops = require("lazyvcs.source_control.ops")
 local persist = require("lazyvcs.source_control.persist")
+local remote_admission = require("lazyvcs.source_control.remote_refresh")
 local util = require("lazyvcs.util")
 
 local M = {}
@@ -30,6 +32,36 @@ end
 
 local function valid_buf(bufnr)
 	return bufnr and vim.api.nvim_buf_is_valid(bufnr)
+end
+
+local function owns_window(state)
+	return valid_win(state.winid) and valid_buf(state.bufnr) and vim.api.nvim_win_get_buf(state.winid) == state.bufnr
+end
+
+local function restore_window(state)
+	if not valid_win(state.winid) then
+		return
+	end
+	for name, value in pairs(state.lazyvcs_window_options or {}) do
+		if util.get_win_option(state.winid, name) == (state.lazyvcs_applied_options or {})[name] then
+			util.set_win_option(state.winid, name, value)
+		end
+	end
+	state.lazyvcs_window_options = nil
+	state.lazyvcs_applied_options = nil
+end
+
+local function safely(callback)
+	local ok, err = pcall(callback)
+	if not ok then
+		util.notify("Source-control callback failed: " .. tostring(err):gsub("[\r\n]+", " "), vim.log.levels.ERROR)
+	end
+end
+
+local function schedule(callback)
+	vim.schedule(function()
+		safely(callback)
+	end)
 end
 
 local function setup_highlights()
@@ -173,7 +205,7 @@ local function reset_for_path(state, path)
 		state.lazyvcs_invalidate_hydration(state, nil, "source path changed")
 	end
 	ops.cancel_commit_generations(state)
-	state.lazyvcs_repo_root = path
+	ops.cancel_diff_target(state, "source path changed")
 	reset_discovery(state)
 	state.lazyvcs_repo_cache = {}
 	state.lazyvcs_loading_details = {}
@@ -182,6 +214,7 @@ local function reset_for_path(state, path)
 	state.lazyvcs_hydration_pending = 0
 	state.lazyvcs_expanded = {}
 	persist.apply_state(state, path)
+	state.lazyvcs_repo_root = path
 end
 
 ---Begin asynchronous repository discovery if the state does not already know
@@ -258,10 +291,10 @@ local function right_meta(node, max_width)
 		return ""
 	end
 	if node.type == "repo_selector" then
-		return compose_right_meta(extra.path_label, extra.sync, extra.counts, max_width)
+		return compose_right_meta(display.label(extra.path_label), extra.sync, extra.counts, max_width)
 	end
 	if node.type == "repo_changes" then
-		return compose_right_meta(extra.branch, extra.sync, extra.counts, max_width)
+		return compose_right_meta(display.label(extra.branch), extra.sync, extra.counts, max_width)
 	end
 	if node.type == "commit_input" and extra.show_input_action_button then
 		return fit_right_text(extra.primary_label, max_width or 0, 4) or ""
@@ -278,9 +311,9 @@ local function display_name(node)
 		if node.extra and node.extra.focused then
 			prefix = "▸ "
 		end
-		return prefix .. node.name
+		return prefix .. display.label(node.name)
 	end
-	return node.name
+	return display.label(node.name)
 end
 
 local function highlight_for(node)
@@ -311,11 +344,11 @@ local function desired_line_width(node, depth)
 	if node.type == "root" and extra.hydration_active and (extra.hydration_pending or 0) > 0 then
 		meta = "󰑓"
 	elseif node.type == "repo_selector" then
-		local primary = extra.path_label or ""
+		local primary = display.label(extra.path_label)
 		local sync = extra.sync and extra.sync.text or ""
 		meta = vim.trim((primary .. " " .. sync):gsub("%s+", " "))
 	elseif node.type == "repo_changes" then
-		local primary = extra.branch or ""
+		local primary = display.label(extra.branch)
 		local sync = extra.sync and extra.sync.text or ""
 		meta = vim.trim((primary .. " " .. sync):gsub("%s+", " "))
 	elseif node.type == "commit_input" and extra.show_input_action_button then
@@ -348,11 +381,11 @@ local function line_for_node(node, depth, width)
 	if padding < 1 then
 		return left
 	end
-	return left .. string.rep(" ", padding) .. meta
+	return left .. string.rep(" ", padding) .. meta, #left + padding
 end
 
 local function capture_view(state)
-	if not valid_win(state.winid) then
+	if not owns_window(state) then
 		return nil
 	end
 	local ok, cursor = pcall(vim.api.nvim_win_get_cursor, state.winid)
@@ -385,7 +418,7 @@ local function line_for_node_id(state, node_id)
 end
 
 local function restore_view(state, saved)
-	if not saved or not valid_win(state.winid) then
+	if not saved or not owns_window(state) then
 		return
 	end
 	local current_win = vim.api.nvim_get_current_win()
@@ -435,8 +468,14 @@ local function add_line(state, lines, marks, node, depth, width)
 	local expanded = state.lazyvcs_expanded[node.id] == true
 	local has_children = #(node.children or {}) > 0
 	state.lazyvcs_longest_line_width = math.max(state.lazyvcs_longest_line_width or 0, desired_line_width(node, depth))
-	lines[#lines + 1] = line_for_node(node, depth, width)
-	marks[#lines] = { node = node, highlight = highlight_for(node) }
+	local line, meta_start = line_for_node(node, depth, width)
+	lines[#lines + 1] = line
+	marks[#lines] = {
+		node = node,
+		highlight = highlight_for(node),
+		meta_start = meta_start,
+		meta_highlight = node.extra and node.extra.sync and node.extra.sync.highlight,
+	}
 	if not has_children or not expanded then
 		return
 	end
@@ -446,7 +485,7 @@ local function add_line(state, lines, marks, node, depth, width)
 end
 
 local function sidebar_width(state)
-	if valid_win(state.winid) then
+	if owns_window(state) then
 		return vim.api.nvim_win_get_width(state.winid)
 	end
 	return config.get().source_control.width
@@ -465,7 +504,7 @@ local function auto_width_target(state)
 end
 
 local function maybe_apply_auto_width(state)
-	if not valid_win(state.winid) or not state.lazyvcs_auto_expand_width then
+	if not owns_window(state) or not state.lazyvcs_auto_expand_width then
 		return false
 	end
 	local target = auto_width_target(state)
@@ -487,37 +526,19 @@ end
 
 local function should_remote_refresh(state)
 	if state.lazyvcs_remote_refresh ~= nil then
-		if state.lazyvcs_remote_refresh then
-			state.lazyvcs_last_remote_refresh_at = state.lazyvcs_last_remote_refresh_at or {}
-			state.lazyvcs_last_remote_refresh_at[state.path] = vim.uv.now()
-		end
 		return state.lazyvcs_remote_refresh
 	end
-	local source_opts = config.get().source_control
-	if source_opts.remote_refresh ~= "on_open" then
-		return false
-	end
-
-	local now = vim.uv.now()
-	local interval = source_opts.remote_refresh_interval_ms
-	state.lazyvcs_last_remote_refresh_at = state.lazyvcs_last_remote_refresh_at or {}
-	local last = state.lazyvcs_last_remote_refresh_at[state.path]
-	if last and interval > 0 and now - last < interval then
-		return false
-	end
-	state.lazyvcs_last_remote_refresh_at[state.path] = now
-	return true
+	return config.get().source_control.remote_refresh == "on_open" and "auto" or false
 end
 
-local function repo_generation(state, repo_root)
-	state.lazyvcs_repo_generations = state.lazyvcs_repo_generations or {}
-	return state.lazyvcs_repo_generations[repo_root] or 0
+local function summary_generation(state, repo_root)
+	state.lazyvcs_summary_generations = state.lazyvcs_summary_generations or {}
+	return state.lazyvcs_summary_generations[repo_root] or 0
 end
 
-local function bump_repo_generation(state, repo_root)
-	state.lazyvcs_repo_generations = state.lazyvcs_repo_generations or {}
-	local generation = (state.lazyvcs_repo_generations[repo_root] or 0) + 1
-	state.lazyvcs_repo_generations[repo_root] = generation
+local function bump_summary_generation(state, repo_root)
+	local generation = summary_generation(state, repo_root) + 1
+	state.lazyvcs_summary_generations[repo_root] = generation
 	return generation
 end
 
@@ -546,7 +567,10 @@ invalidate_hydration = function(state, repo_root, reason)
 		end
 	end
 	for root in pairs(roots) do
-		bump_repo_generation(state, root)
+		bump_summary_generation(state, root)
+		-- Detail requests survive summary refreshes, but not repository invalidation.
+		state.lazyvcs_repo_generations = state.lazyvcs_repo_generations or {}
+		state.lazyvcs_repo_generations[root] = (state.lazyvcs_repo_generations[root] or 0) + 1
 		local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[root] or nil
 		if cached then
 			cached.loading_summary = false
@@ -568,8 +592,18 @@ local function start_summary_hydration(state, remote_refresh)
 	local queue = {}
 	for _, repo in ipairs(specs) do
 		local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[repo.root] or nil
-		if (remote_refresh or not (cached and cached.summary_loaded)) and not (cached and cached.loading_summary) then
-			queue[#queue + 1] = repo
+		if not (cached and cached.loading_summary) then
+			local refresh = remote_refresh == true
+			if remote_refresh == "auto" then
+				refresh = remote_admission.claim(
+					repo.root,
+					config.get().source_control.remote_refresh_interval_ms,
+					vim.uv.now()
+				)
+			end
+			if refresh or not (cached and cached.summary_loaded) then
+				queue[#queue + 1] = { repo = repo, remote_refresh = refresh }
+			end
 		end
 	end
 	if #queue == 0 then
@@ -579,7 +613,8 @@ local function start_summary_hydration(state, remote_refresh)
 
 	state.lazyvcs_hydration_generation = (state.lazyvcs_hydration_generation or 0) + 1
 	state.lazyvcs_repo_cache = state.lazyvcs_repo_cache or {}
-	for _, repo in ipairs(queue) do
+	for _, item in ipairs(queue) do
+		local repo = item.repo
 		local previous = state.lazyvcs_repo_cache[repo.root] or {}
 		state.lazyvcs_repo_cache[repo.root] = vim.tbl_extend("force", model.make_placeholder(repo, previous), {
 			loading_summary = true,
@@ -590,9 +625,10 @@ local function start_summary_hydration(state, remote_refresh)
 	M.render(state)
 
 	local bg = config.get().source_control.background
-	for _, repo in ipairs(queue) do
-		local current_repo = repo
-		local generation = bump_repo_generation(state, current_repo.root)
+	for _, item in ipairs(queue) do
+		local current_repo = item.repo
+		local remote_refresh = item.remote_refresh
+		local generation = bump_summary_generation(state, current_repo.root)
 		local previous = state.lazyvcs_repo_cache[current_repo.root] or nil
 		model.load_repo_summary_async(current_repo, {
 			previous = previous or {},
@@ -607,12 +643,14 @@ local function start_summary_hydration(state, remote_refresh)
 				priority = remote_refresh and -10 or 0,
 			}, on_done)
 		end, function(summary, err)
-			if repo_generation(state, current_repo.root) ~= generation then
+			if summary_generation(state, current_repo.root) ~= generation then
 				return
 			end
 			local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[current_repo.root] or nil
-			state.lazyvcs_repo_cache[current_repo.root] = summary
-				or model.make_error(current_repo, cached, err, { remote_refresh = remote_refresh })
+			state.lazyvcs_repo_cache[current_repo.root] = model.merge_summary(
+				cached,
+				summary or model.make_error(current_repo, cached, err, { remote_refresh = remote_refresh })
+			)
 			update_hydration_counts(state)
 			M.schedule_render(state)
 		end)
@@ -620,7 +658,7 @@ local function start_summary_hydration(state, remote_refresh)
 end
 
 local function current_node(state)
-	if not valid_win(state.winid) then
+	if not owns_window(state) then
 		return nil
 	end
 	local lnum = vim.api.nvim_win_get_cursor(state.winid)[1]
@@ -643,7 +681,7 @@ local function toggle_node(state)
 end
 
 local function rebalance_tab_later(state)
-	vim.schedule(function()
+	schedule(function()
 		local ok, actions = pcall(require, "lazyvcs.actions")
 		if ok and actions.rebalance_tab then
 			pcall(actions.rebalance_tab, state.tabid or vim.api.nvim_get_current_tabpage())
@@ -652,7 +690,7 @@ local function rebalance_tab_later(state)
 end
 
 local function toggle_auto_expand_width(state)
-	if not valid_win(state.winid) then
+	if not owns_window(state) then
 		return
 	end
 	if state.lazyvcs_auto_expand_width then
@@ -682,6 +720,24 @@ local function setup_buffer(state)
 	vim.bo[bufnr].swapfile = false
 	vim.bo[bufnr].modifiable = false
 	vim.bo[bufnr].filetype = "lazyvcs-source-control"
+
+	vim.api.nvim_create_autocmd("BufWinLeave", {
+		buffer = bufnr,
+		callback = function()
+			ops.cancel_diff_target(state, "sidebar hidden")
+			local win = state.winid
+			schedule(function()
+				local ok, err = pcall(function()
+					if state.winid == win and not owns_window(state) then
+						restore_window(state)
+					end
+				end)
+				if not ok then
+					util.notify(tostring(err):gsub("[\r\n]+", " "), vim.log.levels.WARN)
+				end
+			end)
+		end,
+	})
 
 	bind(bufnr, "q", function()
 		M.close()
@@ -768,12 +824,14 @@ end
 
 local function ensure_window(state, opts)
 	opts = opts or {}
-	if valid_win(state.winid) and valid_buf(state.bufnr) then
+	if owns_window(state) then
 		if opts.focus ~= false then
 			vim.api.nvim_set_current_win(state.winid)
 		end
 		return
 	end
+	restore_window(state)
+	ops.cancel_diff_target(state, "sidebar replaced")
 	local current = vim.api.nvim_get_current_win()
 	state.editor_winid = current
 	local source_opts = config.get().source_control
@@ -785,6 +843,18 @@ local function ensure_window(state, opts)
 		setup_buffer(state)
 	end
 	util.show_win_buffer(state.winid, state.bufnr)
+	local names = {
+		"number",
+		"relativenumber",
+		"signcolumn",
+		"foldcolumn",
+		"wrap",
+		"cursorline",
+		"winfixwidth",
+		"scrollbind",
+		"cursorbind",
+	}
+	state.lazyvcs_window_options = util.capture_win_options(state.winid, names)
 	util.unbind_window(state.winid)
 	util.set_win_option(state.winid, "number", false)
 	util.set_win_option(state.winid, "relativenumber", false)
@@ -793,6 +863,7 @@ local function ensure_window(state, opts)
 	util.set_win_option(state.winid, "wrap", false)
 	util.set_win_option(state.winid, "cursorline", true)
 	util.set_win_option(state.winid, "winfixwidth", true)
+	state.lazyvcs_applied_options = util.capture_win_options(state.winid, names)
 	if opts.focus == false and valid_win(current) then
 		vim.api.nvim_set_current_win(current)
 	end
@@ -803,7 +874,7 @@ function M.schedule_render(state)
 		return
 	end
 	state.lazyvcs_render_pending = true
-	vim.schedule(function()
+	schedule(function()
 		state.lazyvcs_render_pending = false
 		if states[state.tabid] == state and valid_buf(state.bufnr) then
 			M.render(state)
@@ -811,7 +882,7 @@ function M.schedule_render(state)
 	end)
 end
 
-function M.render(state)
+local function render(state)
 	state = state or states[tabid()]
 	if not state or not valid_buf(state.bufnr) then
 		return
@@ -832,23 +903,45 @@ function M.render(state)
 	if maybe_apply_auto_width(state) then
 		lines, marks = build_lines(state, root)
 	end
-	state.lazyvcs_line_nodes = {}
+	local nodes = {}
 	for index, mark in ipairs(marks) do
-		state.lazyvcs_line_nodes[index] = mark.node
+		nodes[index] = mark.node
 	end
 
 	vim.bo[state.bufnr].modifiable = true
 	vim.api.nvim_buf_set_lines(state.bufnr, 0, -1, false, lines)
 	vim.bo[state.bufnr].modifiable = false
+	state.lazyvcs_line_nodes = nodes
 	vim.api.nvim_buf_clear_namespace(state.bufnr, ns, 0, -1)
 	for index, mark in ipairs(marks) do
 		vim.api.nvim_buf_set_extmark(state.bufnr, ns, index - 1, 0, {
 			end_row = index,
 			hl_group = mark.highlight,
 			hl_eol = true,
+			priority = 100,
 		})
+		if mark.meta_start and mark.meta_highlight then
+			vim.api.nvim_buf_set_extmark(state.bufnr, ns, index - 1, mark.meta_start, {
+				end_col = #lines[index],
+				hl_group = mark.meta_highlight,
+				priority = 110,
+			})
+		end
 	end
 	restore_view(state, saved_view)
+end
+
+function M.render(state)
+	state = state or states[tabid()]
+	local ok, err = pcall(render, state)
+	if state and valid_buf(state.bufnr) then
+		vim.bo[state.bufnr].modifiable = false
+	end
+	if not ok then
+		util.notify("Could not render source control: " .. tostring(err):gsub("[\r\n]+", " "), vim.log.levels.ERROR)
+		return false
+	end
+	return true
 end
 
 function M.navigate(state)
@@ -880,7 +973,10 @@ local function prepare_state(path)
 	state.lazyvcs_render = M.navigate
 	state.lazyvcs_invalidate_hydration = invalidate_hydration
 	state.lazyvcs_window_exists = function(current)
-		return valid_win(current.winid)
+		return owns_window(current)
+	end
+	state.lazyvcs_target_owner_valid = function(current)
+		return states[current.tabid] == current and not current.lazyvcs_tearing_down and owns_window(current)
 	end
 	state.lazyvcs_get_node = current_node
 	state.lazyvcs_open_file = function(_, path_to_open)
@@ -926,6 +1022,7 @@ end
 
 local function cancel_state_jobs(state)
 	ops.cancel_commit_generations(state)
+	ops.cancel_diff_target(state, "owner closed")
 	invalidate_hydration(state, nil, "owner closed")
 	if state.lazyvcs_discovery_handle and type(state.lazyvcs_discovery_handle.kill) == "function" then
 		pcall(state.lazyvcs_discovery_handle.kill, state.lazyvcs_discovery_handle, 15)
@@ -946,7 +1043,7 @@ local function teardown_state(state, opts)
 		pcall(vim.api.nvim_del_augroup_by_id, state.augroup)
 		state.augroup = nil
 	end
-	if opts.close_window and valid_win(state.winid) then
+	if opts.close_window and owns_window(state) then
 		if #vim.api.nvim_tabpage_list_wins(state.tabid) == 1 then
 			pcall(vim.api.nvim_win_call, state.winid, function()
 				util.editor_window(state.winid)
@@ -956,6 +1053,7 @@ local function teardown_state(state, opts)
 			pcall(vim.api.nvim_win_close, state.winid, true)
 		end
 	end
+	restore_window(state)
 	state.winid = nil
 	if valid_buf(state.bufnr) then
 		pcall(vim.api.nvim_buf_delete, state.bufnr, { force = true })
@@ -980,7 +1078,7 @@ function M.toggle(opts)
 		return compare.source_control("toggle", opts)
 	end
 	local state = states[tabid()]
-	if state and valid_win(state.winid) then
+	if state and owns_window(state) then
 		M.close()
 		return
 	end
@@ -997,7 +1095,7 @@ function M.refresh(remote_refresh)
 		return M.open()
 	end
 	invalidate_hydration(state, nil, "source refreshed")
-	state.lazyvcs_repo_cache = {}
+	state.lazyvcs_repo_cache = model.refresh_cache(state.lazyvcs_repo_cache)
 	state.lazyvcs_loading_details = {}
 	state.lazyvcs_remote_refresh = remote_refresh ~= false
 	persist.save_state(state)
@@ -1034,13 +1132,8 @@ function M.cancel(path)
 				repo.loading_details = false
 			end
 		end
-		if state.lazyvcs_diff_target_task and not normalized then
-			local cancel = state.lazyvcs_diff_target_task.cancel or state.lazyvcs_diff_target_task.kill
-			if type(cancel) == "function" then
-				pcall(cancel, state.lazyvcs_diff_target_task)
-			end
-			state.lazyvcs_diff_target_task = nil
-			state.lazyvcs_diff_target_generation = (state.lazyvcs_diff_target_generation or 0) + 1
+		if not normalized or state.lazyvcs_diff_target_root == normalized then
+			ops.cancel_diff_target(state, "user")
 		end
 		M.navigate(state)
 	end
@@ -1129,7 +1222,7 @@ end
 
 function M.comparison_context()
 	local state = states[tabid()]
-	if not state or vim.api.nvim_get_current_win() ~= state.winid then
+	if not state or not owns_window(state) or vim.api.nvim_get_current_win() ~= state.winid then
 		return nil
 	end
 	local node = current_node(state)
@@ -1164,7 +1257,7 @@ local function setup_lifecycle()
 	vim.api.nvim_create_autocmd("TabClosed", {
 		group = lifecycle_augroup,
 		callback = function()
-			vim.schedule(function()
+			schedule(function()
 				local snapshot = {}
 				for _, state in pairs(states) do
 					snapshot[#snapshot + 1] = state
@@ -1181,7 +1274,7 @@ local function setup_lifecycle()
 		group = lifecycle_augroup,
 		callback = function(args)
 			local closed_win = tonumber(args.match)
-			vim.schedule(function()
+			schedule(function()
 				for _, state in pairs(states) do
 					if state.winid == closed_win and not valid_win(state.winid) then
 						teardown_state(state)
@@ -1193,10 +1286,12 @@ local function setup_lifecycle()
 	vim.api.nvim_create_autocmd("VimLeavePre", {
 		group = lifecycle_augroup,
 		callback = function()
-			for _, state in pairs(states) do
-				persist.save_state(state)
-				cancel_state_jobs(state)
-			end
+			safely(function()
+				for _, state in pairs(states) do
+					persist.save_state(state)
+					cancel_state_jobs(state)
+				end
+			end)
 		end,
 	})
 end

@@ -43,7 +43,13 @@ function M.write(path, value)
 		return nil, "Could not encode persisted LazyVCS state"
 	end
 
-	vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+	local parent = vim.fn.fnamemodify(path, ":h")
+	local made, mkdir_err = pcall(vim.fn.mkdir, parent, "p")
+	local stat = vim.uv.fs_stat(parent)
+	if not made or not stat or stat.type ~= "directory" then
+		local err = not made and mkdir_err or ("Could not create state directory: " .. parent)
+		return nil, (tostring(err):gsub("[\r\n]+", " "))
+	end
 	local suffix = string.format(".tmp.%d.%d", vim.fn.getpid(), vim.uv.hrtime())
 	local tmp = path .. suffix
 	local fd, open_err = vim.uv.fs_open(tmp, "w", 384)

@@ -307,16 +307,27 @@ Open the sidebar with:
 
 Behavior:
 
-- Scans the current root for nested Git and SVN repos.
+- Includes the enclosing working copy and scans for nested Git and SVN repos.
 - Supports broad workspace roots such as `~/src`.
 - Disambiguates duplicate repo names with relative path labels.
 - Shows `Repositories` and `Changes`.
-- Hydrates repo status in background jobs.
+- Hydrates repo status in background jobs. Automatic remote attempts share
+  the configured interval across tabs, close/reopen, and aliases of a repository.
+  Up to 512 unexpired intervals are retained. When full, new roots use local
+  status until an interval expires. Explicit `R` always permits a remote attempt.
 - Keeps other repos usable while one repo syncs, updates, commits, or switches.
-- Keeps cached repo badges visible during refresh.
-- Supports Git fetch/pull/push/sync and SVN update/switch.
+- Keeps cached repo badges visible during refresh. Summary completion preserves
+  details loaded while the refresh was pending. SVN incoming rows remain
+  available during local detail loading; a successful remote refresh replaces
+  them, and a failed remote refresh retains them with an error indicator.
+- Supports Git fetch/pull/push/sync and SVN update/switch. Directory externals
+  own their status in separately discovered working copies. Parent status
+  excludes their contents. An SVN commit that creates no revision keeps its
+  commit-message draft.
 - Publishes no-upstream Git branches with upstream tracking. Push uses the
   configured upstream remote and destination ref, including local upstreams.
+- Keeps repositories with a deleted upstream visible with an `Upstream gone`
+  warning. Refresh does not change tracking or republish the branch.
 - Uses origin for publishing, or the only configured remote when origin is
   absent.
 - Pull and Sync recheck the branch after fetching and when a queued mutation
@@ -337,7 +348,24 @@ Behavior:
 - Generated SVN switch targets are literal URLs, including @ characters. Manual
   Switch URL input accepts SVN URL@PEG syntax. End a literal URL containing @
   with another @ to select the URL without a peg revision.
-- Opens changed files in the live diff view.
+- Opens changed files in the live diff view. Git submodule rows open a
+  read-only commit patch for the selected staged or unstaged section. The patch
+  includes commit IDs even when submodule objects are unavailable.
+- Cancels pending file previews when their sidebar closes, moves to another
+  project, or is replaced by another buffer. Delayed opens use their original
+  editor window and preserve focus after a tab switch.
+- Reopening a displaced sidebar creates a split and preserves the ordinary file.
+- Escapes control characters in labels. Actions use raw paths.
+- Tree leaves show basenames, with the original path as rename context.
+- Sort (`S`) and clean visibility (`H`) update the current rows without
+  reloading status or discarding known incoming changes.
+
+Sidebar preferences are stored per project in
+`stdpath('state')/lazyvcs/source_control/<sha256(normalized-root)>.json`.
+The legacy `lazyvcs/source_control.json` is read when no project file exists.
+Saving migrates only that project and leaves the legacy file unchanged.
+Different projects save independently. Concurrent saves of the same project
+use the last completed write. Invalid preference fields are ignored.
 
 Git and SVN commits read messages from private temporary files, which are deleted
 when the commit process exits. Message length does not consume process argument

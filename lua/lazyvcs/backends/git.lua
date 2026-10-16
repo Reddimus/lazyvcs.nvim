@@ -550,7 +550,16 @@ function M.resolve_diff_target(target)
 		status = status,
 	}
 
-	if section == "merge" or change_kind == "conflict" then
+	if target.gitlink then
+		comparison.kind = "git_submodule"
+		comparison.left = empty_side()
+		comparison.left.label = section == "staged" and "HEAD" or "INDEX"
+		comparison.right = {
+			label = section == "staged" and "INDEX PATCH" or "WORKTREE PATCH",
+			modifiable = false,
+			source = { kind = "git_submodule_patch", section = section },
+		}
+	elseif section == "merge" or change_kind == "conflict" then
 		comparison.kind = "git_conflict"
 		comparison.base = git_side("BASE", ":1:" .. relpath, true)
 		comparison.ours = git_side("OURS", ":2:" .. relpath, true)
@@ -653,6 +662,25 @@ function M.load_diff_target_async(target, on_done, opts)
 		local source = side.source or {}
 		if source.kind == "empty" then
 			side.lines = {}
+		elseif source.kind == "git_submodule_patch" then
+			pending = pending + 1
+			local args = { "git", "diff", "--no-ext-diff", "--no-color", "--submodule=short", "--full-index" }
+			if source.section == "staged" then
+				args[#args + 1] = "--cached"
+			end
+			vim.list_extend(args, { "--", comparison.relpath })
+			task:add(process.lines(args, {
+				cwd = comparison.root,
+				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+			}, function(lines, err)
+				pending = pending - 1
+				if not lines then
+					failed = true
+					return task:finish(nil, err)
+				end
+				side.lines = lines
+				complete()
+			end))
 		elseif source.kind == "git_object" then
 			pending = pending + 1
 			local raw_side = comparison.editable_side == "right" and side == comparison.left
