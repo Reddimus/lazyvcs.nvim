@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Switch Git branches that share names with tags and retain real refs ending in
+  `/HEAD`. Report incomplete target lists and release loading state on close.
+- Switch generated SVN targets containing literal `@` characters while
+  preserving manual peg syntax.
+- Fix Codex commit-message generation failing when `exec` rejects the approval
+  option.
+- Preserve submitted and newer AI commit drafts, and cancel superseded
+  generation on sidebar close, path changes, or repository cancellation.
+- Make confirmation controls work after Insert-mode `<C-o>` commands.
+- Commit long Git and SVN messages through private temporary files instead of
+  process arguments.
+- Collect SVN status context from paths containing `@`, report failed context
+  commands, and schedule AI context commands within repository worker limits.
+
 ## [0.11.2] - 2026-10-16
 
 ### Fixed

@@ -33,6 +33,7 @@ local function popup_size(prompt)
 end
 
 function M.open(opts, on_choice)
+	vim.cmd("stopinsert")
 	opts = opts or {}
 	local prompt = opts.prompt or "Confirm action?"
 	local previous_win = vim.api.nvim_get_current_win()

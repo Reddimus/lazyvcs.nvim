@@ -186,13 +186,17 @@ local function parse_git_ref_records(raw)
 	local refs = {}
 	for _, record in ipairs(util.split_lines(raw or "")) do
 		local fields = vim.split(record, FIELD_SEP, { plain = true, trimempty = false })
-		if #fields >= 10 then
+		if #fields >= 12 then
 			local refname = fields[1]
 			local short = fields[2]
-			if short ~= "" and not short:match("/HEAD$") then
+			local symbolic_head = refname:match("^refs/remotes/.+/HEAD$") and fields[12] ~= ""
+			if short ~= "" and not symbolic_head then
 				refs[#refs + 1] = {
 					refname = refname,
 					short = short,
+					branch_name = refname:match("^refs/heads/(.+)$"),
+					symref = fields[12],
+					upstream_ref = fields[11],
 					ref_kind = git_ref_kind(refname),
 					short_hash = fields[3],
 					relative_date = fields[4],
@@ -429,7 +433,9 @@ function M.collect_async(repo, run_command, on_done, opts)
 						.. "%00%(subject)"
 						.. "%00%(upstream:short)"
 						.. "%00%(upstream:track)"
-						.. "%00%(HEAD)",
+						.. "%00%(HEAD)"
+						.. "%00%(upstream)"
+						.. "%00%(symref)",
 					"refs/heads",
 					"refs/remotes",
 					"refs/tags",
@@ -437,14 +443,17 @@ function M.collect_async(repo, run_command, on_done, opts)
 					if not result then
 						return finish(nil, err)
 					end
+					if result.stdout_truncated then
+						return finish(nil, "Switch targets exceeded the output limit; use Git directly to select a ref")
+					end
 					local refs = parse_git_ref_records(result.stdout)
 					local locals_by_name = {}
 					local locals_by_upstream = {}
 					for _, ref in ipairs(refs) do
 						if ref.ref_kind == "local_branch" then
-							locals_by_name[ref.short] = ref
-							if ref.upstream and ref.upstream ~= "" then
-								locals_by_upstream[ref.upstream] = ref
+							locals_by_name[ref.branch_name] = ref
+							if ref.upstream_ref and ref.upstream_ref ~= "" then
+								locals_by_upstream[ref.upstream_ref] = ref
 							end
 						end
 					end
@@ -683,19 +692,19 @@ end
 
 local function git_checkout(repo, item, context, opts)
 	if item.ref_kind == "local_branch" then
-		if context.head.current_branch == item.short then
+		if context.head.current_branch == item.branch_name then
 			return opts.notify(item.short .. " is already checked out", vim.log.levels.INFO)
 		end
-		return perform(repo, item, opts, { "git", "switch", item.short })
+		return perform(repo, item, opts, { "git", "switch", "--", item.branch_name })
 	end
 
 	if item.ref_kind == "remote_branch" then
-		local existing = context.locals_by_upstream[item.short]
+		local existing = context.locals_by_upstream[item.refname]
 		if existing then
-			if context.head.current_branch == existing.short then
+			if context.head.current_branch == existing.branch_name then
 				return opts.notify(existing.short .. " is already checked out", vim.log.levels.INFO)
 			end
-			return perform(repo, existing, opts, { "git", "switch", existing.short })
+			return perform(repo, existing, opts, { "git", "switch", "--", existing.branch_name })
 		end
 
 		local tail = item.short:match("^[^/]+/(.+)$") or item.short
@@ -826,12 +835,28 @@ local function execute_svn(repo, context, choice, opts)
 	if choice.target_url == current_url then
 		return opts.notify(choice.label .. " is already checked out", vim.log.levels.INFO)
 	end
-	return perform(repo, choice, opts, { "svn", "switch", "--ignore-ancestry", choice.target_url, repo.root })
+	return perform(
+		repo,
+		choice,
+		opts,
+		{ "svn", "switch", "--ignore-ancestry", util.svn_target(choice.target_url), repo.root }
+	)
 end
 
 function M.open_async(repo, opts, run_command)
 	opts = async_defaults(opts)
-	return M.collect_async(repo, run_command, function(context, err)
+	local finalized = false
+	local function finalize()
+		if finalized then
+			return
+		end
+		finalized = true
+		if opts.on_complete then
+			opts.on_complete()
+		end
+	end
+	local task = M.collect_async(repo, run_command, function(context, err)
+		finalize()
 		-- Cancellation invokes callbacks synchronously and the SVN chain can continue. Recheck
 		-- liveness before showing a picker or error during teardown.
 		if opts.is_stale and opts.is_stale() then
@@ -876,6 +901,8 @@ function M.open_async(repo, opts, run_command)
 		timeout_ms = opts.timeout_ms or SWITCH_TIMEOUT_MS,
 		cancel_id = opts.cancel_id,
 	})
+	task:on_cancel(finalize)
+	return task
 end
 
 function M._test_git_picker_items(context, opts)

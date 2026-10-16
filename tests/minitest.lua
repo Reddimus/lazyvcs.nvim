@@ -21,6 +21,7 @@ MiniTest.run({
 				repo_root .. "/tests/minitest_native_sidebar.lua",
 				repo_root .. "/tests/minitest_compare.lua",
 				repo_root .. "/tests/minitest_live_diff.lua",
+				repo_root .. "/tests/minitest_confirm.lua",
 			}
 		end,
 	},
