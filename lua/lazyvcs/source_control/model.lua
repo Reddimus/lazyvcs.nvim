@@ -3,6 +3,7 @@ local runtime_state = require("lazyvcs.state")
 local util = require("lazyvcs.util")
 local Task = require("lazyvcs.backends.task")
 local svn_xml = require("lazyvcs.backends.xml")
+local remote_snapshots = require("lazyvcs.source_control.remote_refresh")
 
 ---@class lazyvcs.RepositoryStatus
 ---@field root string
@@ -16,6 +17,9 @@ local svn_xml = require("lazyvcs.backends.xml")
 ---@field loading_summary? boolean
 ---@field loading_details? boolean
 ---@field remote_snapshot? table[]
+---@field remote_local? {items: table[], version: number}
+---@field remote_unknown? boolean
+---@field remote_version? integer
 ---@field error? string
 ---@field remote_error? string
 ---@field detail_error? string
@@ -151,6 +155,8 @@ local function placeholder_status(repo, previous)
 		unborn = previous and previous.unborn or false,
 		upstream_gone = previous and previous.upstream_gone or false,
 		remote_snapshot = previous and previous.remote_snapshot or nil,
+		remote_local = previous and previous.remote_local or nil,
+		remote_unknown = previous and previous.remote_unknown or false,
 		remote_error = previous and previous.remote_error or nil,
 		sections = previous and previous.sections or {},
 		counts = make_counts(previous),
@@ -1006,6 +1012,9 @@ function M.merge_summary(current, summary)
 	for _, field in ipairs({ "branch", "upstream", "upstream_gone", "detached", "unborn", "sync" }) do
 		result[field] = summary[field]
 	end
+	-- The live cache may have replaced or invalidated the summary's private snapshot.
+	result.remote_local = current.remote_local
+	result.remote_unknown = current.remote_unknown
 	if current.details_loaded then
 		result.sections = current.sections
 		result.details_loaded = true
@@ -1044,14 +1053,39 @@ function M.merge_details(current, detail)
 	return compose_status(result)
 end
 
+---Compose current shared incoming metadata without changing local loading flags.
+function M.with_remote_snapshot(status, snapshot, unknown)
+	if status.vcs ~= "svn" then
+		return status
+	end
+	status = vim.tbl_extend("force", {}, status)
+	snapshot = snapshot or status.remote_local
+	status.remote_snapshot = snapshot and snapshot.items or nil
+	status.remote_version = snapshot and snapshot.version or nil
+	status.remote_unknown = not snapshot
+		and (
+			remote_snapshots.is_dropped(status.root)
+			or unknown == true
+			or unknown == nil and status.remote_unknown == true
+		)
+	status.counts = vim.tbl_extend("force", status.counts, { remote = snapshot and #snapshot.items or 0 })
+	status = compose_status(status)
+	if status.remote_unknown and status.sync.status == "synced" then
+		status.sync = sync_badge("?", "unknown", "Comment")
+	end
+	return status
+end
+
 ---Retain incoming metadata while manual refresh reloads local details.
 function M.refresh_cache(cache)
 	local retained = {}
 	for root, status in pairs(cache or {}) do
-		if status.vcs == "svn" and status.remote_snapshot then
+		if status.vcs == "svn" and (status.remote_snapshot or status.remote_unknown) then
 			retained[root] = placeholder_status(status, {
 				remote_snapshot = status.remote_snapshot,
-				counts = { remote = #status.remote_snapshot },
+				remote_local = status.remote_local,
+				remote_unknown = status.remote_unknown,
+				counts = { remote = status.remote_snapshot and #status.remote_snapshot or 0 },
 			})
 		end
 	end
@@ -1313,6 +1347,7 @@ local function repo_visible(repo, show_clean)
 		return true
 	end
 	return repo.sync.status == "error"
+		or repo.sync.status == "unknown"
 		or repo.sync.status == "incoming"
 		or repo.sync.status == "outgoing"
 		or repo.sync.status == "diverged"

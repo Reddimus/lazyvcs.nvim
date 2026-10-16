@@ -34,7 +34,7 @@ return function(ctx)
 			setup(context)
 			require("lazyvcs.config").get().source_control.background.git_workers = 1
 			require("lazyvcs.config").get().source_control.background.svn_workers = 1
-			local started, requests, owner, callbacks = {}, {}, {}, 0
+			local started, requests, owner, callbacks, cancellations = {}, {}, {}, 0, 0
 			local repo = { root = h.tempdir(), vcs = vcs }
 			---@diagnostic disable-next-line: duplicate-set-field
 			util.system_start = function(args, _, done)
@@ -50,11 +50,24 @@ return function(ctx)
 				for _ = 1, 6 do
 					requests[#requests + 1] = ai.generate(repo, function()
 						callbacks = callbacks + 1
-					end, { owner = owner })
+					end, {
+						owner = owner,
+						on_cancel = function()
+							cancellations = cancellations + 1
+						end,
+					})
 				end
 				assert(#started == 1, "AI context bypassed scheduler worker limit: " .. #started)
-				assert(jobs.cancel_owner(owner) == 6, "context commands lack repository ownership")
-				assert(callbacks == 6, "cancelled context requests did not complete")
+				assert(jobs.cancel_owner(owner) == 0, "sidebar owner cancelled independent context jobs")
+				assert(#started == 1, "owner cancellation disturbed the context queue")
+				assert(
+					require("lazyvcs.source_control.ops").cancel(repo.root, { owner = owner }) == 6,
+					"repository cancellation missed context requests"
+				)
+				assert(
+					callbacks == 0 and cancellations == 6,
+					"context cancellation delivered results or missed cancellation hooks"
+				)
 			end, debug.traceback)
 			for _, request in ipairs(requests) do
 				request:cancel()

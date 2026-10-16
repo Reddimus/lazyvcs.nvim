@@ -134,7 +134,11 @@ the GitHub release.
   local rows and counts. Merge each completion into the current repository
   generation without clearing the other request's loading flag. Manual refresh
   retains SVN incoming metadata until a successful replacement; mutations and
-  project changes discard it.
+  project changes discard it. Shared SVN incoming snapshots live in
+  `source_control/remote_refresh.lua`, independently of sidebar lifetimes and
+  admission deadlines. Version tokens reject superseded or invalidated results.
+  Retention is bounded to 512 roots and 4 MiB; copying costs O(incoming bytes).
+  One native listener updates active states at publication and invalidation.
 - Sidebar window ownership requires the window to display its sidebar buffer.
   Pending opens capture the originating editor and buffer, and reject replaced
   owners or destinations. `editor_target.lua` shares destination eligibility and
@@ -176,6 +180,20 @@ the GitHub release.
   draft revisions reject superseded responses. Context commands use the
   scheduler; repository cancellation also stops provider requests after context
   collection.
+- `source_control/ai_requests.lua` registers every AI request by canonical root
+  and owner through privacy confirmation, context collection, and provider
+  settlement. Release registrations before callbacks; cancellation detaches
+  matches before invoking hooks. Registration and release cost O(1).
+  Cancellation visits active requests. Popup generations also guard replacement
+  confirmations.
+- `source_control/copilotchat_transport.lua` owns request-scoped Plenary Jobs.
+  Its idempotent CopilotChat get/post wrappers hand coroutine ownership to
+  Plenary through a one-shot pending scope. The request wrapper consumes it
+  before starting the Job. Callback-form delegation clears the handoff even when
+  a leaf fails before reaching curl. Cancellation marks the scope terminal
+  before signalling children and shutting down Jobs, including late requests.
+  Self-authored offline fixtures model async leaves and run local children; no
+  third-party plugin source is included.
 - `blame_context.lua` captures source identity and changedtick for blame
   requests.
 - `blame_selection.lua` presents selected-line reports through a cancellable

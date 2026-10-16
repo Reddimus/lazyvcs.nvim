@@ -26,6 +26,11 @@ and this project adheres to
 - Update wrapped diff padding after wrap and break option changes, including
   global showbreak, and clear it when wrapping stops.
 - Avoid repeated fold scans when Resession saves several live diffs in one tab.
+- Keep expanded sidebar rows visible when editor folding is enabled.
+- Honor the initial sidebar width beside fixed-width windows.
+- Retain known SVN incoming changes across sidebar reopening and tabs.
+- Cancel AI generation in commit inputs with repository work and allow retry.
+- Stop CopilotChat transport processes on cancellation and timeout.
 
 ## [0.11.3] - 2026-10-16
 

@@ -98,29 +98,33 @@ function M.open_text(opts, on_submit)
 		owner:finish(line_value(bufnr))
 	end
 
-	local function apply_generated(message)
-		if not owner:is_live() then
+	local function apply_generated(message, current_generation)
+		if not owner:is_live() or current_generation ~= generation then
 			return
 		end
 		local current = util.trim(line_value(bufnr))
 		if current ~= "" then
-			vim.ui.select({ "Replace current message", "Keep current message" }, {
-				prompt = "Generated message is ready",
-			}, function(choice)
-				if choice == "Replace current message" then
-					if not owner:is_live() then
-						return
+			vim.ui.select(
+				{ "Replace current message", "Keep current message" },
+				{
+					prompt = "Generated message is ready",
+				},
+				util.safe_callback(function(choice)
+					if choice == "Replace current message" then
+						if not owner:is_live() or current_generation ~= generation then
+							return
+						end
+						set_line(bufnr, message)
+						if type(opts.on_generated_accept) == "function" then
+							opts.on_generated_accept(message)
+						end
+						if util.win_is_valid(winid) then
+							pcall(vim.api.nvim_set_current_win, winid)
+							pcall(vim.api.nvim_win_set_cursor, winid, { 1, #message })
+						end
 					end
-					set_line(bufnr, message)
-					if type(opts.on_generated_accept) == "function" then
-						opts.on_generated_accept(message)
-					end
-					if util.win_is_valid(winid) then
-						pcall(vim.api.nvim_set_current_win, winid)
-						pcall(vim.api.nvim_win_set_cursor, winid, { 1, #message })
-					end
-				end
-			end)
+				end)
+			)
 		else
 			set_line(bufnr, message)
 			if type(opts.on_generated_accept) == "function" then
@@ -140,22 +144,39 @@ function M.open_text(opts, on_submit)
 		generation = generation + 1
 		local current_generation = generation
 		set_footer(winid, opts, true)
-		local task = opts.on_generate(function(message, err)
-			if not owner:is_live() or current_generation ~= generation then
+		local completed = false
+		local function cancelled()
+			if current_generation ~= generation then
 				return
 			end
-			owner:set_task(nil)
+			completed = true
+			generation = generation + 1
 			generating = false
+			owner:set_task(nil)
 			set_footer(winid, opts, false)
-			if err then
-				util.notify(err, vim.log.levels.WARN)
-				return
-			end
-			if message and util.trim(message) ~= "" then
-				apply_generated(message)
-			end
-		end)
-		owner:set_task(type(task) == "table" and task or nil)
+		end
+		local task = opts.on_generate(
+			util.safe_callback(function(message, err)
+				if not owner:is_live() or current_generation ~= generation then
+					return
+				end
+				completed = true
+				owner:set_task(nil)
+				generating = false
+				set_footer(winid, opts, false)
+				if err then
+					util.notify(err, vim.log.levels.WARN)
+					return
+				end
+				if message and util.trim(message) ~= "" then
+					apply_generated(message, current_generation)
+				end
+			end),
+			util.safe_callback(cancelled)
+		)
+		if not completed and current_generation == generation and owner:is_live() then
+			owner:set_task(type(task) == "table" and task or nil)
+		end
 	end
 
 	local map_opts = { buffer = bufnr, nowait = true, silent = true }
@@ -190,8 +211,10 @@ function M.open(state, repo, default_value, on_submit)
 		title = title,
 		default_value = default_value or "",
 		can_generate = ai.available(),
-		on_generate = function(done)
-			local ok, start_err = ai.generate(repo, done)
+		on_generate = function(done, on_cancel)
+			-- Popups outlive sidebar states and cancel through their repository root.
+			local ok, start_err =
+				ai.generate(repo, done, { owner = util.canonical_path(repo.root), on_cancel = on_cancel })
 			if not ok then
 				done(nil, start_err)
 			end
