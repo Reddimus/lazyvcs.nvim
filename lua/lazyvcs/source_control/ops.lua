@@ -5,6 +5,7 @@ local config = require("lazyvcs.config")
 local input = require("lazyvcs.source_control.input")
 local jobs = require("lazyvcs.source_control.jobs")
 local model = require("lazyvcs.source_control.model")
+local mutation_start = require("lazyvcs.source_control.mutation_start")
 local persist = require("lazyvcs.source_control.persist")
 local picker = require("lazyvcs.picker")
 local repo_switch = require("lazyvcs.source_control.switch")
@@ -292,27 +293,9 @@ local function start_command(repo, kind, args, on_done, opts)
 	opts = opts or {}
 	local timeout = opts.timeout_ms or config.get().source_control.background.mutation_timeout_ms
 	local process_start
-	if opts.guard_modified_buffers then
+	if opts.guard_modified_buffers or opts.branch_ref or opts.svn_discard then
 		process_start = function(command, process_opts, on_exit)
-			local guard_err = buffer_guard.error(repo.root, opts.guard_paths)
-			if not guard_err and opts.guard_relpath then
-				local current, path_err = util.relpath(repo.root, opts.guard_paths[1])
-				if current ~= opts.guard_relpath or util.canonical_path(repo.root) ~= repo.root then
-					guard_err = path_err or "Repository entry changed before discard; refresh and retry"
-				end
-			end
-			if guard_err then
-				local raw = {
-					code = 1,
-					stdout = "",
-					stderr = guard_err,
-					stdout_truncated = false,
-					stderr_truncated = false,
-				}
-				on_exit(nil, guard_err, raw)
-				return {}
-			end
-			return util.system_start(command, process_opts, on_exit)
+			return mutation_start.start(repo, command, process_opts, opts, on_exit)
 		end
 	end
 	return jobs.command(repo, kind, args, {
@@ -349,12 +332,6 @@ local function parse_git_branch_state(line)
 		behind = tonumber(line:match("behind (%d+)") or "0") or 0,
 		has_upstream = line:match("%.%.%.") ~= nil,
 	}
-end
-
-local function parse_upstream(upstream)
-	upstream = util.trim(upstream or "")
-	local remote, branch = upstream:match("^([^/]+)/(.+)$")
-	return remote, branch, upstream
 end
 
 local function parse_git_remotes(stdout)
@@ -413,33 +390,42 @@ local function start_git_current_branch(repo, on_done)
 end
 
 local function start_git_upstream(repo, branch_name, on_done)
-	start_command(
-		repo,
-		"git_upstream",
-		{ "git", "for-each-ref", "--format=%(upstream:short)", "refs/heads/" .. branch_name },
-		function(upstream, upstream_err, raw)
-			if upstream_err then
-				return on_done(nil, upstream_err, raw)
-			end
-
-			local value = util.trim(upstream and upstream.stdout or "")
-			if value == "" then
-				return on_done({ missing = true }, nil)
-			end
-			local remote, branch, full = parse_upstream(value)
-			if not remote or not branch then
-				return on_done(nil, "Unable to parse upstream branch '" .. value .. "' for " .. repo.name, raw)
-			end
-			on_done({
-				remote = remote,
-				branch = branch,
-				full = full,
-			}, nil)
+	start_command(repo, "git_upstream", {
+		"git",
+		"for-each-ref",
+		"--format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)",
+		"refs/heads/" .. branch_name,
+	}, function(upstream, upstream_err, raw)
+		if upstream_err then
+			return on_done(nil, upstream_err, raw)
 		end
-	)
+
+		local value = upstream and upstream.stdout or ""
+		if value == "" then
+			return on_done({ missing = true }, nil)
+		end
+		local ref, full, remote, branch = value:match("^([^%z]+)%z([^%z]*)%z([^%z]*)%z([^%z\n]*)\n?$")
+		if ref == "refs/heads/" .. branch_name and full == "" and remote == "" and branch == "" then
+			return on_done({ missing = true }, nil)
+		end
+		if
+			ref ~= "refs/heads/" .. branch_name
+			or not full
+			or not full:match("^refs/")
+			or remote == ""
+			or not branch:match("^refs/")
+		then
+			return on_done(
+				nil,
+				"Invalid or incomplete upstream metadata for " .. repo.name .. "; refresh and retry.",
+				raw
+			)
+		end
+		on_done({ remote = remote, branch = branch, full = full }, nil)
+	end)
 end
 
-local function start_git_publish(repo, on_done)
+local function start_git_publish(repo, on_done, expected_branch)
 	start_command(repo, "git_remotes", { "git", "remote" }, function(remote_result, remote_err, raw)
 		if remote_err then
 			return on_done(nil, remote_err, raw)
@@ -465,6 +451,10 @@ local function start_git_publish(repo, on_done)
 			if branch_err then
 				return on_done(nil, branch_err, branch_raw)
 			end
+			if expected_branch and branch ~= expected_branch then
+				return on_done(nil, "Branch changed while preparing to publish; retry the action.")
+			end
+			local guards = expected_branch and { branch_ref = "refs/heads/" .. expected_branch } or nil
 			start_git_upstream(repo, branch, function(upstream, upstream_err, upstream_raw)
 				if upstream_err then
 					return on_done(nil, upstream_err, upstream_raw)
@@ -473,11 +463,12 @@ local function start_git_publish(repo, on_done)
 					return start_command(
 						repo,
 						"git_push",
-						{ "git", "push", upstream.remote, branch .. ":" .. upstream.branch },
-						on_done
+						{ "git", "push", upstream.remote, "refs/heads/" .. branch .. ":" .. upstream.branch },
+						on_done,
+						guards
 					)
 				end
-				start_command(repo, "git_publish", { "git", "push", "--set-upstream", remote, branch }, on_done)
+				start_command(repo, "git_publish", { "git", "push", "--set-upstream", remote, branch }, on_done, guards)
 			end)
 		end)
 	end)
@@ -515,7 +506,7 @@ local function start_git_push(repo, on_done)
 				start_command(
 					repo,
 					"git_push",
-					{ "git", "push", upstream.remote, current .. ":" .. upstream.branch },
+					{ "git", "push", upstream.remote, "refs/heads/" .. current .. ":" .. upstream.branch },
 					on_done
 				)
 			end)
@@ -523,19 +514,22 @@ local function start_git_push(repo, on_done)
 	end)
 end
 
-local function start_git_fast_forward(repo, on_done)
+local function start_git_integrate(repo, sync, on_done)
 	start_git_current_branch(repo, function(branch, branch_err, branch_raw)
 		if branch_err then
 			return on_done(nil, branch_err, branch_raw)
 		end
+		local branch_ref = "refs/heads/" .. branch
 		start_git_upstream(repo, branch, function(upstream, upstream_err, upstream_raw)
 			if upstream_err then
 				return on_done(nil, upstream_err, upstream_raw)
 			end
 			if upstream.missing then
+				if sync then
+					return start_git_publish(repo, on_done, branch)
+				end
 				return on_done(nil, "Branch " .. branch .. " has no upstream to fast-forward from.")
 			end
-
 			start_command(
 				repo,
 				"git_fetch",
@@ -544,83 +538,48 @@ local function start_git_fast_forward(repo, on_done)
 					if fetch_err then
 						return on_done(nil, fetch_err, fetch_raw)
 					end
-
-					start_git_status(repo, function(branch_state, status_err, status_raw)
-						if status_err then
-							return on_done(nil, status_err, status_raw)
+					start_git_current_branch(repo, function(current, current_err, current_raw)
+						if current_err then
+							return on_done(nil, current_err, current_raw)
 						end
-						if branch_state.ahead > 0 and branch_state.behind > 0 then
-							return on_done(
-								nil,
-								"Branch has both incoming and outgoing commits. Use explicit pull/push actions."
-							)
+						if current ~= branch then
+							return on_done(nil, "Branch changed while fetching; retry the action.")
 						end
-						if branch_state.behind == 0 then
-							return on_done({ code = 0, stdout = "", stderr = "" }, nil)
-						end
-						start_git_current_branch(repo, function(current, current_err, current_raw)
-							if current_err then
-								return on_done(nil, current_err, current_raw)
+						start_git_status(repo, function(branch_state, status_err, status_raw)
+							if status_err then
+								return on_done(nil, status_err, status_raw)
 							end
-							if current ~= branch then
-								return on_done(nil, "Branch changed while preparing to fast-forward; retry the action.")
+							if branch_state.ahead > 0 and branch_state.behind > 0 then
+								return on_done(
+									nil,
+									"Branch has both incoming and outgoing commits. Use explicit pull/push actions."
+								)
 							end
-							start_command(repo, "git_merge", { "git", "merge", "--ff-only", upstream.full }, on_done, {
-								guard_modified_buffers = true,
-							})
+							if branch_state.behind > 0 then
+								return start_command(
+									repo,
+									"git_merge",
+									{ "git", "merge", "--ff-only", upstream.full },
+									on_done,
+									{
+										guard_modified_buffers = true,
+										branch_ref = branch_ref,
+									}
+								)
+							end
+							if sync and branch_state.ahead > 0 then
+								return start_command(
+									repo,
+									"git_push",
+									{ "git", "push", upstream.remote, branch_ref .. ":" .. upstream.branch },
+									on_done,
+									{
+										branch_ref = branch_ref,
+									}
+								)
+							end
+							on_done({ code = 0, stdout = "", stderr = "" }, nil)
 						end)
-					end)
-				end
-			)
-		end)
-	end)
-end
-
-local function start_git_sync(repo, on_done)
-	start_git_current_branch(repo, function(branch, branch_err, branch_raw)
-		if branch_err then
-			return on_done(nil, branch_err, branch_raw)
-		end
-		start_git_upstream(repo, branch, function(upstream, upstream_err, upstream_raw)
-			if upstream_err then
-				return on_done(nil, upstream_err, upstream_raw)
-			end
-			if upstream.missing then
-				return start_git_publish(repo, on_done)
-			end
-
-			start_command(
-				repo,
-				"git_fetch",
-				{ "git", "fetch", "--prune", "--quiet", upstream.remote },
-				function(_, fetch_err, fetch_raw)
-					if fetch_err then
-						return on_done(nil, fetch_err, fetch_raw)
-					end
-
-					start_git_status(repo, function(branch_state, status_err, status_raw)
-						if status_err then
-							return on_done(nil, status_err, status_raw)
-						end
-						if branch_state.behind > 0 and branch_state.ahead > 0 then
-							return on_done(
-								nil,
-								"Branch has both incoming and outgoing commits. Use explicit pull/push actions."
-							)
-						end
-						if branch_state.behind > 0 then
-							return start_command(
-								repo,
-								"git_merge",
-								{ "git", "merge", "--ff-only", upstream.full },
-								on_done,
-								{ guard_modified_buffers = true }
-							)
-						end
-						if branch_state.ahead > 0 then
-							return start_git_push(repo, on_done)
-						end
-						on_done({ code = 0, stdout = "", stderr = "" }, nil)
 					end)
 				end
 			)
@@ -843,6 +802,15 @@ function M.stage_file(state, node)
 	end)
 end
 
+local function git_index_paths(node)
+	local paths = { node.extra.relpath }
+	local index = node.extra.index_status or (node.extra.status or ""):sub(1, 1)
+	if index == "R" and node.extra.renamed_from then
+		paths[#paths + 1] = node.extra.renamed_from
+	end
+	return paths, index
+end
+
 function M.unstage_file(state, node)
 	node = node or current_node(state)
 	if not node or node.type ~= "file" then
@@ -858,9 +826,9 @@ function M.unstage_file(state, node)
 		return notify_repo_busy(repo, job)
 	end
 	local relpath = node.extra.relpath
-	local status = node.extra.status or ""
-	local args = status:sub(1, 1) == "A" and { "git", "rm", "--cached", "--", relpath }
-		or { "git", "restore", "--staged", "--", relpath }
+	local paths, index = git_index_paths(node)
+	local args = index == "A" and { "git", "rm", "--cached", "-f", "--" } or { "git", "restore", "--staged", "--" }
+	vim.list_extend(args, paths)
 	confirm_mutation(state, "Unstage " .. relpath .. " in " .. repo.name .. "?", function()
 		start_simple_repo_job(state, repo, {
 			action = "unstage_file",
@@ -894,7 +862,17 @@ function M.revert_file(state, node)
 	local section = node.extra.section
 	local change_kind = node.extra.change_kind
 	local status = node.extra.status or ""
-	if not buffer_guard.check(repo.root, { node.path }) then
+	local relpaths = repo.vcs == "git" and section == "staged" and git_index_paths(node) or { relpath }
+	local paths = { node.path }
+	for index = 2, #relpaths do
+		local path = util.normalize_literal_path(repo.root .. "/" .. relpaths[index])
+		local relative, err = util.relpath(repo.root, path)
+		if relative ~= relpaths[index] then
+			return util.notify(err or "Rename source changed; refresh and retry discard", vim.log.levels.WARN)
+		end
+		paths[#paths + 1] = path
+	end
+	if not buffer_guard.check(repo.root, paths) then
 		return
 	end
 	local action
@@ -908,7 +886,7 @@ function M.revert_file(state, node)
 		action = "discard_staged"
 		prompt = "Discard staged and working tree changes for " .. relpath .. " in " .. repo.name .. "?"
 		args = status:sub(1, 1) == "A" and { "git", "rm", "-f", "--", relpath }
-			or { "git", "restore", "--source=HEAD", "--staged", "--worktree", "--", relpath }
+			or vim.list_extend({ "git", "restore", "--source=HEAD", "--staged", "--worktree", "--" }, relpaths)
 	elseif repo.vcs == "git" then
 		action = "discard_unstaged"
 		prompt = "Discard unstaged changes for " .. relpath .. " in " .. repo.name .. "?"
@@ -924,25 +902,56 @@ function M.revert_file(state, node)
 		prompt = "Discard local SVN changes for " .. relpath .. " in " .. repo.name .. "?"
 		args = { "svn", "revert", "--", util.svn_target(relpath) }
 	end
-	confirm_mutation(state, prompt, function()
-		start_simple_repo_job(
-			state,
-			repo,
-			{
-				action = action,
-				label = "Discarding " .. relpath .. "...",
-				sync_text = "Discard",
-				remote_refresh = false,
-			},
-			action,
-			args,
-			{
-				guard_modified_buffers = true,
-				guard_paths = { node.path },
-				guard_relpath = relpath,
-			}
-		)
-	end)
+	local function discard(subtrees, svn_discard)
+		if not buffer_guard.check(repo.root, paths, subtrees) then
+			return
+		end
+		confirm_mutation(state, prompt, function()
+			start_simple_repo_job(
+				state,
+				repo,
+				{
+					action = action,
+					label = "Discarding " .. relpath .. "...",
+					sync_text = "Discard",
+					remote_refresh = false,
+					checktime = true,
+				},
+				action,
+				args,
+				{
+					guard_modified_buffers = true,
+					guard_paths = paths,
+					guard_relpaths = relpaths,
+					guard_subtrees = subtrees,
+					svn_discard = svn_discard,
+				}
+			)
+		end)
+	end
+	if repo.vcs ~= "svn" then
+		return discard()
+	end
+	start_command(
+		repo,
+		"svn_discard_info",
+		{ "svn", "info", "--xml", "--depth", "empty", "--", util.svn_target(relpath) },
+		function(result, err)
+			if err then
+				return util.notify((tostring(err):gsub("[\r\n]+", " ")), vim.log.levels.ERROR)
+			end
+			local info = require("lazyvcs.backends.xml").parse_info(result.stdout)
+			if not info or not info.kind or not info.schedule then
+				return util.notify("Unable to classify SVN discard target; refresh and retry.", vim.log.levels.WARN)
+			end
+			local recursive = info.kind == "dir" and info.schedule == "delete"
+			if recursive then
+				prompt = "Discard deleted SVN directory " .. relpath .. " and its descendants in " .. repo.name .. "?"
+				args = { "svn", "revert", "--depth", "infinity", "--", util.svn_target(relpath) }
+			end
+			discard(recursive and paths or nil, { relpath = relpath, recursive = recursive })
+		end
+	)
 end
 
 function M.commit_repo(state, node)
@@ -1306,7 +1315,7 @@ local function execute_repo_action(state, repo, action, node)
 			close_sessions = true,
 			guard_modified_buffers = true,
 			start = function(resolve, reject)
-				start_git_fast_forward(repo, function(result, err, raw)
+				start_git_integrate(repo, false, function(result, err, raw)
 					if err then
 						return reject(err, raw)
 					end
@@ -1371,7 +1380,7 @@ local function execute_repo_action(state, repo, action, node)
 				checktime = true,
 				close_sessions = true,
 				start = function(resolve, reject)
-					start_git_sync(repo, function(result, err, raw)
+					start_git_integrate(repo, true, function(result, err, raw)
 						if err then
 							return reject(err, raw)
 						end

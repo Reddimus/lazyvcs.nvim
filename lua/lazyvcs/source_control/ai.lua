@@ -21,18 +21,6 @@ local function copilot_chat_installed()
 	return ok and lazy_config.plugins and lazy_config.plugins["CopilotChat.nvim"] ~= nil or false
 end
 
-local function load_copilot_chat()
-	local ok_lazy, lazy = pcall(require, "lazy")
-	if ok_lazy then
-		pcall(lazy.load, { plugins = { "CopilotChat.nvim" } })
-	end
-	local ok, chat = pcall(require, "CopilotChat")
-	if not ok or type(chat.ask) ~= "function" then
-		return nil, "CopilotChat is not available"
-	end
-	return chat
-end
-
 local function executable(name)
 	return executable_checker(name)
 end
@@ -346,58 +334,16 @@ end
 
 local function run_provider(request, provider, repo, prompt, callback)
 	if provider == "copilotchat" then
-		local chat, err = load_copilot_chat()
-		if not chat then
-			return callback(nil, err)
-		end
-		local finished = false
-		local timer
-		local function finish(message, err)
-			if finished or not request.active then
+		local handle = require("lazyvcs.source_control.copilotchat").start(prompt, {
+			timeout_ms = config.get().ai.commit_message.timeout_ms,
+		}, function(message, err)
+			if not request.active then
 				return
 			end
-			finished = true
-			if timer and not timer:is_closing() then
-				timer:stop()
-				timer:close()
-			end
-			local ok, callback_err = pcall(callback, message, err)
-			if not ok then
-				request:finish(nil, "CopilotChat callback failed: " .. tostring(callback_err))
-			end
-		end
-		local timeout_ms = config.get().ai.commit_message.timeout_ms
-		if timeout_ms > 0 then
-			timer = vim.uv.new_timer()
-			if timer then
-				timer:start(
-					timeout_ms,
-					0,
-					vim.schedule_wrap(function()
-						finish(nil, "CopilotChat timed out")
-					end)
-				)
-			end
-		end
-		request:add_cleanup(function()
-			if timer and not timer:is_closing() then
-				timer:stop()
-				timer:close()
-			end
+			request.handle = nil
+			callback(message and clean_message(message), err)
 		end)
-		local ok, ask_err = pcall(chat.ask, prompt, {
-			headless = true,
-			callback = function(response)
-				local message = clean_message(response and response.content or "")
-				if message == "" then
-					return finish(nil, "CopilotChat returned an empty commit message")
-				end
-				finish(message)
-			end,
-		})
-		if not ok then
-			finish(nil, tostring(ask_err))
-		end
+		request:set_handle(handle)
 		return
 	end
 	run_cli_provider(request, provider, repo, prompt, callback)

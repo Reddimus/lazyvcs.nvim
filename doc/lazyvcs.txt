@@ -315,9 +315,21 @@ Behavior:
 - Keeps other repos usable while one repo syncs, updates, commits, or switches.
 - Keeps cached repo badges visible during refresh.
 - Supports Git fetch/pull/push/sync and SVN update/switch.
-- Publishes no-upstream Git branches with upstream tracking.
+- Publishes no-upstream Git branches with upstream tracking. Push uses the
+  configured upstream remote and destination ref, including local upstreams.
 - Uses origin for publishing, or the only configured remote when origin is
   absent.
+- Pull and Sync recheck the branch after fetching and when a queued mutation
+  starts. A branch change stops the operation with a retry error.
+- Unstage preserves working-file edits made after staging a new file. Staged
+  rename Unstage and Discard cover both the source and destination paths.
+- Successful Discard runs Neovim's timestamp check. With 'autoread', unmodified
+  buffers reload from disk. Unsaved buffer edits keep Neovim's normal protection.
+- Discarding a deleted SVN directory restores its descendants recursively. The
+  confirmation names that scope. Unsaved descendant buffers block the action.
+  Discarding directory property changes leaves child edits intact.
+- Tag checkout and branch creation use the selected full ref, including tags
+  whose names start with a dash or match a local branch.
 - Opens changed files in the live diff view.
 
 Pressing `e` outside a commit-message row toggles sidebar auto-fit. The width is
@@ -591,14 +603,23 @@ AI commit-message options, under ai.commit_message:
                        Insert-mode key in the commit input. Default "<C-g>".
     confirm_privacy    Confirm before sending diffs to a provider.
 
-Diff context reaches providers over stdin, or as a private 0600 attachment
+CopilotChat.nvim requires the main client API with client:ask(opts),
+client:models(), and client:get_providers(), plus plenary.async.run. Unsupported
+versions return a provider error asking you to update CopilotChat.nvim.
+Generation sends one literal user message and a fixed system message, with no
+inherited selections, resources, tools, or chat history. Diff directives such
+as #file: stay literal and cannot attach other files. Only the configured scalar
+CopilotChat model and temperature are reused.
+
+CLI diff context reaches providers over stdin, or as a private 0600 attachment
 that is deleted on completion, so it never appears in process arguments or
 task listings.
 
 Mutation confirmations use a small native popup. Press 1 to confirm, 2 to
 confirm and skip more mutation prompts for the current Neovim session, or 3,
 q, or <Esc> to cancel. j/k and arrow keys move the selection; <CR> runs the
-highlighted choice. Confirm is highlighted by default.
+highlighted choice, including after normal cursor or mouse movement. Confirm is
+highlighted by default.
 
 ==============================================================================
 TESTING                                                       *lazyvcs-testing*

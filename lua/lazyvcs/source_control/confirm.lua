@@ -35,7 +35,6 @@ end
 function M.open(opts, on_choice)
 	opts = opts or {}
 	local prompt = opts.prompt or "Confirm action?"
-	local selected = 1
 	local previous_win = vim.api.nvim_get_current_win()
 	local previous_cursor = vim.api.nvim_win_is_valid(previous_win) and vim.api.nvim_win_get_cursor(previous_win) or nil
 	local bufnr = vim.api.nvim_create_buf(false, true)
@@ -77,7 +76,7 @@ function M.open(opts, on_choice)
 		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
 		vim.bo[bufnr].modifiable = false
 		if vim.api.nvim_win_is_valid(winid) then
-			vim.api.nvim_win_set_cursor(winid, { selected, 0 })
+			vim.api.nvim_win_set_cursor(winid, { 1, 0 })
 		end
 	end
 
@@ -105,11 +104,20 @@ function M.open(opts, on_choice)
 		owner:finish(item and item.action or "cancel")
 	end
 
-	local function move(delta)
-		selected = ((selected - 1 + delta) % #options) + 1
-		if vim.api.nvim_win_is_valid(winid) then
-			vim.api.nvim_win_set_cursor(winid, { selected, 0 })
+	local function selection()
+		if not vim.api.nvim_win_is_valid(winid) or vim.api.nvim_win_get_buf(winid) ~= bufnr then
+			return nil
 		end
+		local row = vim.api.nvim_win_get_cursor(winid)[1]
+		return options[row] and row or nil
+	end
+
+	local function move(delta)
+		local row = selection()
+		if not row then
+			return owner:finish("cancel")
+		end
+		vim.api.nvim_win_set_cursor(winid, { ((row - 1 + delta) % #options) + 1, 0 })
 	end
 
 	local map_opts = { buffer = bufnr, nowait = true, silent = true }
@@ -119,7 +127,7 @@ function M.open(opts, on_choice)
 		end, map_opts)
 	end
 	compat.keymap_set("n", "<CR>", function()
-		choose(selected)
+		choose(selection())
 	end, map_opts)
 	compat.keymap_set("n", "j", function()
 		move(1)

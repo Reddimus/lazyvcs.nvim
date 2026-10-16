@@ -25,6 +25,19 @@ and this project adheres to
   buffers.
 - Preserve SVN author names containing spaces and display Git blame metadata as
   UTF-8 regardless of the repository log-output encoding.
+- Confirm the highlighted popup choice after normal cursor or mouse movement.
+- Push to the configured upstream, including local branches and remote names
+  containing slashes.
+- Stop Pull and Sync if the checked-out branch changes during fetch or queueing.
+- Unstage and discard both paths of staged renames, and preserve later working
+  edits when unstaging added files.
+- Refresh unmodified file buffers after sidebar Discard.
+- Restore descendants when discarding deleted SVN directories, and guard unsaved
+  buffers throughout that subtree.
+- Check out the selected tag even when its name starts with a dash or matches a
+  local branch.
+- Isolate CopilotChat commit generation from selections, chat history, tools,
+  and file directives in diffs. Reject unsupported client versions.
 
 ## [0.11.1] - 2026-10-16
 

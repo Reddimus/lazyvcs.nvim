@@ -115,6 +115,10 @@ the GitHub release.
 
 - `backends/` owns Git/SVN commands, eligibility, and immutable comparison data.
 - `source_control/jobs.lua` bounds and profiles repository/comparison commands.
+- `source_control/mutation_start.lua` holds one scheduler worker and one
+  deadline across asynchronous preflight and mutation. Recheck branch and buffer
+  guards before spawning the mutation; never enqueue preflight into the same
+  queue.
 - `compare.lua` owns review tabs, source-control navigation, and read-only
   previews.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
