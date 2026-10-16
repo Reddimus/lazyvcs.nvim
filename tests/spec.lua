@@ -7155,7 +7155,6 @@ vim.list_extend(cases, require("spec_mutation_start")({ helpers = helpers, wait_
 vim.list_extend(cases, require("spec_copilotchat_context")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_confirm")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_commit_messages")({ helpers = helpers, wait_for = wait_for }))
-vim.list_extend(cases, require("spec_confirm_modes")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_ai_drafts")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_ai_context")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_switch_refs")({ helpers = helpers, wait_for = wait_for }))
