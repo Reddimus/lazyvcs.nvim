@@ -296,8 +296,9 @@ return function(ctx)
 								and type(process_opts.on_terminate) == "function",
 							"process options dropped"
 						)
-						assert(args[3] == "-F", "commit message still transported in argv")
-						path, exit = args[4], done
+						local flag = vim.fn.index(args, "-F") + 1
+						assert(flag > 0, "commit message still transported in argv")
+						path, exit = args[flag + 1], done
 						assert(
 							table.concat(vim.fn.readfile(path, "b"), "\n") == message,
 							"private message file bytes changed"

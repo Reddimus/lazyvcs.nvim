@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Make untracked-file Discard reject directory replacements and delete only the
+  selected file or symlink.
+- Discover SVN switch targets below the repository root, including repositories
+  named trunk, branches, or tags.
+- Preserve literal SVN branch and tag names containing percent signs, spaces,
+  and non-ASCII text.
+- Handle leading-dash Git remote names in Push, Publish, Pull, and Sync.
+- Store sidebar Git commit messages as UTF-8 when repository settings declare a
+  legacy encoding.
+
 ## [0.11.3] - 2026-10-16
 
 ### Fixed

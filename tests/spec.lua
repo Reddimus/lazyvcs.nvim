@@ -5410,7 +5410,7 @@ local function test_source_control_git_sync_uses_explicit_upstream_fast_forward(
 		["git branch --show-current"] = "develop\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/develop\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/develop"] = "refs/heads/develop\0refs/remotes/origin/develop\0origin\0refs/heads/develop\n",
-		["git fetch --prune --quiet origin"] = "",
+		["git fetch --prune --quiet -- origin"] = "",
 		["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## develop...origin/develop [behind 1]\n",
 		["git merge --ff-only refs/remotes/origin/develop"] = "",
 	}
@@ -5428,7 +5428,7 @@ local function test_source_control_git_sync_uses_explicit_upstream_fast_forward(
 	eq(calls, {
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/develop",
-		"git fetch --prune --quiet origin",
+		"git fetch --prune --quiet -- origin",
 		"git branch --show-current",
 		"git status --branch --porcelain=v1 --untracked-files=no --ignored=no",
 		"git symbolic-ref --quiet HEAD",
@@ -5479,7 +5479,7 @@ local function test_source_control_git_pull_action_uses_explicit_upstream_fast_f
 		["git branch --show-current"] = "develop\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/develop\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/develop"] = "refs/heads/develop\0refs/remotes/origin/develop\0origin\0refs/heads/develop\n",
-		["git fetch --prune --quiet origin"] = "",
+		["git fetch --prune --quiet -- origin"] = "",
 		["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## develop...origin/develop [behind 1]\n",
 		["git merge --ff-only refs/remotes/origin/develop"] = "",
 	}
@@ -5497,7 +5497,7 @@ local function test_source_control_git_pull_action_uses_explicit_upstream_fast_f
 	eq(calls, {
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/develop",
-		"git fetch --prune --quiet origin",
+		"git fetch --prune --quiet -- origin",
 		"git branch --show-current",
 		"git status --branch --porcelain=v1 --untracked-files=no --ignored=no",
 		"git symbolic-ref --quiet HEAD",
@@ -5550,9 +5550,9 @@ local function test_source_control_git_sync_pushes_to_configured_upstream()
 		["git branch --show-current"] = "feature/local\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/local\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local"] = "refs/heads/feature/local\0refs/remotes/fork/feature/shared\0fork\0refs/heads/feature/shared\n",
-		["git fetch --prune --quiet fork"] = "",
+		["git fetch --prune --quiet -- fork"] = "",
 		["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## feature/local...fork/feature/shared [ahead 2]\n",
-		["git push fork refs/heads/feature/local:refs/heads/feature/shared"] = "",
+		["git push -- fork refs/heads/feature/local:refs/heads/feature/shared"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5568,11 +5568,11 @@ local function test_source_control_git_sync_pushes_to_configured_upstream()
 	eq(calls, {
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local",
-		"git fetch --prune --quiet fork",
+		"git fetch --prune --quiet -- fork",
 		"git branch --show-current",
 		"git status --branch --porcelain=v1 --untracked-files=no --ignored=no",
 		"git symbolic-ref --quiet HEAD",
-		"git push fork refs/heads/feature/local:refs/heads/feature/shared",
+		"git push -- fork refs/heads/feature/local:refs/heads/feature/shared",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
 
@@ -5619,7 +5619,7 @@ local function test_source_control_git_publish_branch_sets_upstream_to_origin()
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
 		["git remote"] = "fork\norigin\n",
-		["git push --set-upstream origin feature/new"] = "",
+		["git push --set-upstream -- origin feature/new"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5638,7 +5638,7 @@ local function test_source_control_git_publish_branch_sets_upstream_to_origin()
 		"git remote",
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
-		"git push --set-upstream origin feature/new",
+		"git push --set-upstream -- origin feature/new",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
 
@@ -5687,7 +5687,7 @@ local function test_source_control_git_sync_without_upstream_publishes_branch()
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
 		["git remote"] = "origin\n",
-		["git push --set-upstream origin feature/new"] = "",
+		["git push --set-upstream -- origin feature/new"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5707,7 +5707,7 @@ local function test_source_control_git_sync_without_upstream_publishes_branch()
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
 		"git symbolic-ref --quiet HEAD",
-		"git push --set-upstream origin feature/new",
+		"git push --set-upstream -- origin feature/new",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
 
@@ -5753,7 +5753,7 @@ local function test_source_control_git_push_uses_configured_upstream()
 		["git branch --show-current"] = "feature/local\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/local\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local"] = "refs/heads/feature/local\0refs/remotes/fork/feature/shared\0fork\0refs/heads/feature/shared\n",
-		["git push fork refs/heads/feature/local:refs/heads/feature/shared"] = "",
+		["git push -- fork refs/heads/feature/local:refs/heads/feature/shared"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5770,7 +5770,7 @@ local function test_source_control_git_push_uses_configured_upstream()
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local",
 		"git branch --show-current",
-		"git push fork refs/heads/feature/local:refs/heads/feature/shared",
+		"git push -- fork refs/heads/feature/local:refs/heads/feature/shared",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
 
@@ -5817,7 +5817,7 @@ local function test_source_control_git_publish_falls_back_to_single_remote()
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
 		["git remote"] = "fork\n",
-		["git push --set-upstream fork feature/new"] = "",
+		["git push --set-upstream -- fork feature/new"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5836,7 +5836,7 @@ local function test_source_control_git_publish_falls_back_to_single_remote()
 		"git remote",
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
-		"git push --set-upstream fork feature/new",
+		"git push --set-upstream -- fork feature/new",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
 
@@ -7188,6 +7188,10 @@ vim.list_extend(cases, require("spec_process_shutdown")({ helpers = helpers, wai
 vim.list_extend(cases, require("spec_process_flows")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_process")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_window_options")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_source_control_discard")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_svn_switch_paths")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_source_control_remotes")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_commit_encoding")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_integrity")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_text")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))
 vim.list_extend(cases, require("spec_compare_text")())

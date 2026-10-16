@@ -406,7 +406,13 @@ local function start_command(repo, kind, args, on_done, opts)
 		or kind == "svn_update"
 		or kind == "switch_mutation"
 	local process_start = opts.start
-	if base_mutation or opts.guard_modified_buffers or opts.branch_ref or opts.svn_discard then
+	if
+		base_mutation
+		or opts.guard_modified_buffers
+		or opts.branch_ref
+		or opts.svn_discard
+		or opts.git_untracked_delete
+	then
 		process_start = function(command, process_opts, on_exit)
 			local signs, change
 			local guards = vim.tbl_extend("force", {}, opts)
@@ -471,7 +477,8 @@ local function start_command(repo, kind, args, on_done, opts)
 end
 
 local function start_commit_command(repo, message, on_done)
-	local args = { repo.vcs, "commit", "-F", "-" }
+	local args = repo.vcs == "git" and { "git", "-c", "i18n.commitEncoding=UTF-8", "commit", "-F", "-" }
+		or { "svn", "commit", "-F", "-" }
 	if repo.vcs == "svn" then
 		args[#args + 1] = "--encoding"
 		args[#args + 1] = "UTF-8"
@@ -626,6 +633,15 @@ local function start_git_upstream(repo, branch_name, on_done)
 	end)
 end
 
+local function git_push_args(remote, refspec, set_upstream)
+	local args = { "git", "push" }
+	if set_upstream then
+		args[#args + 1] = "--set-upstream"
+	end
+	vim.list_extend(args, { "--", remote, refspec })
+	return args
+end
+
 local function start_git_publish(repo, on_done, expected_branch)
 	start_command(repo, "git_remotes", { "git", "remote" }, function(remote_result, remote_err, raw)
 		if remote_err then
@@ -664,12 +680,12 @@ local function start_git_publish(repo, on_done, expected_branch)
 					return start_command(
 						repo,
 						"git_push",
-						{ "git", "push", upstream.remote, "refs/heads/" .. branch .. ":" .. upstream.branch },
+						git_push_args(upstream.remote, "refs/heads/" .. branch .. ":" .. upstream.branch),
 						on_done,
 						guards
 					)
 				end
-				start_command(repo, "git_publish", { "git", "push", "--set-upstream", remote, branch }, on_done, guards)
+				start_command(repo, "git_publish", git_push_args(remote, branch, true), on_done, guards)
 			end)
 		end)
 	end)
@@ -707,7 +723,7 @@ local function start_git_push(repo, on_done)
 				start_command(
 					repo,
 					"git_push",
-					{ "git", "push", upstream.remote, "refs/heads/" .. current .. ":" .. upstream.branch },
+					git_push_args(upstream.remote, "refs/heads/" .. current .. ":" .. upstream.branch),
 					on_done
 				)
 			end)
@@ -734,7 +750,7 @@ local function start_git_integrate(repo, sync, on_done)
 			start_command(
 				repo,
 				"git_fetch",
-				{ "git", "fetch", "--prune", "--quiet", upstream.remote },
+				{ "git", "fetch", "--prune", "--quiet", "--", upstream.remote },
 				function(_, fetch_err, fetch_raw)
 					if fetch_err then
 						return on_done(nil, fetch_err, fetch_raw)
@@ -772,7 +788,7 @@ local function start_git_integrate(repo, sync, on_done)
 								return start_command(
 									repo,
 									"git_push",
-									{ "git", "push", upstream.remote, branch_ref .. ":" .. upstream.branch },
+									git_push_args(upstream.remote, branch_ref .. ":" .. upstream.branch),
 									on_done,
 									{
 										branch_ref = branch_ref,
@@ -1109,7 +1125,16 @@ function M.revert_file(state, node)
 	if repo.vcs == "git" and (section == "untracked" or change_kind == "untracked") then
 		action = "delete_untracked"
 		prompt = "Delete untracked " .. relpath .. " from " .. repo.name .. "?"
-		args = { "git", "clean", "-fd", "--", relpath }
+		args = {
+			"git",
+			"--literal-pathspecs",
+			"status",
+			"--porcelain=v1",
+			"-z",
+			"--untracked-files=normal",
+			"--",
+			relpath,
+		}
 	elseif repo.vcs == "git" and section == "staged" then
 		action = "discard_staged"
 		prompt = "Discard staged and working tree changes for " .. relpath .. " in " .. repo.name .. "?"
@@ -1153,12 +1178,14 @@ function M.revert_file(state, node)
 					guard_relpaths = relpaths,
 					guard_subtrees = subtrees,
 					svn_discard = svn_discard,
+					git_untracked_delete = action == "delete_untracked" and { path = node.path, relpath = relpath }
+						or nil,
 				}
 			)
 		end)
 	end
 	if repo.vcs ~= "svn" then
-		return discard()
+		return discard(action == "delete_untracked" and paths or nil)
 	end
 	start_command(
 		repo,

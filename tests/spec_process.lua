@@ -491,6 +491,11 @@ vim.cmd("qa!")
 			function()
 				local commands = {
 					{ label = "git remote listing", args = { "git", "remote" } },
+					{
+						label = "git UTF-8 commit",
+						args = { "git", "-c", "i18n.commitEncoding=UTF-8", "commit", "-F", "message" },
+						tree = true,
+					},
 					{ label = "git publish is not a subcommand", args = { "git", "publish" } },
 					{ label = "git switch", args = { "git", "switch", "branch" } },
 					{ label = "git merge", args = { "git", "merge", "branch" } },

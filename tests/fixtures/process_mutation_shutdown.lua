@@ -49,9 +49,9 @@ if guarded == "ops" or guarded == "sidebar" then
 	local start = util.system_start
 	---@diagnostic disable-next-line: duplicate-set-field
 	util.system_start = function(args, process_opts, cb)
-		if args[2] == "commit" then
+		if vim.tbl_contains(args, "commit") then
 			assert(process_opts.preserve_on_shutdown and process_opts.on_exit_during_shutdown)
-			vim.fn.writefile({ args[4] }, dir .. "/message-path")
+			vim.fn.writefile({ args[vim.fn.index(args, "-F") + 2] }, dir .. "/message-path")
 		end
 		return start(args, process_opts, cb)
 	end

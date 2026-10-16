@@ -1,5 +1,11 @@
 local M = {}
 
+function M.encode_segment(name)
+	return (name:gsub("[^A-Za-z0-9%-%._~]", function(char)
+		return string.format("%%%02X", char:byte())
+	end))
+end
+
 function M.append_path(root_url, relpath)
 	relpath = require("lazyvcs.backends.xml").local_path(relpath)
 	if relpath == "." or relpath == "" then

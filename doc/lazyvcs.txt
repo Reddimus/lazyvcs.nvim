@@ -378,6 +378,7 @@ Behavior:
   commit-message draft.
 - Publishes no-upstream Git branches with upstream tracking. Push uses the
   configured upstream remote and destination ref, including local upstreams.
+  Configured remote names are literal operands, including leading dashes.
 - Keeps repositories with a deleted upstream visible with an `Upstream gone`
   warning. Refresh does not change tracking or republish the branch.
 - Uses origin for publishing, or the only configured remote when origin is
@@ -386,6 +387,8 @@ Behavior:
   starts. A branch change stops the operation with a retry error.
 - Unstage preserves working-file edits made after staging a new file. Staged
   rename Unstage and Discard cover both the source and destination paths.
+- Untracked-file Discard deletes only the selected file or symlink. Directory
+  replacements are refused, and symlink targets remain intact.
 - Successful Discard runs Neovim's timestamp check. With 'autoread', unmodified
   buffers reload from disk. Unsaved buffer edits keep Neovim's normal protection.
 - Discarding a deleted SVN directory restores its descendants recursively. The
@@ -397,8 +400,10 @@ Behavior:
   selectable. Symbolic remote HEAD aliases are hidden. If ref enumeration exceeds
   the output limit, switching reports an error instead of showing a partial list.
   Closing the sidebar releases pending switch-target loading state.
-- Generated SVN switch targets are literal URLs, including @ characters. Manual
-  Switch URL input accepts SVN URL@PEG syntax. End a literal URL containing @
+- SVN switch layout discovery stays below the repository root.
+- Generated SVN switch targets preserve literal names, including %, spaces,
+  non-ASCII text, and @ characters. Manual Switch URL input accepts SVN URL@PEG
+  syntax. End a literal URL containing @
   with another @ to select the URL without a peg revision.
 - Opens changed files in the live diff view. Git submodule rows open a
   read-only commit patch for the selected staged or unstaged section. The patch
@@ -421,7 +426,8 @@ use the last completed write. Invalid preference fields are ignored.
 
 Git and SVN commits read messages from private temporary files, which are deleted
 when the commit process exits. Message length does not consume process argument
-space. Failed or cancelled commits preserve the draft.
+space. Failed or cancelled commits preserve the draft. Sidebar Git commits store
+UTF-8 messages without changing repository configuration.
 
 Pressing `e` outside a commit-message row toggles sidebar auto-fit. The width is
 capped by `source_control.auto_expand_max_width_ratio`, then restored when `e`
