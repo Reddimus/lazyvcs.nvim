@@ -20,7 +20,7 @@ if mode ~= "handles" then
 	local original = vim.system
 	local attachment, launched, callbacks = nil, 0, 0
 	vim.system = function(args, opts, cb)
-		if args[1] ~= "git" then
+		if args[1] ~= "git" and args[1] ~= "taskkill" then
 			launched = launched + 1
 			assert(args[1] == "copilot", "provider fallback ran during shutdown")
 			attachment = args[vim.fn.index(args, "--attachment") + 2]

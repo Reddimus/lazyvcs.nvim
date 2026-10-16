@@ -104,6 +104,65 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_source_control_commit_falls_back_when_cache_is_not_private",
+			guarded(function()
+				local mkdir, chmod, stat = vim.fn.mkdir, vim.uv.fs_chmod, vim.uv.fs_stat
+				local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
+				local ok, err = xpcall(function()
+					local failures = { "mkdir", "chmod" }
+					if vim.fn.has("win32") ~= 1 then
+						failures[#failures + 1] = "mode"
+					end
+					for _, failure in ipairs(failures) do
+						local f = h.make_git_fixture()
+						h.exec({ "git", "add", "sample.txt" }, f.root)
+						local message = "Fallback " .. failure
+						local state, node = state_for(f.root, "git", message)
+						---@diagnostic disable-next-line: duplicate-set-field
+						vim.fn.mkdir = function(path, ...)
+							if path == dir and failure == "mkdir" then
+								error("cache unavailable")
+							end
+							return mkdir(path, ...)
+						end
+						---@diagnostic disable-next-line: duplicate-set-field
+						vim.uv.fs_chmod = function(path, ...)
+							if path == dir and failure == "chmod" then
+								return nil, "EPERM"
+							end
+							return chmod(path, ...)
+						end
+						---@diagnostic disable-next-line: duplicate-set-field
+						vim.uv.fs_stat = function(path, ...)
+							local value, err, code = stat(path, ...)
+							if path == dir and failure == "mode" and value then
+								value.mode = 511
+							end
+							return value, err, code
+						end
+						local path
+						local start = util.system_start
+						---@diagnostic disable-next-line: duplicate-set-field
+						util.system_start = function(args, opts, done)
+							path = args[vim.fn.index(args, "-F") + 2]
+							assert(path and not vim.startswith(path, dir .. "/"), "commit used unavailable cache")
+							assert(opts.preserve_on_shutdown == false, "temporary commit can outlive editor")
+							return start(args, opts, done)
+						end
+						ops.commit_repo(state, node)
+						finished(f.root)
+						util.system_start = start
+						assert(path, "cache failure prevented commit spawn")
+						assert(not session.get_repo_job(f.root), "fallback commit failed")
+						assert(util.trim(h.exec({ "git", "log", "-1", "--format=%B" }, f.root)) == message)
+						assert(not vim.uv.fs_stat(path), "temporary message leaked")
+					end
+				end, debug.traceback)
+				vim.fn.mkdir, vim.uv.fs_chmod, vim.uv.fs_stat = mkdir, chmod, stat
+				assert(ok, err)
+			end),
+		},
+		{
 			"test_source_control_setup_prunes_only_day_old_commit_files_asynchronously",
 			guarded(function()
 				local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
@@ -116,13 +175,23 @@ return function(ctx)
 				assert(vim.uv.fs_utime(old, expired, expired))
 				vim.fn.mkdir(dir .. "/subdir", "p")
 				assert(vim.uv.fs_utime(dir .. "/subdir", expired, expired))
-				setup()
-				assert(vim.uv.fs_stat(old), "setup blocked to prune files")
-				wait(function()
-					return not vim.uv.fs_stat(old)
-				end, "stale message was not pruned")
-				assert(vim.uv.fs_stat(recent), "recent message was pruned")
-				assert(vim.uv.fs_stat(dir .. "/subdir"), "pruning removed a directory")
+				local scandir_next = vim.uv.fs_scandir_next
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.uv.fs_scandir_next = function(scan)
+					local name = scandir_next(scan)
+					return name, "unknown"
+				end
+				local ok, err = xpcall(function()
+					setup()
+					assert(vim.uv.fs_stat(old), "setup blocked to prune files")
+					wait(function()
+						return not vim.uv.fs_stat(old)
+					end, "stale message was not pruned")
+					assert(vim.uv.fs_stat(recent), "recent message was pruned")
+					assert(vim.uv.fs_stat(dir .. "/subdir"), "pruning removed a directory")
+				end, debug.traceback)
+				vim.uv.fs_scandir_next = scandir_next
+				assert(ok, err)
 			end),
 		},
 		{ "test_source_control_utf8_git_commit_message_c_locale", guarded(function()

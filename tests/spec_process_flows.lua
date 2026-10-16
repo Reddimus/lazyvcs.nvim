@@ -22,9 +22,14 @@ return function(ctx)
 					root = h.tempdir()
 					local repo = { root = root, name = "flow", vcs = "git", counts = { local_changes = 0 } }
 					local state = { path = root, lazyvcs_repo_cache = { [root] = repo } }
-					local cancelled, mutations = false, 0
+					local cancelled, starts_after_cancel = false, 0
+					local status = action == "sync" and "## main...origin/main [ahead 1]\n"
+						or "## main...origin/main [behind 1]\n"
 					---@diagnostic disable-next-line: duplicate-set-field
 					util.system_start = function(args, opts, done)
+						if cancelled then
+							starts_after_cancel = starts_after_cancel + 1
+						end
 						local kind = args[2]
 						if kind == step then
 							assert(not opts.preserve_on_shutdown, "read-only step classified as mutation")
@@ -35,11 +40,9 @@ return function(ctx)
 								end,
 							}
 						end
-						if kind == "merge" or kind == "push" then
-							mutations = mutations + 1
-						end
 						local stdout = kind == "branch" and "main\n"
 							or kind == "for-each-ref" and "refs/heads/main\0refs/remotes/origin/main\0origin\0refs/heads/main\n"
+							or kind == "status" and status
 							or ""
 						done({ code = 0, stdout = stdout, stderr = "" })
 						return {}
@@ -58,12 +61,11 @@ return function(ctx)
 					-- A late successful exit must not restart the cancelled chain.
 					pending({
 						code = 0,
-						stdout = action == "sync" and "## main...origin/main [ahead 1]\n"
-							or "## main...origin/main [behind 1]\n",
+						stdout = step == "status" and status or "",
 						stderr = "",
 					})
 					pending = nil
-					assert(mutations == 0, "cancelled flow advanced to merge or push")
+					assert(starts_after_cancel == 0, "cancelled flow started another command")
 					assert(not session.get_repo_job(root), "cancelled flow remained busy")
 				end
 			end

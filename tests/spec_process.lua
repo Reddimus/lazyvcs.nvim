@@ -77,7 +77,8 @@ return function(ctx)
 	local function job_control_shell()
 		for _, shell in ipairs({ "sh", "bash", "ksh", "zsh" }) do
 			if vim.fn.executable(shell) == 1 then
-				local result = vim.system({ shell, "-c", "set -m; sh -c 'kill -0 -$$' & wait $!" }):wait()
+				local result = vim.system({ shell, "-c", "set -m; sh -c 'kill -0 -$$' & wait $!" }, { detach = true })
+					:wait()
 				if result.code == 0 then
 					return shell
 				end
@@ -124,6 +125,9 @@ return function(ctx)
 			ctx.wait_for(function()
 				return p.pid(dir .. "/helper.pid") ~= nil
 			end, "escaped pipe holder not ready")
+			if not kill(-assert(p.pid(dir .. "/helper.pid")), 0) then
+				error({ lazyvcs_skip = "Pipe holder did not lead its own process group" })
+			end
 			if forced then
 				handle:cancel("test")
 				ctx.wait_for(function()
@@ -276,6 +280,140 @@ return function(ctx)
 					raw.code ~= 0 and raw.stderr:find("terminal prompts disabled", 1, true),
 					"Git did not report disabled prompts"
 				)
+			end,
+		},
+		{
+			"test_core_process_windows_cancel_releases_worker_with_inherited_pipes",
+			function()
+				local jobs = require("lazyvcs.source_control.jobs")
+				local dir, has = h.tempdir(), vim.fn.has
+				local handle, recovered
+				-- Record native PIDs and inherit the real output handles on Windows
+				-- too; an MSYS shell's $! need not be a Windows process ID.
+				h.write_file(
+					dir .. "/helper.lua",
+					[[
+vim.fn.writefile({ tostring(vim.uv.os_getpid()) }, arg[1])
+vim.wait(60000, function() return false end, 100)
+vim.cmd("qa!")
+]]
+				)
+				h.write_file(
+					dir .. "/leader.lua",
+					[[
+local child = assert(vim.uv.spawn(vim.v.progpath, {
+  args = { "--headless", "-u", "NONE", "-i", "NONE", "-l", arg[1], arg[2] },
+  stdio = { nil, 1, 2 },
+}, function() end))
+child:unref()
+assert(vim.wait(5000, function() return vim.fn.filereadable(arg[2]) == 1 end, 10))
+vim.cmd("qa!")
+]]
+				)
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.has = function(name)
+					return name == "win32" and 1 or has(name)
+				end
+				local ok, err = pcall(p.guarded, dir, function()
+					local repo = { root = dir, vcs = "svn" }
+					local id = jobs.command(repo, "buffer", {
+						vim.v.progpath,
+						"--headless",
+						"-u",
+						"NONE",
+						"-i",
+						"NONE",
+						"-l",
+						dir .. "/leader.lua",
+						dir .. "/helper.lua",
+						dir .. "/helper.pid",
+					}, {
+						kill_grace_ms = 20,
+						start = function(args, opts, done)
+							handle = util.system_start(args, opts, done)
+							return handle
+						end,
+					})
+					ctx.wait_for(function()
+						return p.pid(dir .. "/helper.pid") and handle.process:is_closing()
+					end, "leader did not exit with inherited pipes open")
+					jobs.command(repo, "buffer", { "probe" }, {
+						start = function(_, _, done)
+							recovered = true
+							done({ code = 0, stdout = "", stderr = "" })
+							return {}
+						end,
+					})
+					jobs.cancel(function(job)
+						return job.id == id
+					end)
+					ctx.wait_for(function()
+						return recovered
+					end, "exited Windows parent held worker through inherited pipes")
+					assert(p.alive(p.pid(dir .. "/helper.pid")), "fixture did not keep inherited pipes open")
+				end)
+				vim.fn.has = has
+				-- Reap the fixture even on the failing-before path.
+				vim.wait(1000, function()
+					return recovered
+				end, 10)
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_core_process_windows_hung_taskkill_cannot_hold_worker",
+			function()
+				local jobs = require("lazyvcs.source_control.jobs")
+				local original, has = vim.system, vim.fn.has
+				local process_exit, helper_opts
+				local killed, recovered = false, false
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.has = function(name)
+					return name == "win32" and 1 or has(name)
+				end
+				vim.system = function(args, opts, cb)
+					if args[1] == "taskkill" then
+						helper_opts = opts
+						return {} -- Enumeration never finishes; no helper callback.
+					end
+					process_exit = cb
+					return {
+						pid = 12345,
+						is_closing = function()
+							return false
+						end,
+						kill = function(_, signal)
+							killed = signal == 9
+						end,
+					}
+				end
+				local ok, err = xpcall(function()
+					local repo = { root = h.tempdir(), vcs = "svn" }
+					local id = jobs.command(repo, "buffer", { "held" }, { kill_grace_ms = 20 })
+					jobs.command(repo, "buffer", { "next" }, {
+						start = function(_, _, done)
+							recovered = true
+							done({ code = 0, stdout = "", stderr = "" })
+							return {}
+						end,
+					})
+					jobs.cancel(function(job)
+						return job.id == id
+					end)
+					ctx.wait_for(function()
+						return killed
+					end, "hung taskkill prevented forced parent termination")
+					assert(helper_opts.timeout and helper_opts.timeout > 0, "taskkill has no deadline")
+					assert(not recovered, "worker released before process exit")
+				end, debug.traceback)
+				if process_exit then
+					process_exit({ code = 1, stdout = "", stderr = "" })
+					ctx.wait_for(function()
+						return recovered
+					end, "Windows cancellation held worker after process exit")
+				end
+				vim.system, vim.fn.has = original, has
+				assert(ok, err)
 			end,
 		},
 		{

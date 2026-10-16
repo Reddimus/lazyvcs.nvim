@@ -257,11 +257,13 @@ function M.system_start(args, opts, on_exit)
 	local process
 	local timeout_timer
 	local kill_timer
+	local reap_timer
 	local forced_result
 	local exited_result
 	local force_sent = false
 	local group_gone = false
 	local complete_exit
+	local reap_windows
 	local windows = vim.fn.has("win32") == 1
 	local wrapper = {}
 	opts.detach = not windows
@@ -300,10 +302,12 @@ function M.system_start(args, opts, on_exit)
 				local ok = pcall(vim.system, { "taskkill", "/T", "/F", "/PID", tostring(process.pid) }, {
 					stdout = false,
 					stderr = false,
+					timeout = math.max(1, math.min(kill_grace_ms, 1000)),
 				}, function()
 					pcall(process.kill, process, signal)
 				end)
-				if not ok then
+				-- A stalled tree walk must not defer the final parent kill.
+				if not ok or signal == 9 then
 					pcall(process.kill, process, signal)
 				end
 			else
@@ -312,6 +316,9 @@ function M.system_start(args, opts, on_exit)
 		end
 		if signal == 9 then
 			force_sent = true
+			if windows and forced_result then
+				reap_windows()
+			end
 		end
 	end
 
@@ -324,6 +331,39 @@ function M.system_start(args, opts, on_exit)
 			pcall(timer.stop, timer)
 			pcall(timer.close, timer)
 		end
+	end
+
+	-- vim.system waits for pipe EOF after the process handle closes. Windows
+	-- cannot find descendants of an exited parent with taskkill, so an inherited
+	-- pipe must not keep a cancelled command's worker forever. After the grace
+	-- period, discard those pipes only once the direct process has really exited.
+	-- Both supported Neovim versions keep these handles in SystemObj._state;
+	-- there is no public method for closing its output pipes.
+	reap_windows = function()
+		if done or reap_timer or not process.is_closing then
+			return
+		end
+		if process:is_closing() then
+			---@diagnostic disable-next-line: invisible
+			local state = process._state
+			if state then
+				for _, name in ipairs({ "stdout", "stderr" }) do
+					local pipe = state[name]
+					if pipe and not pipe:is_closing() then
+						pcall(pipe.read_stop, pipe)
+						pcall(pipe.close, pipe)
+					end
+				end
+			end
+			return
+		end
+		reap_timer = vim.defer_fn(
+			M.safe_callback(function()
+				reap_timer = nil
+				reap_windows()
+			end),
+			10
+		)
 	end
 
 	local function bounded_text(value, limit)
@@ -492,8 +532,10 @@ function M.system_start(args, opts, on_exit)
 		done = true
 		close_timer(timeout_timer)
 		close_timer(kill_timer)
+		close_timer(reap_timer)
 		timeout_timer = nil
 		kill_timer = nil
+		reap_timer = nil
 		if type(on_exit) == "function" then
 			runtime.track(wrapper)
 			vim.schedule(function()
@@ -548,7 +590,8 @@ function M.system_start(args, opts, on_exit)
 	function wrapper:close_timers()
 		close_timer(timeout_timer)
 		close_timer(kill_timer)
-		timeout_timer, kill_timer = nil, nil
+		close_timer(reap_timer)
+		timeout_timer, kill_timer, reap_timer = nil, nil, nil
 	end
 
 	if type(opts.cwd) == "string" and opts.cwd ~= "" and not vim.uv.fs_stat(opts.cwd) then

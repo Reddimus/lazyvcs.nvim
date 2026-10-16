@@ -490,7 +490,7 @@ local function start_commit_command(repo, message, on_done)
 				on_exit(nil, "Commit command is missing the -F message file argument")
 				return
 			end
-			local path, file_err = require("lazyvcs.source_control.commit_files").create(message)
+			local path, file_err, persistent = require("lazyvcs.source_control.commit_files").create(message)
 			if not path then
 				on_exit(nil, file_err)
 				return
@@ -499,6 +499,7 @@ local function start_commit_command(repo, message, on_done)
 				pcall(vim.uv.fs_unlink, path)
 			end
 			command[message_index] = path
+			process_opts.preserve_on_shutdown = process_opts.preserve_on_shutdown and persistent
 			local started, handle = pcall(util.system_start, command, process_opts, function(...)
 				cleanup()
 				on_exit(...)

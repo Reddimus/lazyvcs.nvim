@@ -7,16 +7,17 @@ end
 
 function M.create(message)
 	local dir = directory()
-	local ok, err = pcall(vim.fn.mkdir, dir, "p", 448)
-	if not ok then
-		return nil, "Could not create private commit directory: " .. tostring(err)
-	end
-	local private, chmod_err = vim.uv.fs_chmod(dir, 448)
-	if not private then
-		return nil, "Could not protect commit directory: " .. tostring(chmod_err)
+	local ok = pcall(vim.fn.mkdir, dir, "p", 448)
+	local persistent = false
+	if ok then
+		local protected, private = pcall(vim.uv.fs_chmod, dir, 448)
+		local stat = protected and private and vim.uv.fs_stat(dir)
+		persistent = stat and stat.type == "directory" and (vim.fn.has("win32") == 1 or bit.band(stat.mode, 511) == 448)
+			or false
 	end
 	sequence = sequence + 1
-	local path = string.format("%s/%d-%.0f-%d.txt", dir, vim.fn.getpid(), vim.uv.hrtime(), sequence)
+	local path = persistent and string.format("%s/%d-%.0f-%d.txt", dir, vim.fn.getpid(), vim.uv.hrtime(), sequence)
+		or vim.fn.tempname()
 	local fd, open_err = vim.uv.fs_open(path, "wx", 384)
 	if not fd then
 		return nil, "Could not create private commit message: " .. tostring(open_err)
@@ -27,7 +28,7 @@ function M.create(message)
 		pcall(vim.uv.fs_unlink, path)
 		return nil, "Could not write commit message: " .. tostring(written_ok and (write_err or close_err) or written)
 	end
-	return path
+	return path, nil, persistent
 end
 
 -- A preserved commit can outlive Neovim, so its completion cannot remove its
@@ -39,18 +40,16 @@ function M.prune()
 			return
 		end
 		while true do
-			local scanned, name, kind = pcall(vim.uv.fs_scandir_next, scan)
+			local scanned, name = pcall(vim.uv.fs_scandir_next, scan)
 			if not scanned or not name then
 				break
 			end
-			if kind == "file" then
-				local path = dir .. "/" .. name
-				pcall(vim.uv.fs_stat, path, function(stat_err, stat)
-					if not stat_err and stat and stat.type == "file" and stat.mtime.sec < cutoff then
-						pcall(vim.uv.fs_unlink, path, function() end)
-					end
-				end)
-			end
+			local path = dir .. "/" .. name
+			pcall(vim.uv.fs_stat, path, function(stat_err, stat)
+				if not stat_err and stat and stat.type == "file" and stat.mtime.sec < cutoff then
+					pcall(vim.uv.fs_unlink, path, function() end)
+				end
+			end)
 		end
 	end)
 end

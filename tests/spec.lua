@@ -1084,9 +1084,10 @@ local function test_svn_async_blame_cancels_active_child_process()
 	end
 
 	local backend = require("lazyvcs.backends.svn")
+	local jobs = require("lazyvcs.source_control.jobs")
 	local util = require("lazyvcs.util")
 	local original_system_start = util.system_start
-	local path = vim.fn.tempname()
+	local path = helpers.tempdir() .. "/cancel-blame.txt"
 	helpers.write_file(path, "line\n")
 
 	-- Guarantee the global monkey-patch is restored even if an assertion
@@ -1096,7 +1097,10 @@ local function test_svn_async_blame_cancels_active_child_process()
 		local callbacks = {}
 
 		---@diagnostic disable-next-line: duplicate-set-field
-		util.system_start = function(args, _, on_exit)
+		util.system_start = function(args, opts, on_exit)
+			if opts.cwd ~= vim.fs.dirname(path) then
+				return original_system_start(args, opts, on_exit)
+			end
 			local handle = {
 				args = args,
 				killed = false,
@@ -1115,10 +1119,38 @@ local function test_svn_async_blame_cancels_active_child_process()
 		end)
 		callbacks[1]({ stdout = vim.fs.dirname(path) .. "\n", code = 0 })
 		eq(#handles, 2)
+		callbacks[2]({ stdout = "", code = 0 })
+		eq(#handles, 3)
+		assert(vim.tbl_contains(handles[3].args, "blame"), "fixture did not reach svn blame")
+		-- Other buffers share this single worker and can already be queued when
+		-- cancellation completes. The mock must not capture their real processes.
+		local other_done = false
+		jobs.command(
+			{ root = helpers.tempdir(), vcs = "svn" },
+			"buffer",
+			{ "svn", "--version", "--quiet" },
+			{},
+			function(result, failure)
+				assert(result and not failure, failure)
+				other_done = true
+			end
+		)
 		job:kill()
-		assert(handles[2].killed, "active svn blame child process should be killed")
-		callbacks[2]({ stdout = "     1 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line\n", code = 0 })
+		assert(handles[3].killed, "active svn blame child process should be killed")
+		assert(not other_done, "worker released before physical completion")
+		callbacks[3]({ stdout = "     1 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line\n", code = 0 })
 		eq(completed, false)
+		local released = false
+		jobs.command({ root = vim.fs.dirname(path), vcs = "svn" }, "buffer", { "worker-probe" }, {
+			start = function(_, _, done)
+				released = true
+				done({ code = 0, stdout = "", stderr = "" })
+				return {}
+			end,
+		})
+		wait_for(function()
+			return released and other_done
+		end, "cancelled svn blame kept its scheduler worker", ASYNC_TIMEOUT_MS)
 	end)
 
 	util.system_start = original_system_start

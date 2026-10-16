@@ -56,6 +56,12 @@ if guarded == "ops" or guarded == "sidebar" then
 		return start(args, process_opts, cb)
 	end
 	require("lazyvcs.source_control.ops").commit_repo(state, { path = dir })
+	assert(
+		vim.wait(4000, function()
+			return vim.fn.filereadable(dir .. "/message-path") == 1
+		end, 10),
+		"commit did not start"
+	)
 	util.system_start = start
 else
 	mutation_id = jobs.command(repo, "git_commit", { "git", "commit", "-m", "survived shutdown" }, opts, function()
@@ -79,10 +85,27 @@ assert(
 	"status not ready"
 )
 vim.fn.mkdir(dir .. "/fetch", "p")
+-- Fill the remaining worker so the fetch must survive a queued start. Sidebar
+-- hydration can cause this ordering on slower hosts, including macOS CI.
+local release_worker
+jobs.command(repo, "fixture_barrier", { "held" }, {
+	start = function(_, _, done)
+		release_worker = done
+		return {}
+	end,
+})
+assert(
+	vim.wait(4000, function()
+		return release_worker ~= nil
+	end, 10),
+	"fixture barrier did not start"
+)
 local original = vim.system
 vim.system = function(args, process_opts, cb)
-	assert(args[1] == "git" and args[2] == "fetch", "unexpected fetch command")
-	return original(p.tree(dir .. "/fetch"), process_opts, cb)
+	if args[1] == "git" and args[2] == "fetch" then
+		return original(p.tree(dir .. "/fetch"), process_opts, cb)
+	end
+	return original(args, process_opts, cb)
 end
 if guarded == "ops" or guarded == "sidebar" then
 	jobs.command(repo, "git_fetch", { "git", "fetch" }, { scope = "git_fetch" })
@@ -91,13 +114,16 @@ else
 		lazyvcs_repo_cache = { [dir] = repo },
 	}, { type = "action_button", extra = { repo_root = dir, action = "fetch" } })
 end
-vim.system = original
+vim.defer_fn(function()
+	release_worker({ code = 0, stdout = "", stderr = "" })
+end, 20)
 assert(
 	vim.wait(4000, function()
 		return p.ready(dir .. "/fetch")
 	end, 10),
 	"fetch not ready"
 )
+vim.system = original
 jobs.command(repo, "git_commit", { "sh", "-c", 'echo queued > "$1/queued"', "sh", dir }, { scope = "mutation" })
 vim.api.nvim_create_autocmd("VimLeavePre", {
 	callback = function()
