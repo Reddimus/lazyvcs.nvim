@@ -99,8 +99,9 @@ return function(ctx)
 						source_control = { confirm_mutations = true },
 					})
 					s.refresh(buf, true)
+					local resets = 0
 					attach(buf, function()
-						error("detached gitsigns was invoked")
+						resets = resets + 1
 					end)
 					vim.cmd("LazyVCS hunk revert")
 					s.wait(function()
@@ -116,6 +117,14 @@ return function(ctx)
 					s.wait(function()
 						return (s.signs.current_state(buf).native_holds or 0) == 0
 					end, "confirmation hold was not released", 15000)
+					-- A reset error would be contained, so count calls instead of raising.
+					assert(resets == 0, "detached gitsigns was invoked")
+					if choice == "1" then
+						assert(
+							s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "two",
+							"confirmed revert was not applied natively"
+						)
+					end
 					s.edit(buf, { "one", "edited after detach", "three" })
 					s.wait(function()
 						return #s.marks(buf) > 0
