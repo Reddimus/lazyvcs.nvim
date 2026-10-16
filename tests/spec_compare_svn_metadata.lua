@@ -63,9 +63,10 @@ return function(ctx)
 				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
 				local f = h.make_svn_fixture()
 				h.exec({ "svn", "revert", f.file }, f.root)
-				local paths = { ".", "dir &@'()", "dir %23#", "dir ;café", "dir !$*+,=" }
+				local paths = { ".", "dir &@'()", "dir %23#", "dir ;café", "dir !$+,=" }
+				-- Windows rejects * : ? in file names.
 				if vim.fn.has("win32") ~= 1 then
-					paths[#paths + 1] = "dir !+,=:?"
+					paths[#paths + 1] = "dir *!+,=:?"
 				end
 				for _, path in ipairs(paths) do
 					if path ~= "." then
