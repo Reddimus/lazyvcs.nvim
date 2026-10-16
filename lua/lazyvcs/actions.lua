@@ -263,7 +263,7 @@ transfer = require("lazyvcs.live_transfer").new({
 	close = close_session,
 	commit = commit_transfer,
 	attach_source = function(session)
-		attach_source(session)
+		attach_source(session, true)
 	end,
 })
 
@@ -580,7 +580,7 @@ set_session_maps = function(session)
 	session.maps_installed = true
 end
 
-attach_source = function(session)
+attach_source = function(session, reattach)
 	if not session.readonly_comparison and not source_attachments[session.editable_bufnr] then
 		source_attachments[session.editable_bufnr] = vim.api.nvim_buf_attach(session.editable_bufnr, false, {
 			on_lines = safe_callback(function(_, bufnr)
@@ -597,7 +597,10 @@ attach_source = function(session)
 				end
 			end),
 		})
-		schedule_refresh(session.editable_bufnr)
+		-- A reload detaches the source; refresh hunks against the reloaded text.
+		if reattach then
+			schedule_refresh(session.editable_bufnr)
+		end
 	end
 end
 

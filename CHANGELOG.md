@@ -24,7 +24,6 @@ and this project adheres to
   repeated close failures.
 - Refresh live diffs after file reloads and alignment after global showbreak
   changes.
-- Preserve user diff windows in other tabs during Resession saves.
 - Keep delayed live diff opens in their originating window and preserve focus.
 - Update wrapped diff padding after option changes and clear it when wrapping
   stops.
