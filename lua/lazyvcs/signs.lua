@@ -62,8 +62,8 @@ local function defers_to_gitsigns(backend_name, bufnr)
 	if backend_name ~= "git" or not config.get().use_gitsigns then
 		return false
 	end
-	local ok, gs = pcall(require, "gitsigns")
-	if not ok or type(gs.get_hunks) ~= "function" then
+	local gs = package.loaded.gitsigns
+	if type(gs) ~= "table" or type(gs.get_hunks) ~= "function" then
 		return false
 	end
 	local usable, hunks = pcall(gs.get_hunks, bufnr)
@@ -77,11 +77,7 @@ local function gitsigns_api()
 	if not backend or not defers_to_gitsigns(backend.name, bufnr) then
 		return nil
 	end
-	local ok, gitsigns = pcall(require, "gitsigns")
-	if not ok then
-		return nil
-	end
-	return gitsigns
+	return package.loaded.gitsigns
 end
 
 local function gitsigns_method(method)
@@ -217,6 +213,9 @@ local function render(bufnr, on_ready)
 		state.compute_waiters = nil
 		for _, waiter in ipairs(waiters) do
 			util.safe_callback(waiter)(loaded, err)
+		end
+		if state.delegate_after_command then
+			delegate_to_gitsigns(bufnr, state)
 		end
 	end
 	if on_ready then
@@ -371,6 +370,19 @@ delegate_to_gitsigns = function(bufnr, state, on_ready)
 	if not defers_to_gitsigns(state.backend or (backend and backend.name), bufnr) then
 		return false
 	end
+	if
+		state.native
+		and (#(state.load_waiters or {}) > 0 or #(state.compute_waiters or {}) > 0 or #(state.base_waiters or {}) > 0)
+	then
+		-- Serve commands already using the native base before handing signs over.
+		state.delegate_after_command = true
+		if on_ready then
+			state.compute_waiters = state.compute_waiters or {}
+			state.compute_waiters[#state.compute_waiters + 1] = on_ready
+		end
+		return true
+	end
+	state.delegate_after_command = nil
 	state.delegated, state.native = true, nil
 	local waiters = {}
 	for _, key in ipairs({ "load_waiters", "compute_waiters", "base_waiters" }) do
@@ -461,7 +473,6 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 	if not native and delegate_to_gitsigns(bufnr, state, on_ready) then
 		return
 	end
-	state.native, state.delegated = native, nil
 	local profile, profile_err = compare_text.profile(bufnr)
 	if not profile then
 		clear(bufnr)
@@ -477,11 +488,15 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 	if state.loading and not reload_base then
 		return state.job
 	end
+	state.native, state.delegated = native, nil
 	on_ready = function(loaded, err)
 		local waiters = state.load_waiters or {}
 		state.load_waiters = nil
 		for _, waiter in ipairs(waiters) do
 			util.safe_callback(waiter)(loaded, err)
+		end
+		if state.delegate_after_command then
+			delegate_to_gitsigns(bufnr, state)
 		end
 	end
 	if not reload_base and state.loaded and state.base_text and state.base_text.profile_key == profile.key then

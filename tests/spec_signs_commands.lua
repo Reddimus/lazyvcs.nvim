@@ -176,37 +176,120 @@ return function(ctx)
 			assert(loads == 1, "delegated buffer started another native load")
 		end),
 	}
+	for _, trigger in ipairs({ "gitsigns_update", "refresh" }) do
+		cases[#cases + 1] = {
+			trigger == "gitsigns_update" and "test_signs_gitsigns_update_invalidates_target_and_releases_waiters"
+				or "test_signs_non_native_refresh_preserves_native_command_load",
+			s.guard(function()
+				local f, buf = s.fixture(false, { use_gitsigns = true })
+				s.refresh(buf, true)
+				local attached, held, completed, loaded, failure = false, nil, 0, nil, nil
+				package.loaded.gitsigns = {
+					get_hunks = function(target)
+						return target == buf and attached and {} or nil
+					end,
+				}
+				local backends = require("lazyvcs.backends")
+				---@diagnostic disable-next-line: duplicate-set-field
+				backends.load_base_async = function(_, cb)
+					held = cb
+					return { kill = function() end }
+				end
+				s.signs.refresh(buf, true)
+				s.api.nvim_win_set_cursor(0, { 1, 0 })
+				vim.cmd("LazyVCS hunk next")
+				s.wait(function()
+					return held ~= nil
+				end, "native command load did not start", 15000)
+				s.signs.refresh(buf, false, function(state, err)
+					completed, loaded, failure = completed + 1, state and state.loaded, err
+				end, true)
+				if trigger == "refresh" then
+					s.signs.refresh(buf, false)
+					assert(s.signs.current_state(buf).native, "non-native refresh reset the native load")
+				end
+				attached = true
+				if trigger == "gitsigns_update" then
+					s.api.nvim_exec_autocmds("User", { pattern = "GitSignsUpdate", data = { buffer = buf } })
+				else
+					s.signs.refresh(buf, false)
+				end
+				assert(completed == 0, "delegation failed the native command's waiter before its load completed")
+				assert(held)({ root = f.root, relpath = "sample.txt", base_lines = { "one", "two", "three" } })
+				assert(completed == 1 and loaded and not failure, "native command waiter did not receive loaded state")
+				assert(s.api.nvim_win_get_cursor(0)[1] == 2, "late delegation prevented native hunk navigation")
+				assert(#s.marks(buf) == 0, "command completion left native signs beside gitsigns")
+				assert(s.signs.current_state(buf).delegated and not s.signs.current_state(buf).base_lines)
+				if trigger == "gitsigns_update" then
+					attached = false
+					held = nil
+					s.signs.refresh(buf, true)
+					s.wait(function()
+						return held ~= nil
+					end, "replacement native load did not start", 15000)
+					assert(held)({ root = f.root, relpath = "sample.txt", base_lines = { "one", "two", "three" } })
+					assert(#s.marks(buf) > 0)
+					vim.o.hidden = true
+					vim.cmd("enew!")
+					attached = true
+					s.api.nvim_exec_autocmds("User", { pattern = "GitSignsUpdate", data = { buffer = buf } })
+					assert(#s.marks(buf) == 0, "gitsigns update left native signs in background buffer")
+					assert(s.signs.current_state(buf).delegated)
+				end
+			end),
+		}
+	end
 	cases[#cases + 1] = {
-		"test_signs_gitsigns_update_invalidates_target_and_releases_waiters",
+		"test_signs_unloaded_gitsigns_is_not_required_by_refresh",
 		s.guard(function()
-			local _, buf = s.fixture(false, { use_gitsigns = true })
-			s.refresh(buf, true)
-			local attached, held, completed = false, nil, 0
-			package.loaded.gitsigns = {
-				get_hunks = function(target)
-					return target == buf and attached and {} or nil
-				end,
-			}
-			local backends = require("lazyvcs.backends")
-			---@diagnostic disable-next-line: duplicate-set-field
-			backends.load_base_async = function(_, cb)
-				held = cb
-				return { kill = function() end }
+			local required = 0
+			package.loaded.gitsigns = nil
+			-- An importable module models an installed plugin that has not loaded yet.
+			package.preload.gitsigns = function()
+				required = required + 1
+				return {
+					get_hunks = function()
+						return {}
+					end,
+				}
 			end
-			s.signs.refresh(buf, true, function(state, err)
-				assert(not state and err:find("delegated", 1, true))
-				completed = completed + 1
-			end, true)
+			local _, buf = s.fixture(false, { use_gitsigns = true })
+			assert(required == 0, "refresh required unloaded gitsigns")
+			local state = s.refresh(buf, true)
+			assert(required == 0 and package.loaded.gitsigns == nil, "refresh required unloaded gitsigns")
+			assert(state and state.loaded, "unloaded gitsigns suppressed native loading")
+			assert(#s.marks(buf) > 0, "unloaded gitsigns suppressed native signs")
+			s.edit(buf, { "one", "another change", "three" })
 			s.wait(function()
-				return held ~= nil
-			end, "native command load did not start", 15000)
-			vim.o.hidden = true
-			vim.cmd("enew!")
-			attached = true
-			s.api.nvim_exec_autocmds("User", { pattern = "GitSignsUpdate", data = { buffer = buf } })
-			assert(#s.marks(buf) == 0, "gitsigns update left native signs in background buffer")
-			assert(completed == 1, "gitsigns update stranded load waiter")
-			assert(s.signs.current_state(buf).delegated and not s.signs.current_state(buf).base_lines)
+				local state = s.signs.current_state(buf)
+				return state
+					and state.rendered_identity
+					and state.rendered_identity.changedtick == s.api.nvim_buf_get_changedtick(buf)
+			end, "debounced native refresh did not finish")
+			assert(required == 0 and package.loaded.gitsigns == nil, "debounced refresh loaded gitsigns")
+			assert(#s.marks(buf) > 0)
+		end),
+	}
+	cases[#cases + 1] = {
+		"test_signs_guard_restores_globals_and_config_after_failure",
+		s.guard(function()
+			local config = require("lazyvcs.config")
+			local settings, notify = vim.deepcopy(config.get()), vim.notify
+			local loaded, preload = package.loaded.gitsigns, package.preload.gitsigns
+			local ok, err = pcall(s.guard(function()
+				config.get().use_gitsigns = not settings.use_gitsigns
+				vim.notify = function() end
+				package.loaded.gitsigns = {}
+				package.preload.gitsigns = function()
+					return {}
+				end
+				error("injected signs spec failure")
+			end))
+			assert(not ok and tostring(err):find("injected signs spec failure", 1, true))
+			assert(vim.notify == notify, "guard leaked vim.notify after failure")
+			assert(package.loaded.gitsigns == loaded, "guard leaked loaded gitsigns after failure")
+			assert(vim.deep_equal(config.get(), settings), "guard leaked in-place config changes after failure")
+			assert(package.preload.gitsigns == preload, "guard leaked preload gitsigns after failure")
 		end),
 	}
 	cases[#cases + 1] = {
@@ -229,7 +312,8 @@ return function(ctx)
 			local ok, err = pcall(function()
 				for i = 1, 3 do
 					s.edit(buf, { "edit " .. i })
-					vim.wait(30)
+					-- The fixture debounce is 5 ms; allow well beyond it after each edit.
+					vim.wait(100)
 				end
 				assert(count == 0, "delegated edits scheduled " .. count .. " native refreshes")
 			end)
