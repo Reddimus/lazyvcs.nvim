@@ -145,6 +145,170 @@ return function(ctx)
 	end
 	local cases = {
 		{
+			"test_live_diff_open_completion_refuses_pending_window_owner",
+			function()
+				local f = setup()
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+				local release = hold()
+				actions.open()
+				local complete = release()
+				vim.cmd.edit(vim.fn.fnameescape(f.file1))
+				local s = opened()
+				local finish_transfer = hold()
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+				local target = api.nvim_get_current_buf()
+				assert(state.for_window(s.editable_win) == s and not state.get(target))
+				local messages = {}
+				---@diagnostic disable-next-line: duplicate-set-field
+				require("lazyvcs.util").notify = function(message)
+					messages[#messages + 1] = message
+				end
+				-- This earlier open finishes in EW before the new transfer can commit.
+				complete()
+				assert(not state.get(target) and state.for_window(s.editable_win) == s)
+				assert(#state.list() == 1 and #api.nvim_tabpage_list_wins(0) == 2)
+				assert(#messages == 1 and messages[1]:find("owned by another buffer"))
+				finish_transfer()()
+				ctx.wait_for(function()
+					local live = state.get(target)
+					return live and live.phase == "active"
+				end, "refused open stranded the window transfer")
+				assert(state.get(target).base_win == s.base_win)
+			end,
+		},
+		{
+			"test_live_diff_immediate_open_keeps_pending_transfer_owner",
+			function()
+				local f = setup()
+				local other = f.root .. "/other.txt"
+				h.write_file(other, "other base\n")
+				h.exec({ "git", "add", "other.txt" }, f.root)
+				h.exec({ "git", "commit", "-m", "other" }, f.root)
+				local s = opened()
+				local release = hold()
+				local load, builds = backends.load_async, 0
+				---@diagnostic disable-next-line: duplicate-set-field
+				backends.load_async = function(...)
+					builds = builds + 1
+					return load(...)
+				end
+				vim.cmd.edit(vim.fn.fnameescape(other))
+				local target = api.nvim_get_current_buf()
+				assert(state.for_window(s.editable_win) == s and not state.get(target))
+				local before = builds
+				assert(actions.open() == s, "open did not return the pending window owner")
+				vim.cmd("LazyVCS diff open")
+				assert(builds == before, "immediate open started a competing backend build")
+				local complete = release()
+				assert(builds == 1, "transfer did not own the only build")
+				assert(actions.open() == s, "loading transfer lost its window owner")
+				complete()
+				ctx.wait_for(function()
+					local live = state.get(target)
+					return live and live.phase == "active"
+				end, "pending transfer did not finish")
+				local live = assert(state.get(target))
+				assert(live.base_win == s.base_win and live.base_bufnr == s.base_bufnr)
+				assert(#state.list() == 1 and #api.nvim_tabpage_list_wins(0) == 2)
+			end,
+		},
+		{
+			"test_live_diff_registration_refuses_colliding_keys_atomically",
+			function()
+				setup()
+				local s = opened()
+				for _, key in ipairs({ "editable_bufnr", "base_bufnr", "editable_win", "base_win" }) do
+					for _, owned in ipairs({ "editable", "base" }) do
+						local candidate = { editable_bufnr = -1, base_bufnr = -2, editable_win = -3, base_win = -4 }
+						local suffix = key:find("bufnr") and "_bufnr" or "_win"
+						candidate[key] = s[owned .. suffix]
+						local registered, err = state.register(candidate)
+						assert(not registered and err, "registration accepted a colliding " .. key)
+						assert(state.get(s.editable_bufnr) == s and state.get(s.base_bufnr) == s)
+						assert(state.for_window(s.editable_win) == s and state.for_window(s.base_win) == s)
+						assert(not state.get(-1) and not state.get(-2))
+						assert(not state.for_window(-3) and not state.for_window(-4))
+					end
+				end
+			end,
+		},
+		{
+			"test_live_diff_unregister_preserves_new_window_owner",
+			function()
+				setup()
+				local s = opened()
+				local replacement = { editable_bufnr = -1 }
+				local ok, err = xpcall(function()
+					state.window_index[s.editable_win], state.window_index[s.base_win] = replacement, replacement
+					state.unregister(s)
+					assert(not state.get(s.editable_bufnr) and not state.get(s.base_bufnr))
+					assert(state.for_window(s.editable_win) == replacement)
+					assert(state.for_window(s.base_win) == replacement)
+				end, debug.traceback)
+				state.window_index[s.editable_win], state.window_index[s.base_win] = nil, nil
+				assert(state.register(s))
+				actions.close(s.editable_bufnr)
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_live_diff_queued_automatic_closes_skip_failed_closing_owner",
+			function()
+				for _, event in ipairs({ "base_window", "editable_window", "base_buffer", "rename" }) do
+					local f = setup()
+					local s = opened()
+					local close, util = layout.close, require("lazyvcs.util")
+					local notify, calls, messages = util.notify, 0, {}
+					local ok, err = xpcall(function()
+						---@diagnostic disable-next-line: duplicate-set-field
+						layout.close = function()
+							calls = calls + 1
+							error("persistent cleanup failure")
+						end
+						---@diagnostic disable-next-line: duplicate-set-field
+						util.notify = function(message)
+							messages[#messages + 1] = message
+						end
+						-- Queue real lifecycle events before the failing close removes their autocmds.
+						if event == "base_window" then
+							api.nvim_win_close(s.base_win, true)
+						elseif event == "editable_window" then
+							api.nvim_win_close(s.editable_win, true)
+						elseif event == "base_buffer" then
+							api.nvim_buf_delete(s.base_bufnr, { force = true })
+						else
+							vim.cmd("file " .. vim.fn.fnameescape(f.root .. "/renamed.txt"))
+						end
+						actions.close(s.editable_bufnr)
+						vim.wait(100, function()
+							return false
+						end, 10)
+						assert(calls == 2 and #messages == 1, event .. " retried a closing owner")
+						for _ = 1, 3 do
+							vim.cmd.enew()
+							vim.cmd.edit(vim.fn.fnameescape(f.file2))
+							vim.cmd.tabnew()
+							vim.cmd.tabclose()
+							vim.wait(20, function()
+								return false
+							end, 10)
+						end
+						assert(calls == 2 and #messages == 1, "navigation repeated failed cleanup")
+						actions.close(s.editable_bufnr)
+						assert(calls == 3 and #messages == 2, "explicit retry did not report failure")
+					end, debug.traceback)
+					layout.close, util.notify = close, notify
+					actions.close(s.editable_bufnr)
+					ctx.wait_for(function()
+						return not state.get(s.editable_bufnr)
+					end, "automatic close spec stranded its session")
+					assert(ok, err)
+					h.cleanup()
+					vim.cmd("silent! only!")
+				end
+			end,
+		},
+		{
 			"test_live_diff_open_target_refuses_closing_buffer_in_other_tab",
 			function()
 				local f = setup()
@@ -181,29 +345,46 @@ return function(ctx)
 			function()
 				setup()
 				local s = opened()
+				local close, util = layout.close, require("lazyvcs.util")
+				local notify = util.notify
 				local calls, messages = 0, {}
-				---@diagnostic disable-next-line: duplicate-set-field
-				layout.close = function()
-					calls = calls + 1
-					error("persistent cleanup failure")
-				end
-				---@diagnostic disable-next-line: duplicate-set-field
-				require("lazyvcs.util").notify = function(message)
-					messages[#messages + 1] = message
-				end
+				local ok, err = xpcall(function()
+					---@diagnostic disable-next-line: duplicate-set-field
+					layout.close = function()
+						calls = calls + 1
+						error("persistent cleanup failure")
+					end
+					---@diagnostic disable-next-line: duplicate-set-field
+					util.notify = function(message)
+						messages[#messages + 1] = message
+					end
+					actions.close(s.editable_bufnr)
+					ctx.wait_for(function()
+						return calls == 2
+					end, "automatic close retry did not run")
+					assert(#messages == 1, "automatic retry repeated cleanup notification")
+					actions.close(s.editable_bufnr)
+					assert(#messages == 2, "explicit failed close was silent")
+					assert(state.current() == s and s.phase == "closing", "closing owner must remain discoverable")
+					assert(actions.open({ silent = true }) == s)
+					assert(#messages == 2, "silent open warned about closing window owner")
+					actions.open()
+					assert(#messages == 3 and messages[3]:find("cleanup is unfinished"), "blocked open was silent")
+					vim.cmd.tabnew()
+					assert(actions.open({ bufnr = s.editable_bufnr, silent = true }) == s)
+					assert(#messages == 3, "silent open warned about closing buffer owner")
+					actions.open({ bufnr = s.editable_bufnr })
+					assert(
+						#messages == 4 and messages[4]:find("cleanup is unfinished"),
+						"closing buffer owner was silent"
+					)
+				end, debug.traceback)
+				layout.close, util.notify = close, notify
 				actions.close(s.editable_bufnr)
 				ctx.wait_for(function()
-					return calls == 2
-				end, "automatic close retry did not run")
-				assert(#messages == 1, "automatic retry repeated cleanup notification")
-				actions.close(s.editable_bufnr)
-				assert(#messages == 2, "explicit failed close was silent")
-				assert(state.current() == s and s.phase == "closing", "closing owner must remain discoverable")
-				actions.open()
-				assert(#messages == 3 and messages[3]:find("cleanup is unfinished"), "blocked open was silent")
-				vim.cmd.tabnew()
-				actions.open({ bufnr = s.editable_bufnr })
-				assert(#messages == 4 and messages[4]:find("cleanup is unfinished"), "closing buffer owner was silent")
+					return state.get(s.editable_bufnr) == nil
+				end, "explicit close spec stranded its session")
+				assert(ok, err)
 			end,
 		},
 		{

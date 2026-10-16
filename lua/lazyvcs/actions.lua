@@ -108,6 +108,12 @@ local function open_session(session)
 	if (owner and owner.closing) or (prior and prior.closing) then
 		return nil, "Previous live diff cleanup is unfinished"
 	end
+	if owner and owner.editable_bufnr ~= session.editable_bufnr then
+		return nil, "Live diff window is owned by another buffer"
+	end
+	if prior then
+		return nil, "Buffer already has a live diff session"
+	end
 	session_sequence = session_sequence + 1
 	session.id = session_sequence
 	session.editor_state = session.editor_state
@@ -123,7 +129,7 @@ local function open_session(session)
 				and vim.api.nvim_win_get_buf(session.base_win) == session.base_bufnr,
 			"Comparison panes changed while opening"
 		)
-		state.register(session)
+		assert(state.register(session))
 		registered = true
 		require("lazyvcs.integrations.resession").setup(not session.readonly_comparison)
 		set_session_maps(session)
@@ -228,6 +234,14 @@ close_session = function(session, opts, automatic_retry)
 	state.unregister(session)
 end
 
+-- Automatic events may have queued before a failed close removed the autocmds.
+-- Only explicit closes and the one scheduled retry may retry a closing owner.
+local function close_automatically(session, opts)
+	if session and not session.closing then
+		close_session(session, opts)
+	end
+end
+
 local function commit_transfer(old, replacement)
 	session_sequence = session_sequence + 1
 	replacement.id = session_sequence
@@ -260,7 +274,7 @@ end
 
 transfer = require("lazyvcs.live_transfer").new({
 	build = build_session_async,
-	close = close_session,
+	close = close_automatically,
 	commit = commit_transfer,
 	attach_source = function(session)
 		attach_source(session, true)
@@ -657,7 +671,7 @@ attach_session = function(session)
 		callback = safe_callback(function()
 			session.base_invalid, session.hunks = true, {}
 			vim.schedule(safe_callback(function()
-				M.close(session.editable_bufnr)
+				close_automatically(session)
 			end))
 		end),
 	})
@@ -708,7 +722,7 @@ attach_session = function(session)
 			session.base_wiping = true
 			vim.schedule(safe_callback(function()
 				if state.get(session.editable_bufnr) == session then
-					close_session(session)
+					close_automatically(session)
 				end
 			end))
 		end),
@@ -732,7 +746,7 @@ attach_session = function(session)
 			session.phase = "closed"
 			vim.schedule(safe_callback(function()
 				if state.get(session.editable_bufnr) == session then
-					M.close(session.editable_bufnr)
+					close_automatically(session)
 				end
 			end))
 		end),
@@ -746,7 +760,7 @@ attach_session = function(session)
 			session.phase = "closed"
 			vim.schedule(safe_callback(function()
 				if state.get(session.editable_bufnr) == session then
-					M.close(session.editable_bufnr)
+					close_automatically(session)
 				end
 			end))
 		end),
@@ -772,13 +786,20 @@ function M.open(opts)
 	local invoking_tab = util.win_is_valid(invoking_win) and vim.api.nvim_win_get_tabpage(invoking_win)
 	local owner = state.for_window(invoking_win)
 	if owner and owner.closing then
-		util.notify("Previous live diff cleanup is unfinished", vim.log.levels.WARN)
+		if not opts.silent then
+			util.notify("Previous live diff cleanup is unfinished", vim.log.levels.WARN)
+		end
+		return owner
+	end
+	if owner and owner.editable_bufnr ~= bufnr then
 		return owner
 	end
 	local existing = state.get(bufnr)
 	if existing then
 		if existing.closing then
-			util.notify("Previous live diff cleanup is unfinished", vim.log.levels.WARN)
+			if not opts.silent then
+				util.notify("Previous live diff cleanup is unfinished", vim.log.levels.WARN)
+			end
 			return existing
 		end
 		if util.win_is_valid(existing.editable_win) then
