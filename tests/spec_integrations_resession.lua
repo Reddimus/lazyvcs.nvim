@@ -311,6 +311,42 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_live_diff_resession_serializes_user_winhighlight_and_resumes_overlay",
+			function()
+				local s = open(false)
+				local highlighting = require("lazyvcs.highlighting")
+				local user = "Normal:ErrorMsg,@lsp.type.lazyvcs_resession:Comment"
+				api.nvim_set_hl(0, "@lsp.type.lazyvcs_resession", { fg = 0xff0000 })
+				util.set_win_option(s.editable_win, "winhighlight", user)
+				highlighting.refresh(s.editable_win)
+				local live = util.get_win_option(s.editable_win, "winhighlight")
+				---@cast live string
+				assert(live:find("LazyVcsSemanticHidden", 1, true), "fixture has no active semantic overlay")
+				for _ = 1, 2 do
+					dispatch("pre_save")
+					local serialized = vim.json.encode(get(s.editable_win))
+					assert(not serialized:find("LazyVcsSemanticHidden", 1, true), "serializer saw semantic overlay")
+					equal(vim.json.decode(serialized).winhighlight, user, "serializer lost user mappings")
+					dispatch("post_save")
+					vim.wait(20, function()
+						return false
+					end)
+					equal(
+						util.get_win_option(s.editable_win, "winhighlight"),
+						live,
+						"save changed live semantic overlay"
+					)
+				end
+				require("lazyvcs.actions").close(s.editable_bufnr)
+				equal(
+					util.get_win_option(s.editable_win, "winhighlight"),
+					user,
+					"save changed highlighting user mappings"
+				)
+				util.set_win_option(s.editable_win, "winhighlight", "")
+			end,
+		},
+		{
 			"test_live_diff_resession_recovers_interrupted_save",
 			function()
 				local s, before = open(false)

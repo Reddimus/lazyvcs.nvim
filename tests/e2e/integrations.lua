@@ -24,7 +24,8 @@ local function run()
 	local util, state = require("lazyvcs.util"), require("lazyvcs.state")
 	local options = dofile(plugins .. "/AstroNvim/lua/astronvim/plugins/resession.lua").opts
 	options.dir = "lazyvcs-integration"
-	options.options = { "diff", "scrollbind", "cursorbind", "foldmethod", "foldcolumn", "wrap", "winbar" }
+	options.options =
+		{ "diff", "scrollbind", "cursorbind", "foldmethod", "foldcolumn", "wrap", "winbar", "winhighlight" }
 	-- Let lazy.nvim configure Resession on its first require, as AstroNvim does.
 	local spec = assert(require("lazy.core.config").plugins["resession.nvim"], "missing lazy Resession spec")
 	assert(not package.loaded.resession, "Resession loaded before the live diff test")
@@ -93,6 +94,8 @@ local function run()
 
 	vim.cmd.edit(vim.fn.fnameescape(f.file))
 	local editor = api.nvim_get_current_win()
+	api.nvim_set_hl(0, "@lsp.type.lazyvcs_resession", { fg = 0xff0000 })
+	util.set_win_option(editor, "winhighlight", "Normal:ErrorMsg,@lsp.type.lazyvcs_resession:Comment")
 	local before = snapshot(editor)
 	require("neo-tree").setup({
 		enable_git_status = false,
@@ -166,6 +169,7 @@ local function run()
 		vim.t[tab].bufs = { s.editable_bufnr }
 	end
 	local live = snapshot(editor)
+	assert(tostring(live.winhighlight):find("LazyVcsSemanticHidden", 1, true), "fixture has no active semantic overlay")
 	-- This is the user's first require: save immediately, before LazyLoad can run.
 	---@diagnostic disable-next-line: different-requires
 	require("resession").save(name .. "-first", { notify = false })
@@ -190,6 +194,12 @@ local function run()
 	h.write_file(manifest, vim.json.encode({ file = vim.fs.normalize(f.file), options = before, lines = lines }))
 	print("PASS integration " .. backend .. " real Resession save from both panes")
 	local files = require("resession.files")
+	for _, session_name in ipairs({ name .. "-first", name, name .. "-tab" }) do
+		local path = require("resession.util").get_session_file(session_name)
+		local serialized = assert(files.read_file(path), "session file was not written")
+		assert(not serialized:find("LazyVcsSemanticHidden", 1, true), "session file contains semantic overlay")
+	end
+	print("PASS integration " .. backend .. " real Resession serialized user winhighlight without overlay")
 	local write = files.write_json_file
 	files.write_json_file = function()
 		error("forced integration write failure")

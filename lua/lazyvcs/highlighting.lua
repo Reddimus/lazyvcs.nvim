@@ -89,6 +89,15 @@ local function owned(win, state)
 		)
 end
 
+---Return user mappings without the native semantic-token overlay.
+---@param win integer
+---@return string
+function M.user_winhighlight(win)
+	local value = util.get_win_option(win, "winhighlight")
+	---@cast value string
+	return user_mappings(value, windows[win])
+end
+
 local function semantic(name)
 	return name:match("^@lsp%.type%.") or name:match("^@lsp%.mod%.") or name:match("^@lsp%.typemod%.")
 end
