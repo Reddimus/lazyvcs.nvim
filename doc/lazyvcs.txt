@@ -323,12 +323,13 @@ final-newline state. Above `signs.max_file_bytes`, attached gitsigns handles
 reverts after pending LazyVCS base mutations settle and this buffer emits
 `User GitSignsUpdate`. LazyVCS requests a gitsigns refresh when its public API is
 available. A just-settled mutation also requires this buffer's next update before
-large-file or matching-gitsigns reverts can use its hunks. The update clears this
-requirement. If no update arrives within two seconds, nothing is reverted and
-LazyVCS asks you to retry. A new base mutation cancels a waiting refresh with a
-warning. Buffer unload cancels it silently. A second large-file revert reports
-that a command is already pending. Confirmation checks gitsigns hunks and rejects
-matching base mutations that begin or settle while open.
+large-file or matching-gitsigns reverts can use its hunks. Only that update
+clears this requirement. If no update arrives within two seconds, nothing is
+reverted and LazyVCS asks you to retry after the signs update. A retry requests
+another refresh and waits again. A new base mutation cancels a waiting refresh
+with a warning. Buffer unload cancels it silently. A second large-file revert
+reports that a command is already pending. Confirmation checks gitsigns hunks and
+rejects matching base mutations that begin or settle while open.
 
 Large native sign comparisons run histogram diff in a worker thread. Results from
 older edits or bases are discarded. Small comparisons run synchronously. Preview

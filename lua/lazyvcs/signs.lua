@@ -857,9 +857,13 @@ local function after_gitsigns_refresh(context, state, release, on_ready)
 		if finished then
 			return
 		end
-		state.gitsigns_refresh_needed = nil
+		-- Keep the freshness mark: without native validation, a retry could reset
+		-- against hunks gitsigns computed from the previous base.
 		cancel()
-		util.notify("gitsigns.nvim has not refreshed its hunks; retry the revert", vim.log.levels.WARN)
+		util.notify(
+			"gitsigns.nvim has not refreshed its hunks, so nothing was reverted; retry after its signs update",
+			vim.log.levels.WARN
+		)
 	end
 	if not timer then
 		timeout()

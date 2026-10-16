@@ -440,29 +440,44 @@ return function(ctx)
 					end
 				end
 				local pending = wait_for_refresh()
-				local started = vim.uv.hrtime()
-				s.wait(function()
-					return #notices > 0
-				end, "missing gitsigns refresh did not time out", 3000)
-				assert((vim.uv.hrtime() - started) / 1e6 >= 1800, "refresh wait expired too soon")
-				assert(notices[1]:find("retry", 1, true))
-				assert(pending.resets == 0 and type(pending.confirmation()) ~= "function")
-				assert(s.api.nvim_buf_get_lines(pending.buf, 1, 2, false)[1] == "changed")
-				assert((s.signs.current_state(pending.buf).native_holds or 0) == 0)
-				assert(
-					not s.signs.current_state(pending.buf).gitsigns_refresh_needed,
-					"timeout retained freshness mark"
-				)
-				-- Retry must converge even when no update ever arrives.
-				vim.cmd("LazyVCS hunk revert")
+				local function timed_out(count)
+					local started = vim.uv.hrtime()
+					s.wait(function()
+						return #notices >= count
+					end, "missing gitsigns refresh did not time out", 3000)
+					assert((vim.uv.hrtime() - started) / 1e6 >= 1800, "refresh wait expired too soon")
+					assert(#notices == count and notices[count]:find("retry", 1, true))
+					local state = s.signs.current_state(pending.buf)
+					assert(pending.resets == 0 and type(pending.confirmation()) ~= "function")
+					assert(s.api.nvim_buf_get_lines(pending.buf, 1, 2, false)[1] == "changed")
+					assert((state.native_holds or 0) == 0)
+					-- The cached gitsigns hunks still describe the pre-stage index.
+					assert(state.gitsigns_refresh_needed, "timeout cleared the freshness mark")
+				end
+				local function retry(refreshes)
+					vim.cmd("LazyVCS hunk revert")
+					s.wait(function()
+						return pending.refreshes == refreshes
+					end, "retry did not request another gitsigns refresh")
+				end
+				timed_out(1)
+				retry(2)
+				timed_out(2)
+				retry(3)
+				pending.publish(pending.buf)
 				s.wait(function()
 					return type(pending.confirmation()) == "function"
-				end, "retry waited again")
-				assert(pending.refreshes == 1 and #notices == 1)
-				vim.fn.maparg("3", "n", false, true).callback()
-				pending.publish(pending.buf)
-				vim.wait(50)
-				assert(#notices == 1 and pending.resets == 0 and type(pending.confirmation()) ~= "function")
+				end, "refreshed hunks did not open confirmation")
+				pending.confirmation()()
+				s.wait(function()
+					return pending.resets == 1
+				end, "refreshed hunk was not reset")
+				assert(
+					s.api.nvim_buf_get_lines(pending.buf, 1, 2, false)[1] == "staged",
+					"retry reset against stale gitsigns hunks"
+				)
+				local state = s.signs.current_state(pending.buf)
+				assert(#notices == 2 and not state.gitsigns_refresh_needed and (state.native_holds or 0) == 0)
 			end),
 		},
 		{
