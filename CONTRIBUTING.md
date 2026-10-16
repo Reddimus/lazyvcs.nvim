@@ -79,8 +79,16 @@ A green run on an svn-less machine therefore covers less than CI does.
   raw local values and restore them, including global-local fallback sentinels.
 - Detach a buffer from diff mode before hiding it from a diff window. Use
   `util.show_win_buffer` for buffer replacements; callers reapply diff mode.
-- Paths are normalized with `vim.fs.normalize`. Tests must normalize
-  `vim.fn.tempname()` too, or they fail on Windows with mixed separators.
+- Literal filesystem paths use `util.normalize_literal_path`, which disables
+  environment expansion. Join relative repository entries to their root before
+  normalization. Model paths are normalized without resolving symlinks, so
+  status parsing adds no per-file realpath calls. Use
+  `util.relative_literal_path` for lexical membership and nullable
+  `util.relpath` for verified entry membership. Mutation callers must reject
+  failures and recheck identity at command start. Expand paths only at explicit
+  user-input boundaries, such as the sidebar path argument in `commands.lua`.
+  Tests must normalize `vim.fn.tempname()` too, or they fail on Windows with
+  mixed separators.
 
 ## Commands
 

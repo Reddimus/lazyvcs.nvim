@@ -295,6 +295,12 @@ local function start_command(repo, kind, args, on_done, opts)
 	if opts.guard_modified_buffers then
 		process_start = function(command, process_opts, on_exit)
 			local guard_err = buffer_guard.error(repo.root, opts.guard_paths)
+			if not guard_err and opts.guard_relpath then
+				local current, path_err = util.relpath(repo.root, opts.guard_paths[1])
+				if current ~= opts.guard_relpath or util.canonical_path(repo.root) ~= repo.root then
+					guard_err = path_err or "Repository entry changed before discard; refresh and retry"
+				end
+			end
 			if guard_err then
 				local raw = {
 					code = 1,
@@ -878,7 +884,13 @@ function M.revert_file(state, node)
 	if busy then
 		return notify_repo_busy(repo, job)
 	end
-	local relpath = node.extra.relpath
+	local relpath, path_err = util.relpath(repo.root, node.path)
+	if not relpath or relpath ~= node.extra.relpath then
+		return util.notify(
+			path_err or "Selected repository entry changed; refresh and retry discard",
+			vim.log.levels.WARN
+		)
+	end
 	local section = node.extra.section
 	local change_kind = node.extra.change_kind
 	local status = node.extra.status or ""
@@ -927,6 +939,7 @@ function M.revert_file(state, node)
 			{
 				guard_modified_buffers = true,
 				guard_paths = { node.path },
+				guard_relpath = relpath,
 			}
 		)
 	end)

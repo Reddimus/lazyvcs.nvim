@@ -276,7 +276,7 @@ function M.include(fname)
 	then
 		return fname
 	end
-	local path = vim.fs.normalize(resource.directory .. "/" .. fname)
+	local path = util.normalize_literal_path(resource.directory .. "/" .. fname)
 	return vim.uv.fs_lstat(path) and path or fname
 end
 

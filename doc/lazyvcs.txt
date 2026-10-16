@@ -80,6 +80,7 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
 :LazyVCS preview      Preview the current buffer diff in a floating window.
 
 :LazyVCS revert       Revert all changes in the current file, after confirming.
+                      Refuse paths that cannot be placed in the repository.
 
 :LazyVCS profile {show|clear}
                       Show or clear recent source-control job timings.
@@ -90,6 +91,11 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
 All subcommands work in both Git and SVN working copies; the backend is
 detected from the current file. See |lazyvcs-notes| for the base each backend
 compares against.
+
+Repository filenames and roots are literal: $NAME text does not expand to an
+environment variable when selecting, opening, saving, or reverting a file.
+Lua API path options are literal too. Paths typed as :LazyVCS sidebar arguments
+expand environment variables and ~ before repository discovery.
 
 ==============================================================================
 TOTAL COMPARISON                                           *lazyvcs-comparison*

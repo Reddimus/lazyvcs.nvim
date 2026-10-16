@@ -17,9 +17,11 @@ local function sidebar()
 	return require("lazyvcs")
 end
 
-local function path_arg(args)
+-- Paths typed into :LazyVCS sidebar expand ~ and environment variables.
+-- Filesystem data and Lua API paths use util.normalize_literal_path instead.
+local function path_arg(args, expand)
 	local path = args[1]
-	return (path and path ~= "") and path or nil
+	return (path and path ~= "") and (expand and vim.fs.normalize(path) or path) or nil
 end
 
 local function show_profile(args)
@@ -94,7 +96,7 @@ local spec = {
 		verbs = {
 			open = {
 				run = function(a)
-					sidebar().source_control_open({ path = path_arg(a) })
+					sidebar().source_control_open({ path = path_arg(a, true) })
 				end,
 				complete = "dir",
 			},
@@ -105,7 +107,7 @@ local spec = {
 			},
 			toggle = {
 				run = function(a)
-					sidebar().source_control_toggle({ path = path_arg(a) })
+					sidebar().source_control_toggle({ path = path_arg(a, true) })
 				end,
 				complete = "dir",
 			},
@@ -116,7 +118,7 @@ local spec = {
 			},
 			cancel = {
 				run = function(a)
-					local count = sidebar().source_control_cancel(path_arg(a))
+					local count = sidebar().source_control_cancel(path_arg(a, true))
 					require("lazyvcs.util").notify(
 						count == 1 and "Cancelled one source-control job"
 							or string.format("Cancelled %d source-control jobs", count),

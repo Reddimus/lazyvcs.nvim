@@ -102,7 +102,10 @@ function M.load(path)
 		return nil, err or "Not a Git working tree"
 	end
 
-	local relpath = util.relpath(root, path)
+	local relpath, path_err = util.relpath(root, path)
+	if not relpath then
+		return nil, path_err
+	end
 	local tracked = is_tracked(root, relpath)
 	---@type string[]
 	local base_lines = {}
@@ -137,7 +140,11 @@ function M.is_versioned(path)
 	if not root then
 		return false
 	end
-	return is_tracked(root, util.relpath(root, path))
+	local relpath, err = util.relpath(root, path)
+	if not relpath then
+		return false, err
+	end
+	return is_tracked(root, relpath)
 end
 
 function M.is_versioned_async(path, on_done, opts)
@@ -150,7 +157,10 @@ function M.is_versioned_async(path, on_done, opts)
 		if not info then
 			return task:finish(false, err)
 		end
-		local relpath = util.relpath(info.root, path)
+		local relpath, path_err = util.relpath(info.root, path)
+		if not relpath then
+			return task:finish(false, path_err)
+		end
 		task:add(process.start({ "git", "ls-files", "--error-unmatch", "--", relpath }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
@@ -176,7 +186,10 @@ function M.load_base(path)
 		return nil, err or "Not a Git working tree"
 	end
 
-	local relpath = util.relpath(root, path)
+	local relpath, path_err = util.relpath(root, path)
+	if not relpath then
+		return nil, path_err
+	end
 	if not is_tracked(root, relpath) then
 		return {
 			root = root,
@@ -221,7 +234,10 @@ local function load_payload_async(path, on_done, opts, base_only)
 			return task:finish(nil, err)
 		end
 		local root = util.canonical_path(util.trim(result.stdout))
-		local relpath = util.relpath(root, path)
+		local relpath, path_err = util.relpath(root, path)
+		if not relpath then
+			return task:finish(nil, path_err)
+		end
 
 		task:add(
 			process.start(
@@ -336,7 +352,7 @@ function M.resolve_diff_target(target)
 	target = target or {}
 	local root = target.root or target.repo_root
 	local relpath = target.relpath
-	local path = target.path or (root and relpath and vim.fs.normalize(root .. "/" .. relpath))
+	local path = target.path or (root and relpath and util.normalize_literal_path(root .. "/" .. relpath))
 	if not root or not relpath then
 		return nil, "Git diff target requires root and relpath"
 	end
@@ -517,7 +533,7 @@ function M.parse_status_lines(lines, root)
 					status = code,
 					label = status_label(code),
 					path = path,
-					absolute_path = root and vim.fs.normalize(root .. "/" .. path) or path,
+					absolute_path = root and util.normalize_literal_path(root .. "/" .. path) or path,
 				}
 			end
 		end
@@ -566,9 +582,16 @@ function M.revert_file(path)
 		return nil, err or "Not a Git working tree"
 	end
 
-	local relpath = util.relpath(root, path)
+	local relpath, path_err = util.relpath(root, path)
+	if not relpath then
+		return nil, path_err
+	end
 	if not is_tracked(root, relpath) then
 		return nil, "File is untracked; nothing to revert"
+	end
+	local current, current_err = util.relpath(root, path)
+	if current ~= relpath or util.canonical_path(root) ~= root then
+		return nil, current_err or "Repository entry changed before discard; retry the action"
 	end
 	return util.system({ "git", "checkout", "--", relpath }, { cwd = root })
 end
@@ -583,7 +606,10 @@ function M.revert_file_async(path, on_done, opts)
 		if not info then
 			return task:finish(nil, err or "Not a Git working tree")
 		end
-		local relpath = util.relpath(info.root, path)
+		local relpath, path_err = util.relpath(info.root, path)
+		if not relpath then
+			return task:finish(nil, path_err)
+		end
 		task:add(process.start({ "git", "ls-files", "--error-unmatch", "--", relpath }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
@@ -596,6 +622,10 @@ function M.revert_file_async(path, on_done, opts)
 					return task:finish(nil, "File is untracked; nothing to revert")
 				end
 				return task:finish(nil, tracked_err)
+			end
+			local current, current_err = util.relpath(info.root, path)
+			if current ~= relpath or util.canonical_path(info.root) ~= info.root then
+				return task:finish(nil, current_err or "Repository entry changed before discard; retry the action")
 			end
 			local start = opts.start or util.system_start
 			task:add(start({ "git", "restore", "--worktree", "--", relpath }, {
@@ -646,7 +676,10 @@ function M.blame_lines(path)
 		return nil, err or "Not a Git working tree"
 	end
 
-	local relpath = util.relpath(root, path)
+	local relpath, path_err = util.relpath(root, path)
+	if not relpath then
+		return nil, path_err
+	end
 	if not is_tracked(root, relpath) then
 		return nil, "File is not tracked by Git"
 	end
@@ -678,7 +711,10 @@ function M.blame_lines_async(path, on_done, opts)
 		end
 
 		local root = util.canonical_path(util.trim(result.stdout))
-		local relpath = util.relpath(root, path)
+		local relpath, path_err = util.relpath(root, path)
+		if not relpath then
+			return task:finish(nil, path_err)
+		end
 		task:add(
 			process.start(
 				{ "git", "ls-files", "--error-unmatch", "--", relpath },
@@ -833,7 +869,10 @@ function M.revision_log(path, revision)
 	if not root then
 		return nil, err or "Not a Git working tree"
 	end
-	local relpath = util.relpath(root, path)
+	local relpath, path_err = util.relpath(root, path)
+	if not relpath then
+		return nil, path_err
+	end
 	local lines, log_err = util.system_lines(
 		{ "git", "show", "--no-ext-diff", "--stat", "--format=medium", tostring(revision), "--", relpath },
 		{ cwd = root }
@@ -854,7 +893,10 @@ function M.revision_log_async(path, revision, on_done, opts)
 		if not info then
 			return task:finish(nil, err or "Not a Git working tree")
 		end
-		local relpath = util.relpath(info.root, path)
+		local relpath, path_err = util.relpath(info.root, path)
+		if not relpath then
+			return task:finish(nil, path_err)
+		end
 		task:add(process.lines({
 			"git",
 			"show",

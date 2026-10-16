@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Restore the selected nested entry after a checkout moves behind a symlink,
+  preserving edits in files with the same basename. Refuse discard when the
+  repository entry cannot be verified.
+- Preserve literal `$NAME` text in repository paths when opening and saving
+  changes, including paths inside repository roots that contain dollar signs.
+
 ## [0.11.1] - 2026-10-16
 
 ### Fixed

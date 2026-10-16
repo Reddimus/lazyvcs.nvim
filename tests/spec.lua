@@ -4350,18 +4350,17 @@ local function test_git_status_decodes_quoted_paths()
 	eq(renamed[1].path, "new.txt")
 end
 
-local function test_relpath_never_returns_nil()
+local function test_relpath_rejects_unverified_entries()
 	local util = require("lazyvcs.util")
 
-	eq(util.relpath("/repo", "/repo/a.txt"), "a.txt")
-	eq(util.relpath("/repo", "/repo/sub/a.txt"), "sub/a.txt")
-
-	-- Return a string even when Windows short and long paths share no textual prefix.
-	local unrelated = util.relpath("/somewhere/else", "/repo/a.txt")
-	eq(type(unrelated), "string")
-	assert(unrelated ~= "", "relpath must not return an empty string")
-
-	eq(type(util.relpath("", "/repo/a.txt")), "string")
+	local root = helpers.tempdir()
+	eq(util.relpath(root, root .. "/a.txt"), "a.txt")
+	eq(util.relpath(root, root .. "/sub/a.txt"), "sub/a.txt")
+	local relative, err = util.relpath(root, root .. "-other/a.txt")
+	eq(relative, nil)
+	assert(err and not err:find("\n"), "membership failure should explain the refusal on one line")
+	eq(util.relpath("", root .. "/a.txt"), nil)
+	eq(util.relpath(root .. "/missing-root", root .. "/a.txt"), nil)
 end
 
 local function test_single_command_replaces_legacy_surface()
@@ -6854,7 +6853,7 @@ local cases = {
 	{ "test_svn_signs_preview_diff_window", test_svn_signs_preview_diff_window },
 	{ "test_svn_added_file_signs_and_live_diff", test_svn_added_file_signs_and_live_diff },
 	{ "test_svn_signs_ignore_untracked_files", test_svn_signs_ignore_untracked_files },
-	{ "test_relpath_never_returns_nil", test_relpath_never_returns_nil },
+	{ "test_relpath_rejects_unverified_entries", test_relpath_rejects_unverified_entries },
 	{ "test_backend_resolves_directory_arguments", test_backend_resolves_directory_arguments },
 	{ "test_git_status_decodes_quoted_paths", test_git_status_decodes_quoted_paths },
 	{ "test_single_command_replaces_legacy_surface", test_single_command_replaces_legacy_surface },
@@ -7132,6 +7131,8 @@ vim.list_extend(
 	})
 )
 vim.list_extend(cases, require("spec_window_options")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_revert_paths")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_literal_paths")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_highlighting")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {
