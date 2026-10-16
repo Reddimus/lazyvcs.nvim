@@ -55,14 +55,9 @@ and this project adheres to
 - Cancel pending line history when the source cursor moves.
 - Reject SVN blame encodings with incompatible line boundaries or undecodable
   BASE.
-- Wait for refreshed gitsigns hunks after index mutations, including reverts
-  started just after settlement. Abort after two seconds without an update,
-  report base-change cancellations and duplicate pending reverts, and reject
-  stale hunk confirmations.
-- Keep native signs clear during delegated revert confirmations and contain
-  errors in gitsigns update and timeout callbacks.
-- Use configured blame decode limits and preserve missing-path fallbacks for
-  saved blame with filters on older Git versions.
+- Revert gitsigns hunks against the settled index: wait for pending LazyVCS
+  index changes and refreshed gitsigns hunks, and reject confirmations whose
+  base changed. Large files keep reverting through gitsigns.
 - Resume native gutter signs after gitsigns detaches.
 - Refresh custom theme colors when highlight namespaces are reused or
   colorschemes change.
