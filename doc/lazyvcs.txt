@@ -701,9 +701,17 @@ direct-process termination. Descendants whose parent has already exited may
 survive on Windows.
 
 Neovim exit discards queued work, including mutations that have not started.
-Running repository mutations (commit, update, pull, merge, switch, stage, and
-revert) are untracked and left to finish in their own process groups. This avoids
-interrupting writes that could leave an index.lock or a locked SVN working copy.
+Running repository mutations (commit, update, merge, switch, stage, unstage,
+revert, push, publish, and delete untracked) are untracked without a termination
+signal. Multi-step actions (Pull, Sync) are preserved only once they reach their
+mutating step. This avoids interrupting writes that could leave an index.lock or
+a locked SVN working copy. Preserved commands lose their output pipes at exit.
+A hook or helper that writes output afterwards can fail and abort the mutation.
+Git aborts cleanly in this case without leaving an index.lock.
+Commit message files survive exit in stdpath("cache")/lazyvcs/commit, with a
+private directory (0700) and exclusive files (0600). Each file is removed when
+its command completes while Neovim runs. Setup asynchronously prunes files older
+than one day, ignoring cleanup errors.
 Read-only and background commands (status, diff, blame, log, fetch, AI context,
 and discovery) are terminated, including editor requests and commands already
 cancelled. Mutation preflights cannot start a mutation during shutdown.

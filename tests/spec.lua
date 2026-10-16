@@ -7153,6 +7153,7 @@ vim.list_extend(cases, require("spec_signs_lifecycle")({ helpers = helpers, wait
 vim.list_extend(cases, require("spec_integrations_resession")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_integrations_editor")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_process_shutdown")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_process_flows")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_process")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_window_options")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_integrity")({ helpers = helpers, wait_for = wait_for }))

@@ -490,21 +490,13 @@ local function start_commit_command(repo, message, on_done)
 				on_exit(nil, "Commit command is missing the -F message file argument")
 				return
 			end
-			local path = vim.fn.tempname() .. "-lazyvcs-commit.txt"
-			local fd, open_err = vim.uv.fs_open(path, "wx", 384)
-			if not fd then
-				on_exit(nil, "Could not create private commit message: " .. tostring(open_err))
+			local path, file_err = require("lazyvcs.source_control.commit_files").create(message)
+			if not path then
+				on_exit(nil, file_err)
 				return
 			end
 			local function cleanup()
 				pcall(vim.uv.fs_unlink, path)
-			end
-			local ok, written, write_err = pcall(require("lazyvcs.fs").write_all, fd, message, 0)
-			local closed, close_err = vim.uv.fs_close(fd)
-			if not ok or not written or not closed then
-				cleanup()
-				on_exit(nil, "Could not write commit message: " .. tostring(ok and (write_err or close_err) or written))
-				return
 			end
 			command[message_index] = path
 			local started, handle = pcall(util.system_start, command, process_opts, function(...)

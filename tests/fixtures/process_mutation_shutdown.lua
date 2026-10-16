@@ -1,7 +1,11 @@
 local root, dir, guarded = arg[1], arg[2], arg[3]
+vim.env.XDG_CACHE_HOME = dir .. "/cache"
+vim.env.XDG_STATE_HOME = dir .. "/state"
 vim.opt.runtimepath:prepend(root)
 package.path = root .. "/tests/?.lua;" .. package.path
 local p = require("process_helpers")
+-- Exercise loading native before the runtime directly, as well as an open sidebar.
+local native = guarded == "sidebar" and require("lazyvcs.source_control.native") or nil
 local jobs = require("lazyvcs.source_control.jobs")
 local util = require("lazyvcs.util")
 require("lazyvcs.config").setup({ source_control = { confirm_mutations = false, background = { git_workers = 3 } } })
@@ -19,9 +23,45 @@ if guarded == "yes" then
 		)
 	end
 end
-local mutation_id = jobs.command(repo, "git_commit", { "git", "commit", "-m", "survived shutdown" }, opts, function()
-	vim.fn.writefile({ "unexpected" }, dir .. "/callback")
-end)
+local mutation_id
+if guarded == "ops" or guarded == "sidebar" then
+	native = native or require("lazyvcs.source_control.native")
+	local state = guarded == "sidebar" and native.open({ path = dir }) or {}
+	assert(guarded ~= "sidebar" or vim.api.nvim_win_is_valid(state.winid), "sidebar did not open")
+	if guarded == "sidebar" then
+		local cancel_owner = jobs.cancel_owner
+		---@diagnostic disable-next-line: duplicate-set-field
+		jobs.cancel_owner = function(owner, cancel_opts)
+			if owner == state then
+				vim.fn.writefile(
+					{ tostring(require("lazyvcs.process_runtime").is_shutting_down()) },
+					dir .. "/sidebar-shutdown"
+				)
+			end
+			return cancel_owner(owner, cancel_opts)
+		end
+	end
+	state.lazyvcs_repo_cache =
+		{ [dir] = vim.tbl_extend("force", repo, {
+			counts = { staged = 1, local_changes = 1 },
+		}) }
+	state.lazyvcs_commit_drafts = { [dir] = table.concat(vim.fn.readfile(dir .. "/message", "b"), "\n") }
+	local start = util.system_start
+	---@diagnostic disable-next-line: duplicate-set-field
+	util.system_start = function(args, process_opts, cb)
+		if args[2] == "commit" then
+			assert(process_opts.preserve_on_shutdown and process_opts.on_exit_during_shutdown)
+			vim.fn.writefile({ args[4] }, dir .. "/message-path")
+		end
+		return start(args, process_opts, cb)
+	end
+	require("lazyvcs.source_control.ops").commit_repo(state, { path = dir })
+	util.system_start = start
+else
+	mutation_id = jobs.command(repo, "git_commit", { "git", "commit", "-m", "survived shutdown" }, opts, function()
+		vim.fn.writefile({ "unexpected" }, dir .. "/callback")
+	end)
+end
 assert(
 	vim.wait(4000, function()
 		return p.pid(dir .. "/mutation.pid") ~= nil
@@ -44,9 +84,13 @@ vim.system = function(args, process_opts, cb)
 	assert(args[1] == "git" and args[2] == "fetch", "unexpected fetch command")
 	return original(p.tree(dir .. "/fetch"), process_opts, cb)
 end
-require("lazyvcs.source_control.ops").run_primary_action({
-	lazyvcs_repo_cache = { [dir] = repo },
-}, { type = "action_button", extra = { repo_root = dir, action = "fetch" } })
+if guarded == "ops" or guarded == "sidebar" then
+	jobs.command(repo, "git_fetch", { "git", "fetch" }, { scope = "git_fetch" })
+else
+	require("lazyvcs.source_control.ops").run_primary_action({
+		lazyvcs_repo_cache = { [dir] = repo },
+	}, { type = "action_button", extra = { repo_root = dir, action = "fetch" } })
+end
 vim.system = original
 assert(
 	vim.wait(4000, function()

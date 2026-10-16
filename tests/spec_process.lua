@@ -74,8 +74,20 @@ return function(ctx)
 		config.setup(old)
 		assert(ok, err)
 	end
+	local function job_control_shell()
+		for _, shell in ipairs({ "sh", "bash", "ksh", "zsh" }) do
+			if vim.fn.executable(shell) == 1 then
+				local result = vim.system({ shell, "-c", "set -m; sh -c 'kill -0 -$$' & wait $!" }):wait()
+				if result.code == 0 then
+					return shell
+				end
+			end
+		end
+		error({ lazyvcs_skip = "No shell supports process groups through job control" })
+	end
 	local function held_pipe_case(forced)
 		posix()
+		local shell = job_control_shell()
 		local dir = h.tempdir()
 		local kill = vim.uv.kill
 		local signals = {}
@@ -83,16 +95,17 @@ return function(ctx)
 		local ok, err = pcall(p.guarded, dir, function()
 			local calls, timed_out = 0, false
 			handle = util.system_start({
-				"sh",
+				shell,
 				"-c",
-				(forced and 'trap "" TERM; ' or "")
-					.. 'setsid sh -c \'echo $$ > "$1/helper.pid"; exec sleep 60\' sh "$1" & '
+				"set -m; "
+					.. (forced and 'trap "" TERM; ' or "")
+					.. 'sh -c \'echo $$ > "$1/helper.pid"; exec sleep 60\' sh "$1" & '
 					.. 'echo $$ > "$1/parent.pid"; while [ ! -f "$1/helper.pid" ]; do sleep 0.01; done; '
 					.. (forced and "wait" or "exit 0"),
 				"sh",
 				dir,
 			}, {
-				timeout_ms = forced and 10000 or 300,
+				timeout_ms = forced and 10000 or 2000,
 				kill_grace_ms = 30,
 				on_terminate = function(_, _, raw)
 					timed_out = raw.timed_out == true
