@@ -118,10 +118,13 @@ return function(ctx)
 						return command(cmd)
 					end,
 				})
-				api.nvim_set_current_win(s.rightwin)
-				api.nvim_win_set_buf(s.rightwin, borrowed)
-				vim.wait(100)
-				vim.cmd = command
+				local ok, err = pcall(function()
+					api.nvim_set_current_win(s.rightwin)
+					api.nvim_win_set_buf(s.rightwin, borrowed)
+					vim.wait(100)
+				end)
+				vim.cmd, util.show_win_buffer = command, show
+				assert(ok, err)
 				assert(api.nvim_win_get_buf(s.rightwin) == s.right, "routing restore did not install the right pane")
 				assert(s.mode == "text", "routing restore left text mode")
 				assert(restored and updates > 0, "routing restore did not update the diff")
