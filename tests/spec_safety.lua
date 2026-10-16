@@ -1211,7 +1211,7 @@ return function(ctx)
 			["git branch --show-current"] = "main\n",
 			["git symbolic-ref --quiet HEAD"] = "refs/heads/main\n",
 			["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/main"] = "refs/heads/main\0refs/remotes/origin/main\0origin\0refs/heads/main\n",
-			["git fetch --prune --quiet origin"] = "",
+			["git fetch --prune --quiet -- origin"] = "",
 			["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## main...origin/main [behind 1]\n M sample.txt\n",
 		}
 		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
@@ -1279,9 +1279,9 @@ return function(ctx)
 			["git branch --show-current"] = "main\n",
 			["git symbolic-ref --quiet HEAD"] = "refs/heads/main\n",
 			["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/main"] = "refs/heads/main\0refs/remotes/origin/main\0origin\0refs/heads/main\n",
-			["git fetch --prune --quiet origin"] = "",
+			["git fetch --prune --quiet -- origin"] = "",
 			["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## main...origin/main [ahead 1]\n M sample.txt\n",
-			["git push origin refs/heads/main:refs/heads/main"] = "",
+			["git push -- origin refs/heads/main:refs/heads/main"] = "",
 		}
 		vim.cmd.edit(vim.fn.fnameescape(fixture.file))
 		vim.api.nvim_buf_set_lines(0, 0, -1, false, { "unsaved editor text" })
@@ -1301,7 +1301,7 @@ return function(ctx)
 		local ok, err = xpcall(function()
 			ops.sync_repo(state, node)
 			assert(
-				vim.tbl_contains(calls, "git push origin refs/heads/main:refs/heads/main"),
+				vim.tbl_contains(calls, "git push -- origin refs/heads/main:refs/heads/main"),
 				"push-only sync must remain available"
 			)
 		end, debug.traceback)
@@ -1412,7 +1412,7 @@ return function(ctx)
 			["git branch --show-current"] = "main\n",
 			["git symbolic-ref --quiet HEAD"] = "refs/heads/main\n",
 			["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/main"] = "refs/heads/main\0refs/remotes/origin/main\0origin\0refs/heads/main\n",
-			["git fetch --prune --quiet origin"] = "",
+			["git fetch --prune --quiet -- origin"] = "",
 			["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## main...origin/main [behind 1]\n",
 			["git merge --ff-only refs/remotes/origin/main"] = "",
 		}
@@ -1421,7 +1421,7 @@ return function(ctx)
 			local key = table.concat(args, " ")
 			calls[#calls + 1] = key
 			assert(responses[key] ~= nil, "unexpected command: " .. key)
-			if key == "git fetch --prune --quiet origin" then
+			if key == "git fetch --prune --quiet -- origin" then
 				vim.api.nvim_buf_set_lines(0, 0, -1, false, { "edited while fetch was running" })
 			end
 			local result = { code = 0, stdout = responses[key], stderr = "" }

@@ -151,7 +151,9 @@ the GitHub release.
 - `source_control/mutation_start.lua` holds one scheduler worker and one
   deadline across asynchronous preflight and mutation. Recheck branch and buffer
   guards before spawning the mutation; never enqueue preflight into the same
-  queue.
+  queue. Untracked Git Discard shares that worker and deadline across
+  path-limited status, native lstat, and nonrecursive unlink. Cancellation waits
+  for pending filesystem callbacks before releasing the worker.
 - `compare.lua` owns review tabs, source-control navigation, and read-only
   previews. Its `set_panes()` transition installs both panes before publishing
   their slots and defers results while the picker router owns a borrowed buffer.

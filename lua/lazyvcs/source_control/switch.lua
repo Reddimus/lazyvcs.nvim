@@ -2,6 +2,7 @@ local util = require("lazyvcs.util")
 local Task = require("lazyvcs.backends.task")
 local picker = require("lazyvcs.picker")
 local svn_xml = require("lazyvcs.backends.xml")
+local svn_url = require("lazyvcs.backends.svn_url")
 
 local M = {}
 
@@ -303,10 +304,12 @@ local function svn_date_label(iso_date)
 	return iso_date:sub(1, 10)
 end
 
-local function detect_svn_layout(url)
-	-- Match exact layout path segments with a non-greedy root. Greedy patterns
-	-- misclassified URLs whose repository/root happened to contain "trunk" or
-	-- "branches" as a substring.
+local function detect_svn_layout(url, repository_root)
+	local unknown = { standard = false, current_url = url }
+	if not repository_root or repository_root == "" or url:sub(1, #repository_root + 1) ~= repository_root .. "/" then
+		return unknown
+	end
+	url = url:sub(#repository_root + 1)
 	local candidates = {}
 	local base, suffix = url:match("^(.-)/trunk/(.*)$")
 	if not base then
@@ -354,14 +357,15 @@ local function detect_svn_layout(url)
 		return #a.layout_root < #b.layout_root
 	end)
 	if candidates[1] then
+		candidates[1].target_name = candidates[1].target_name:gsub("%%(%x%x)", function(byte)
+			return string.char(tonumber(byte, 16))
+		end)
 		candidates[1].standard = true
+		candidates[1].layout_root = repository_root .. candidates[1].layout_root
 		return candidates[1]
 	end
 
-	return {
-		standard = false,
-		current_url = url,
-	}
+	return unknown
 end
 
 local function build_svn_target_url(layout, target_kind, target_name)
@@ -371,9 +375,9 @@ local function build_svn_target_url(layout, target_kind, target_name)
 		return root .. "/trunk" .. suffix
 	end
 	if target_kind == "branch" then
-		return string.format("%s/branches/%s%s", root, target_name, suffix)
+		return string.format("%s/branches/%s%s", root, svn_url.encode_segment(target_name), suffix)
 	end
-	return string.format("%s/tags/%s%s", root, target_name, suffix)
+	return string.format("%s/tags/%s%s", root, svn_url.encode_segment(target_name), suffix)
 end
 
 local function add_svn_target(items, layout, target_kind, entry, current)
@@ -501,7 +505,7 @@ function M.collect_async(repo, run_command, on_done, opts)
 		if not info or not info.url then
 			return finish(nil, "Unable to parse svn info for " .. repo.name)
 		end
-		local layout = detect_svn_layout(info.url)
+		local layout = detect_svn_layout(info.url, info.root)
 		local context = {
 			repo = repo,
 			vcs = "svn",
@@ -527,6 +531,7 @@ function M.collect_async(repo, run_command, on_done, opts)
 			return finish(context)
 		end
 
+		local root = layout.layout_root
 		-- Distinct name: a local `finish` here would shadow the outer `finish`
 		-- above and make the call below recurse into itself.
 		local function finish_sorted()
@@ -540,7 +545,7 @@ function M.collect_async(repo, run_command, on_done, opts)
 			finish(context)
 		end
 
-		run({ "svn", "info", "--xml", layout.layout_root .. "/trunk" }, { kind = "switch" }, function(trunk_info)
+		run({ "svn", "info", "--xml", util.svn_target(root .. "/trunk") }, { kind = "switch" }, function(trunk_info)
 			if trunk_info then
 				local trunk_meta = parse_svn_info_xml(trunk_info.stdout) or {}
 				add_svn_target(items, layout, "trunk", {
@@ -552,7 +557,7 @@ function M.collect_async(repo, run_command, on_done, opts)
 			else
 				add_svn_target(items, layout, "trunk", nil, layout.target_kind == "trunk")
 			end
-			run({ "svn", "ls", "--xml", layout.layout_root .. "/branches" }, { kind = "switch" }, function(branches)
+			run({ "svn", "ls", "--xml", util.svn_target(root .. "/branches") }, { kind = "switch" }, function(branches)
 				if branches then
 					for _, entry in ipairs(parse_svn_list_xml(branches.stdout)) do
 						add_svn_target(
@@ -564,7 +569,7 @@ function M.collect_async(repo, run_command, on_done, opts)
 						)
 					end
 				end
-				run({ "svn", "ls", "--xml", layout.layout_root .. "/tags" }, { kind = "switch" }, function(tags)
+				run({ "svn", "ls", "--xml", util.svn_target(root .. "/tags") }, { kind = "switch" }, function(tags)
 					if tags then
 						for _, entry in ipairs(parse_svn_list_xml(tags.stdout)) do
 							add_svn_target(
@@ -836,7 +841,7 @@ local function execute_svn(repo, context, choice, opts)
 	end
 
 	local current_url = context.info.url
-	if choice.target_url == current_url then
+	if choice.current or choice.target_url == current_url then
 		return opts.notify(choice.label .. " is already checked out", vim.log.levels.INFO)
 	end
 	return perform(

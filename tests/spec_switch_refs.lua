@@ -220,7 +220,7 @@ return function(ctx)
 					return util.trim(h.exec({ "svn", "info", "--show-item", "url", util.svn_target(root) }, root))
 				end
 				for _, url in ipairs({ branch, tag }) do
-					pick(repo, { url })
+					pick(repo, { (url:gsub("@", "%%40")) })
 					assert(current() == url, "literal SVN URL was not selected")
 				end
 				for _, expression in ipairs({ branch .. "@", tag .. "@HEAD" }) do

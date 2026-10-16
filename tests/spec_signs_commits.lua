@@ -103,11 +103,12 @@ return function(ctx)
 					local start = util.system_start
 					---@diagnostic disable-next-line: duplicate-set-field
 					util.system_start = function(args, options, cb)
-						if args[2] == "commit" then
+						if vim.tbl_contains(args, "commit") then
 							assert(counts.begin == 1 and counts.finish == 0)
 							assert(not s.signs.current_state(buf).loaded, "commit did not invalidate cached base")
-							assert(args[3] == "-F" and args[4] ~= "-", "commit bypassed private message file")
-							path = args[4]
+							local flag = vim.fn.index(args, "-F") + 1
+							assert(flag > 0 and args[flag + 1] ~= "-", "commit bypassed private message file")
+							path = args[flag + 1]
 							assert(table.concat(vim.fn.readfile(path, "b"), "\n") == message)
 							assert(vim.fs.normalize(options.cwd) == vim.fs.normalize(f.root))
 							if package.config:sub(1, 1) ~= "\\" then
@@ -159,17 +160,17 @@ return function(ctx)
 						end
 						vim.system = function(args, ...)
 							-- SVN commands gain --non-interactive before the subcommand.
-							if failure == "spawn_report" and (args[2] == "commit" or args[3] == "commit") then
+							if failure == "spawn_report" and vim.tbl_contains(args, "commit") then
 								error("injected spawn error")
 							end
 							return system(args, ...)
 						end
 						---@diagnostic disable-next-line: duplicate-set-field
 						util.system_start = function(args, options, cb)
-							if args[2] ~= "commit" then
+							if not vim.tbl_contains(args, "commit") then
 								return start(args, options, cb)
 							end
-							path = args[4]
+							path = args[vim.fn.index(args, "-F") + 2]
 							pending()
 							if failure == "spawn_throw" then
 								error("injected spawn error")
