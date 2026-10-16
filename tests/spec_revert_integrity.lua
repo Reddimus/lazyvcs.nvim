@@ -325,9 +325,50 @@ return function(ctx)
 				end
 				print("repeated backend error warnings=" .. warnings)
 				assert(warnings == 1, "unchanged reload error warned repeatedly")
+				actions.refresh_current()
+				assert(deliver)(nil, "different failure")
+				assert(warnings == 2, "a changed reload error did not warn")
 			end, debug.traceback)
 			backend.load_base_async, util.notify = load, notify
 			assert(ok, err)
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_live_diff_eof_only_revert_with_fixendofline_needs_a_write",
+		function()
+			-- Committed with a final newline; the worktree file lacks it and the buffer is clean.
+			local f, buf = fixture(false, "alpha\n")
+			write(f.file, "alpha")
+			vim.cmd("edit!")
+			assert(not vim.bo[buf].endofline and vim.bo[buf].fixendofline and not vim.bo[buf].modified)
+			local live = open()
+			assert(#live.hunks == 1, "EOF-only change did not produce a hunk")
+			local hunk = live.hunks[1]
+			require("lazyvcs.diff").reset_text_hunk(buf, live.base_text, live.current_text, hunk)
+			assert(vim.bo[buf].endofline, "revert did not restore the final newline")
+			assert(vim.bo[buf].modified, "EOF-only revert left the buffer unmodified, so :update would skip it")
+			vim.cmd("update")
+			local fd = assert(io.open(f.file, "rb"))
+			local bytes = fd:read("*a")
+			fd:close()
+			assert(bytes == "alpha\n", "update did not write the restored newline: " .. vim.inspect(bytes))
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_capture_write_to_other_file_keeps_endofline",
+		function()
+			local _, buf = fixture(false, "alpha")
+			assert(not vim.bo[buf].endofline and vim.bo[buf].fixendofline)
+			local copy = vim.fs.normalize(vim.fn.tempname())
+			vim.cmd("silent write " .. vim.fn.fnameescape(copy))
+			assert(not vim.bo[buf].endofline, "writing a copy changed this buffer's endofline")
+			vim.cmd("silent write! ++bin " .. vim.fn.fnameescape(copy))
+			assert(not vim.bo[buf].endofline, "a ++bin write changed this buffer's endofline")
+			vim.bo[buf].modified = true
+			vim.cmd("silent write! ++bin")
+			assert(not vim.bo[buf].endofline, "a ++bin write of the buffer's own file changed its endofline")
+			local text = require("lazyvcs.compare_text")
+			assert(text.serialize(assert(text.capture(buf, 1024))) == "alpha", "clean capture gained a newline")
 		end,
 	}
 	return cases

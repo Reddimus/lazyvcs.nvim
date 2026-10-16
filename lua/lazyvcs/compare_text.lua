@@ -31,6 +31,17 @@ function M.setup()
 	vim.api.nvim_create_autocmd("BufWritePost", {
 		group = group,
 		callback = function(args)
+			if not vim.api.nvim_buf_is_valid(args.buf) or vim.v.cmdarg:find("++bin", 1, true) then
+				return
+			end
+			-- Only a write of the buffer's own file adds the newline 'fixendofline' promises.
+			local name = vim.api.nvim_buf_get_name(args.buf)
+			local function full(path)
+				return vim.fs.normalize(vim.fn.fnamemodify(path, ":p"), { expand_env = false })
+			end
+			if name == "" or full(args.match) ~= full(name) then
+				return
+			end
 			local bo = vim.bo[args.buf]
 			if bo.fixendofline and not bo.binary and not bo.endofline then
 				bo.endofline = true

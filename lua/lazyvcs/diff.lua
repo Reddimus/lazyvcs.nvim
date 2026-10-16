@@ -91,9 +91,15 @@ function M.reset_text_hunk(bufnr, base, current, hunk)
 		M.reset_hunk(bufnr, base.lines, hunk)
 	end
 	if hunk.covers_eof then
+		local changed = vim.bo[bufnr].endofline ~= base.eol
 		vim.bo[bufnr].endofline = base.eol
 		if not base.eol then
 			vim.bo[bufnr].fixendofline = false
+		end
+		-- With 'fixendofline' set, Neovim ignores 'endofline' when deciding whether the
+		-- buffer is modified, so :update and autosave would skip an EOF-only revert.
+		if changed then
+			vim.bo[bufnr].modified = true
 		end
 	end
 end
