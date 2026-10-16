@@ -48,6 +48,8 @@ to `shellcheck`.
 Container E2E (Linux + Docker):
 
 CI pulls the same pinned Docker Official Images from their public ECR mirror.
+When a registry rate-limits the pull, `tests/e2e/image.sh` retries and then
+pulls the same digest from mirror.gcr.io or Docker Hub.
 
 ```sh
 tests/e2e/ubuntu-native.sh

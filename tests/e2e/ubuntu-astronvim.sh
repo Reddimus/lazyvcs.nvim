@@ -24,6 +24,11 @@ else
 	ARTIFACT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lazyvcs-astronvim-e2e.XXXXXX")"
 fi
 
+# shellcheck source=tests/e2e/image.sh
+source "${SCRIPT_DIR}/image.sh"
+pull_pinned_image "${UBUNTU_IMAGE}"
+UBUNTU_IMAGE="${LAZYVCS_PULLED_IMAGE}"
+
 printf 'lazyvcs AstroNvim native E2E\n'
 printf '  repo:      %s\n' "${REPO_ROOT}"
 printf '  image:     %s\n' "${UBUNTU_IMAGE}"

@@ -13,6 +13,11 @@ if ! command -v docker >/dev/null 2>&1; then
 	exit 1
 fi
 
+# shellcheck source=tests/e2e/image.sh
+source "${SCRIPT_DIR}/image.sh"
+pull_pinned_image "${UBUNTU_IMAGE}"
+UBUNTU_IMAGE="${LAZYVCS_PULLED_IMAGE}"
+
 ARTIFACT_DIR="${E2E_ARTIFACT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/lazyvcs-native-e2e.XXXXXX")}"
 mkdir -p "${ARTIFACT_DIR}"
 
