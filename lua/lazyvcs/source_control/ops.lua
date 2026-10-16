@@ -206,7 +206,7 @@ end
 
 local function restart_source(state, remote_refresh)
 	invalidate_hydration(state, nil, "source restarted")
-	state.lazyvcs_repo_cache = {}
+	state.lazyvcs_repo_cache = model.refresh_cache(state.lazyvcs_repo_cache)
 	state.lazyvcs_loading_details = {}
 	state.lazyvcs_remote_refresh = remote_refresh ~= false
 	persist.save_state(state)
@@ -315,7 +315,10 @@ local function finish_repo_job(state, repo, spec, result, err, raw)
 	end
 
 	session_state.clear_repo_job(repo.root)
-	if spec.clear_draft then
+	if
+		spec.clear_draft
+		and (repo.vcs ~= "svn" or spec.action ~= "commit" or (result and (result.stdout or ""):find("%S")))
+	then
 		set_commit_draft(state, repo.root, "")
 	end
 	if spec.checktime then
@@ -764,9 +767,10 @@ local function ensure_repo_details(state, repo)
 		end
 		state.lazyvcs_loading_details[repo.root] = nil
 		if detail then
-			state.lazyvcs_repo_cache[repo.root] = detail
+			state.lazyvcs_repo_cache[repo.root] = model.merge_details(state.lazyvcs_repo_cache[repo.root], detail)
 		else
-			state.lazyvcs_repo_cache[repo.root] = model.make_error(repo, repo, err)
+			state.lazyvcs_repo_cache[repo.root] =
+				model.merge_details(state.lazyvcs_repo_cache[repo.root], model.make_error(repo, repo, err))
 			util.notify(err, vim.log.levels.WARN)
 		end
 		navigate_if_visible(state)
@@ -781,7 +785,8 @@ end
 
 function M.toggle_show_clean(state)
 	state.lazyvcs_show_clean = not state.lazyvcs_show_clean
-	restart_source(state, false)
+	persist.save_state(state)
+	navigate(state)
 end
 
 function M.toggle_changes_view_mode(state)
@@ -801,7 +806,8 @@ function M.cycle_changes_sort(state)
 		end
 	end
 	state.lazyvcs_changes_sort = order[next_index]
-	restart_source(state, false)
+	persist.save_state(state)
+	navigate(state)
 end
 
 function M.edit_commit_message(state, node)
@@ -855,6 +861,19 @@ function M.generate_commit_message(state, node)
 	end
 end
 
+function M.cancel_diff_target(state, _reason)
+	local task = state.lazyvcs_diff_target_task
+	state.lazyvcs_diff_target_generation = (state.lazyvcs_diff_target_generation or 0) + 1
+	state.lazyvcs_diff_target_task = nil
+	state.lazyvcs_diff_target_root = nil
+	if task then
+		local cancel = task.cancel or task.kill
+		if type(cancel) == "function" then
+			pcall(cancel, task, 15)
+		end
+	end
+end
+
 function M.open_change(state, node)
 	node = node or current_node(state)
 	if not node or node.type ~= "file" then
@@ -879,15 +898,15 @@ function M.open_change(state, node)
 		repo_root = repo.root,
 		path = node.path,
 	})
-	if state.lazyvcs_diff_target_task then
-		local cancel = state.lazyvcs_diff_target_task.cancel or state.lazyvcs_diff_target_task.kill
-		if type(cancel) == "function" then
-			pcall(cancel, state.lazyvcs_diff_target_task)
-		end
-		state.lazyvcs_diff_target_task = nil
-		state.lazyvcs_diff_target_root = nil
+	M.cancel_diff_target(state, "target replaced")
+	local origin_tab = vim.api.nvim_get_current_tabpage()
+	local origin_win = vim.api.nvim_get_current_win()
+	local origin_path = state.path
+	local editor = state.editor_winid
+	if not (editor and vim.api.nvim_win_is_valid(editor) and vim.api.nvim_win_get_tabpage(editor) == origin_tab) then
+		editor = origin_win
 	end
-	state.lazyvcs_diff_target_generation = (state.lazyvcs_diff_target_generation or 0) + 1
+	local editor_buf = vim.api.nvim_win_get_buf(editor)
 	local generation = state.lazyvcs_diff_target_generation
 	state.lazyvcs_diff_target_root = repo.root
 	navigate_if_visible(state)
@@ -896,6 +915,15 @@ function M.open_change(state, node)
 	local task = backends.load_diff_target_async(target, function(loaded, load_err)
 		completed = true
 		if state.lazyvcs_diff_target_generation ~= generation then
+			return
+		end
+		local owner_valid = not state.lazyvcs_target_owner_valid or state.lazyvcs_target_owner_valid(state)
+		local destination_valid = vim.api.nvim_tabpage_is_valid(origin_tab)
+			and vim.api.nvim_win_is_valid(editor)
+			and vim.api.nvim_win_get_tabpage(editor) == origin_tab
+			and vim.api.nvim_win_get_buf(editor) == editor_buf
+		if not owner_valid or state.path ~= origin_path or not destination_valid then
+			M.cancel_diff_target(state, "target owner changed")
 			return
 		end
 		state.lazyvcs_diff_target_task = nil
@@ -910,9 +938,14 @@ function M.open_change(state, node)
 			util.notify("Typed diff UI support is unavailable", vim.log.levels.ERROR)
 			return
 		end
-		local ok, open_err = pcall(actions.open_target, loaded)
+		local ok, open_err = pcall(actions.open_target, loaded, {
+			winid = editor,
+			bufnr = editor_buf,
+			tabid = origin_tab,
+			preserve_focus = vim.api.nvim_get_current_win() ~= origin_win,
+		})
 		if not ok then
-			util.notify(tostring(open_err), vim.log.levels.ERROR)
+			util.notify(tostring(open_err):gsub("[\r\n]+", " "), vim.log.levels.ERROR)
 		end
 	end, {
 		timeout_ms = config.get().source_control.background.status_timeout_ms,
@@ -1349,14 +1382,8 @@ function M.cancel_repo(state, node)
 	end
 	local hydration_count = invalidate_hydration(state, repo.root, "user")
 	clear_repo_details_loading(state, repo.root)
-	if state.lazyvcs_diff_target_task and state.lazyvcs_diff_target_root == repo.root then
-		local cancel = state.lazyvcs_diff_target_task.cancel or state.lazyvcs_diff_target_task.kill
-		if type(cancel) == "function" then
-			pcall(cancel, state.lazyvcs_diff_target_task)
-		end
-		state.lazyvcs_diff_target_task = nil
-		state.lazyvcs_diff_target_root = nil
-		state.lazyvcs_diff_target_generation = (state.lazyvcs_diff_target_generation or 0) + 1
+	if state.lazyvcs_diff_target_root == repo.root then
+		M.cancel_diff_target(state, "user")
 	end
 	local count = hydration_count + M.cancel(repo.root, { owner = state })
 	count = count + M.cancel(repo.root, { owner = repo.root })

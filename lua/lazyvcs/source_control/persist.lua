@@ -3,35 +3,54 @@ local json_file = require("lazyvcs.json_file")
 
 local M = {}
 
-local cache
-
 local function state_path()
 	return util.normalize_literal_path(vim.fn.stdpath("state") .. "/lazyvcs/source_control.json")
 end
 
-local function load_cache()
-	if cache ~= nil then
-		return cache
-	end
-
-	cache = json_file.read(state_path())
-	return cache
+local function project_path(root)
+	return util.normalize_literal_path(
+		vim.fn.stdpath("state") .. "/lazyvcs/source_control/" .. vim.fn.sha256(root) .. ".json"
+	)
 end
 
--- Warn once on persistence failures. Repeating the same warning on every layout change
--- would flood notifications.
+local function normalize_preferences(value)
+	value = type(value) == "table" and value or {}
+	local result = {}
+	for _, key in ipairs({ "visible_repos", "hidden_repos" }) do
+		result[key] = {}
+		if type(value[key]) == "table" then
+			for _, root in ipairs(value[key]) do
+				if type(root) == "string" and root ~= "" then
+					result[key][#result[key] + 1] = root
+				end
+			end
+		end
+	end
+	if type(value.focused_repo) == "string" then
+		result.focused_repo = value.focused_repo
+	end
+	if type(value.show_clean) == "boolean" then
+		result.show_clean = value.show_clean
+	end
+	for key, allowed in pairs({
+		selection_mode = { "single", "multiple" },
+		changes_view_mode = { "list", "tree" },
+		changes_sort = { "path", "name", "status" },
+	}) do
+		if vim.tbl_contains(allowed, value[key]) then
+			result[key] = value[key]
+		end
+	end
+	return result
+end
+
 local warned = false
 
-local function save_cache()
-	if cache == nil then
-		return
-	end
-
-	local ok, err = json_file.write(state_path(), cache)
-	if not ok and not warned then
+local function warn(err)
+	if not warned then
 		warned = true
-		require("lazyvcs.util").notify(
-			"Could not persist source-control layout: " .. tostring(err),
+		util.notify(
+			"Could not persist source-control layout: " .. tostring(err):gsub("[\r\n]+", " "),
 			vim.log.levels.WARN
 		)
 	end
@@ -63,19 +82,25 @@ end
 
 function M.load(root)
 	root = util.normalize_literal_path(root)
-	local all = load_cache()
-	local entry = all[root]
-	if type(entry) ~= "table" then
-		return {}
+	local path = project_path(root)
+	if vim.uv.fs_stat(path) then
+		local entry = json_file.read(path)
+		return normalize_preferences(entry.root == root and entry.preferences or nil)
 	end
-	return vim.deepcopy(entry)
+	return normalize_preferences(json_file.read(state_path())[root])
 end
 
 function M.save(root, value)
 	root = util.normalize_literal_path(root)
-	local all = load_cache()
-	all[root] = vim.deepcopy(value or {})
-	save_cache()
+	local path = project_path(root)
+	if vim.uv.fs_stat(path) and json_file.read(path).root ~= root then
+		warn("Stored project root does not match " .. root)
+		return
+	end
+	local ok, err = json_file.write(path, { root = root, preferences = normalize_preferences(value) })
+	if not ok then
+		warn(err)
+	end
 end
 
 function M.save_state(state)
@@ -85,7 +110,7 @@ function M.save_state(state)
 end
 
 function M.apply_state(state, path)
-	local saved = M.load(path)
+	local saved = normalize_preferences(M.load(path))
 	state.lazyvcs_repo_visibility = {}
 	state.lazyvcs_repo_visibility_overrides = {}
 	for _, root in ipairs(saved.visible_repos or {}) do

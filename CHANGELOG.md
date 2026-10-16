@@ -23,6 +23,23 @@ and this project adheres to
   process arguments.
 - Collect SVN status context from paths containing `@`, report failed context
   commands, and schedule AI context commands within repository worker limits.
+- Finish blame toggles when the state directory cannot be created.
+- Preserve sidebar preferences across editors working on different projects and
+  ignore malformed saved layout fields.
+- Render control characters in sidebar filenames safely, keep failed renders
+  read-only, and show distinct tree basenames in narrow sidebars.
+- Include the enclosing repository when discovery also finds nested checkouts.
+- Reopen displaced sidebars and cancel previews whose sidebar or destination has
+  closed or changed. Keep delayed opens in their originating tab.
+- Preserve loaded sidebar details during background refresh and retain SVN
+  incoming files for expansion and preview.
+- Keep cached status and SVN incoming rows when changing sidebar sort or
+  clean-repository visibility.
+- Honor automatic remote-refresh intervals across sidebar reopenings and tabs.
+- Warn about deleted Git upstreams and keep their repositories visible.
+- Open changed Git submodules as read-only commit patches.
+- Attribute SVN directory-external changes to their own working copies and
+  preserve commit drafts after SVN no-op commits.
 
 ## [0.11.2] - 2026-10-16
 

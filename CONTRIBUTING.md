@@ -124,6 +124,16 @@ the GitHub release.
   `signs.max_file_bytes`. Profile changes invalidate decoded bases. Revalidate
   entry eligibility and the captured context before native replacement.
 - `source_control/jobs.lua` bounds and profiles repository/comparison commands.
+- Source-control summaries own branch, upstream, and remote status. Details own
+  local rows and counts. Merge each completion into the current repository
+  generation without clearing the other request's loading flag. Manual refresh
+  retains SVN incoming metadata until a successful replacement; mutations and
+  project changes discard it.
+- Sidebar window ownership requires the window to display its sidebar buffer.
+  Pending opens capture the originating editor and buffer, and reject replaced
+  owners or destinations.
+- `source_control/persist.lua` writes independent project files and reads the
+  legacy shared file without changing it. Same-project saves use the last write.
 - `source_control/mutation_start.lua` holds one scheduler worker and one
   deadline across asynchronous preflight and mutation. Recheck branch and buffer
   guards before spawning the mutation; never enqueue preflight into the same

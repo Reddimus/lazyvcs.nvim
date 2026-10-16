@@ -775,7 +775,7 @@ local function comparison_buffer(comparison, side, editor_win)
 	vim.bo[bufnr].modifiable = true
 	vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, side.lines or {})
 	local extension = vim.fn.fnamemodify(comparison.path or comparison.relpath or "", ":e")
-	if comparison.property_only then
+	if comparison.property_only or comparison.kind == "git_submodule" then
 		vim.bo[bufnr].filetype = "diff"
 	elseif extension ~= "" then
 		vim.bo[bufnr].filetype = vim.filetype.match({ filename = comparison.path or comparison.relpath }) or ""
@@ -890,7 +890,18 @@ local function open_target_impl(comparison, failure_context)
 	return opened
 end
 
-function M.open_target(comparison)
+function M.open_target(comparison, opts)
+	local previous_win = vim.api.nvim_get_current_win()
+	if opts then
+		if
+			not util.win_is_valid(opts.winid)
+			or vim.api.nvim_win_get_tabpage(opts.winid) ~= opts.tabid
+			or vim.api.nvim_win_get_buf(opts.winid) ~= opts.bufnr
+		then
+			return nil
+		end
+		vim.api.nvim_set_current_win(opts.winid)
+	end
 	ensure_global_autocmds()
 	local failure_context = {
 		tabpage = vim.api.nvim_get_current_tabpage(),
@@ -902,6 +913,9 @@ function M.open_target(comparison)
 	local ok, result = xpcall(function()
 		return open_target_impl(comparison, failure_context)
 	end, debug.traceback)
+	if opts and opts.preserve_focus and util.win_is_valid(previous_win) then
+		vim.api.nvim_set_current_win(previous_win)
+	end
 	if not ok then
 		cleanup_failed_comparison(failure_context)
 		util.notify("Could not open comparison: " .. one_line(result), vim.log.levels.ERROR)

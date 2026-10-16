@@ -399,29 +399,20 @@ local function test_config_normalization()
 end
 
 local function test_source_control_auto_remote_refresh_is_throttled_per_root()
-	local config = require("lazyvcs.config")
-	local source = require("lazyvcs.source_control.native")
-	config.setup({
-		source_control = {
-			remote_refresh = "on_open",
-			remote_refresh_interval_ms = 60000,
-		},
-	})
-
-	local state = {
-		path = "/tmp/workspace",
-	}
-
-	eq(source._test_should_remote_refresh(state), true)
-	eq(source._test_should_remote_refresh(state), false)
-
-	state.lazyvcs_last_remote_refresh_at[state.path] = vim.uv.now() - 60001
-	eq(source._test_should_remote_refresh(state), true)
-
-	state.lazyvcs_remote_refresh = true
-	eq(source._test_should_remote_refresh(state), true)
-	state.lazyvcs_remote_refresh = nil
-	eq(source._test_should_remote_refresh(state), false)
+	local refresh = require("lazyvcs.source_control.remote_refresh")
+	local root = helpers.tempdir()
+	local now = vim.uv.now()
+	eq(refresh.claim(root, 60000, now), true)
+	eq(refresh.claim(root, 60000, now + 59999), false)
+	eq(refresh.claim(root, 60000, now + 60000), true)
+	for index = 1, 511 do
+		eq(refresh.claim(root .. "/" .. index, 60000, now + 60000), true)
+	end
+	eq(refresh.claim(root .. "/overflow", 60000, now + 60000), false)
+	eq(refresh.claim(root, 60000, now + 60000), false)
+	eq(refresh.claim(root .. "/overflow", 60000, now + 120000), true)
+	-- Expire the synthetic reservations before integration tests use real time.
+	eq(refresh.claim(root, 0, now + 180000), true)
 end
 
 local function test_source_control_rejects_removed_neotree_ui()
@@ -2866,7 +2857,7 @@ local function test_source_control_native_invalidated_cache_rehydrates()
 	end, "initial native hydration should load repo summary", ASYNC_TIMEOUT_MS)
 
 	local generation = state.lazyvcs_hydration_generation
-	ops.toggle_show_clean(state)
+	ops.refresh(state, false)
 	local placeholder = state.lazyvcs_repo_cache[spec.root]
 	assert(placeholder and placeholder.loading_summary == true, "invalidated cache should render a loading placeholder")
 
@@ -7158,6 +7149,9 @@ vim.list_extend(cases, require("spec_commit_messages")({ helpers = helpers, wait
 vim.list_extend(cases, require("spec_ai_drafts")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_ai_context")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_switch_refs")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_source_control_refresh")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_source_control_sidebar")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_persistence")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_window_options")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_integrity")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_revert_text")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))

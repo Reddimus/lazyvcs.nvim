@@ -4,6 +4,27 @@ local util = require("lazyvcs.util")
 local Task = require("lazyvcs.backends.task")
 local svn_xml = require("lazyvcs.backends.xml")
 
+---@class lazyvcs.RepositoryStatus
+---@field root string
+---@field name string
+---@field vcs string
+---@field sections table[]
+---@field counts table
+---@field sync table
+---@field summary_loaded boolean
+---@field details_loaded boolean
+---@field loading_summary? boolean
+---@field loading_details? boolean
+---@field remote_snapshot? table[]
+---@field error? string
+---@field remote_error? string
+---@field detail_error? string
+---@field branch? string
+---@field upstream? string
+---@field upstream_gone? boolean
+---@field detached? boolean
+---@field unborn? boolean
+
 local M = {}
 
 local function truncated_output_error(result, command)
@@ -126,6 +147,11 @@ local function placeholder_status(repo, previous)
 		path_label = repo.path_label,
 		branch = previous and previous.branch or nil,
 		upstream = previous and previous.upstream or nil,
+		detached = previous and previous.detached or false,
+		unborn = previous and previous.unborn or false,
+		upstream_gone = previous and previous.upstream_gone or false,
+		remote_snapshot = previous and previous.remote_snapshot or nil,
+		remote_error = previous and previous.remote_error or nil,
 		sections = previous and previous.sections or {},
 		counts = make_counts(previous),
 		sync = previous and previous.sync or sync_badge("…", "loading", "Comment"),
@@ -159,7 +185,7 @@ end
 function M.make_error(repo, previous, err, opts)
 	opts = opts or {}
 	local status = placeholder_status(repo, previous)
-	status.sync = sync_badge("!", "error", "DiagnosticError")
+	status.sync = vim.tbl_extend("force", status.sync, sync_badge("!", "error", "DiagnosticError"))
 	status.error = err
 	status.remote_error = opts.remote_refresh and err or nil
 	status.summary_loaded = true
@@ -230,34 +256,34 @@ local function annotate_repos(root, repos)
 	end
 end
 
+local function merge_enclosing(root, repos, enclosing, kind)
+	local seen, merged = {}, {}
+	for _, repo in ipairs(repos) do
+		repo.root = canonical_root(repo.root)
+		if not seen[repo.root] then
+			seen[repo.root] = true
+			merged[#merged + 1] = repo
+		end
+	end
+	if enclosing then
+		enclosing = canonical_root(enclosing)
+		if not seen[enclosing] and kind then
+			merged[#merged + 1] = { vcs = kind, root = enclosing, name = basename(enclosing) }
+		end
+	end
+	for index, repo in ipairs(merged) do
+		repo.order = index
+	end
+	annotate_repos(root, merged)
+	return merged
+end
+
 function M.discover(root, max_depth)
 	root = canonical_root(root)
 	local repos = {}
 	scan_repos(root, max_depth, 0, repos, {})
-
-	-- The scan only walks downward, so opening the sidebar from anywhere inside a
-	-- working copy (the common case: `cd repo/src && nvim`) found nothing at all.
-	-- Fall back to the enclosing working copy.
-	if #repos == 0 then
-		local enclosing = require("lazyvcs.backends").root(root)
-		if enclosing then
-			local kind = repo_kind(enclosing)
-			if kind then
-				repos[#repos + 1] = {
-					vcs = kind,
-					root = canonical_root(enclosing),
-					name = vim.fs.basename(enclosing),
-					order = 1,
-				}
-			end
-		end
-	end
-
-	annotate_repos(root, repos)
-	table.sort(repos, function(a, b)
-		return a.order < b.order
-	end)
-	return repos
+	local enclosing = require("lazyvcs.backends").root(root)
+	return merge_enclosing(root, repos, enclosing, enclosing and repo_kind(enclosing))
 end
 
 ---Incremental, cancellable repository discovery. Directory entries are consumed
@@ -275,24 +301,10 @@ function M.discover_async(root, max_depth, on_done, opts)
 	local budget = math.max(1, opts.entry_budget or 128)
 
 	local function finish()
-		if #repos > 0 then
-			annotate_repos(root, repos)
-			table.sort(repos, function(a, b)
-				return a.order < b.order
-			end)
-			return task:finish(repos)
-		end
 		task:add(require("lazyvcs.backends").resolve_async(root, function(backend, enclosing)
-			if backend and enclosing then
-				repos[1] = {
-					vcs = backend.name,
-					root = canonical_root(enclosing),
-					name = basename(enclosing),
-					order = 1,
-				}
+			if task:is_active() then
+				task:finish(merge_enclosing(root, repos, enclosing, backend and backend.name))
 			end
-			annotate_repos(root, repos)
-			task:finish(repos)
 		end, { timeout_ms = opts.timeout_ms }))
 	end
 
@@ -360,6 +372,7 @@ end
 local function parse_git_branch(line)
 	local branch = util.trim((line or ""):gsub("^##%s*", ""))
 	local upstream
+	local upstream_gone = false
 	local ahead = 0
 	local behind = 0
 	local branch_name = branch
@@ -384,6 +397,7 @@ local function parse_git_branch(line)
 		if lhs and rhs then
 			branch_name = lhs
 			upstream = rhs
+			upstream_gone = suffix:find("[gone]", 1, true) ~= nil
 			ahead = tonumber((suffix or ""):match("ahead (%d+)") or "0") or 0
 			behind = tonumber((suffix or ""):match("behind (%d+)") or "0") or 0
 		end
@@ -392,6 +406,7 @@ local function parse_git_branch(line)
 	return {
 		branch = branch_name,
 		upstream = upstream,
+		upstream_gone = upstream_gone,
 		ahead = ahead,
 		behind = behind,
 		detached = detached,
@@ -518,6 +533,9 @@ local function build_git_sync(branch_info, counts, fetch_error)
 	if fetch_error then
 		return sync_badge("!", "error", "DiagnosticError")
 	end
+	if branch_info.upstream_gone then
+		return sync_badge("Upstream gone", "upstream_gone", "DiagnosticWarn")
+	end
 	if
 		not branch_info.upstream
 		and not branch_info.unborn
@@ -563,6 +581,7 @@ local function build_git_summary(repo, opts, status_stdout, fetch_error)
 		detached = branch_info.detached,
 		unborn = branch_info.unborn,
 		upstream = branch_info.upstream,
+		upstream_gone = branch_info.upstream_gone,
 		sections = previous.sections or {},
 		counts = counts,
 		sync = vim.tbl_extend("force", build_git_sync(branch_info, counts, fetch_error), {
@@ -578,6 +597,48 @@ local function build_git_summary(repo, opts, status_stdout, fetch_error)
 	})
 end
 
+local function git_status_entries(raw)
+	local entries = vim.split(raw or "", "\0", { plain = true, trimempty = true })
+	local gitlinks = {}
+	local index = 1
+	while index <= #entries do
+		local entry = entries[index]
+		local kind = entry:sub(1, 1)
+		local count = ({ ["1"] = 8, ["2"] = 9, u = 10 })[kind]
+		if count then
+			local fields, offset = {}, 1
+			for _ = 1, count do
+				local boundary = entry:find(" ", offset, true)
+				if not boundary then
+					break
+				end
+				fields[#fields + 1] = entry:sub(offset, boundary - 1)
+				offset = boundary + 1
+			end
+			if #fields == count then
+				local path = entry:sub(offset)
+				for mode = 4, kind == "u" and 7 or 6 do
+					if fields[mode] == "160000" then
+						gitlinks[path] = true
+					end
+				end
+				entries[index] = fields[2]:gsub("%.", " ") .. " " .. path
+				if kind == "2" then
+					index = index + 1
+				end
+			end
+		elseif entry:sub(1, 2) == "? " then
+			entries[index] = "?? " .. entry:sub(3)
+		elseif entry:sub(1, 2) == "! " then
+			entries[index] = "!! " .. entry:sub(3)
+		elseif entry:sub(1, 2):find("[RC]") then
+			index = index + 1
+		end
+		index = index + 1
+	end
+	return entries, gitlinks
+end
+
 local function parse_git_entries(root, raw, sort_key)
 	local sections = {
 		merge = { id = "merge", label = "Merge Changes", items = {} },
@@ -591,7 +652,7 @@ local function parse_git_entries(root, raw, sort_key)
 		remote = 0,
 	}
 
-	local items = vim.split(raw or "", "\0", { plain = true, trimempty = true })
+	local items, gitlinks = git_status_entries(raw)
 	local seen = {}
 	local idx = 1
 
@@ -677,6 +738,9 @@ local function parse_git_entries(root, raw, sort_key)
 	local ordered = {}
 	for _, id in ipairs({ "merge", "staged", "changes", "untracked" }) do
 		if #sections[id].items > 0 then
+			for _, item in ipairs(sections[id].items) do
+				item.extra.gitlink = gitlinks[item.extra.relpath] or false
+			end
 			sort_items(sections[id].items, sort_key)
 			ordered[#ordered + 1] = sections[id]
 		end
@@ -700,6 +764,7 @@ local function build_git_detail(repo, opts, status_stdout, raw_stdout)
 			ahead = summary.sync.ahead or 0,
 			behind = summary.sync.behind or 0,
 			upstream = summary.upstream,
+			upstream_gone = summary.upstream_gone,
 			branch = summary.branch,
 			-- Both are required by the publish test in `build_git_sync`. Dropping
 			-- them made a repo with no commits yet ("unborn") offer Publish
@@ -770,50 +835,19 @@ local function svn_change_kind(item, remote)
 	return kinds[item]
 end
 
+local build_svn_detail
+
 local function build_svn_summary(repo, opts, status_stdout, info_stdout)
 	opts = opts or {}
 	local previous = opts.previous or {}
-	local entries = parse_svn_status_xml(status_stdout)
-
-	local counts = {
-		local_changes = 0,
-		staged = 0,
-		remote = previous.counts and previous.counts.remote or 0,
-	}
-
-	local remote_count = 0
-	for _, entry in ipairs(entries) do
-		if entry.wc_item ~= "external" then
-			if svn_local_changed(entry) then
-				counts.local_changes = counts.local_changes + 1
-			end
-			if opts.remote_refresh and svn_remote_changed(entry) then
-				remote_count = remote_count + 1
-			end
-		end
-	end
-	counts.remote = opts.remote_refresh and remote_count or counts.remote
-
-	return apply_repo_job({
-		root = repo.root,
-		name = repo.name,
-		vcs = repo.vcs,
-		order = repo.order,
-		relpath = repo.relpath,
-		path_label = repo.path_label,
-		branch = svn_branch_from_info(info_stdout),
-		sections = previous.sections or {},
-		counts = counts,
-		sync = build_svn_sync(counts),
-		error = nil,
-		summary_loaded = true,
-		details_loaded = previous.details_loaded or false,
-		loading_details = false,
-		loading_summary = false,
-	})
+	local detail = build_svn_detail(repo, opts, status_stdout, info_stdout)
+	detail.sections = previous.sections or {}
+	detail.details_loaded = previous.details_loaded or false
+	detail.loading_details = previous.loading_details or false
+	return M.merge_summary(previous, detail)
 end
 
-local function build_svn_detail(repo, opts, status_stdout, info_stdout)
+build_svn_detail = function(repo, opts, status_stdout, info_stdout)
 	opts = opts or {}
 	local previous = opts.previous or {}
 	local entries = parse_svn_status_xml(status_stdout)
@@ -901,7 +935,7 @@ local function build_svn_detail(repo, opts, status_stdout, info_stdout)
 		end
 	end
 
-	return apply_repo_job({
+	local result = {
 		root = repo.root,
 		name = repo.name,
 		vcs = repo.vcs,
@@ -916,7 +950,113 @@ local function build_svn_detail(repo, opts, status_stdout, info_stdout)
 		summary_loaded = true,
 		details_loaded = true,
 		loading_details = false,
+		remote_snapshot = opts.remote_refresh and sections.remote.items or previous.remote_snapshot,
+	}
+	return M.merge_details(nil, result)
+end
+
+local function compose_status(status)
+	status.counts = make_counts(status)
+	if status.vcs == "svn" then
+		local sections = {}
+		for _, section in ipairs(status.sections or {}) do
+			if section.id ~= "remote" then
+				sections[#sections + 1] = section
+			end
+		end
+		if status.remote_snapshot then
+			status.counts.remote = #status.remote_snapshot
+			if #status.remote_snapshot > 0 then
+				sections[#sections + 1] = { id = "remote", label = "Remote Changes", items = status.remote_snapshot }
+			end
+		end
+		status.sections = sections
+		status.sync = build_svn_sync(status.counts)
+	else
+		local sync = status.sync or {}
+		status.sync = vim.tbl_extend(
+			"force",
+			build_git_sync({
+				branch = status.branch,
+				upstream = status.upstream,
+				upstream_gone = status.upstream_gone,
+				detached = status.detached,
+				unborn = status.unborn,
+				ahead = sync.ahead or 0,
+				behind = sync.behind or 0,
+			}, status.counts, sync.fetch_error),
+			{
+				ahead = sync.ahead,
+				behind = sync.behind,
+				fetch_error = sync.fetch_error,
+			}
+		)
+	end
+	if status.error or status.remote_error or status.detail_error then
+		status.sync = vim.tbl_extend("force", status.sync, sync_badge("!", "error", "DiagnosticError"))
+	end
+	return apply_repo_job(status)
+end
+
+---@param current? lazyvcs.RepositoryStatus
+---@param summary lazyvcs.RepositoryStatus
+---@return lazyvcs.RepositoryStatus
+function M.merge_summary(current, summary)
+	current = current or {}
+	local result = vim.tbl_extend("force", current, summary)
+	for _, field in ipairs({ "branch", "upstream", "upstream_gone", "detached", "unborn", "sync" }) do
+		result[field] = summary[field]
+	end
+	if current.details_loaded then
+		result.sections = current.sections
+		result.details_loaded = true
+		result.counts = vim.tbl_extend("force", summary.counts, {
+			local_changes = current.counts.local_changes,
+			staged = current.counts.staged,
+		})
+	else
+		result.counts = vim.deepcopy(summary.counts)
+	end
+	result.loading_details = current.loading_details or false
+	result.loading_summary = false
+	result.refreshing_summary = false
+	result.error = summary.error
+	result.remote_error = summary.remote_error
+	result.remote_snapshot = summary.remote_snapshot or current.remote_snapshot
+	return compose_status(result)
+end
+
+---@param current? lazyvcs.RepositoryStatus
+---@param detail lazyvcs.RepositoryStatus
+---@return lazyvcs.RepositoryStatus
+function M.merge_details(current, detail)
+	local result = vim.tbl_extend("force", detail, current or {})
+	result.sections = detail.sections
+	result.details_loaded = detail.details_loaded
+	result.loading_details = false
+	result.detail_error = detail.error
+	result.error = current and current.error or nil
+	local counts = make_counts(detail)
+	result.counts = vim.tbl_extend("force", result.counts or {}, {
+		local_changes = counts.local_changes,
+		staged = counts.staged,
 	})
+	result.remote_snapshot = (current or {}).remote_snapshot or detail.remote_snapshot
+	return compose_status(result)
+end
+
+---Retain incoming metadata while manual refresh reloads local details.
+function M.refresh_cache(cache)
+	local retained = {}
+	for root, status in pairs(cache or {}) do
+		if status.vcs == "svn" and status.remote_snapshot then
+			retained[root] = placeholder_status(status, {
+				remote_snapshot = status.remote_snapshot,
+				counts = { remote = #status.remote_snapshot },
+			})
+		end
+	end
+	return retained
 end
 
 local function mark_node_disabled(node, disabled, busy_label)
@@ -953,6 +1093,13 @@ local function section_content_signature(repo, section, source_opts)
 			tostring(extra.status or ""),
 			tostring(extra.change_kind or ""),
 			tostring(extra.renamed_from or ""),
+			tostring(extra.gitlink or false),
+			tostring(extra.base_revision or ""),
+			tostring(extra.wc_item or ""),
+			tostring(extra.wc_props or ""),
+			tostring(extra.repos_item or ""),
+			tostring(extra.repos_props or ""),
+			tostring(extra.property_only or false),
 		}, "\31")
 	end
 	return table.concat(parts, "\30")
@@ -1060,7 +1207,7 @@ function M.load_repo_summary_async(repo, opts, run_command, on_done)
 		return
 	end
 
-	local args = { "svn", "status", "--xml" }
+	local args = { "svn", "status", "--xml", "--ignore-externals" }
 	if opts.remote_refresh then
 		args[#args + 1] = "-u"
 	end
@@ -1108,7 +1255,7 @@ function M.load_repo_details_async(repo, opts, run_command, on_done)
 					return on_done(nil, truncated_err)
 				end
 				run_command(
-					{ "git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=no" },
+					{ "git", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=no" },
 					{ kind = "details", timeout_ms = opts.status_timeout_ms },
 					function(files, files_err)
 						if not files then
@@ -1126,7 +1273,7 @@ function M.load_repo_details_async(repo, opts, run_command, on_done)
 		return
 	end
 
-	local args = { "svn", "status", "--xml" }
+	local args = { "svn", "status", "--xml", "--ignore-externals" }
 	if opts.remote_refresh then
 		args[#args + 1] = "-u"
 	end
@@ -1171,6 +1318,7 @@ local function repo_visible(repo, show_clean)
 		or repo.sync.status == "outgoing"
 		or repo.sync.status == "diverged"
 		or repo.sync.status == "publish"
+		or repo.sync.status == "upstream_gone"
 		or repo.counts.local_changes > 0
 		or repo.counts.remote > 0
 end
@@ -1237,6 +1385,10 @@ local function folder_tree_from_items(repo, section, items, compact)
 
 	for _, item in ipairs(items) do
 		local relpath = item.extra.relpath
+		item.name = basename(relpath)
+		if item.extra.renamed_from then
+			item.name = item.name .. " <- " .. item.extra.renamed_from
+		end
 		local segments = vim.split(relpath, "/", { plain = true })
 		local cursor = root
 		local current_path = {}
