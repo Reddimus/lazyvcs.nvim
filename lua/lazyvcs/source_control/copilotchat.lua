@@ -1,4 +1,5 @@
 local util = require("lazyvcs.util")
+local runtime = require("lazyvcs.process_runtime")
 
 local M = {}
 
@@ -26,7 +27,7 @@ function M.start(prompt, settings, on_done)
 	end
 	handle.kill = handle.cancel
 	local function finish(message, err)
-		if not active or settled then
+		if not active or settled or runtime.is_shutting_down() then
 			return
 		end
 		settled = true
@@ -39,7 +40,7 @@ function M.start(prompt, settings, on_done)
 			end
 		end
 		vim.schedule(function()
-			if not active then
+			if not active or runtime.is_shutting_down() then
 				return
 			end
 			active = false
@@ -53,6 +54,9 @@ function M.start(prompt, settings, on_done)
 		end)
 	end
 
+	if runtime.is_shutting_down() then
+		return handle
+	end
 	local ok_lazy, lazy = pcall(require, "lazy")
 	if ok_lazy then
 		pcall(lazy.load, { plugins = { "CopilotChat.nvim" } })
@@ -94,7 +98,7 @@ function M.start(prompt, settings, on_done)
 	end
 	local ok, run_err = pcall(async.run, function()
 		scope:run(function()
-			if not active or settled then
+			if not active or settled or runtime.is_shutting_down() then
 				return
 			end
 			local asked, response = pcall(client.ask, client, {

@@ -194,10 +194,17 @@ the GitHub release.
   Its idempotent CopilotChat get/post wrappers hand coroutine ownership to
   Plenary through a one-shot pending scope. The request wrapper consumes it
   before starting the Job. Callback-form delegation clears the handoff even when
-  a leaf fails before reaching curl. Cancellation marks the scope terminal
-  before signalling children and shutting down Jobs, including late requests.
-  Self-authored offline fixtures model async leaves and run local children; no
-  third-party plugin source is included.
+  a leaf fails before reaching curl. `copilotchat_job.lua` guards each returned
+  Job's finalizer until physical exit and retains runtime ownership through file
+  cleanup. Logical stream success survives termination unless cancellation or
+  timeout supersedes it. Curl receives direct signals and shares the runtime's
+  editor-exit deadlines. `copilotchat_files.lua` adopts only temporary names
+  generated inside the synchronous leaf and passed as curl file options. It
+  captures file identity there and removes matching files asynchronously after
+  exit, or after a spawn failure. Temporary-name wrappers are restored before
+  the leaf returns. New transports are rejected during shutdown. Self-authored
+  offline fixtures model async leaves and run local children; no third-party
+  plugin source is included.
 - `blame_context.lua` captures source identity and changedtick for blame
   requests.
 - `blame_selection.lua` presents selected-line reports through a cancellable

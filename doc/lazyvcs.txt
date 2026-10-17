@@ -752,7 +752,7 @@ occupied until cleanup completes. On POSIX, timeout and cancellation terminate
 owned command descendants in separate process groups. Descendants that create
 another session or leave the group are outside this cleanup.
 
-On Windows, taskkill /T /F handles all timeouts and shutdown termination.
+On Windows, taskkill /T /F handles command timeouts and shutdown termination.
 Cancellation uses it only for mutation or remote scopes, Git fetch, pull, push,
 clone, ls-remote, remote update, and commit, and SVN checkout/co, update/up,
 switch/sw, merge, commit/ci, import, and status with -u or --show-updates.
@@ -820,6 +820,16 @@ as #file: stay literal and cannot attach other files. Only the configured scalar
 CopilotChat model and temperature are reused. LazyVCS cancels the request's
 transport processes on cancellation or timeout. Cancellation delivers no result;
 timeout reports one error. Other CopilotChat requests remain independent.
+Successful streams stop their remaining curl process and retain its handle until
+libuv reaps it, before delivering the message. CopilotChat curl processes also
+share the editor-exit TERM and KILL deadlines. Curl has no descendants, so these
+transports use direct signals on every platform, including Windows.
+
+LazyVCS removes request files after the transport exits. Ownership requires a
+name returned by os.tmpname() or vim.fn.tempname() during the synchronous
+CopilotChat leaf call and that same name passed as a curl file option. Existing
+caller files and replaced files are preserved. If CopilotChat changes its
+temporary-file API, generation continues but unrecognized files may remain.
 Compatibility is tested with CopilotChat client 1e06be9 and Plenary b9fd522.
 
 CLI diff context reaches providers over stdin, or as a private 0600 attachment
