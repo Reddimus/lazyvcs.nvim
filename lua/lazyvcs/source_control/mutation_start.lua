@@ -87,7 +87,7 @@ function M.start(repo, args, opts, guards, on_exit)
 		return self:cancel("cancelled")
 	end
 
-	local function spawn(command, continuation, mutation)
+	local function spawn(command, continuation, mutation, environment)
 		if done or terminal then
 			return
 		end
@@ -106,6 +106,9 @@ function M.start(repo, args, opts, guards, on_exit)
 			on_terminate = terminate,
 			preserve_on_shutdown = opts.preserve_on_shutdown and mutation == true,
 		})
+		if environment then
+			process_opts.env = vim.tbl_extend("force", opts.env or {}, environment)
+		end
 		if guards.git_untracked_delete then
 			process_opts.text = false
 		end
@@ -278,14 +281,27 @@ function M.start(repo, args, opts, guards, on_exit)
 					end, true)
 				end
 				filesystem(vim.uv.fs_lstat, function(stat)
+					if stat and stat.type == "directory" and repo.vcs == "git" and args[2] == "restore" then
+						-- A populated gitlink is a directory, but restore does not remove it.
+						return spawn(
+							{ "git", "--literal-pathspecs", "ls-files", "--stage", "-z", "--", target.relpath },
+							function(result)
+								for entry in result.stdout:gmatch("[^%z]+") do
+									local mode, stage, path = entry:match("^(%d+) %x+ (%d)\t(.*)$")
+									if mode == "160000" and stage == "0" and path == target.relpath then
+										return check_next()
+									end
+								end
+								return reject("Tracked Discard refuses directory obstruction at " .. target.relpath)
+							end
+						)
+					end
 					if stat and stat.type ~= "file" and stat.type ~= "link" then
 						return reject("Tracked Discard refuses " .. stat.type .. " obstruction at " .. target.relpath)
 					end
 					if stat and stat.type == "link" and vim.fn.has("win32") == 1 then
 						-- libuv reports both junctions and symbolic links as links on Windows.
-						local script = "(Get-Item -Force -ErrorAction Stop -LiteralPath '"
-							.. target.path:gsub("'", "''")
-							.. "').LinkType"
+						local script = "(Get-Item -Force -ErrorAction Stop -LiteralPath $env:LAZYVCS_LINK).LinkType"
 						return spawn(
 							{ "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script },
 							function(result)
@@ -296,7 +312,9 @@ function M.start(repo, args, opts, guards, on_exit)
 									)
 								end
 								check_next()
-							end
+							end,
+							nil,
+							{ LAZYVCS_LINK = target.path }
 						)
 					end
 					check_next()

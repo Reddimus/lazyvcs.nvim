@@ -59,8 +59,9 @@ local function write_record(path, value)
 		return nil, err
 	end
 	local ok, written = pcall(fs.write_all, fd, encoded)
+	local synced_ok, synced = pcall(vim.uv.fs_fsync, fd)
 	local closed = vim.uv.fs_close(fd)
-	if not ok or not written or not closed then
+	if not ok or not written or not synced_ok or not synced or not closed then
 		pcall(vim.uv.fs_unlink, temp)
 		return nil, "Could not write ownership record"
 	end
@@ -198,26 +199,25 @@ local function decode(data)
 	return ok and type(value) == "table" and value or nil
 end
 
+local function valid_record(record, current, token)
+	return record
+		and record.version == 1
+		and record.token == token
+		and type(record.boot) == "number"
+		and record.platform == current.platform
+		and (record.boot_id == nil or type(record.boot_id) == "string")
+end
+
 local function gone(record, current)
-	if
-		record.version ~= 1
-		or type(record.token) ~= "string"
-		or type(record.boot) ~= "number"
-		or type(record.platform) ~= "string"
-	then
-		return false
-	end
-	if record.boot_id ~= nil and type(record.boot_id) ~= "string" then
-		return false
-	end
-	if record.platform ~= current.platform then
-		return false
-	end
 	local changed = math.abs(record.boot - current.boot) > 5
 	if record.boot_id and current.boot_id then
-		changed = record.boot_id ~= current.boot_id
+		if record.boot_id ~= current.boot_id then
+			return true
+		end
+		changed = false
 	end
-	if changed then
+	-- Wall-clock steps change the estimate even while the consumer is alive.
+	if changed and record.pid == nil then
 		return true
 	end
 	if current.platform == "Linux" then
@@ -275,6 +275,30 @@ function M.prune()
 						pruning = false
 						return
 					end
+					local message = name:match("^(.*%.txt)%.owner$")
+						or name:match("^(.*%.txt)%.settled$")
+						or name:match("^(.*%.txt)%.owner%.tmp$")
+						or name:match("^(.*%.txt)%.settled%.tmp$")
+					if message then
+						local sidecar = dir .. "/" .. name
+						return vim.uv.fs_lstat(
+							sidecar,
+							callback(function(_, stat)
+								if not stat or stat.type ~= "file" or stat.mtime.sec >= current.boot - 5 then
+									return next_entry()
+								end
+								vim.uv.fs_lstat(
+									dir .. "/" .. message,
+									callback(function(err)
+										if err and tostring(err):match("^ENOENT[: ]") then
+											return vim.uv.fs_unlink(sidecar, callback(next_entry))
+										end
+										next_entry()
+									end)
+								)
+							end)
+						)
+					end
 					if not name:match("%.txt$") then
 						return callback(next_entry)()
 					end
@@ -285,19 +309,12 @@ function M.prune()
 							if stat_err or not stat or stat.type ~= "file" then
 								return next_entry()
 							end
-							read_async(path .. ".owner", function(data, owner_err)
+							read_async(path .. ".owner", function(data)
 								local record = decode(data)
-								if not record then
-									if
-										owner_err
-										and owner_err:match("^ENOENT[: ]")
-										and stat.mtime.sec < current.boot - 5
-									then
+								if not record or not valid_record(record, current, name:sub(1, -5)) then
+									if stat.mtime.sec < current.boot - 5 then
 										return remove(path)
 									end
-									return next_entry()
-								end
-								if record.token ~= name:sub(1, -5) then
 									return next_entry()
 								end
 								read_async(path .. ".settled", function(receipt)

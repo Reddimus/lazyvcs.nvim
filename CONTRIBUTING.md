@@ -179,9 +179,11 @@ the GitHub release.
   for pending filesystem callbacks before releasing the worker. Tracked-file
   Discard checks every restore target, including rename sources, with
   asynchronous lstat before startup. Files, symlinks, and ENOENT are accepted.
-  Windows links also require an asynchronous PowerShell LinkType check to
-  exclude junctions. SVN revalidates its recorded node kind before choosing file
-  or directory scope.
+  Git directory restore targets require an exact stage-zero index entry with
+  mode 160000 before restore can accept them. Windows links also require an
+  asynchronous PowerShell LinkType check to exclude junctions; pass the path
+  through the child's environment. SVN revalidates its recorded node kind before
+  choosing file or directory scope.
 - `compare.lua` owns review tabs, source-control navigation, and read-only
   previews. Its `set_panes()` transition installs both panes before publishing
   their slots and defers results while the picker router owns a borrowed buffer.
@@ -207,10 +209,14 @@ the GitHub release.
   process start and removed after physical process exit, including cancellation
   and spawn failure. `source_control/commit_files.lua` records the consuming
   PID, boot identity, and Linux PID namespace. Setup prunes one bounded
-  ownership record at a time. Age alone never releases an owned message;
-  settlement, another boot, or a same-scope ESRCH probe does. Legacy messages
+  ownership record at a time and syncs records before rename. Age alone never
+  releases a valid owned message. Settlement, a changed kernel boot ID, or a
+  same-scope ESRCH probe does. Without a boot ID pair, a boot estimate differing
+  by more than five seconds also requires a missing PID or ESRCH. Messages with
+  missing or invalid ownership records, including token or platform mismatches,
   are eligible only when their mtime precedes the current boot by more than five
-  seconds.
+  seconds. Orphaned ownership, settlement, and temporary sidecars use that age
+  threshold too.
 - Sidebar AI drafts belong to one state and repository root. Request tickets and
   draft revisions reject superseded responses. Context commands use the
   scheduler; repository cancellation also stops provider requests after context

@@ -5,15 +5,51 @@ return function(ctx)
 			"test_core_directory_completion_roundtrips_windows_backslashes",
 			function()
 				local received
-				local path = [[C:\space repo\C#App\100%repo\]]
+				local has, scan, next_entry = vim.fn.has, vim.uv.fs_scandir, vim.uv.fs_scandir_next
+				local ignore = vim.o.wildignore
 				vim.api.nvim_create_user_command("LazyVCSCompletionProbe", function(args)
 					received = args.fargs
 				end, { nargs = "*" })
-				local ok, err = pcall(function()
-					local candidates = { require("lazyvcs.command_path").escape(path) }
-					vim.cmd("LazyVCSCompletionProbe " .. candidates[1])
-					assert(vim.deep_equal(received, { path }), "Windows completion did not round-trip through <f-args>")
-				end)
+				local ok, err = xpcall(function()
+					vim.o.wildignore = ""
+					vim.fn.has = function(name)
+						return name == "win32" and 1 or has(name)
+					end
+					for _, case in ipairs({
+						{ "C:", "C:", "space repo", "C:space repo/" },
+						{ [[C:\]], [[C:\]], "space repo", [[C:\space repo/]] },
+						{
+							[[C:\space repo\C#App\100]],
+							[[C:\space repo\C#App\]],
+							"100%repo",
+							[[C:\space repo\C#App\100%repo/]],
+						},
+						{ "d:/", "d:/", "space repo", "d:/space repo/" },
+					}) do
+						local request, emitted = {}, false
+						vim.uv.fs_scandir = function(path)
+							assert(path == case[2], "wrong Windows scan parent: " .. path)
+							return request
+						end
+						vim.uv.fs_scandir_next = function(value)
+							assert(value == request)
+							if not emitted then
+								emitted = true
+								return case[3], "directory"
+							end
+						end
+						local lead = require("lazyvcs.command_path").escape(case[1])
+						local candidates = require("lazyvcs.commands")._complete(lead, "LazyVCS sidebar open " .. lead)
+						assert(#candidates == 1, "Windows completion missing")
+						vim.cmd("LazyVCSCompletionProbe " .. candidates[1])
+						assert(
+							vim.deep_equal(received, { case[4] }),
+							"Windows completion did not round-trip through <f-args>"
+						)
+					end
+				end, debug.traceback)
+				vim.fn.has, vim.uv.fs_scandir, vim.uv.fs_scandir_next = has, scan, next_entry
+				vim.o.wildignore = ignore
 				vim.api.nvim_del_user_command("LazyVCSCompletionProbe")
 				assert(ok, err)
 			end,

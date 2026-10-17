@@ -1,6 +1,66 @@
 return function(ctx)
 	local h, util = ctx.helpers, require("lazyvcs.util")
+	local function complete(lead)
+		return require("lazyvcs.commands")._complete(lead, "LazyVCS sidebar open " .. lead)
+	end
+	local function directory_case(fn)
+		return function()
+			local cwd, ignore = vim.fn.getcwd(), vim.o.wildignore
+			local dir = h.tempdir()
+			vim.fn.mkdir(dir .. "/.git")
+			vim.fn.mkdir(dir .. "/visible")
+			vim.fn.mkdir(dir .. "/skip")
+			vim.cmd.cd(dir)
+			vim.o.wildignore = ""
+			local ok, err = xpcall(function()
+				fn(dir)
+			end, debug.traceback)
+			vim.cmd.cd(cwd)
+			vim.o.wildignore = ignore
+			assert(ok, err)
+		end
+	end
 	return {
+		{
+			"test_core_directory_completion_hides_dot_names",
+			directory_case(function()
+				assert(vim.deep_equal(complete(""), { "skip/", "visible/" }), "empty prefix exposed .git")
+				assert(vim.deep_equal(complete("."), { ".git/" }), "dot prefix hid .git")
+			end),
+		},
+		{
+			"test_core_directory_completion_respects_wildignore",
+			directory_case(function(dir)
+				for _, lead in ipairs({ "", dir .. "/" }) do
+					for _, pattern in ipairs({ "skip/", "*/skip", "*/skip/*", "visible/", "*/visible/", "s*" }) do
+						vim.o.wildignore = pattern
+						local expected = vim.fn.getcompletion(lead, "dir", true)
+						table.sort(expected)
+						assert(
+							vim.deep_equal(complete(lead), expected),
+							pattern .. ": wildignore differs from Vim for " .. lead
+						)
+					end
+				end
+			end),
+		},
+		{
+			"test_core_directory_completion_expands_named_home",
+			directory_case(function(dir)
+				local expand = vim.fn.expand
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.expand = function(path, ...)
+					if path == "~lazyvcs_test_user" then
+						return dir
+					end
+					return expand(path, ...)
+				end
+				local ok, result = pcall(complete, "~lazyvcs_test_user/vis")
+				vim.fn.expand = expand
+				assert(ok, result)
+				assert(vim.deep_equal(result, { dir .. "/visible/" }), "named home completion was lost")
+			end),
+		},
 		{
 			"test_core_directory_completion_protects_environment_dollars",
 			function()

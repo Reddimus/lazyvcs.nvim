@@ -110,6 +110,9 @@ literal dollar. Completion protects every dollar in a literal directory name.
 Expansion runs once: $$ becomes $, $NAME expands from the environment, and
 undefined names stay unchanged. Environment values are never expanded again.
 Backslashes and whitespace keep their existing command argument escaping.
+Directory completion hides dot names unless the prefix starts with a dot and
+respects 'wildignore' and 'wildignorecase'. Named home paths (~user/) and Windows
+drive-relative paths (C:) are supported.
 
 ==============================================================================
 TOTAL COMPARISON                                           *lazyvcs-comparison*
@@ -472,11 +475,14 @@ Behavior:
 - Unstage preserves working-file edits made after staging a new file. Staged
   rename Unstage and Discard cover both the source and destination paths.
 - Tracked-file Discard checks every restore target, including rename sources.
-  Directories, nested repositories, Windows junctions, special files, and
-  unverifiable filesystem errors are refused. Ordinary files, symlinks, and
-  missing files are accepted. Symlink targets and their children remain intact.
-  Windows link classification uses PowerShell asynchronously. These checks do
-  not make Discard atomic against concurrent external filesystem replacements.
+  Directory obstructions, nested repositories replacing regular files, Windows
+  junctions, special files, and unverifiable filesystem errors are refused.
+  Ordinary files, symlinks, missing files, and tracked submodule directories are
+  accepted. Submodule Discard restores the index pointer without changing the
+  populated submodule checkout. Symlink targets and their children remain intact.
+  Windows link classification passes the literal path through the PowerShell
+  child's environment and runs asynchronously. These checks do not make Discard
+  atomic against concurrent external filesystem replacements.
 - Untracked-file Discard deletes only the selected file or symlink. All directory
   rows, including nested repositories, are refused. Symlink targets remain intact.
 - Successful Discard runs Neovim's timestamp check. With 'autoread', unmodified
@@ -507,8 +513,9 @@ Behavior:
 - Sort (`S`) and clean visibility (`H`) update the current rows without
   reloading status or discarding known incoming changes.
 
-Preference reads use the opened file's type, size, and contents, so an atomic
-replacement by another editor does not truncate a valid document.
+Preference reads reject non-regular paths before opening, then use the opened
+file's type, size, and contents. An atomic replacement by another editor does not
+truncate a valid document.
 
 Sidebar preferences are stored per project in
 `stdpath('state')/lazyvcs/source_control/<sha256(normalized-root)>.json`.
@@ -861,21 +868,26 @@ private directory (0700) and exclusive files (0600) on POSIX. Each file is remov
 when its command physically completes while Neovim runs. Logical cancellation
 keeps the message until the process exits. Each cached message has an ownership
 record with the consuming command's PID and boot time, derived from os.time()
-minus vim.uv.uptime(). Boot times allow five seconds of tolerance. Linux also
-records the kernel boot ID when readable and the PID namespace device and inode.
+minus vim.uv.uptime(). Linux also records the kernel boot ID when readable and
+the PID namespace device and inode. Ownership records are synced before rename.
 
 Setup prunes asynchronously, reading one ownership record at a time. A changed
-boot, a matching settlement receipt, or a signal-zero PID probe returning ESRCH
-releases a message. Matching Linux boot IDs take precedence over boot-time
-estimates. In the same boot, Linux probes only within the recorded PID namespace.
-macOS and Windows probe the consuming PID in the same boot. PID reuse delays
-cleanup. Permission failures, foreign namespaces, and invalid records retain the
-message until ownership can be verified. A failed deletion after physical exit
-leaves a settlement receipt for later cleanup.
+Linux boot ID, a matching settlement receipt, or a signal-zero PID probe
+returning ESRCH releases a message. Matching Linux boot IDs take precedence over
+boot-time estimates. Without a boot ID pair, estimated boot times differing by
+more than five seconds release a message only if the consumer PID is missing or
+a same-scope probe returns ESRCH. A wall-clock step cannot release a live PID's
+message. Linux probes only within the recorded PID namespace; macOS and Windows
+probe the consuming PID. PID reuse delays cleanup. PID probes cannot release
+records on permission failures or across namespaces. A failed deletion after
+physical exit leaves a settlement receipt for later cleanup.
 
-Legacy message files have no ownership record. Setup prunes one only if its
-modification time is more than five seconds earlier than the current boot time.
-Otherwise it remains until a later boot. Cleanup errors do not interrupt setup.
+Messages with missing, unreadable, invalid, token-mismatched, or foreign-platform
+ownership records use the legacy rule: setup prunes them only if their mtime is
+more than five seconds earlier than the current boot time. Otherwise they remain
+until a later boot. Orphaned .owner, .settled, .owner.tmp, and .settled.tmp
+sidecars use the same age threshold and are removed only when their message is
+gone. Cleanup errors do not interrupt setup.
 If the cache directory cannot be created or protected, that commit uses
 vim.fn.tempname() instead. Such commits cannot outlive the editor and are
 cancelled at shutdown.

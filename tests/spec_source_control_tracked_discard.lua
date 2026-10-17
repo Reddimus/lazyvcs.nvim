@@ -174,10 +174,19 @@ return function(ctx)
 		end
 	end
 
-	local function windows_links()
+	local function windows_links(link_name)
 		local has, lstat, start = vim.fn.has, vim.uv.fs_lstat, util.system_start
 		local ok, err = xpcall(function()
-			for _, kind in ipairs({ "Junction", "SymbolicLink", "unknown" }) do
+			local cases = {
+				{ "Junction", "it's a link" },
+				{ "unknown", "it's a link" },
+				{ "SymbolicLink", "it's a link" },
+			}
+			if link_name then
+				cases = { { "SymbolicLink", link_name } }
+			end
+			for _, case in ipairs(cases) do
+				local kind, path = case[1], "C:/repo/" .. case[2]
 				local checked, mutated, done, failure = false, false, false, nil
 				vim.fn.has = function(name)
 					return name == "win32" and 1 or has(name)
@@ -189,12 +198,15 @@ return function(ctx)
 					return {}
 				end
 				---@diagnostic disable-next-line: duplicate-set-field
-				util.system_start = function(args, _, cb)
+				util.system_start = function(args, opts, cb)
 					if args[1] == "powershell.exe" then
 						checked = true
 						assert(
-							args[#args]:find("-LiteralPath 'C:/repo/it''s a link'", 1, true),
-							"PowerShell path was not quoted literally"
+							args[#args]:find("-LiteralPath $env:LAZYVCS_LINK", 1, true)
+								and not args[#args]:find(path, 1, true)
+								and opts.env.LAZYVCS_LINK == path
+								and opts.env.LAZYVCS_TEST == "inherited",
+							"PowerShell path must travel only through the child environment"
 						)
 						cb({ code = 0, stdout = kind .. "\n", stderr = "" })
 					else
@@ -206,8 +218,8 @@ return function(ctx)
 				require("lazyvcs.source_control.mutation_start").start(
 					{ root = "C:/repo", vcs = "git" },
 					{ "git", "restore" },
-					{ timeout = 5000 },
-					{ tracked_discard = { { path = "C:/repo/it's a link", relpath = "it's a link" } } },
+					{ timeout = 5000, env = { LAZYVCS_TEST = "inherited" } },
+					{ tracked_discard = { { path = path, relpath = case[2] } } },
 					function(_, e)
 						done, failure = true, e
 					end
@@ -224,6 +236,57 @@ return function(ctx)
 	end
 
 	return {
+		{ "test_source_control_windows_link_paths_use_environment", guarded(windows_links) },
+		{
+			"test_source_control_windows_link_typographic_quote_uses_environment",
+			guarded(function()
+				windows_links("Dave’s link")
+			end),
+		},
+		{
+			"test_source_control_windows_link_injection_text_uses_environment",
+			guarded(function()
+				windows_links("');Start-Process calc;#")
+			end),
+		},
+		{
+			"test_source_control_tracked_discard_allows_submodules",
+			guarded(function()
+				local source, f = h.make_git_fixture(), h.make_git_fixture()
+				h.exec({ "git", "restore", "sample.txt" }, source.root)
+				h.exec(
+					{ "git", "-c", "protocol.file.allow=always", "submodule", "add", "file://" .. source.root, "sub" },
+					f.root
+				)
+				h.exec({ "git", "add", "sample.txt" }, f.root)
+				h.exec({ "git", "commit", "-m", "add submodule" }, f.root)
+				local original = util.trim(h.exec({ "git", "rev-parse", "HEAD:sub" }, f.root))
+				h.write_file(source.file, "next submodule commit\n")
+				h.exec({ "git", "commit", "-am", "advance" }, source.root)
+				h.exec({ "git", "-c", "protocol.file.allow=always", "fetch" }, f.root .. "/sub")
+				local next_commit = util.trim(h.exec({ "git", "rev-parse", "HEAD" }, source.root))
+				h.exec({ "git", "checkout", next_commit }, f.root .. "/sub")
+				for _, staged in ipairs({ false, true }) do
+					jobs.clear_history()
+					if staged then
+						h.exec({ "git", "add", "sub" }, f.root)
+					end
+					local state, node = row(f, "git", f.root .. "/sub", staged and "staged" or "changes")
+					ops.revert_file(state, node)
+					finished(f.root)
+					assert(not session.get_repo_job(f.root), "tracked submodule discard was refused")
+					assert(vim.fn.readfile(f.root .. "/sub/sample.txt")[1] == "next submodule commit")
+					assert(
+						util.trim(h.exec({ "git", "rev-parse", ":sub" }, f.root)) == original,
+						"staged pointer was not restored"
+					)
+					assert(
+						util.trim(h.exec({ "git", "rev-parse", "HEAD" }, f.root .. "/sub")) == next_commit,
+						"submodule checkout changed"
+					)
+				end
+			end),
+		},
 		{
 			"test_source_control_tracked_discard_refuses_obstructions",
 			guarded(function()
@@ -311,7 +374,6 @@ return function(ctx)
 				end
 				symlinks("git")
 				interrupted()
-				windows_links()
 			end),
 		},
 		{

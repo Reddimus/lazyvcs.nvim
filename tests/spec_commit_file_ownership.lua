@@ -82,11 +82,12 @@ return function(ctx)
 				util.trim(h.exec({ "git", "log", "-1", "--format=%B" }, f.root)) == "Owned commit",
 				"commit lost its message"
 			)
-			if not preserved then
-				wait(function()
-					return not vim.uv.fs_stat(path)
-				end, "settled commit message leaked")
+			if preserved then
+				prune(f.root .. "/cache", f.root)
 			end
+			wait(function()
+				return not vim.uv.fs_stat(path)
+			end, "settled commit message leaked")
 		end)
 	end
 	local function policy()
@@ -109,7 +110,8 @@ return function(ctx)
 		end
 		local function save(value, receipt)
 			h.write_file(path, "private message")
-			vim.uv.fs_utime(path, os.time() - 86402, os.time() - 86402)
+			local age = os.time() - math.min(86402, math.max(0, vim.uv.uptime() - 1))
+			vim.uv.fs_utime(path, age, age)
 			h.write_file(path .. ".owner", vim.json.encode(value))
 			if receipt then
 				h.write_file(path .. ".settled", vim.json.encode(receipt))
@@ -169,7 +171,7 @@ return function(ctx)
 					value.pid = nil
 				end
 				if mode == "boot" then
-					value.boot, value.boot_id = value.boot - 100, "another boot"
+					value.boot, value.boot_id, value.pid = value.boot - 100, "another boot", nil
 				end
 				rawset(vim.uv, "kill", function()
 					error("unverifiable scope reached liveness probe")
@@ -224,7 +226,157 @@ return function(ctx)
 		assert(ok, err)
 	end
 
-	return {
+	local function prune_scan()
+		local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
+		local marker = dir .. "/zzzz-review.txt"
+		h.write_file(marker, "barrier")
+		local old = os.time() - vim.uv.uptime() - 10
+		assert(vim.uv.fs_utime(marker, old, old))
+		require("lazyvcs.source_control.commit_files").prune()
+		wait(function()
+			return not vim.uv.fs_stat(marker)
+		end, "pruning did not finish", 5000)
+		vim.wait(30)
+	end
+	local extra = {}
+	for _, mode in ipairs({ "missing", "unreadable", "malformed", "token", "platform", "version" }) do
+		extra[#extra + 1] = {
+			"test_source_control_commit_prunes_previous_boot_" .. mode .. "_owner",
+			function()
+				local files = require("lazyvcs.source_control.commit_files")
+				local open = vim.uv.fs_open
+				local ok, err = xpcall(function()
+					for _, old in ipairs({ false, true }) do
+						local file = assert(files.create("private"))
+						local owner = file.path .. ".owner"
+						if mode == "missing" then
+							assert(vim.uv.fs_unlink(owner))
+						elseif mode == "malformed" then
+							h.write_file(owner, "")
+						elseif mode == "unreadable" then
+							vim.uv.fs_open = function(path, flags, permissions, cb)
+								if path == owner and cb then
+									vim.schedule(function()
+										cb("EACCES: unreadable")
+									end)
+									return {}
+								end
+								return open(path, flags, permissions, cb)
+							end
+						else
+							local record = vim.deepcopy(file.record)
+							if mode == "token" then
+								record.token = "another message"
+							end
+							if mode == "platform" then
+								record.platform = "another platform"
+							end
+							if mode == "version" then
+								record.version = 999
+							end
+							h.write_file(owner, vim.json.encode(record))
+						end
+						if old then
+							local before_boot = os.time() - vim.uv.uptime() - 10
+							assert(vim.uv.fs_utime(file.path, before_boot, before_boot))
+						end
+						prune_scan()
+						assert((vim.uv.fs_stat(file.path) == nil) == old, mode .. ": wrong legacy age release")
+						vim.uv.fs_open = open
+						files.release(file)
+					end
+				end, debug.traceback)
+				vim.uv.fs_open = open
+				assert(ok, err)
+			end,
+		}
+	end
+	for _, suffix in ipairs({ ".owner", ".settled", ".owner.tmp", ".settled.tmp" }) do
+		extra[#extra + 1] = {
+			"test_source_control_commit_prunes_orphan" .. suffix:gsub("%.", "_"),
+			function()
+				local files = require("lazyvcs.source_control.commit_files")
+				local file = assert(files.create("private"))
+				local sidecar = file.path .. suffix
+				h.write_file(sidecar, "sidecar")
+				local old = os.time() - vim.uv.uptime() - 10
+				assert(vim.uv.fs_utime(sidecar, old, old))
+				prune_scan()
+				assert(vim.uv.fs_stat(sidecar), "owned sidecar was removed")
+				assert(vim.uv.fs_unlink(file.path))
+				assert(vim.uv.fs_utime(sidecar, os.time(), os.time()))
+				prune_scan()
+				assert(vim.uv.fs_stat(sidecar), "fresh orphan was removed")
+				assert(vim.uv.fs_utime(sidecar, old, old))
+				prune_scan()
+				assert(not vim.uv.fs_stat(sidecar), "previous-boot orphan leaked")
+				files.release(file)
+			end,
+		}
+	end
+	extra[#extra + 1] = {
+		"test_source_control_commit_clock_step_keeps_live_consumer",
+		function()
+			local files = require("lazyvcs.source_control.commit_files")
+			local uname, kill = vim.uv.os_uname, vim.uv.kill
+			local ok, err = xpcall(function()
+				for _, platform in ipairs({ "Linux", "Darwin", "Windows_NT" }) do
+					local file = assert(files.create("live message"))
+					files.attach(file, { process = { pid = vim.fn.getpid() } })
+					local record = vim.deepcopy(file.record)
+					record.boot, record.boot_id, record.platform = record.boot - 100, nil, platform
+					h.write_file(file.path .. ".owner", vim.json.encode(record))
+					vim.uv.os_uname = function()
+						return { sysname = platform }
+					end
+					prune_scan()
+					assert(vim.uv.fs_stat(file.path), platform .. ": clock step deleted a live consumer message")
+					files.release(file)
+					vim.uv.os_uname = uname
+				end
+			end, debug.traceback)
+			vim.uv.os_uname, vim.uv.kill = uname, kill
+			assert(ok, err)
+		end,
+	}
+	extra[#extra + 1] = {
+		"test_source_control_commit_records_sync_before_rename",
+		function()
+			local files = require("lazyvcs.source_control.commit_files")
+			local sync, rename, unlink = vim.uv.fs_fsync, vim.uv.fs_rename, vim.uv.fs_unlink
+			local synced, renamed, file = false, 0, nil
+			local ok, err = xpcall(function()
+				vim.uv.fs_fsync = function(fd)
+					synced = true
+					return sync(fd)
+				end
+				vim.uv.fs_rename = function(from, to)
+					assert(synced, "ownership record renamed without fsync")
+					synced, renamed = false, renamed + 1
+					return rename(from, to)
+				end
+				file = assert(files.create("private"))
+				files.attach(file, { process = { pid = vim.fn.getpid() } })
+				vim.uv.fs_unlink = function(path, ...)
+					if path == file.path then
+						return nil, "EPERM", "EPERM"
+					end
+					return unlink(path, ...)
+				end
+				files.release(file)
+				assert(renamed == 3, "owner, attached PID and settlement must all sync")
+			end, debug.traceback)
+			vim.uv.fs_fsync, vim.uv.fs_rename, vim.uv.fs_unlink = sync, rename, unlink
+			if file then
+				unlink(file.path)
+				unlink(file.path .. ".owner")
+				unlink(file.path .. ".settled")
+			end
+			assert(ok, err)
+		end,
+	}
+
+	local cases = {
 		{ "test_source_control_commit_pruning_requires_ownership_evidence", policy },
 		{
 			"test_source_control_commit_pruning_preserves_active_message",
@@ -235,8 +387,13 @@ return function(ctx)
 		{
 			"test_source_control_commit_pruning_preserves_message_after_editor_exit",
 			function()
-				active(vim.fn.has("win32") ~= 1)
+				if vim.fn.has("win32") == 1 then
+					error({ lazyvcs_skip = "Windows terminates running mutations at editor exit (#96)" })
+				end
+				active(true)
 			end,
 		},
 	}
+	vim.list_extend(cases, extra)
+	return cases
 end

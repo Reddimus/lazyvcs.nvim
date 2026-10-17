@@ -2,6 +2,30 @@ return function(ctx)
 	local h = ctx.helpers
 	return {
 		{
+			"test_source_control_json_read_rejects_fifo_before_open",
+			function()
+				if vim.fn.has("win32") == 1 then
+					error({ lazyvcs_skip = "POSIX FIFO fixture requires mkfifo; Windows has no POSIX FIFOs" })
+				end
+				local path = h.tempdir() .. "/state.json"
+				h.exec({ "mkfifo", path })
+				local open, attempted = vim.uv.fs_open, false
+				vim.uv.fs_open = function(name, ...)
+					if name == path then
+						attempted = true
+						return nil, "FIFO open intercepted"
+					end
+					return open(name, ...)
+				end
+				local ok, result = pcall(require("lazyvcs.json_file").read, path)
+				vim.uv.fs_open = open
+				assert(ok, result)
+				assert(not attempted, "JSON reader attempted a blocking open on a FIFO")
+				assert(vim.deep_equal(require("lazyvcs.json_file").read(path), {}), "real FIFO read did not return")
+				assert(vim.deep_equal(result, {}))
+			end,
+		},
+		{
 			"test_source_control_json_read_uses_open_descriptor",
 			function()
 				local json = require("lazyvcs.json_file")
