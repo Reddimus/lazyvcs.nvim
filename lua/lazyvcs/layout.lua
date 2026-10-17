@@ -385,7 +385,10 @@ function M.finish_sessions_save(transaction)
 				for win, record in pairs(token.windows) do
 					if save_window_owned(win, record) then
 						for name, value in pairs(record.options) do
-							restore(util.set_win_option_noautocmd, win, name, value)
+							-- Reassigning foldmethod recomputes non-diff folds too.
+							if name ~= "foldmethod" or util.get_win_option(win, name) ~= value then
+								restore(util.set_win_option_noautocmd, win, name, value)
+							end
 						end
 						restore(util.set_win_option_noautocmd, win, "winbar", record.winbar)
 						restore(function()

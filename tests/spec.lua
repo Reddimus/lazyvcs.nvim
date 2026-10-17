@@ -7273,6 +7273,8 @@ vim.list_extend(cases, require("spec_live_diff_ownership")({ helpers = helpers, 
 
 vim.list_extend(cases, require("spec_live_diff_nested_folds")({ helpers = helpers, wait_for = wait_for }))
 
+vim.list_extend(cases, require("spec_live_diff_fold_methods")({ helpers = helpers, wait_for = wait_for }))
+
 vim.list_extend(cases, require("spec_highlighting_links")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {

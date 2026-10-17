@@ -138,9 +138,9 @@ return function(ctx)
 		end
 	end
 	local function scans()
-		local original, counts = vim.fn.foldlevel, {}
+		local original, counts = vim.fn.foldclosed, {}
 		---@diagnostic disable-next-line: duplicate-set-field
-		vim.fn.foldlevel = function(line)
+		vim.fn.foldclosed = function(line)
 			local win = api.nvim_get_current_win()
 			if line == 1 then
 				counts[win] = (counts[win] or 0) + 1
@@ -148,7 +148,7 @@ return function(ctx)
 			return original(line)
 		end
 		return counts, function()
-			vim.fn.foldlevel = original
+			vim.fn.foldclosed = original
 		end
 	end
 
@@ -234,19 +234,24 @@ return function(ctx)
 			"test_live_diff_resession_captures_each_window_once",
 			function()
 				local sessions, wins = fixture(true)
+				-- User-selected non-diff methods need no capture or replay.
+				util.set_win_option(wins[1], "foldmethod", "manual")
+				util.set_win_option(wins[#wins], "foldmethod", "manual")
 				local before = snapshot(wins)
 				local captures, stop = scans()
 				dispatch("pre_save")
 				stop()
 				for _, win in ipairs(wins) do
-					assert(captures[win] == 1, "window fold capture repeated: " .. tostring(captures[win]))
+					local expected = before[win].options.foldmethod == "diff" and 1 or nil
+					assert(captures[win] == expected, "unexpected fold capture count: " .. tostring(captures[win]))
 				end
 				local restores
 				restores, stop = scans()
 				dispatch("post_save")
 				stop()
 				for _, win in ipairs(wins) do
-					assert(restores[win] == 1, "window fold restoration repeated: " .. tostring(restores[win]))
+					local expected = before[win].options.foldmethod == "diff" and 1 or nil
+					assert(restores[win] == expected, "unexpected fold restore count: " .. tostring(restores[win]))
 				end
 				intact(sessions, wins, before)
 				-- Scope the next save to this tab while another live session remains active.

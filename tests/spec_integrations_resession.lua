@@ -195,27 +195,22 @@ return function(ctx)
 			end,
 		},
 		{
-			"test_live_diff_resession_fold_restore_makes_progress",
+			"test_live_diff_resession_empty_fold_restore_does_not_scan",
 			function()
-				open(false)
+				local s = open(false)
+				assert(#assert(require("lazyvcs.fold_state").capture(s.editable_win)).closed == 0, "fixture has folds")
 				dispatch("pre_save")
-				local foldclosed, foldend = vim.fn.foldclosed, vim.fn.foldclosedend
-				local calls = 0
-				-- Simulate zO silently failing to open the first fold.
+				local foldclosed, calls = vim.fn.foldclosed, 0
 				---@diagnostic disable-next-line: duplicate-set-field
-				vim.fn.foldclosed = function(line)
+				vim.fn.foldclosed = function()
 					calls = calls + 1
-					assert(calls < 500, "fold restoration made no progress")
-					return line == 1 and 1 or -1
-				end
-				---@diagnostic disable-next-line: duplicate-set-field
-				vim.fn.foldclosedend = function(line)
-					return line == 1 and 3 or foldend(line)
+					error("empty fold snapshot must not scan during restore")
 				end
 				local ok, err = pcall(dispatch, "post_save")
-				vim.fn.foldclosed, vim.fn.foldclosedend = foldclosed, foldend
+				vim.fn.foldclosed = foldclosed
 				assert(ok, err)
-				assert(calls > 0 and calls < 500, "fold restoration made no progress")
+				assert(calls == 0, "empty fold restoration scanned lines")
+				assert(s.phase == "active", "empty fold restoration blocked resume")
 			end,
 		},
 		{

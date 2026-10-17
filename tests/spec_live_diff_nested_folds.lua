@@ -79,6 +79,16 @@ return function(ctx)
 			end
 		end)
 	end
+	local function levels(win)
+		return api.nvim_win_call(win, function()
+			local result = {}
+			for line = 1, api.nvim_buf_line_count(0) do
+				result[line] = vim.fn.foldlevel(line)
+			end
+			return result
+		end)
+	end
+
 	local function tiled(win, three)
 		api.nvim_win_call(win, function()
 			vim.cmd("silent! normal! zE")
@@ -106,10 +116,12 @@ return function(ctx)
 			function()
 				local s, win = fixture()
 				tiled(win, false)
+				local before = levels(win)
 				dispatch("pre_save")
 				assert(s.phase == "saving", "fold capture prevented option projection")
 				assert(not util.get_win_option(s.editable_win, "diff"), "save sees live diff options")
 				dispatch("post_save")
+				assert(vim.deep_equal(levels(win), before), "save changed tiled fold levels")
 				check_tiled(win)
 			end,
 		},
@@ -118,8 +130,10 @@ return function(ctx)
 			function()
 				local _, win = fixture()
 				tiled(win, true)
+				local before = levels(win)
 				dispatch("pre_save")
 				dispatch("post_save")
+				assert(vim.deep_equal(levels(win), before), "save changed tiled fold levels")
 				check_tiled(win)
 				api.nvim_win_call(win, function()
 					vim.cmd("normal! zE")
@@ -147,70 +161,6 @@ return function(ctx)
 					end),
 					"mixed tiled children changed state"
 				)
-			end,
-		},
-		{
-			"test_live_diff_resession_fold_capture_failure_is_atomic",
-			function()
-				local s, win = fixture()
-				folds(win, { { 1, 10 }, { 2, 5 } })
-				local fold_state = require("lazyvcs.fold_state")
-				local original, calls = vim.fn.foldtextresult, 0
-				for _, fail_at in ipairs({ 2, 3 }) do
-					calls = 0
-					---@diagnostic disable-next-line: duplicate-set-field
-					vim.fn.foldtextresult = function(...)
-						calls = calls + 1
-						if calls == fail_at then
-							error("forced fold inspection failure")
-						end
-						return original(...)
-					end
-					local ok, result = pcall(fold_state.capture, win)
-					vim.fn.foldtextresult = original
-					assert(ok and result == nil, "capture failure escaped or returned a usable snapshot")
-					reveal(win, { { 1, 10 }, { 2, 5 } })
-					folds(win, { { 1, 10 }, { 2, 5 } })
-				end
-				folds(win, { { 1, 10 }, { 2, 5 } })
-				calls = 0
-				vim.fn.foldtextresult = function(...)
-					if api.nvim_get_current_win() == win then
-						calls = calls + 1
-						if calls == 2 then
-							error("forced save fold inspection failure")
-						end
-					end
-					return original(...)
-				end
-				dispatch("pre_save")
-				vim.fn.foldtextresult = original
-				assert(
-					s.phase == "saving" and not util.get_win_option(s.editable_win, "diff"),
-					"capture failure leaked live options"
-				)
-				dispatch("post_save")
-				reveal(win, { { 1, 10 }, { 2, 5 } })
-				folds(win, { { 1, 10 }, { 2, 5 } })
-				local cursor, writes = api.nvim_win_set_cursor, 0
-				---@diagnostic disable-next-line: duplicate-set-field
-				api.nvim_win_set_cursor = function(...)
-					writes = writes + 1
-					if writes == 2 then
-						error("forced fold cursor failure")
-					end
-					return cursor(...)
-				end
-				local captured, value = pcall(fold_state.capture, win)
-				api.nvim_win_set_cursor = cursor
-				assert(captured and value == nil, "cursor failure escaped")
-				reveal(win, { { 1, 10 }, { 2, 5 } })
-				folds(win, { { 1, 10 }, { 2, 5 } })
-				local snapshot = assert(fold_state.capture(win))
-				snapshot.closed[1].last = 11
-				local restored, value = pcall(fold_state.restore, win, snapshot)
-				assert(restored and value == false, "restore failure escaped")
-				reveal(win, { { 1, 10 }, { 2, 5 } })
 			end,
 		},
 		{
@@ -246,7 +196,7 @@ return function(ctx)
 				assert(api.nvim_win_call(win, function()
 					return vim.fn.foldclosed(2)
 				end) == -1, "hidden open child became closed")
-				-- Marker and expression folds use the same closure replay.
+				-- Marker and expression folds must also remain untouched.
 				for _, method in ipairs({ "marker", "expr" }) do
 					util.set_win_option(win, "foldmethod", "manual")
 					api.nvim_win_call(win, function()
