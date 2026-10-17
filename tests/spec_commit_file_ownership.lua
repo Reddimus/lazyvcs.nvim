@@ -387,6 +387,38 @@ return function(ctx)
 		end,
 	}
 	extra[#extra + 1] = {
+		"test_source_control_commit_matching_boot_id_keeps_old_live_message",
+		function()
+			-- Issue #107 on Linux: an active commit's day-old message survives another editor's setup.
+			local files = require("lazyvcs.source_control.commit_files")
+			local uname, kill = vim.uv.os_uname, vim.uv.kill
+			local restore_scope = linux_scope()
+			local ok, err = xpcall(function()
+				vim.uv.os_uname = function()
+					return { sysname = "Linux" }
+				end
+				local file = assert(files.create("live message"))
+				files.attach(file, { process = { pid = vim.fn.getpid() } })
+				assert(file.record.boot_id, "fixture boot ID was not recorded")
+				local aged = os.time() - vim.uv.uptime() - 86410
+				assert(vim.uv.fs_utime(file.path, aged, aged))
+				local probes = 0
+				rawset(vim.uv, "kill", function(pid, signal)
+					assert(pid == file.record.pid and signal == 0)
+					probes = probes + 1
+					return true
+				end)
+				prune_scan()
+				assert(vim.uv.fs_stat(file.path), "matching boot ID released a live consumer's old message")
+				assert(probes == 1, "live consumer was not probed")
+				files.release(file)
+			end, debug.traceback)
+			restore_scope()
+			vim.uv.os_uname, vim.uv.kill = uname, kill
+			assert(ok, err)
+		end,
+	}
+	extra[#extra + 1] = {
 		"test_source_control_commit_records_sync_before_rename",
 		function()
 			local files = require("lazyvcs.source_control.commit_files")

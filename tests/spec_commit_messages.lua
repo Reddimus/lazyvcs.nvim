@@ -167,26 +167,38 @@ return function(ctx)
 				vim.fn.mkdir(dir, "p")
 				assert(vim.uv.fs_chmod(dir, 448))
 				local old, recent = dir .. "/old.txt", dir .. "/recent.txt"
+				-- Pruning visits entries one at a time; the barrier sorts last.
+				local barrier = dir .. "/zzzz-barrier.txt"
 				vim.fn.writefile({ "old" }, old)
 				vim.fn.writefile({ "recent" }, recent)
+				vim.fn.writefile({ "barrier" }, barrier)
 				local expired = os.time() - vim.uv.uptime() - 86410
 				assert(vim.uv.fs_utime(old, expired, expired))
+				assert(vim.uv.fs_utime(barrier, expired, expired))
 				assert(vim.uv.fs_utime(recent, expired + 86400, expired + 86400))
 				vim.fn.mkdir(dir .. "/subdir", "p")
 				assert(vim.uv.fs_utime(dir .. "/subdir", expired, expired))
 				local scandir_next = vim.uv.fs_scandir_next
+				local sorted = setmetatable({}, { __mode = "k" })
 				---@diagnostic disable-next-line: duplicate-set-field
 				vim.uv.fs_scandir_next = function(scan)
-					local name = scandir_next(scan)
-					return name, "unknown"
+					if not sorted[scan] then
+						local names = {}
+						for name in scandir_next, scan do
+							names[#names + 1] = name
+						end
+						table.sort(names)
+						sorted[scan] = names
+					end
+					return table.remove(sorted[scan], 1), "unknown"
 				end
 				local ok, err = xpcall(function()
 					setup()
 					assert(vim.uv.fs_stat(old), "setup blocked to prune files")
 					wait(function()
-						return not vim.uv.fs_stat(old)
-					end, "stale message was not pruned")
-					vim.wait(50)
+						return not vim.uv.fs_stat(barrier)
+					end, "stale messages were not pruned")
+					assert(not vim.uv.fs_stat(old), "stale message was not pruned")
 					assert(vim.uv.fs_stat(recent), "recent message was pruned")
 					assert(vim.uv.fs_stat(dir .. "/subdir"), "pruning removed a directory")
 				end, debug.traceback)
