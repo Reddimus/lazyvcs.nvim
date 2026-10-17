@@ -425,6 +425,8 @@ local function invalidate_base(bufnr, state, reason)
 	for cancel in pairs(state.gitsigns_waiters or {}) do
 		cancel(reason)
 	end
+	-- Base changes and gitsigns hand-offs retry a suspended base.
+	state.unavailable_reason = nil
 	state.generation = (state.generation or 0) + 1
 	state.base_generation = (state.base_generation or 0) + 1
 	local job = state.job

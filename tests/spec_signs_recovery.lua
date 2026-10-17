@@ -122,5 +122,38 @@ return function(ctx)
 				recovered(f, buf)
 			end),
 		},
+		{
+			"test_signs_suspended_base_resumes_native_after_gitsigns_detach",
+			s.guard(function()
+				local f, buf = s.fixture(false, { use_gitsigns = true, signs = { max_file_bytes = 64 } })
+				s.h.write_file(f.file, string.rep("large base", 20) .. "\n")
+				s.h.exec({ "git", "add", "sample.txt" }, f.root)
+				s.h.write_file(f.file, "resolved\n")
+				vim.cmd("edit!")
+				assert(not s.refresh(buf, true), "oversized base unexpectedly loaded")
+				assert(s.signs.current_state(buf).unavailable_reason, "oversized base was not suspended")
+				package.loaded.gitsigns = {
+					get_hunks = function(target)
+						return target == buf and {} or nil
+					end,
+				}
+				s.refresh(buf, false)
+				assert(s.signs.current_state(buf).delegated, "gitsigns did not take over the buffer")
+				stage(f)
+				s.wait(function()
+					local job = store.get_repo_job(f.root)
+					return not job or job.status ~= "running"
+				end, "stage did not finish", 15000)
+				---@diagnostic disable-next-line: duplicate-set-field
+				package.loaded.gitsigns.get_hunks = function()
+					return nil
+				end
+				s.edit(buf, { "unsaved after detach" })
+				s.wait(function()
+					local state = s.signs.current_state(buf)
+					return state and state.loaded and #state.hunks == 1 and #s.marks(buf) > 0
+				end, "native signs did not resume after gitsigns detached", 15000)
+			end),
+		},
 	}
 end
