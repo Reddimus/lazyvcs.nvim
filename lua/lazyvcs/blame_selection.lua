@@ -199,8 +199,9 @@ function M.open(first, last)
 	if captured then
 		local changed = protect(request, function()
 			if request.handle and not context.valid(captured) then
-				pcall(request.handle.kill, request.handle)
+				local handle = request.handle
 				request.handle = nil
+				pcall(handle.kill, handle)
 				write(request, { "Source changed while loading. Select the lines again." })
 			end
 		end)
@@ -208,7 +209,10 @@ function M.open(first, last)
 			"OptionSet",
 			{ group = request.group, pattern = context.options, callback = changed }
 		)
-		vim.api.nvim_create_autocmd("BufModifiedSet", { group = request.group, buffer = source, callback = changed })
+		vim.api.nvim_create_autocmd(
+			{ "BufModifiedSet", "TextChanged", "TextChangedI" },
+			{ group = request.group, buffer = source, callback = changed }
+		)
 	end
 	local check = protect(request, function()
 		if not request.closed and not owns_report(request) then

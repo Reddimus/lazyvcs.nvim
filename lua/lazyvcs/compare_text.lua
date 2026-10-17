@@ -129,11 +129,11 @@ local function codec(encoding)
 	if encoding == "utf8" then
 		return "utf-8"
 	elseif encoding == "utf-16" or encoding == "utf-16be" or encoding == "ucs-2" or encoding == "ucs-2be" then
-		return "utf-16le", 2
+		return "utf-16le", 2, encoding == "ucs-2" or encoding == "ucs-2be"
 	elseif encoding == "ucs-4" or encoding == "ucs-4be" then
 		return "ucs-4le", 4
 	elseif encoding == "ucs-2le" then
-		return "utf-16le"
+		return "utf-16le", nil, true
 	end
 	return encoding
 end
@@ -321,7 +321,10 @@ function M.encode_file(text, profile, limit_bytes)
 	if not M.valid_utf8(decoded) or decoded:find("\0", 1, true) then
 		return nil, "Buffer contains unsupported text"
 	end
-	local encoding, width = codec(profile.fileencoding)
+	local encoding, width, ucs2 = codec(profile.fileencoding)
+	if ucs2 and decoded:find("[\240-\244]") then
+		return nil, "UCS-2 cannot represent characters above U+FFFF"
+	end
 	local bytes = decoded
 	if encoding ~= "utf-8" then
 		local input = decoded == "" and "a" or decoded

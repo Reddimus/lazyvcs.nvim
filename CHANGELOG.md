@@ -23,6 +23,11 @@ and this project adheres to
   bases.
 - Generate large native previews without blocking the editor on histogram diff.
 - Support exact-limit files without a final newline.
+- Preserve significant saved whitespace edits in Compare blame on older Git.
+- Restore inherited source options when closing split blame and preserve user
+  overrides.
+- Cancel pending selection blame after further unsaved source edits.
+- Reject UCS-2 blame captures containing characters above U+FFFF.
 
 ## [0.11.4] - 2026-10-16
 

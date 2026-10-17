@@ -90,13 +90,14 @@ function M.load(target, contents, callback, capture)
 									end
 									return uncommitted()
 								end
-								local selected, format_err
+								local selected, format_err, cleaned
 								if raw then
-									selected, format_err = format.select(raw, opts, policy)
+									selected, format_err, cleaned = format.select(raw, opts, policy)
 								end
 								if not selected then
 									return task:finish(nil, format_err or err)
 								end
+								snapshot_lines = cleaned
 								policy.validated = true
 								historical(relpath, retry)
 							end
@@ -125,14 +126,6 @@ function M.load(target, contents, callback, capture)
 									return uncommitted()
 								end
 								return task:finish(nil, err)
-							end
-							if policy and policy.validate then
-								base_lines = vim.tbl_map(function(line)
-									return format.normalize(line, policy)
-								end, base_lines)
-								snapshot_lines = vim.tbl_map(function(line)
-									return format.normalize(line, policy)
-								end, snapshot_lines)
 							end
 							local indices = {}
 							for i = 1, #base_lines do

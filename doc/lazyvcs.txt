@@ -367,6 +367,7 @@ unsupported. Git applies its normal attributes and clean filters to these bytes.
 If Git and the editor use different lines, such as raw UTF-16 or Mac separators,
 blame reports an unsupported line format instead of assigning incorrect history.
 UTF-16 files normalized by Git's working-tree-encoding attribute are supported.
+UCS-2 capture rejects characters above U+FFFF. UTF-16 supports these characters.
 Active Git clean filters require bounded full-file blame and ordered source-row
 validation, including saved Compare blame. Trailing horizontal whitespace and
 ident collapse ($Id: ... $ to $Id$) are supported normalization. Other row rewrites
@@ -385,6 +386,8 @@ aligns its initial viewport and subsequent reloads with the source. While it is
 open, the source window has wrapping and folding disabled so each source line
 occupies one row. Closing the split restores the source's previous window-local
 wrap, foldenable, scrollbind, and cursorbind values, preserving fold definitions.
+Ordinary source splits inherit this restoration. Later user overrides and
+independent source windows keep their own values.
 The split closes when the source window changes buffers, the source is unloaded,
 or either window closes. Line history uses the current buffer contents and has
 no committed revision for newly inserted lines. Pending history is cancelled
@@ -514,6 +517,8 @@ arguments it uses the active visual selection or cursor line. An optional map: >
     vim.keymap.set("x", "<leader>vb", "<Plug>(LazyVCSBlameSelection)")
 <
 Replacing a selection report cancels its request and releases its window.
+Further source edits cancel pending editor selections immediately, including
+edits to an already modified buffer. Completed reports keep their captured text.
 Late results do not change the replacement buffer. Backend failures remain in a
 readonly report with separate diagnostic lines until you close it.
 
@@ -522,6 +527,8 @@ revision and original rename path. Git saved panes use the captured HEAD and
 saved preview bytes, including their original encoding and line endings. SVN
 saved panes map working-copy BASE to those contents.
 Older Git versions map saved lines to the pinned blob before requesting blame.
+For clean filters, whitespace normalization only validates row correspondence.
+Actual cleaned rows determine whether saved edits are uncommitted.
 Metadata and directory previews have no line attribution. Modern Git normally
 requests only the selected range. Representations that may use a different Git
 line model require bounded full-file validation. SVN loads file blame once.

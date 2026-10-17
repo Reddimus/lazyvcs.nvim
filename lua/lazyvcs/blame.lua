@@ -5,6 +5,7 @@ local config = require("lazyvcs.config")
 local store = require("lazyvcs.store")
 local util = require("lazyvcs.util")
 local text = require("lazyvcs.compare_text")
+local source_options = require("lazyvcs.blame_source_options")
 
 local M = {}
 
@@ -16,7 +17,6 @@ local line_log_views = {}
 local inline_enabled = false
 local STORE_KEY = "blame_inline_enabled"
 
-local capture_win_options = util.capture_win_options
 local apply_win_options = util.set_win_options
 
 local function notify(message, level)
@@ -56,53 +56,6 @@ local function supported_blame_buffer(bufnr)
 	return path, backend
 end
 
--- Window-local values are saved per buffer. If the source has left this window,
--- wait for it to return rather than changing the replacement buffer's options.
-local function restore_source_options(source_bufnr, view)
-	local win = view.source_winid
-	if not view.source_options or not util.win_is_valid(win) then
-		return
-	end
-	if vim.api.nvim_win_get_buf(win) == source_bufnr then
-		apply_win_options(win, view.source_options)
-		return
-	end
-	if not util.buf_is_valid(source_bufnr) then
-		return
-	end
-	local group = vim.api.nvim_create_augroup("lazyvcs_blame_restore_" .. source_bufnr .. "_" .. win, { clear = true })
-	local function clear()
-		pcall(vim.api.nvim_del_augroup_by_id, group)
-	end
-	vim.api.nvim_create_autocmd("BufWinEnter", {
-		group = group,
-		buffer = source_bufnr,
-		callback = protect(function()
-			if util.win_is_valid(win) and vim.api.nvim_win_get_buf(win) == source_bufnr then
-				clear()
-				apply_win_options(win, view.source_options)
-			else
-				local entered = vim.api.nvim_get_current_win()
-				local temporary = { wrap = false, foldenable = false, scrollbind = true, cursorbind = true }
-				local live = blame_views[source_bufnr]
-				if
-					entered ~= win
-					-- A newer split on this window owns its temporary values.
-					and not (live and live.source_winid == entered)
-					and vim.api.nvim_win_get_buf(entered) == source_bufnr
-					and vim.deep_equal(capture_win_options(entered, vim.tbl_keys(temporary)), temporary)
-				then
-					-- New windows can inherit the source's last saved temporary values.
-					-- The original window still needs its own pending restore.
-					apply_win_options(entered, view.source_options)
-				end
-			end
-		end, clear),
-	})
-	vim.api.nvim_create_autocmd("BufWipeout", { group = group, buffer = source_bufnr, callback = clear })
-	vim.api.nvim_create_autocmd("WinClosed", { group = group, pattern = tostring(win), callback = clear })
-end
-
 local function close_blame(source_bufnr, expected, deferred)
 	local view = blame_views[source_bufnr]
 	if not view or (expected and view ~= expected) then
@@ -123,7 +76,7 @@ local function close_blame(source_bufnr, expected, deferred)
 		view.handle = nil
 		pcall(handle.kill, handle, 15)
 	end
-	restore_source_options(source_bufnr, view)
+	source_options.release(view.source_lease)
 	local function dispose()
 		if util.win_is_valid(view.winid) and vim.api.nvim_win_get_buf(view.winid) == view.bufnr then
 			pcall(vim.api.nvim_win_close, view.winid, true)
@@ -588,7 +541,7 @@ end
 
 local function align_split_view(view)
 	local source, blame = view.source_winid, view.winid
-	apply_win_options(source, { scrollbind = false, cursorbind = false })
+	source_options.apply(view.source_lease, { scrollbind = false, cursorbind = false })
 	apply_win_options(blame, { scrollbind = false, cursorbind = false })
 	local saved = vim.api.nvim_win_call(source, vim.fn.winsaveview)
 	local count = vim.api.nvim_buf_line_count(view.bufnr)
@@ -602,7 +555,7 @@ local function align_split_view(view)
 			skipcol = 0,
 		})
 	end)
-	apply_win_options(source, { scrollbind = true, cursorbind = true })
+	source_options.apply(view.source_lease, { scrollbind = true, cursorbind = true })
 	apply_win_options(blame, { scrollbind = true, cursorbind = true })
 end
 
@@ -764,8 +717,11 @@ function M.blame_split()
 			"Normal:LazyVcsBlame,NormalNC:LazyVcsBlame,EndOfBuffer:LazyVcsBlame"
 		)
 		pcall(vim.api.nvim_win_set_width, view.winid, width)
-		view.source_options = capture_win_options(source_win, { "scrollbind", "cursorbind", "wrap", "foldenable" })
-		apply_win_options(source_win, { scrollbind = false, cursorbind = false, wrap = false, foldenable = false })
+		view.source_lease = source_options.acquire(source_bufnr, source_win)
+		source_options.apply(
+			view.source_lease,
+			{ scrollbind = false, cursorbind = false, wrap = false, foldenable = false }
+		)
 
 		if util.win_is_valid(callback_win) then
 			vim.api.nvim_set_current_win(callback_win)
