@@ -53,6 +53,19 @@ return function(ctx)
 			end
 		end, "discard did not settle", 15000)
 	end
+	local function refusal_names(prefix)
+		local message
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.notify = function(text)
+			message = text
+		end
+		return function()
+			assert(
+				message and message:find("Tracked Discard refuses nested repository ancestor at " .. prefix, 1, true),
+				"refusal did not name ancestor " .. prefix .. ": " .. tostring(message)
+			)
+		end
+	end
 	local function directory(path)
 		vim.fn.mkdir(path, "p")
 		h.write_file(path .. "/child", "precious\n")
@@ -318,11 +331,11 @@ return function(ctx)
 		ops.revert_file(state, node)
 		finished(f.root)
 		util.system_start = start
+		assert(not ran, kind .. ": tree/blob replacement reached restore")
 		assert(vim.uv.fs_stat(target .. "/.git"), "staged Discard deleted embedded .git")
 		assert(h.exec({ "git", "rev-parse", "HEAD" }, target) == commit, "embedded commit lost")
 		assert(vim.fn.readfile(target .. "/sample.txt")[2] == "changed", "embedded tracked file overwritten")
 		assert(vim.fn.readfile(target .. "/untracked")[1] == "untracked private work", "untracked work lost")
-		assert(not ran, "HEAD obstruction reached restore")
 		assert(h.exec({ "git", "status", "--porcelain" }, f.root) == before, "outer index changed")
 	end
 
@@ -352,6 +365,7 @@ return function(ctx)
 			end
 		end
 		local before = h.exec({ "git", "ls-files", "--stage" }, f.root)
+		local named = refusal_names(parent)
 		local start, ran = util.system_start, false
 		---@diagnostic disable-next-line: duplicate-set-field
 		util.system_start = function(args, ...)
@@ -363,6 +377,7 @@ return function(ctx)
 		ops.revert_file(state, node)
 		finished(f.root)
 		assert(not ran, kind .. ": ancestor obstruction reached restore")
+		named()
 		assert(vim.fn.readfile(path)[1] == "private work", "nested file overwritten")
 		assert(h.exec({ "git", "ls-files", "--stage" }, f.root) == before, "ancestor index changed")
 		if kind:find("marker", 1, true) then
@@ -381,6 +396,7 @@ return function(ctx)
 		assert(node.extra.status:sub(1, 1) == "R", "fixture did not select rename")
 		local marker = f.root .. (source and "/outer/.git" or "/destination/.git")
 		h.write_file(marker, "gitdir: private metadata\n")
+		local named = refusal_names(source and "outer" or "destination")
 		local start, ran = util.system_start, false
 		---@diagnostic disable-next-line: duplicate-set-field
 		util.system_start = function(args, ...)
@@ -392,6 +408,7 @@ return function(ctx)
 		ops.revert_file(state, node)
 		finished(f.root)
 		assert(not ran, "rename ancestor obstruction reached restore")
+		named()
 		assert(vim.uv.fs_lstat(marker), "rename ancestor marker removed")
 		assert(vim.uv.fs_stat(f.root .. "/destination/renamed.txt"), "rename destination removed")
 	end
@@ -430,6 +447,76 @@ return function(ctx)
 			"test_source_control_rename_discard_refuses_ancestor_" .. (source and "source" or "destination"),
 			guarded(function()
 				rename_ancestor_obstruction(source)
+			end),
+		}
+	end
+
+	for _, mode in ipairs({ "unborn", "truncated_subtree", "incomplete_record" }) do
+		extra[#extra + 1] = {
+			"test_source_control_tracked_discard_ancestor_" .. mode,
+			guarded(function()
+				local f
+				if mode == "unborn" then
+					f = { root = h.tempdir() }
+					h.exec({ "git", "init" }, f.root)
+				else
+					f = h.make_git_fixture()
+				end
+				vim.fn.mkdir(f.root .. "/d/nested", "p")
+				local relative = "d/nested/f"
+				local path = f.root .. "/" .. relative
+				h.write_file(path, "index version\n")
+				h.exec({ "git", "add", "--", relative }, f.root)
+				h.write_file(path, "working version\n")
+				local state, node = row(f, "git", path, "changes")
+				local start, ran, injected, heads, trees = util.system_start, false, false, 0, 0
+				local message
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.notify = function(text)
+					message = text
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.system_start = function(args, opts, cb)
+					if vim.tbl_contains(args, "rev-parse") and vim.tbl_contains(args, "HEAD^{commit}") then
+						heads = heads + 1
+					end
+					if vim.tbl_contains(args, "ls-tree") then
+						trees = trees + 1
+					end
+					if args[2] == "restore" then
+						ran = true
+					end
+					if mode ~= "unborn" and vim.tbl_contains(args, "ls-files") and args[#args] == "d" then
+						injected = true
+						return start(args, opts, function(result, err, raw)
+							assert(result, err)
+							local first = assert(result.stdout:match("^[^%z]+%z"))
+							result.stdout = mode == "incomplete_record" and first:sub(1, 12)
+								or (first .. "100644 partial descendant")
+							result.stdout_truncated = true
+							cb(result, nil, raw)
+						end)
+					end
+					return start(args, opts, cb)
+				end
+				ops.revert_file(state, node)
+				finished(f.root)
+				if mode == "incomplete_record" then
+					assert(injected and not ran, "incomplete ancestor check reached restore")
+					assert(
+						message
+							and message:find("ancestor check could not complete at d", 1, true)
+							and not message:find("nested repository", 1, true),
+						"incomplete check misreported a nested repository: " .. tostring(message)
+					)
+					assert(vim.fn.readfile(path)[1] == "working version", "incomplete check changed file")
+				else
+					assert(ran and not session.get_repo_job(f.root), mode .. ": safe restore was refused")
+					assert(vim.fn.readfile(path)[1] == "index version", "Discard did not restore index bytes")
+					assert(heads == 1, "HEAD availability was not cached once per mutation")
+					assert(mode ~= "unborn" or trees == 0, "unborn repository queried ls-tree HEAD")
+					assert(mode ~= "truncated_subtree" or injected, "subtree truncation was not exercised")
+				end
 			end),
 		}
 	end

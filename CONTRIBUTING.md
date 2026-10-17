@@ -180,15 +180,21 @@ the GitHub release.
   Discard checks every restore target, including rename sources, with
   asynchronous lstat before startup. Git targets also check each proper path
   prefix for a .git entry or an index/HEAD gitlink and refuse descendants of
-  nested repositories. This check uses at most one lstat and two Git commands
-  per prefix, within the same worker and deadline. Files, symlinks, and ENOENT
-  are accepted after these checks. Git directory restore targets require an
-  exact stage-zero index gitlink. Staged rows and rename sources also require an
-  exact HEAD gitlink or a path absent from HEAD. Every Discard restore disables
-  submodule recursion. Windows links also require an asynchronous PowerShell
-  LinkType check to exclude junctions; pass the path through the child's
-  environment. SVN revalidates its recorded node kind before choosing file or
-  directory scope.
+  nested repositories. HEAD availability is checked once per mutation and
+  cached; unborn repositories skip HEAD tree queries. Each prefix uses at most
+  one lstat and two Git commands within the same worker and deadline. Index
+  queries can enumerate descendants, but only the first NUL-terminated record is
+  parsed. Retained output is bounded by the job's output limit (1 MiB by
+  default, split equally between stdout and stderr); Git's enumeration work can
+  scale with the subtree at each prefix. An incomplete first record refuses
+  Discard with a check failure, while truncation after a complete first record
+  does not imply a gitlink. Files, symlinks, and ENOENT are accepted after these
+  checks. Git directory restore targets require an exact stage-zero index
+  gitlink. Staged rows and rename sources also require an exact HEAD gitlink or
+  a path absent from HEAD. Every Discard restore disables submodule recursion.
+  Windows links also require an asynchronous PowerShell LinkType check to
+  exclude junctions; pass the path through the child's environment. SVN
+  revalidates its recorded node kind before choosing file or directory scope.
 - `compare.lua` owns review tabs, source-control navigation, and read-only
   previews. Its `set_panes()` transition installs both panes before publishing
   their slots and defers results while the picker router owns a borrowed buffer.
@@ -217,15 +223,18 @@ the GitHub release.
   ownership record at a time and syncs records before rename. Pending records
   include the creating editor's PID in the same scope. Settlement, a changed
   kernel boot ID, or a same-scope consumer ESRCH probe releases a message.
-  PID-less records with an editor PID survive clock steps and old mtimes; a
-  changed boot ID or settlement releases them. Windows also accepts editor ESRCH
-  after a changed boot estimate because consumers cannot outlive Neovim there
-  (#96). Only PID-less legacy records without an editor PID use the mtime rule.
-  Without a boot ID pair, a changed estimate and an attached consumer in a
-  foreign Linux namespace also use that rule. Legacy cleanup requires an mtime
-  more than five seconds before boot. It covers missing or invalid ownership
-  records, including token or platform mismatches, and orphaned ownership,
-  settlement, and temporary sidecars. Clock steps can affect this fallback.
+  Matching Linux boot IDs keep PID-less records until settlement or a boot ID
+  change. Without a boot ID pair, macOS and Linux PID-less records require an
+  mtime more than one day before the current boot estimate. A forward clock step
+  of more than a day can falsely release a still-needed PID-less message.
+  Windows accepts a boot-estimate change or same-boot editor ESRCH for PID-less
+  records, and same-boot consumer ESRCH for attached records, because consumers
+  cannot outlive Neovim there (#96). Without a boot ID pair, a changed estimate
+  and an attached consumer in a foreign Linux namespace use the legacy mtime
+  rule. Legacy cleanup requires an mtime more than five seconds before boot. It
+  covers missing or invalid ownership records, including token or platform
+  mismatches, and orphaned ownership, settlement, and temporary sidecars. Clock
+  steps can affect this fallback.
 - Sidebar AI drafts belong to one state and repository root. Request tickets and
   draft revisions reject superseded responses. Context commands use the
   scheduler; repository cancellation also stops provider requests after context

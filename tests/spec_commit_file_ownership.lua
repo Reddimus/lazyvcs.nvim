@@ -341,7 +341,7 @@ return function(ctx)
 		}
 	end
 	extra[#extra + 1] = {
-		"test_source_control_commit_clock_step_keeps_live_consumer",
+		"test_source_control_commit_clock_step_uses_platform_consumer_policy",
 		function()
 			local files = require("lazyvcs.source_control.commit_files")
 			local uname, kill = vim.uv.os_uname, vim.uv.kill
@@ -357,7 +357,10 @@ return function(ctx)
 					record.boot, record.boot_id, record.platform = record.boot - 100, nil, platform
 					h.write_file(file.path .. ".owner", vim.json.encode(record))
 					prune_scan()
-					assert(vim.uv.fs_stat(file.path), platform .. ": clock step deleted a live consumer message")
+					assert(
+						(vim.uv.fs_stat(file.path) == nil) == (platform == "Windows_NT"),
+						platform .. ": wrong changed-boot consumer release"
+					)
 					files.release(file)
 					vim.uv.os_uname = uname
 				end
@@ -404,82 +407,82 @@ return function(ctx)
 		end,
 	}
 
-	for _, mode in ipairs({ "pending", "attach_failed", "legacy" }) do
-		extra[#extra + 1] = {
-			"test_source_control_commit_clock_step_protects_pidless_" .. mode,
-			function()
-				local files = require("lazyvcs.source_control.commit_files")
-				local uname, kill, rename = vim.uv.os_uname, vim.uv.kill, vim.uv.fs_rename
-				local restore_scope = linux_scope()
-				local ok, err = xpcall(function()
-					for _, platform in ipairs({ "Linux", "Darwin", "Windows_NT" }) do
+	for _, platform in ipairs({ "Darwin", "Linux", "Windows_NT" }) do
+		for _, mode in ipairs({ "pending", "attach_failed", "legacy" }) do
+			extra[#extra + 1] = {
+				"test_source_control_commit_pidless_cleanup_" .. platform .. "_" .. mode,
+				function()
+					local files = require("lazyvcs.source_control.commit_files")
+					local uname, kill, rename = vim.uv.os_uname, vim.uv.kill, vim.uv.fs_rename
+					local restore_scope = linux_scope()
+					local ok, err = xpcall(function()
 						vim.uv.os_uname = function()
 							return { sysname = platform }
 						end
-						for _, result in ipairs({ "alive", "EPERM", "ESRCH" }) do
-							local file = assert(files.create("pending message"))
-							if mode == "attach_failed" then
-								vim.uv.fs_rename = function()
-									return nil, "EIO: attach failed"
+						for _, changed in ipairs({ false, true }) do
+							for _, result in ipairs({ "ESRCH", "alive", "EPERM" }) do
+								local file = assert(files.create("pending message"))
+								if mode == "attach_failed" then
+									vim.uv.fs_rename = function()
+										return nil, "EIO: attach failed"
+									end
+									files.attach(file, { process = { pid = vim.fn.getpid() } })
+									vim.uv.fs_rename = rename
 								end
-								files.attach(file, { process = { pid = vim.fn.getpid() } })
-								vim.uv.fs_rename = rename
-							end
-							local record = vim.json.decode(table.concat(vim.fn.readfile(file.path .. ".owner"), "\n"))
-							assert(record.pid == nil, "fixture unexpectedly attached PID")
-							record.boot, record.boot_id = record.boot - 100, nil
-							if mode == "legacy" then
-								record.editor_pid = nil
-							end
-							h.write_file(file.path .. ".owner", vim.json.encode(record))
-							local probes = 0
-							rawset(vim.uv, "kill", function(pid, signal)
-								probes = probes + 1
-								assert(
-									mode ~= "legacy" and pid == vim.fn.getpid() and signal == 0,
-									"PID-less probe used the wrong owner"
-								)
-								if result == "alive" then
-									return true
+								-- Read the durable record, including a crash before attachment.
+								local record =
+									vim.json.decode(table.concat(vim.fn.readfile(file.path .. ".owner"), "\n"))
+								assert(record.pid == nil, "fixture unexpectedly attached PID")
+								record.boot_id = nil
+								if changed then
+									record.boot = record.boot - 100
 								end
-								return nil, result, result
-							end)
-							prune_scan()
-							local released = mode ~= "legacy" and platform == "Windows_NT" and result == "ESRCH"
-							assert(
-								(vim.uv.fs_stat(file.path) == nil) == released,
-								platform .. "/" .. result .. ": estimate alone released PID-less message"
-							)
-							if not released then
-								local old = os.time() - vim.uv.uptime() - 10
-								assert(vim.uv.fs_utime(file.path, old, old))
+								if mode == "legacy" then
+									record.editor_pid = nil
+								end
+								h.write_file(file.path .. ".owner", vim.json.encode(record))
+								local probes = 0
+								rawset(vim.uv, "kill", function(pid, signal)
+									probes = probes + 1
+									assert(pid == vim.fn.getpid() and signal == 0, "wrong creating editor probe")
+									if result == "alive" then
+										return true
+									end
+									return nil, result, result
+								end)
 								prune_scan()
+								local released = platform == "Windows_NT"
+									and (changed or (mode ~= "legacy" and result == "ESRCH"))
 								assert(
-									(vim.uv.fs_stat(file.path) == nil) == (mode == "legacy"),
-									platform .. ": old mtime released a PID-less editor record"
+									(vim.uv.fs_stat(file.path) == nil) == released,
+									platform .. "/" .. result .. ": wrong fresh PID-less release"
 								)
-								if mode ~= "legacy" then
-									h.write_file(file.path .. ".settled", vim.json.encode({ token = file.token }))
-									prune_scan()
-									assert(not vim.uv.fs_stat(file.path), "settlement did not release PID-less record")
+								if platform ~= "Windows_NT" then
+									local boot = os.time() - vim.uv.uptime()
+									for _, age in ipairs({ 10, 86390, 86410 }) do
+										assert(vim.uv.fs_utime(file.path, boot - age, boot - age))
+										prune_scan()
+										assert(
+											(vim.uv.fs_stat(file.path) == nil) == (age > 86400),
+											platform .. ": wrong one-day PID-less age release at " .. age
+										)
+									end
 								end
-							end
-							if mode ~= "legacy" then
 								assert(
-									record.editor_pid == vim.fn.getpid()
-										and probes == (platform == "Windows_NT" and (released and 1 or 2) or 0),
-									"pending ownership did not record/probe the creating editor"
+									probes
+										== ((platform == "Windows_NT" and not changed and mode ~= "legacy") and 1 or 0),
+									"PID-less cleanup probed an unverifiable owner"
 								)
+								files.release(file)
 							end
-							files.release(file)
 						end
-					end
-				end, debug.traceback)
-				restore_scope()
-				vim.uv.os_uname, vim.uv.kill, vim.uv.fs_rename = uname, kill, rename
-				assert(ok, err)
-			end,
-		}
+					end, debug.traceback)
+					restore_scope()
+					vim.uv.os_uname, vim.uv.kill, vim.uv.fs_rename = uname, kill, rename
+					assert(ok, err)
+				end,
+			}
+		end
 	end
 	for _, mode in ipairs({ "pending", "attach_failed" }) do
 		extra[#extra + 1] = {
@@ -511,7 +514,7 @@ return function(ctx)
 							record.namespace.ino = -1
 						end
 						h.write_file(file.path .. ".owner", vim.json.encode(record))
-						local old = os.time() - vim.uv.uptime() - 10
+						local old = os.time() - vim.uv.uptime() - 86410
 						assert(vim.uv.fs_utime(file.path, old, old))
 						prune_scan()
 						assert(vim.uv.fs_stat(file.path), "matching boot IDs released PID-less editor record")
@@ -565,7 +568,7 @@ return function(ctx)
 							end
 							prune_scan()
 							assert(
-								(vim.uv.fs_stat(file.path) == nil) == (changed and old and mode ~= "pending"),
+								(vim.uv.fs_stat(file.path) == nil) == (changed and old and mode == "attached"),
 								"foreign namespace did not apply changed-boot legacy age rule"
 							)
 							files.release(file)

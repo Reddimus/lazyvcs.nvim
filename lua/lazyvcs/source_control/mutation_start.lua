@@ -87,7 +87,7 @@ function M.start(repo, args, opts, guards, on_exit)
 		return self:cancel("cancelled")
 	end
 
-	local function spawn(command, continuation, mutation, environment)
+	local function spawn(command, continuation, mutation, environment, allowed_code)
 		if done or terminal then
 			return
 		end
@@ -122,10 +122,11 @@ function M.start(repo, args, opts, guards, on_exit)
 				return
 			end
 			child = nil
-			if terminal or err or (raw or result or {}).code ~= 0 then
+			local code = (raw or result or {}).code
+			if terminal or ((err or code ~= 0) and not (allowed_code and code == allowed_code)) then
 				return finish(result, err, raw or result)
 			end
-			local continued, continuation_err = pcall(continuation, result)
+			local continued, continuation_err = pcall(continuation, result or raw)
 			if not continued then
 				reject((tostring(continuation_err):gsub("[\r\n]+", " ")))
 			end
@@ -257,6 +258,16 @@ function M.start(repo, args, opts, guards, on_exit)
 			request = value
 		end
 		if guards.tracked_discard then
+			local head_exists
+			local function check_head(continuation)
+				if head_exists ~= nil then
+					return continuation(head_exists)
+				end
+				return spawn({ "git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}" }, function(result)
+					head_exists = result.code == 0
+					continuation(head_exists)
+				end, nil, nil, 1)
+			end
 			local index = 0
 			local function check_next()
 				index = index + 1
@@ -321,15 +332,25 @@ function M.start(repo, args, opts, guards, on_exit)
 									if not from_head then
 										return check_next()
 									end
-									return spawn(
-										{ "git", "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", target.relpath },
-										function(tree)
+									return check_head(function(exists)
+										if not exists then
+											return check_next()
+										end
+										return spawn({
+											"git",
+											"--literal-pathspecs",
+											"ls-tree",
+											"-z",
+											"HEAD",
+											"--",
+											target.relpath,
+										}, function(tree)
 											if not is_gitlink(tree, true) then
 												return refuse()
 											end
 											return check_next()
-										end
-									)
+										end)
+									end)
 								end
 							)
 						end
@@ -375,17 +396,26 @@ function M.start(repo, args, opts, guards, on_exit)
 					local function refuse()
 						return reject("Tracked Discard refuses nested repository ancestor at " .. prefix)
 					end
-					local function contains_gitlink(result)
-						if result.stdout_truncated then
-							return true
+					local function contains_gitlink(result, head)
+						if result.stdout == "" and not result.stdout_truncated then
+							return false
 						end
-						for entry in result.stdout:gmatch("[^%z]+") do
-							local mode, path = entry:match("^(%d+) [^\t]+\t(.*)$")
-							if mode == "160000" and path == prefix then
-								return true
+						-- The exact prefix sorts before its descendants. Only the first
+						-- complete record can be its gitlink, even if later output is cut.
+						local entry = result.stdout:match("^([^%z]+)%z")
+						local mode, path
+						if entry then
+							if head then
+								mode, path = entry:match("^(%d+) %w+ %x+\t(.*)$")
+							else
+								mode, path = entry:match("^(%d+) %x+ %d\t(.*)$")
 							end
 						end
-						return false
+						if not mode then
+							reject("Tracked Discard ancestor check could not complete at " .. prefix)
+							return nil
+						end
+						return mode == "160000" and path == prefix
 					end
 					filesystem(vim.uv.fs_lstat, function(stat)
 						if stat then
@@ -394,18 +424,29 @@ function M.start(repo, args, opts, guards, on_exit)
 						spawn(
 							{ "git", "--literal-pathspecs", "ls-files", "--stage", "-z", "--", prefix },
 							function(result)
-								if contains_gitlink(result) then
+								local linked = contains_gitlink(result, false)
+								if linked == nil then
+									return
+								elseif linked then
 									return refuse()
 								end
-								spawn(
-									{ "git", "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", prefix },
-									function(tree)
-										if contains_gitlink(tree) then
-											return refuse()
-										end
-										check_ancestor()
+								check_head(function(exists)
+									if not exists then
+										return check_ancestor()
 									end
-								)
+									spawn(
+										{ "git", "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", prefix },
+										function(tree)
+											local head_linked = contains_gitlink(tree, true)
+											if head_linked == nil then
+												return
+											elseif head_linked then
+												return refuse()
+											end
+											check_ancestor()
+										end
+									)
+								end)
 							end
 						)
 					end, repo.root .. "/" .. prefix .. "/.git", true)

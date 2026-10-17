@@ -218,15 +218,22 @@ local function gone(record, current, mtime)
 		end
 		changed = false
 	end
-	if record.pid == nil and record.editor_pid ~= nil then
-		-- A preserved consumer can outlive its editor on Unix. Only Windows
-		-- terminates consumers at editor exit; age cannot settle these records.
-		local pid = record.editor_pid
-		if current.platform == "Windows_NT" and changed and type(pid) == "number" and pid > 0 and pid % 1 == 0 then
-			local alive, _, code = vim.uv.kill(pid, 0)
-			return not alive and code == "ESRCH"
+	if current.platform == "Windows_NT" and changed then
+		-- Consumers cannot outlive Neovim on Windows (#96).
+		return true
+	end
+	if record.pid == nil then
+		if current.platform == "Windows_NT" then
+			local pid = record.editor_pid
+			if type(pid) == "number" and pid > 0 and pid % 1 == 0 then
+				local alive, _, code = vim.uv.kill(pid, 0)
+				return not alive and code == "ESRCH"
+			end
+			return mtime < current.boot - 5
 		end
-		return false
+		-- A Unix consumer may outlive its editor. Matching boot IDs protect it;
+		-- without a pair, allow a day of clock error before using boot age.
+		return not (record.boot_id and current.boot_id) and mtime < current.boot - 86400
 	end
 	if current.platform == "Linux" then
 		if
@@ -238,10 +245,6 @@ local function gone(record, current, mtime)
 			-- Without a boot ID pair, foreign consumer namespaces use legacy age.
 			return changed and mtime < current.boot - 5
 		end
-	end
-	if record.pid == nil then
-		-- True legacy PID-less records have no creating editor identity.
-		return mtime < current.boot - 5
 	end
 	if type(record.pid) ~= "number" or record.pid <= 0 or record.pid % 1 ~= 0 then
 		return false

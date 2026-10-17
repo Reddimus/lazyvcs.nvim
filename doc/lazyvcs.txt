@@ -482,6 +482,10 @@ Behavior:
   asynchronously: a .git entry (file, directory, or link), or a gitlink in the
   index or HEAD, refuses Discard of paths inside that repository. Each component
   uses at most one lstat and two Git commands within the mutation's deadline.
+  HEAD availability is checked once per mutation; unborn repositories skip HEAD
+  tree queries. Index queries parse only the first complete record. Truncation
+  after that record does not imply a gitlink; an unusable first record refuses
+  Discard because the ancestor check could not complete.
   Directory obstructions, nested repositories replacing regular files, Windows
   junctions, special files, and unverifiable filesystem errors are refused.
   Ordinary files, symlinks, and missing files are accepted. Submodule directory
@@ -886,23 +890,31 @@ readable and the PID namespace device and inode. Ownership records are synced
 before rename.
 
 Setup prunes asynchronously, reading one ownership record at a time. A changed
-Linux boot ID, a matching settlement receipt, or a signal-zero PID probe
-returning ESRCH releases a message. Matching Linux boot IDs take precedence over
-boot-time estimates. A boot-estimate change alone never releases a message.
-PID-less records with a creating editor PID, including failed PID attachments,
-survive clock steps and old mtimes. A changed Linux boot ID or matching settlement
-receipt releases them. On Windows, an estimate change of more than five seconds
-and editor ESRCH also release them: consumers cannot outlive Neovim there (#96).
-On Unix the editor's exit does not prove that its consumer has exited. Only
-PID-less legacy records without an editor PID use the mtime rule below.
-Without boot-ID or settlement evidence, Unix PID-less editor records are retained.
-Attached consumer PIDs are probed in the recorded Linux PID namespace, or directly
-on macOS and Windows. Without a boot ID pair, a changed estimate and an attached
-consumer in a foreign Linux namespace also use the legacy mtime rule. A wall-clock
-step can therefore release a message through that age fallback if its mtime
-appears to precede boot. PID reuse delays cleanup, and permission failures do not
-prove that a process exited. A failed deletion after physical exit leaves a
-settlement receipt for later cleanup.
+Linux boot ID or a matching settlement receipt releases a message. Matching Linux
+boot IDs take precedence over boot-time estimates. Attached consumer PIDs are
+probed in the recorded Linux PID namespace, or directly on macOS and Windows.
+A signal-zero probe returning ESRCH releases the message in the same boot.
+Windows also releases attached and PID-less records after a boot-estimate change
+of more than five seconds. Within the same boot estimate, editor ESRCH releases
+Windows PID-less records because consumers cannot outlive Neovim there (#96).
+Windows PID-less records without an editor PID use the legacy mtime rule below.
+
+On Unix the editor's exit does not prove that its consumer has exited. PID-less
+records, including pending records and failed PID attachments, are retained while
+Linux boot IDs match. On macOS and Linux without a boot ID pair, setup releases
+a PID-less message only if its mtime is more than one day (86400 seconds) before
+the current boot estimate, os.time() minus vim.uv.uptime(). This also covers
+valid legacy PID-less records without an editor PID. Fresh PID-less messages
+remain within the same boot. The one-day margin means a false release requires
+a forward clock step of more than a day while a PID-less commit still needs the
+message. No additional boot identity source is used.
+
+Without a boot ID pair, a changed estimate and an attached consumer in a foreign
+Linux namespace use the legacy mtime rule below. A wall-clock step can therefore
+release a message through that fallback if its mtime appears to precede boot.
+PID reuse delays cleanup, and permission failures do not prove that a process
+exited. A failed deletion after physical exit leaves a settlement receipt for
+later cleanup.
 
 Messages with missing, unreadable, invalid, token-mismatched, or foreign-platform
 ownership records use the legacy rule: setup prunes them only if their mtime is
