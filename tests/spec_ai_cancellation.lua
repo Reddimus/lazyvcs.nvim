@@ -257,6 +257,10 @@ return function(ctx)
 					}, function() end)
 					assert(jobs.cancel_owner(owner) == index % 2, "completed owner retained cancellable work")
 				end
+				-- JIT traces can retain completed callback closures and their owners.
+				if jit then
+					jit.flush()
+				end
 				collectgarbage("collect")
 				collectgarbage("collect")
 				assert(next(owners) == nil, "scheduler retained completed request owners")
