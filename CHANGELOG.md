@@ -49,6 +49,8 @@ and this project adheres to
 - Preserve preferences when another editor atomically replaces their state file.
 - Refuse tracked-file Discard when a directory or special file obstructs a
   regular tracked file, while allowing tracked submodule pointer restores.
+- Refuse tracked-file Discard when a directory, nested repository or special
+  file obstructs a restore target, while still restoring submodule pointers.
 
 ## [0.11.4] - 2026-10-16
 
