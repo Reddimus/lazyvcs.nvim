@@ -162,11 +162,8 @@ with (artifacts / "compare-terminal.log").open("w") as transcript:
                 child.send(keys)
                 state = expect_focus("saved", line)
                 assert state["path"] == path, state
+            # A clean SVN root has no property row: Compare drops SVN's summary-only record.
             child.send("]b")
-            if vcs == "svn":
-                state = expect_focus("saved", 1)
-                assert state["path"] == ".", state
-                child.send("]b")
             state = expect_focus("base", 1)
             assert state["path"] == deleted_name, state
             child.send("]b")
