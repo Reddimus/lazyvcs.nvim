@@ -647,6 +647,7 @@ Main options:
     session_keymaps    Add buffer-local live diff and Compare navigation mappings.
     base_window.width  Left/base diff window width. Values <= 1 are a ratio
                        of the combined pane width; values > 1 are columns.
+                       Column counts round down after classification.
                        Reapplied on resize. Each pane keeps at least 30 columns
                        when space permits. Sidebars are excluded.
     base_window.cursor_sync
@@ -704,6 +705,12 @@ while the diff is open. Statuslines and other raw option readers see this overla
 while the window is managed. New splits and floats keep only your mappings.
 Explicit custom highlight namespaces use a reusable namespace that resolves
 links through the source theme; closing restores the previous namespace.
+On runtimes with link_global support, LazyVCS keeps a window's source namespace
+if any link target resolves differently there than globally, following the full
+link chain. Neovim's public API cannot distinguish ordinary and global-only
+links. Links to unmodified targets or identical definitions keep the pooled path.
+Source-preserving windows retain semantic overlays and their 'winhighlight'.
+Use diff_highlighting = "editor" to retain semantic colors in every diff window.
 Reused namespaces and ColorScheme refreshes replace copied default definitions
 with the current theme colors, preserving the source definitions.
 The internal overlay is bounded to 4096 entries and 256 KiB, plus your mappings.
@@ -961,9 +968,16 @@ NOTES                                                           *lazyvcs-notes*
   A pending open is cancelled if its captured destination changes.
 - With Resession installed, saving an active live diff serializes the editable
   window's pre-session options. The live panes resume after saving. Saves preserve
-  affected folds and views, including neighboring user diff windows. Options
-  changed by the user during the session are preserved. Temporary bases and
-  LazyVCS sessions are not restored in a new process. No dependency is required.
+  affected views. The adapter records and restores only enabled diff-method folds,
+  including folds in neighboring user diff windows. Diff folds have one level. Other fold
+  methods are never touched. Fold capture failures skip fold restoration for that
+  window; mismatched diff ranges are skipped during restoration. Option projection
+  still runs. Options changed by the user during the session are preserved.
+  Temporary bases and LazyVCS sessions are not restored in a new process.
+  No dependency is required.
+- Read-only live comparisons close when either owned pane displays another
+  buffer. The replacement buffer stays in its window. Editable right panes
+  transfer their live diff when you switch to another supported file.
 - Git compares live diff buffers against the index.
 - SVN compares live diff buffers against working-copy BASE.
 - Git untracked files and SVN added files show an empty base.

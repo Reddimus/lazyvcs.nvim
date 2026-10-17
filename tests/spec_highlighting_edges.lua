@@ -250,19 +250,24 @@ return function(ctx)
 				local ok, err = pcall(function()
 					assert(api.nvim_get_hl_ns({ winid = win }) == pooled, "pool slot was not reused")
 					assert(foreground(win) == expected, "reused slot resolved child through global parent")
-					api.nvim_set_hl(0, "LazyVCSEdgeSelf", { link = "LazyVCSEdgeParent" })
+					api.nvim_set_hl(0, "LazyVCSEdgeStable", { fg = "#12ee34" })
+					api.nvim_set_hl(source, "LazyVCSEdgeStable", { fg = "#12ee34" })
+					api.nvim_set_hl(0, "LazyVCSEdgeSelf", { link = "LazyVCSEdgeStable" })
 					api.nvim_set_hl(source, "LazyVCSEdgeSelf", { link = "LazyVCSEdgeSelf" })
+					api.nvim_set_hl(source, "LazyVCSEdgeChain", { link = "LazyVCSEdgeSelf" })
+					api.nvim_set_hl(0, "LazyVCSEdgeChain", { link = "LazyVCSEdgeSelf" })
 					api.nvim_set_hl(source, "LazyVCSEdgeCycleA", { link = "LazyVCSEdgeCycleB" })
 					api.nvim_set_hl(source, "LazyVCSEdgeCycleB", { link = "LazyVCSEdgeCycleA" })
 					api.nvim_set_hl(source, "LazyVCSEdgeMissing", { link = "LazyVCSEdgeAbsent" })
 					guard.refresh(win)
+					assert(api.nvim_get_hl_ns({ winid = win }) == pooled, "unambiguous links left the pool")
 					assert(
 						api.nvim_get_hl(pooled, { name = "LazyVCSEdgeSelf" }).fg == 0x12ee34,
-						"self-link did not fall back through the source parent"
+						"self-link did not fall back through its global parent"
 					)
 					assert(
 						api.nvim_get_hl(pooled, { name = "LazyVCSEdgeChain" }).fg == 0x12ee34,
-						"chained link lost its source parent"
+						"chained link lost its parent"
 					)
 					for _, name in ipairs({ "LazyVCSEdgeMissing", "LazyVCSEdgeCycleA", "LazyVCSEdgeCycleB" }) do
 						assert(

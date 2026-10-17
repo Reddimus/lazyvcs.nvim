@@ -85,6 +85,7 @@ local function owned(win, state)
 	return api.nvim_win_is_valid(win)
 		and (
 			state.native and (api.nvim_get_hl_ns({ winid = win }) == state.native_ns or not explicit(win))
+			or state.preserved and api.nvim_get_hl_ns({ winid = win }) == state.previous
 			or state.slot and api.nvim_get_hl_ns({ winid = win }) == state.slot.ns
 		)
 end
@@ -147,10 +148,110 @@ local function suppress(slot, token, ft)
 	return added
 end
 
+local function resolver(theme, global)
+	local resolved, resolving = {}, {}
+	local function inherited(name)
+		if resolved[name] then
+			return resolved[name]
+		end
+		if resolving[name] then
+			return {}
+		end
+		resolving[name] = true
+		local value = theme[name] or global[name]
+		if not value and name:sub(1, 1) == "@" and name:find("%.") then
+			value = inherited((name:gsub("%.[^.]+$", "")))
+		elseif value and value.link then
+			if value.link == name then
+				value = global[name] or {}
+				if value.link and value.link ~= name then
+					value = inherited(value.link)
+				elseif value.link then
+					value = {}
+				end
+			else
+				value = inherited(value.link)
+			end
+		end
+		value = vim.deepcopy(value or {})
+		value.default = nil
+		resolved[name], resolving[name] = value, nil
+		return resolved[name]
+	end
+	return inherited
+end
+
+local global_links
+local function supports_global_links()
+	if global_links == nil then
+		local ns = api.nvim_create_namespace("lazyvcs-highlight-capability")
+		global_links = pcall(api.nvim_set_hl, ns, "LazyVcsGlobalLinkProbe", { link_global = "Normal" })
+	end
+	return global_links
+end
+
+-- Public highlight definitions omit the distinction between local and global links.
+local function requires_source_namespace(theme, global)
+	if not supports_global_links() then
+		return false
+	end
+	local local_value, global_value = resolver(theme, global), resolver({}, global)
+	local checked = {}
+	local function ambiguous(name)
+		if checked[name] then
+			return false
+		end
+		checked[name] = true
+		local value = theme[name] or global[name]
+		if value and value.link then
+			return not vim.deep_equal(local_value(value.link), global_value(value.link)) or ambiguous(value.link)
+		end
+		return false
+	end
+	for name in pairs(theme) do
+		if ambiguous(name) then
+			return true
+		end
+	end
+	return false
+end
+
+local function acquire()
+	local slot
+	for _, candidate in ipairs(pool) do
+		if not candidate.busy then
+			slot = candidate
+			break
+		end
+	end
+	if not slot then
+		slot = { ns = api.nvim_create_namespace("lazyvcs-diff-highlighting-" .. (#pool + 1)), names = {} }
+		pool[#pool + 1] = slot
+	end
+	slot.busy = true
+	return slot
+end
+
 function M.refresh(win)
 	local state = windows[win]
 	if not state or not owned(win, state) then
 		return
+	end
+	local global = api.nvim_get_hl(0, {})
+	local source = state.previous == -1 and api.nvim_get_hl_ns({}) or state.previous
+	local theme = source and source > 0 and api.nvim_get_hl(source, {}) or {}
+	if not state.native then
+		if requires_source_namespace(theme, global) then
+			if state.slot then
+				api.nvim_win_set_hl_ns(win, state.previous)
+				state.slot.busy = false
+				state.slot = nil
+			end
+			state.preserved = true
+			return
+		end
+		state.slot = state.slot or acquire()
+		state.preserved = nil
 	end
 	local slot = state.native and state or state.slot
 	slot.suppressed, slot.bytes, slot.count = {}, 0, 0
@@ -158,37 +259,8 @@ function M.refresh(win)
 		state.user = user_mappings(util.get_win_option(win, "winhighlight"), state)
 		api.nvim_set_hl(0, hidden, {})
 	end
-	local global = api.nvim_get_hl(0, {})
-	local source = state.previous == -1 and api.nvim_get_hl_ns({}) or state.previous
-	local theme = source and source > 0 and api.nvim_get_hl(source, {}) or {}
 	if not state.native then
-		local resolved, resolving = {}, {}
-		local function inherited(name)
-			if resolved[name] then
-				return resolved[name]
-			end
-			if resolving[name] then
-				return {}
-			end
-			resolving[name] = true
-			local value = theme[name] or global[name]
-			if not value and name:sub(1, 1) == "@" and name:find("%.") then
-				value = inherited((name:gsub("%.[^.]+$", "")))
-			elseif value and value.link then
-				if value.link == name then
-					value = global[name] or {}
-					if value.link and value.link ~= name then
-						value = inherited(value.link)
-					elseif value.link then
-						value = {}
-					end
-				else
-					value = inherited(value.link)
-				end
-			end
-			resolved[name], resolving[name] = value or {}, nil
-			return resolved[name]
-		end
+		local inherited = resolver(theme, global)
 		-- Namespaces cannot delete definitions. Reset through the new owner's graph.
 		for name in pairs(slot.names) do
 			write_pooled_highlight(slot.ns, name, inherited(name))
@@ -246,7 +318,7 @@ function M.release(win)
 		if api.nvim_win_is_valid(win) then
 			write_mapping(win, user_mappings(util.get_win_option(win, "winhighlight"), state))
 		end
-	elseif owned(win, state) then
+	elseif not state.preserved and owned(win, state) then
 		api.nvim_win_set_hl_ns(win, state.previous)
 	end
 	if state.slot then
@@ -293,7 +365,7 @@ local function listen()
 		vim.schedule(protected(function()
 			state.pending = false
 			if windows[win] == state then
-				if not state.native and state.mapping_changed and api.nvim_win_is_valid(win) then
+				if state.slot and state.mapping_changed and api.nvim_win_is_valid(win) then
 					state.mapping_changed = false
 					-- Recheck ownership after coalescing mapping changes. An explicit
 					-- window namespace survives winhighlight writes on Neovim 0.11/0.12.
@@ -352,7 +424,7 @@ local function listen()
 				return
 			end
 			for win, state in pairs(windows) do
-				if owned(win, state) and api.nvim_win_get_buf(win) == event.buf then
+				if not state.preserved and owned(win, state) and api.nvim_win_get_buf(win) == event.buf then
 					local added = suppress(state.native and state or state.slot, token, vim.bo[event.buf].filetype)
 					if state.native and added then
 						overlay(win, state)
@@ -404,20 +476,7 @@ function M.apply(win, policy)
 		listen()
 		return
 	end
-	local slot
-	for _, candidate in ipairs(pool) do
-		if not candidate.busy then
-			slot = candidate
-			break
-		end
-	end
-	if not slot then
-		slot = { ns = api.nvim_create_namespace("lazyvcs-diff-highlighting-" .. (#pool + 1)), names = {} }
-		pool[#pool + 1] = slot
-	end
-	slot.busy = true
-	windows[win] = { slot = slot, previous = api.nvim_get_hl_ns({ winid = win }), buf = api.nvim_win_get_buf(win) }
-	api.nvim_win_set_hl_ns(win, slot.ns)
+	windows[win] = { preserved = true, previous = api.nvim_get_hl_ns({ winid = win }), buf = api.nvim_win_get_buf(win) }
 	M.refresh(win)
 	listen()
 end

@@ -785,6 +785,10 @@ function M.open(opts)
 	local invoking_win = opts.winid or vim.api.nvim_get_current_win()
 	local invoking_tab = util.win_is_valid(invoking_win) and vim.api.nvim_win_get_tabpage(invoking_win)
 	local owner = state.for_window(invoking_win)
+	if owner and owner.readonly_comparison then
+		transfer.reconcile_now(owner)
+		owner = state.for_window(invoking_win)
+	end
 	if owner and owner.closing then
 		if not opts.silent then
 			util.notify("Previous live diff cleanup is unfinished", vim.log.levels.WARN)

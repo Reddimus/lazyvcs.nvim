@@ -9,6 +9,14 @@ local function kill(handle)
 	end
 end
 
+local function panes_owned(s, tab)
+	return util.win_is_valid(s.editable_win)
+		and util.win_is_valid(s.base_win)
+		and vim.api.nvim_win_get_tabpage(s.editable_win) == tab
+		and vim.api.nvim_win_get_tabpage(s.base_win) == tab
+		and vim.api.nvim_win_get_buf(s.base_win) == s.base_bufnr
+end
+
 function M.new(lifecycle)
 	local layout = require("lazyvcs.layout")
 	local aerial = require("lazyvcs.integrations.aerial")
@@ -101,22 +109,16 @@ function M.new(lifecycle)
 		if not current(s) or s.phase == "saving" or s.phase == "committing" then
 			return
 		end
+		if not panes_owned(s, s.tabpage) then
+			return lifecycle.close(s, { reset_tab_diff = true })
+		end
+		local target = vim.api.nvim_win_get_buf(s.editable_win)
 		if s.readonly_comparison then
-			if s.source_detached then
+			if s.source_detached or target ~= s.editable_bufnr then
 				return lifecycle.close(s, { reset_tab_diff = true })
 			end
 			return
 		end
-		if
-			not util.win_is_valid(s.editable_win)
-			or not util.win_is_valid(s.base_win)
-			or vim.api.nvim_win_get_tabpage(s.editable_win) ~= s.tabpage
-			or vim.api.nvim_win_get_tabpage(s.base_win) ~= s.tabpage
-			or vim.api.nvim_win_get_buf(s.base_win) ~= s.base_bufnr
-		then
-			return lifecycle.close(s, { reset_tab_diff = true })
-		end
-		local target = vim.api.nvim_win_get_buf(s.editable_win)
 		local p = state.peek_pending_transfer(s.editable_win)
 		if target == s.editable_bufnr then
 			if not vim.api.nvim_buf_is_loaded(target) or s.editable_wiping then
@@ -177,13 +179,7 @@ function M.new(lifecycle)
 					return
 				end
 				p.handle = nil
-				if
-					not util.win_is_valid(s.editable_win)
-					or not util.win_is_valid(s.base_win)
-					or vim.api.nvim_win_get_tabpage(s.editable_win) ~= p.tabpage
-					or vim.api.nvim_win_get_tabpage(s.base_win) ~= p.tabpage
-					or vim.api.nvim_win_get_buf(s.base_win) ~= s.base_bufnr
-				then
+				if not panes_owned(s, p.tabpage) then
 					return lifecycle.close(s, { reset_tab_diff = true })
 				end
 				if vim.api.nvim_win_get_buf(s.editable_win) ~= target or util.buf_path(target) ~= p.target_path then
@@ -228,6 +224,11 @@ function M.new(lifecycle)
 		else
 			kill(handle)
 		end
+	end
+	function api.reconcile_now(s)
+		guarded(s, function()
+			api.reconcile(s)
+		end)
 	end
 	function api.detached(s)
 		s.source_detached = true

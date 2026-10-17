@@ -142,11 +142,7 @@ local function normalize_width(width)
 		error("lazyvcs base_window.width must be greater than 0")
 	end
 
-	if width <= 1 then
-		return width
-	end
-
-	return math.floor(width)
+	return width
 end
 
 local function normalize(opts)

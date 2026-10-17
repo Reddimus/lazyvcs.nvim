@@ -23,7 +23,8 @@ return function(ctx)
 		return function()
 			integration.teardown()
 			local original = package.loaded.resession
-			local foldclosed, setter, notify = vim.fn.foldclosed, util.set_win_option_noautocmd, util.notify
+			local foldclosed, foldlevel, setter, notify =
+				vim.fn.foldclosed, vim.fn.foldlevel, util.set_win_option_noautocmd, util.notify
 			local columns, lines, diffopt = vim.o.columns, vim.o.lines, vim.o.diffopt
 			hooks = { pre_save = {}, post_save = {} }
 			package.loaded.resession = {
@@ -43,6 +44,7 @@ return function(ctx)
 			vim.o.columns, vim.o.lines = 220, 45
 			local ok, err = xpcall(fn, debug.traceback)
 			vim.fn.foldclosed, util.set_win_option_noautocmd, util.notify = foldclosed, setter, notify
+			vim.fn.foldlevel = foldlevel
 			integration.teardown()
 			package.loaded.resession = original
 			h.cleanup()
@@ -136,19 +138,20 @@ return function(ctx)
 		end
 	end
 	local function scans()
-		local foldclosed, counts = vim.fn.foldclosed, {}
+		local original, counts = vim.fn.foldclosed, {}
 		---@diagnostic disable-next-line: duplicate-set-field
 		vim.fn.foldclosed = function(line)
+			local win = api.nvim_get_current_win()
 			if line == 1 then
-				local win = api.nvim_get_current_win()
 				counts[win] = (counts[win] or 0) + 1
 			end
-			return foldclosed(line)
+			return original(line)
 		end
 		return counts, function()
-			vim.fn.foldclosed = foldclosed
+			vim.fn.foldclosed = original
 		end
 	end
+
 	local cases = {
 		{
 			"test_live_diff_resession_preserves_other_tab_user_diff",
@@ -184,6 +187,7 @@ return function(ctx)
 			function()
 				local sessions, wins = fixture(false)
 				local before, focus = snapshot(wins), api.nvim_get_current_win()
+				local counts, stop = scans()
 				local foldclosed, calls = vim.fn.foldclosed, 0
 				---@diagnostic disable-next-line: duplicate-set-field
 				vim.fn.foldclosed = function(line)
@@ -193,6 +197,8 @@ return function(ctx)
 				dispatch("pre_save")
 				dispatch("post_save")
 				vim.fn.foldclosed = foldclosed
+				stop()
+				assert(next(counts) == nil, "disabled folds visited scan lines")
 				assert(calls == 0, "disabled folds scanned " .. calls .. " lines")
 				intact(sessions, wins, before)
 				assert(api.nvim_get_current_win() == focus, "batch save changed focus")
@@ -228,19 +234,24 @@ return function(ctx)
 			"test_live_diff_resession_captures_each_window_once",
 			function()
 				local sessions, wins = fixture(true)
+				-- User-selected non-diff methods need no capture or replay.
+				util.set_win_option(wins[1], "foldmethod", "manual")
+				util.set_win_option(wins[#wins], "foldmethod", "manual")
 				local before = snapshot(wins)
 				local captures, stop = scans()
 				dispatch("pre_save")
 				stop()
 				for _, win in ipairs(wins) do
-					assert(captures[win] == 1, "window fold capture repeated: " .. tostring(captures[win]))
+					local expected = before[win].options.foldmethod == "diff" and 1 or nil
+					assert(captures[win] == expected, "unexpected fold capture count: " .. tostring(captures[win]))
 				end
 				local restores
 				restores, stop = scans()
 				dispatch("post_save")
 				stop()
 				for _, win in ipairs(wins) do
-					assert(restores[win] == 1, "window fold restoration repeated: " .. tostring(restores[win]))
+					local expected = before[win].options.foldmethod == "diff" and 1 or nil
+					assert(restores[win] == expected, "unexpected fold restore count: " .. tostring(restores[win]))
 				end
 				intact(sessions, wins, before)
 				-- Scope the next save to this tab while another live session remains active.
