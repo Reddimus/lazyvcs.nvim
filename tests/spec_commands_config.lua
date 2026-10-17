@@ -4,21 +4,16 @@ return function(ctx)
 		{
 			"test_core_directory_completion_roundtrips_windows_backslashes",
 			function()
-				local getcompletion, received = vim.fn.getcompletion, nil
+				local received
 				local path = [[C:\space repo\C#App\100%repo\]]
 				vim.api.nvim_create_user_command("LazyVCSCompletionProbe", function(args)
 					received = args.fargs
 				end, { nargs = "*" })
-				---@diagnostic disable-next-line: duplicate-set-field
-				vim.fn.getcompletion = function()
-					return { path }
-				end
 				local ok, err = pcall(function()
-					local candidates = require("lazyvcs.commands")._complete("C:", "LazyVCS sidebar open C:")
+					local candidates = { require("lazyvcs.command_path").escape(path) }
 					vim.cmd("LazyVCSCompletionProbe " .. candidates[1])
 					assert(vim.deep_equal(received, { path }), "Windows completion did not round-trip through <f-args>")
 				end)
-				vim.fn.getcompletion = getcompletion
 				vim.api.nvim_del_user_command("LazyVCSCompletionProbe")
 				assert(ok, err)
 			end,

@@ -363,9 +363,7 @@ local function complete(arg_lead, cmd_line)
 	-- Third token: only directory-taking verbs accept an argument.
 	local action = entry.verbs[typed[2]] or entry.verbs[entry.default]
 	if action and action.complete == "dir" then
-		return vim.tbl_map(function(candidate)
-			return vim.fn.escape(candidate, "\\ \t")
-		end, vim.fn.getcompletion(arg_lead, "dir"))
+		return require("lazyvcs.command_path").complete(arg_lead)
 	end
 	return {}
 end

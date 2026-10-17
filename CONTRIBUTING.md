@@ -92,7 +92,8 @@ A green run on an svn-less machine therefore covers less than CI does.
   failures and recheck identity at command start. Expand paths only at explicit
   user-input boundaries, such as the sidebar path argument in `commands.lua`.
   Tests must normalize `vim.fn.tempname()` too, or they fail on Windows with
-  mixed separators.
+  mixed separators. `command_path.lua` owns the command boundary: completion
+  doubles literal dollars and expansion processes `$$` and `$NAME` once.
 
 ## Commands
 
@@ -162,6 +163,8 @@ the GitHub release.
   originating tab.
 - `source_control/persist.lua` writes independent project files and reads the
   legacy shared file without changing it. Same-project saves use the last write.
+  `json_file.lua` validates and reads from one open descriptor; `fs.read_exact`
+  handles short reads without mixing metadata from another pathname generation.
 - `util.system_start` owns every asynchronous command's process group and
   escalation. Custom scheduler `start` functions must delegate to it, including
   preflight and mutation wrappers. `process_runtime.lua` tracks physical cleanup
@@ -173,7 +176,12 @@ the GitHub release.
   guards before spawning the mutation; never enqueue preflight into the same
   queue. Untracked Git Discard shares that worker and deadline across
   path-limited status, native lstat, and nonrecursive unlink. Cancellation waits
-  for pending filesystem callbacks before releasing the worker.
+  for pending filesystem callbacks before releasing the worker. Tracked-file
+  Discard checks every restore target, including rename sources, with
+  asynchronous lstat before startup. Files, symlinks, and ENOENT are accepted.
+  Windows links also require an asynchronous PowerShell LinkType check to
+  exclude junctions. SVN revalidates its recorded node kind before choosing file
+  or directory scope.
 - `compare.lua` owns review tabs, source-control navigation, and read-only
   previews. Its `set_panes()` transition installs both panes before publishing
   their slots and defers results while the picker router owns a borrowed buffer.
@@ -196,8 +204,13 @@ the GitHub release.
 - Switch-target enumeration finalizes its own repository marker before checking
   sidebar liveness. A stale callback cannot clear another operation's marker.
 - Commit message files are created exclusively with private permissions at
-  process start and removed after process exit, including cancellation and spawn
-  failure.
+  process start and removed after physical process exit, including cancellation
+  and spawn failure. `source_control/commit_files.lua` records the consuming
+  PID, boot identity, and Linux PID namespace. Setup prunes one bounded
+  ownership record at a time. Age alone never releases an owned message;
+  settlement, another boot, or a same-scope ESRCH probe does. Legacy messages
+  are eligible only when their mtime precedes the current boot by more than five
+  seconds.
 - Sidebar AI drafts belong to one state and repository root. Request tickets and
   draft revisions reject superseded responses. Context commands use the
   scheduler; repository cancellation also stops provider requests after context

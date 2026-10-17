@@ -105,7 +105,11 @@ compares against.
 Repository filenames and roots are literal: $NAME text does not expand to an
 environment variable when selecting, opening, saving, or reverting a file.
 Lua API path options are literal too. Paths typed as :LazyVCS sidebar arguments
-expand environment variables and ~ before repository discovery.
+expand environment variables and ~ before repository discovery. Use $$ for a
+literal dollar. Completion protects every dollar in a literal directory name.
+Expansion runs once: $$ becomes $, $NAME expands from the environment, and
+undefined names stay unchanged. Environment values are never expanded again.
+Backslashes and whitespace keep their existing command argument escaping.
 
 ==============================================================================
 TOTAL COMPARISON                                           *lazyvcs-comparison*
@@ -467,6 +471,12 @@ Behavior:
   starts. A branch change stops the operation with a retry error.
 - Unstage preserves working-file edits made after staging a new file. Staged
   rename Unstage and Discard cover both the source and destination paths.
+- Tracked-file Discard checks every restore target, including rename sources.
+  Directories, nested repositories, Windows junctions, special files, and
+  unverifiable filesystem errors are refused. Ordinary files, symlinks, and
+  missing files are accepted. Symlink targets and their children remain intact.
+  Windows link classification uses PowerShell asynchronously. These checks do
+  not make Discard atomic against concurrent external filesystem replacements.
 - Untracked-file Discard deletes only the selected file or symlink. All directory
   rows, including nested repositories, are refused. Symlink targets remain intact.
 - Successful Discard runs Neovim's timestamp check. With 'autoread', unmodified
@@ -496,6 +506,9 @@ Behavior:
 - Tree leaves show basenames, with the original path as rename context.
 - Sort (`S`) and clean visibility (`H`) update the current rows without
   reloading status or discarding known incoming changes.
+
+Preference reads use the opened file's type, size, and contents, so an atomic
+replacement by another editor does not truncate a valid document.
 
 Sidebar preferences are stored per project in
 `stdpath('state')/lazyvcs/source_control/<sha256(normalized-root)>.json`.
@@ -845,8 +858,24 @@ A hook or helper that writes output afterwards can fail and abort the mutation.
 Git aborts cleanly in this case without leaving an index.lock.
 Commit message files survive exit in stdpath("cache")/lazyvcs/commit, with a
 private directory (0700) and exclusive files (0600) on POSIX. Each file is removed
-when its command completes while Neovim runs. Setup asynchronously prunes files
-older than one day, ignoring cleanup errors.
+when its command physically completes while Neovim runs. Logical cancellation
+keeps the message until the process exits. Each cached message has an ownership
+record with the consuming command's PID and boot time, derived from os.time()
+minus vim.uv.uptime(). Boot times allow five seconds of tolerance. Linux also
+records the kernel boot ID when readable and the PID namespace device and inode.
+
+Setup prunes asynchronously, reading one ownership record at a time. A changed
+boot, a matching settlement receipt, or a signal-zero PID probe returning ESRCH
+releases a message. Matching Linux boot IDs take precedence over boot-time
+estimates. In the same boot, Linux probes only within the recorded PID namespace.
+macOS and Windows probe the consuming PID in the same boot. PID reuse delays
+cleanup. Permission failures, foreign namespaces, and invalid records retain the
+message until ownership can be verified. A failed deletion after physical exit
+leaves a settlement receipt for later cleanup.
+
+Legacy message files have no ownership record. Setup prunes one only if its
+modification time is more than five seconds earlier than the current boot time.
+Otherwise it remains until a later boot. Cleanup errors do not interrupt setup.
 If the cache directory cannot be created or protected, that commit uses
 vim.fn.tempname() instead. Such commits cannot outlive the editor and are
 cancelled at shutdown.

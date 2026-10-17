@@ -41,6 +41,12 @@ and this project adheres to
 - Leave non-diff folds untouched when Resession saves live diffs.
 - Interpret fractional absolute base widths as columns.
 - Release read-only diff sessions when their panes display another buffer.
+- Refuse tracked-file Discard when a directory or special file occupies a
+  restore target.
+- Protect commit message files while active or preserved commands still need
+  them.
+- Preserve literal dollar signs in completed sidebar paths.
+- Preserve preferences when another editor atomically replaces their state file.
 
 ## [0.11.4] - 2026-10-16
 

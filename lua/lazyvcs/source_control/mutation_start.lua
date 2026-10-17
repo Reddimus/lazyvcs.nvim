@@ -44,6 +44,7 @@ function M.start(repo, args, opts, guards, on_exit)
 		end
 	end
 	local function reject(err)
+		err = tostring(err):gsub("[\r\n]+", " ")
 		finish(nil, err, { code = 1, stdout = "", stderr = err })
 	end
 	local function terminate(_, err, raw)
@@ -153,7 +154,7 @@ function M.start(repo, args, opts, guards, on_exit)
 			end
 		end
 	end
-	local function native_delete()
+	local function native_discard()
 		local plan = guards.git_untracked_delete
 		native_plans[handle] = true
 		runtime.track(handle)
@@ -213,13 +214,13 @@ function M.start(repo, args, opts, guards, on_exit)
 				end)
 			end)
 		end
-		local function filesystem(operation, continuation)
+		local function filesystem(operation, continuation, path, allow_missing)
 			if stopped() then
 				return
 			end
 			pending = true
 			unlink_pending = operation == vim.uv.fs_unlink
-			local submitted, value, submit_err = pcall(operation, plan.path, function(err, result)
+			local submitted, value, submit_err = pcall(operation, path or plan.path, function(err, result)
 				vim.schedule(function()
 					pending, request = false, nil
 					local ok, callback_err = pcall(function()
@@ -232,7 +233,10 @@ function M.start(repo, args, opts, guards, on_exit)
 						if stopped() then
 							return
 						end
-						if err then
+						if allow_missing and not err and not result then
+							return reject("Cannot verify tracked Discard target: " .. path)
+						end
+						if err and not (allow_missing and (err == "ENOENT" or tostring(err):match("^ENOENT[: ]"))) then
 							return reject(tostring(err):gsub("[\r\n]+", " "))
 						end
 						continuation(result)
@@ -249,6 +253,58 @@ function M.start(repo, args, opts, guards, on_exit)
 			end
 			request = value
 		end
+		if guards.tracked_discard then
+			local index = 0
+			local function check_next()
+				index = index + 1
+				local target = guards.tracked_discard[index]
+				if not target then
+					local err = guard_error()
+					if err then
+						return reject(err)
+					end
+					if stopped() then
+						return
+					end
+					native_plans[handle] = nil
+					runtime.untrack(handle)
+					if timer then
+						timer:stop()
+						timer:close()
+						timer = nil
+					end
+					return spawn(args, function(result)
+						finish(result, nil, result)
+					end, true)
+				end
+				filesystem(vim.uv.fs_lstat, function(stat)
+					if stat and stat.type ~= "file" and stat.type ~= "link" then
+						return reject("Tracked Discard refuses " .. stat.type .. " obstruction at " .. target.relpath)
+					end
+					if stat and stat.type == "link" and vim.fn.has("win32") == 1 then
+						-- libuv reports both junctions and symbolic links as links on Windows.
+						local script = "(Get-Item -Force -ErrorAction Stop -LiteralPath '"
+							.. target.path:gsub("'", "''")
+							.. "').LinkType"
+						return spawn(
+							{ "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script },
+							function(result)
+								if util.trim(result.stdout) ~= "SymbolicLink" then
+									return reject(
+										"Tracked Discard refuses junction or unknown link obstruction at "
+											.. target.relpath
+									)
+								end
+								check_next()
+							end
+						)
+					end
+					check_next()
+				end, target.path, true)
+			end
+			return check_next()
+		end
+
 		local function file_type(stat)
 			if not stat or (stat.type ~= "file" and stat.type ~= "link") then
 				reject(
@@ -292,8 +348,8 @@ function M.start(repo, args, opts, guards, on_exit)
 		if err then
 			return reject(err)
 		end
-		if guards.git_untracked_delete then
-			return native_delete()
+		if guards.git_untracked_delete or guards.tracked_discard then
+			return native_discard()
 		end
 		spawn(args, function(result)
 			finish(result, nil, result)
@@ -312,7 +368,13 @@ function M.start(repo, args, opts, guards, on_exit)
 		spawn({ "svn", "info", "--xml", "--depth", "empty", "--", util.svn_target(plan.relpath) }, function(result)
 			local info = require("lazyvcs.backends.xml").parse_info(result.stdout)
 			local recursive = info and info.kind == "dir" and info.schedule == "delete"
-			if not info or not info.kind or not info.schedule or recursive ~= plan.recursive then
+			if
+				not info
+				or not info.kind
+				or not info.schedule
+				or recursive ~= plan.recursive
+				or info.kind ~= plan.kind
+			then
 				return reject("SVN directory classification changed before discard; refresh and retry.")
 			end
 			mutate()

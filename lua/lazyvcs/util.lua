@@ -855,13 +855,7 @@ end
 ---@param path string
 ---@return string expanded
 function M.expand_user_path(path)
-	if path:sub(1, 1) == "~" then
-		local home = vim.uv.os_homedir()
-		if home then
-			path = home:gsub("[/\\]$", "") .. path:sub(2)
-		end
-	end
-	return (path:gsub("%$([%w_]+)", vim.uv.os_getenv))
+	return require("lazyvcs.command_path").expand(path)
 end
 
 -- Canonicalize root identities by resolving symlinks. Missing paths retain their
