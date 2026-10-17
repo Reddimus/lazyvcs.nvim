@@ -393,11 +393,12 @@ return function(ctx)
 			local files = require("lazyvcs.source_control.commit_files")
 			local uname, kill = vim.uv.os_uname, vim.uv.kill
 			local restore_scope = linux_scope()
+			local file
 			local ok, err = xpcall(function()
 				vim.uv.os_uname = function()
 					return { sysname = "Linux" }
 				end
-				local file = assert(files.create("live message"))
+				file = assert(files.create("live message"))
 				files.attach(file, { process = { pid = vim.fn.getpid() } })
 				assert(file.record.boot_id, "fixture boot ID was not recorded")
 				local aged = os.time() - vim.uv.uptime() - 86410
@@ -411,10 +412,12 @@ return function(ctx)
 				prune_scan()
 				assert(vim.uv.fs_stat(file.path), "matching boot ID released a live consumer's old message")
 				assert(probes == 1, "live consumer was not probed")
-				files.release(file)
 			end, debug.traceback)
 			restore_scope()
 			vim.uv.os_uname, vim.uv.kill = uname, kill
+			if file then
+				files.release(file)
+			end
 			assert(ok, err)
 		end,
 	}
