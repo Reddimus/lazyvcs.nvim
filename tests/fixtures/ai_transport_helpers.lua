@@ -115,9 +115,11 @@ function M.transport(dir, child, async)
 			if opts.unused_name then
 				vim.fn.writefile({ "unrelated" }, vim.fn.tempname())
 			end
-			local args = vim.tbl_extend("force", opts, {
+			local args
+			args = vim.tbl_extend("force", opts, {
 				callback = function(response)
-					if body_file then
+					-- An HTTP failure keeps the body, so only LazyVCS cleanup can remove it.
+					if body_file and not args.http_error then
 						os.remove(body_file)
 					end
 					done(response, response.status >= 400 and "http failure" or nil)

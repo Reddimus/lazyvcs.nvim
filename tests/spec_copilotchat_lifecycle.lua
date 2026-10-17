@@ -121,12 +121,14 @@ return function(ctx)
 						deadline = fn
 						return assert(vim.uv.new_timer())
 					end
+					local transport_value, transport_err, transport_done
 					f.client.ask = function()
-						local value = f.chat.post(
+						transport_value, transport_err = f.chat.post(
 							"offline://fixture",
 							{ headers = { Authorization = "fixture" }, ignore_term = true }
 						)
-						return { message = { content = value and value.body or "late" } }
+						transport_done = true
+						return { message = { content = transport_value and transport_value.body or "late" } }
 					end
 					require("lazyvcs.source_control.copilotchat").start(
 						"literal",
@@ -143,6 +145,10 @@ return function(ctx)
 					wait(function()
 						return process.reaped(timed_out.pid) and result ~= nil
 					end, "timeout did not supersede successful stream", 5000)
+					wait(function()
+						return transport_done
+					end, "timed-out transport did not resume the request", 5000)
+					assert(not transport_value and transport_err, "timeout delivered the recorded success")
 					vim.wait(30)
 					assert(callbacks == 1 and result == "CopilotChat timed out", "late success replaced timeout")
 				end)
