@@ -90,13 +90,18 @@ return function(ctx)
 				local start, fallback = util.system_start, false
 				---@diagnostic disable-next-line: duplicate-set-field
 				util.system_start = function(args, opts, done)
-					return start(args, opts, function(raw)
-						for _, arg in ipairs(args) do
-							if arg:match("^%-%-source=") then
-								raw.code, raw.stderr, fallback = 129, "error: unknown option 'source'", true
-							end
+					local source = false
+					for _, arg in ipairs(args) do
+						source = source or arg:match("^%-%-source=") ~= nil
+					end
+					return start(args, opts, function(result, err, raw)
+						if not source then
+							return done(result, err, raw)
 						end
-						done(raw)
+						-- Fail the way Git before 2.40 does, whether or not this Git supports --source.
+						fallback = true
+						err = "error: unknown option 'source'"
+						done(nil, err, vim.tbl_extend("force", raw or {}, { code = 129, stderr = err }))
 					end)
 				end
 				local native = assert(preview("git", s.snapshot, path))
