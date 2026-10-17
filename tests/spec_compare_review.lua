@@ -445,6 +445,26 @@ return function(ctx)
 				end))
 				assert(value.left_bytes == row[2] and value.right_bytes == row[3])
 			end
+			-- Saved-pane blame decodes working-copy BASE; its errors must not name the base pane.
+			vim.o.fileencodings = "ucs-bom,utf-8"
+			local f = h.make_svn_fixture()
+			write(f.file, "café\nold\n")
+			h.exec({ "svn", "commit", "-m", "utf-8" }, f.root)
+			-- BASE becomes Latin-1 while the pinned revision and saved file stay UTF-8.
+			write(f.file, "caf\233\nold\n")
+			h.exec({ "svn", "commit", "-m", "latin1" }, f.root)
+			write(f.file, "café\nnew\n")
+			local s = assert(compare.open({ path = f.root, base = h.file_url(f.repo) .. "@2" }))
+			ctx.wait_for(function()
+				return s.preview_result
+			end, "SVN saved-pane preview", 15000)
+			local target = assert(compare.blame_target(s.right))
+			target.first, target.last = 1, 2
+			local entries, err = await(function(done)
+				require("lazyvcs.backends.blame_selection").load(target, target.bytes, done)
+			end)
+			assert(not entries and tostring(err):find("^SVN BASE for blame: "), "BASE decode error: " .. tostring(err))
+			compare.close(s)
 		end),
 	}
 	return cases

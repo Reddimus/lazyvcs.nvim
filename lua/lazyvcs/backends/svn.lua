@@ -996,19 +996,25 @@ function M.blame_lines_async(path, on_done, opts)
 												local common = require("lazyvcs.backends.comparison")
 												local options = common.decode_options(path)
 												options.hint = nil
-												local result = {}
-												local decoded, decode_err =
-													common.decode_side(result, "left", base, options)
-												if not decoded then
-													return task:finish(nil, decode_err)
+												local document, decode_err =
+													require("lazyvcs.compare_text").decode_preview(
+														base,
+														options,
+														common.max_file_bytes
+													)
+												if not document then
+													return task:finish(
+														nil,
+														"SVN BASE for blame: " .. tostring(decode_err)
+													)
 												end
-												if #result.left ~= #lines then
+												if #document.lines ~= #lines then
 													return task:finish(
 														nil,
 														"Unsupported blame line format: SVN and the preview use different lines"
 													)
 												end
-												base = result.left
+												base = document.lines
 											elseif opts.profile then
 												local format = require("lazyvcs.backends.blame_format")
 												local decoded, decode_err =
