@@ -969,9 +969,12 @@ NOTES                                                           *lazyvcs-notes*
 - With Resession installed, saving an active live diff serializes the editable
   window's pre-session options. The live panes resume after saving. Saves preserve
   affected folds and views, including closed children hidden inside nested
-  folds and neighboring user diff windows. Options changed by the user during
-  the session are preserved. Temporary bases and
-  LazyVCS sessions are not restored in a new process. No dependency is required.
+  folds and neighboring user diff windows. This includes parents tiled by open
+  children, shared boundaries, and coincident ranges. Fold inspection failures
+  roll back closure changes and skip fold restoration for that window; option
+  projection still runs. Options changed by the user during the session are
+  preserved. Temporary bases and LazyVCS sessions are not restored in a new
+  process. No dependency is required.
 - Read-only live comparisons close when either owned pane displays another
   buffer. The replacement buffer stays in its window. Editable right panes
   transfer their live diff when you switch to another supported file.

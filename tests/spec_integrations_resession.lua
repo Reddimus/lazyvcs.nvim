@@ -528,7 +528,7 @@ return function(ctx)
 				local failed, messages = false, {}
 				---@diagnostic disable-next-line: duplicate-set-field
 				util.set_win_option_noautocmd = function(win, option, value)
-					if not failed then
+					if not failed and s.phase == "saving" then
 						failed = true
 						error("forced projection failure\nsecond line")
 					end

@@ -237,11 +237,18 @@ the GitHub release.
   projecting any session. Restore all owned options and update each diff tab
   before restoring folds and views. `fold_state.lua` captures hidden closed
   descendants and restores children before parents using exact ranges and
-  depths. Fold inspection restores raw fold options and views. Disabled folds
-  require no line scan. Save bookkeeping costs O(sessions + unique windows +
-  lines with enabled folds + closed folds), excluding native fold and diff
-  recomputation. Buffer changes invalidate saved diff folds throughout the
-  affected tab. Storage is O(sessions + unique windows + closed folds).
+  depths. When open descendants tile a closed parent, replay temporarily closes
+  descendants to locate that parent, removes its boundary in manual mode,
+  reopens those descendants, and recreates the parent closed. This also handles
+  coincident ranges. Restore the original fold method without changing buffer
+  text. Fold inspection restores raw local fold options and views. Capture and
+  restore contain failures, roll back closure changes, and return `nil` or
+  `false`; layout skips unavailable fold snapshots while continuing option
+  projection. Disabled folds require no line scan. Save bookkeeping costs
+  O(sessions + unique windows + lines with enabled folds + closed folds),
+  excluding native fold and diff recomputation. Buffer changes invalidate saved
+  diff folds throughout the affected tab. Storage is O(sessions + unique
+  windows + closed folds).
 - `highlighting.lua` uses native `winhighlight` overlays for inherited colors
   and strips copied overlays from unowned windows. Only explicit theme
   namespaces use its pool, which grows with concurrently managed custom

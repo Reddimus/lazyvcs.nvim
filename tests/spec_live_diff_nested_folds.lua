@@ -79,7 +79,140 @@ return function(ctx)
 			end
 		end)
 	end
+	local function tiled(win, three)
+		api.nvim_win_call(win, function()
+			vim.cmd("silent! normal! zE")
+			local ranges = three and { { 1, 2 }, { 3, 5 }, { 1, 5 }, { 6, 7 }, { 8, 10 }, { 6, 10 } }
+				or { { 1, 5 }, { 6, 10 } }
+			for _, range in ipairs(ranges) do
+				vim.cmd(range[1] .. "," .. range[2] .. "fold")
+				vim.cmd(range[1] .. "normal! zo")
+			end
+			vim.cmd("1,10fold")
+		end)
+	end
+	local function check_tiled(win)
+		reveal(win, { { 1, 10 } })
+		api.nvim_win_call(win, function()
+			for line = 1, 10 do
+				assert(vim.fn.foldclosed(line) == -1, "open tiled descendant became closed at " .. line)
+			end
+		end)
+	end
+
 	local cases = {
+		{
+			"test_live_diff_resession_preserves_two_child_tiling",
+			function()
+				local s, win = fixture()
+				tiled(win, false)
+				dispatch("pre_save")
+				assert(s.phase == "saving", "fold capture prevented option projection")
+				assert(not util.get_win_option(s.editable_win, "diff"), "save sees live diff options")
+				dispatch("post_save")
+				check_tiled(win)
+			end,
+		},
+		{
+			"test_live_diff_resession_preserves_three_level_tiling",
+			function()
+				local _, win = fixture()
+				tiled(win, true)
+				dispatch("pre_save")
+				dispatch("post_save")
+				check_tiled(win)
+				api.nvim_win_call(win, function()
+					vim.cmd("normal! zE")
+					for _, range in ipairs({
+						{ 1, 2, true },
+						{ 3, 5 },
+						{ 1, 5, true },
+						{ 6, 7 },
+						{ 8, 10, true },
+						{ 6, 10 },
+						{ 1, 10, true },
+					}) do
+						vim.cmd(range[1] .. "," .. range[2] .. "fold")
+						if not range[3] then
+							vim.cmd(range[1] .. "normal! zo")
+						end
+					end
+				end)
+				dispatch("pre_save")
+				dispatch("post_save")
+				reveal(win, { { 1, 10 }, { 1, 5 }, { 1, 2 }, { 8, 10 } })
+				assert(
+					api.nvim_win_call(win, function()
+						return vim.fn.foldclosed(3) == -1 and vim.fn.foldclosed(6) == -1
+					end),
+					"mixed tiled children changed state"
+				)
+			end,
+		},
+		{
+			"test_live_diff_resession_fold_capture_failure_is_atomic",
+			function()
+				local s, win = fixture()
+				folds(win, { { 1, 10 }, { 2, 5 } })
+				local fold_state = require("lazyvcs.fold_state")
+				local original, calls = vim.fn.foldtextresult, 0
+				for _, fail_at in ipairs({ 2, 3 }) do
+					calls = 0
+					---@diagnostic disable-next-line: duplicate-set-field
+					vim.fn.foldtextresult = function(...)
+						calls = calls + 1
+						if calls == fail_at then
+							error("forced fold inspection failure")
+						end
+						return original(...)
+					end
+					local ok, result = pcall(fold_state.capture, win)
+					vim.fn.foldtextresult = original
+					assert(ok and result == nil, "capture failure escaped or returned a usable snapshot")
+					reveal(win, { { 1, 10 }, { 2, 5 } })
+					folds(win, { { 1, 10 }, { 2, 5 } })
+				end
+				folds(win, { { 1, 10 }, { 2, 5 } })
+				calls = 0
+				vim.fn.foldtextresult = function(...)
+					if api.nvim_get_current_win() == win then
+						calls = calls + 1
+						if calls == 2 then
+							error("forced save fold inspection failure")
+						end
+					end
+					return original(...)
+				end
+				dispatch("pre_save")
+				vim.fn.foldtextresult = original
+				assert(
+					s.phase == "saving" and not util.get_win_option(s.editable_win, "diff"),
+					"capture failure leaked live options"
+				)
+				dispatch("post_save")
+				reveal(win, { { 1, 10 }, { 2, 5 } })
+				folds(win, { { 1, 10 }, { 2, 5 } })
+				local cursor, writes = api.nvim_win_set_cursor, 0
+				---@diagnostic disable-next-line: duplicate-set-field
+				api.nvim_win_set_cursor = function(...)
+					writes = writes + 1
+					if writes == 2 then
+						error("forced fold cursor failure")
+					end
+					return cursor(...)
+				end
+				local captured, value = pcall(fold_state.capture, win)
+				api.nvim_win_set_cursor = cursor
+				assert(captured and value == nil, "cursor failure escaped")
+				reveal(win, { { 1, 10 }, { 2, 5 } })
+				folds(win, { { 1, 10 }, { 2, 5 } })
+				local snapshot = assert(fold_state.capture(win))
+				snapshot.closed[1].last = 11
+				local restored, value = pcall(fold_state.restore, win, snapshot)
+				assert(restored and value == false, "restore failure escaped")
+				reveal(win, { { 1, 10 }, { 2, 5 } })
+			end,
+		},
 		{
 			"test_live_diff_resession_preserves_hidden_nested_folds",
 			function()
