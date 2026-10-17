@@ -1398,21 +1398,22 @@ function M.open_repo(state, node, _toggle_node)
 	if not repo then
 		return
 	end
+	local expanded = repo_changes_expanded(state, node, repo)
+	local busy = repo_is_busy(repo.root)
+	if expanded and (repo.details_loaded or busy or repo.loading_details or repo.detail_error) then
+		return set_repo_changes_expanded(state, repo, false)
+	end
 	if not repo.details_loaded then
-		if repo_is_busy(repo.root) then
+		if busy then
 			return
 		end
-		if not repo_changes_expanded(state, node, repo) then
+		if not expanded then
 			state.lazyvcs_force_expand = state.lazyvcs_force_expand or {}
 			state.lazyvcs_force_expand[model.repo_changes_id(repo.root)] = true
 		end
 		M.load_repo_details(state, repo.root)
 		return navigate(state)
 	end
-	if repo_changes_expanded(state, node, repo) then
-		return set_repo_changes_expanded(state, repo, false)
-	end
-	local busy = repo_is_busy(repo.root)
 	if busy then
 		return
 	end

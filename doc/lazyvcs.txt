@@ -468,6 +468,11 @@ UTF-8 messages without changing repository configuration.
 Refresh restores previously loaded or loading expanded changes and preserves
 section and folder expansion. Enter on "Press <CR> to load changes" loads the
 changes without collapsing the repository.
+Enter on an expanded repository collapses it while an action or detail load is
+running, or after a detail load fails. When no action is running, Enter on a
+collapsed repository loads or retries missing details. The load prompt also
+retries failed detail loads explicitly.
+Resumed detail requests show "Loading changes..." until they finish.
 Repository actions refresh local rows in sibling sidebars across tabs. Sibling
 reconciliation reads local status; it does not request another remote check.
 SVN commits, updates, and switches discard shared incoming metadata until the

@@ -134,9 +134,111 @@ return function(ctx)
 			assert(b.lazyvcs_repo_cache[f.root] == current, "old callback restored sibling rows")
 			assert(a.lazyvcs_repo_cache[f.root].counts.staged == 1)
 			assert(current.sync.status ~= "busy" and not current.job, "sibling retained completed job")
+			ctx.wait_for(function()
+				local staged = false
+				for row, node in ipairs(b.lazyvcs_line_nodes) do
+					local line = api.nvim_buf_get_lines(b.bufnr, row - 1, row, false)[1]
+					if node.extra and node.extra.sync then
+						if node.extra.sync.status == "busy" or line:find("Stage", 1, true) then
+							return false
+						end
+					end
+					staged = staged
+						or node.type == "file"
+							and node.extra.section == "staged"
+							and node.extra.relpath == "new.txt"
+							and line:find("new.txt", 1, true) ~= nil
+				end
+				return staged
+			end, "sibling buffer did not render staged row without busy badge", 1000)
 			assert(unrelated.lazyvcs_repo_cache[other.root] == retained, "unrelated root invalidated")
 		end, debug.traceback)
 		model.load_repo_summary_async, model.load_repo_details_async, util.system_start = summary, detail, start
+		assert(ok, err)
+	end
+	local function svn_private_revert()
+		local f = h.make_svn_fixture()
+		local a = open(f.root)
+		vim.cmd.tabnew()
+		local b = open(f.root)
+		local cache = require("lazyvcs.source_control.remote_refresh")
+		local loader, start = model.load_repo_summary_async, util.system_start
+		local items = {
+			{
+				id = f.root .. "::incoming",
+				type = "file",
+				name = "sample.txt",
+				path = f.file,
+				extra = { repo_root = f.root, relpath = "sample.txt", section = "remote", status = "M" },
+				padding = string.rep("x", 4 * 1024 * 1024),
+			},
+		}
+		---@diagnostic disable-next-line: duplicate-set-field
+		model.load_repo_summary_async = function(repo, opts, run, done)
+			return loader(repo, opts, run, function(value, err)
+				if value and opts.remote_refresh then
+					value = model.with_remote_snapshot(value, { items = items, version = 1 })
+				end
+				done(value, err)
+			end)
+		end
+		local ok, err = xpcall(function()
+			native.refresh(true)
+			settled(b)
+			ctx.wait_for(function()
+				return b.lazyvcs_repo_cache[f.root].details_loaded
+			end, "private snapshot details not ready", 15000)
+			model.load_repo_summary_async = loader
+			assert(not cache.read(f.root) and cache.is_dropped(f.root), "oversized result entered shared cache")
+			local private = assert(b.lazyvcs_repo_cache[f.root].remote_local)
+			b.lazyvcs_expanded[f.root .. "::section::remote"] = true
+			local function incoming_row()
+				for row, node in ipairs(b.lazyvcs_line_nodes) do
+					if node.type == "file" and node.extra.section == "remote" then
+						return api.nvim_buf_get_lines(b.bufnr, row - 1, row, false)[1]:find("sample.txt", 1, true)
+					end
+				end
+			end
+			native.render(b)
+			assert(incoming_row(), "private incoming row was not initially rendered")
+			api.nvim_set_current_tabpage(a.tabid)
+			ops.revert_file(a, {
+				type = "file",
+				path = f.file,
+				extra = { repo_root = f.root, relpath = "sample.txt", section = "changes", status = "M" },
+			})
+			ctx.wait_for(function()
+				local job = runtime.get_repo_job(f.root)
+				return vim.fn.readfile(f.file)[2] == "two" and (not job or job.status ~= "running")
+			end, "SVN revert did not settle", 15000)
+			settled(b)
+			assert(b.lazyvcs_repo_cache[f.root].remote_local == private, "sibling revert discarded private incoming")
+			ctx.wait_for(incoming_row, "sibling revert removed rendered incoming row", 1000)
+			assert(b.lazyvcs_repo_cache[f.root].sync.status == "incoming")
+			-- A real base mutation must still clear the preserved private result before spawning.
+			local invalidated = false
+			---@diagnostic disable-next-line: duplicate-set-field
+			util.system_start = function(args, opts, done)
+				if args[1] == "svn" and args[2] == "update" then
+					local current = b.lazyvcs_repo_cache[f.root]
+					assert(
+						not current.remote_local and not current.remote_snapshot,
+						"mutation retained private incoming"
+					)
+					assert(current.remote_unknown and current.sync.status == "unknown", "mutation reported synced")
+					invalidated = true
+				end
+				return start(args, opts, done)
+			end
+			ops.run_primary_action(a, { extra = { repo_root = f.root, action = "update" } })
+			ctx.wait_for(function()
+				local job = runtime.get_repo_job(f.root)
+				return invalidated and (not job or job.status ~= "running")
+			end, "SVN update did not invalidate private result and settle", 15000)
+			settled(a)
+			settled(b)
+		end, debug.traceback)
+		model.load_repo_summary_async, util.system_start = loader, start
 		assert(ok, err)
 	end
 	local function svn_commit()
@@ -247,6 +349,7 @@ return function(ctx)
 		assert(ok, err)
 	end
 	local cases = {
+		{ "test_svn_source_control_sibling_revert_preserves_private_incoming", svn_private_revert },
 		{ "test_svn_source_control_cancel_rechecks_pending_sibling_summary", svn_cancel },
 		{ "test_source_control_job_overlay_preserves_repository_status", overlay },
 		{ "test_source_control_mutation_refreshes_sibling_sidebars", mutation },

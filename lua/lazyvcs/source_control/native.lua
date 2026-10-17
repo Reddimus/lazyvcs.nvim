@@ -597,6 +597,9 @@ local function resume_details(state)
 	for _, root in ipairs(ready) do
 		ops.load_repo_details(state, root)
 	end
+	if #ready > 0 then
+		M.schedule_render(state)
+	end
 end
 
 invalidate_hydration = function(state, repo_root, reason, defer_cancel)
@@ -1118,6 +1121,7 @@ function M.repository_changed(origin, root, remote_refresh, cancelled)
 			state.lazyvcs_repo_cache[root] = previous
 					and model.make_placeholder(previous, {
 						remote_unknown = previous.remote_unknown,
+						remote_local = previous.remote_local,
 						loading_summary = preserve or false,
 					})
 				or nil
