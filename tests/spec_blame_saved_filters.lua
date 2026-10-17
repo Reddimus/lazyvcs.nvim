@@ -7,7 +7,10 @@ return function(ctx)
 			function()
 				local process = require("lazyvcs.backends.process")
 				local run = process.lines
-				t.patch(package.loaded, "lazyvcs.backends.blame_selection", nil)
+				-- The detected legacy Git is cached per executable; keep it out of later cases.
+				local backend = require("lazyvcs.backends.blame_selection")
+				backend._test_reset_legacy_git()
+				t.cleanups[#t.cleanups + 1] = backend._test_reset_legacy_git
 				local explicit, validation = 0, 0
 				t.patch(process, "lines", function(args, opts, callback)
 					if args[2] == "blame" and vim.tbl_contains(args, "--contents") then

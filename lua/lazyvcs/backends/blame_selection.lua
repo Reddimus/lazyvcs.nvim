@@ -294,4 +294,10 @@ function M.load(target, contents, callback, capture)
 	end
 	return task
 end
+function M._test_reset_legacy_git()
+	for executable in pairs(legacy_git) do
+		legacy_git[executable] = nil
+	end
+end
+
 return M
