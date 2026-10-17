@@ -1,5 +1,6 @@
 return function(ctx)
 	local h, wait = ctx.helpers, ctx.wait_for
+	local pruning = require("commit_file_helpers")
 	local ops = require("lazyvcs.source_control.ops")
 	local util = require("lazyvcs.util")
 	local jobs = require("lazyvcs.source_control.jobs")
@@ -27,9 +28,8 @@ return function(ctx)
 			lazyvcs_render = function() end,
 		}, { path = root }
 	end
-	local function guarded(fn)
+	local function guarded(fn, opts)
 		return function()
-			setup()
 			local select, start, notify, command = picker.select, util.system_start, util.notify, jobs.command
 			local notices = {}
 			---@diagnostic disable-next-line: duplicate-set-field
@@ -41,11 +41,14 @@ return function(ctx)
 				notices[#notices + 1] = message
 			end
 			local ok, err = xpcall(function()
+				if not opts or opts.setup ~= false then
+					setup()
+				end
 				fn(notices)
 			end, debug.traceback)
 			picker.select, util.system_start, util.notify = select, start, notify
 			jobs.command = command
-			assert(ok, err)
+			assert(ok, tostring(err) .. "\nNotifications: " .. vim.inspect(notices))
 		end
 	end
 	local function finished(root)
@@ -161,37 +164,41 @@ return function(ctx)
 			end),
 		},
 		{
-			"test_source_control_setup_prunes_only_day_old_commit_files_asynchronously",
+			"test_source_control_setup_prunes_legacy_commit_files_with_one_day_margin_asynchronously",
 			guarded(function()
-				local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
-				vim.fn.mkdir(dir, "p")
-				assert(vim.uv.fs_chmod(dir, 448))
-				local old, recent = dir .. "/old.txt", dir .. "/recent.txt"
-				vim.fn.writefile({ "old" }, old)
-				vim.fn.writefile({ "recent" }, recent)
-				local expired = os.time() - 86401
-				assert(vim.uv.fs_utime(old, expired, expired))
-				vim.fn.mkdir(dir .. "/subdir", "p")
-				assert(vim.uv.fs_utime(dir .. "/subdir", expired, expired))
-				local scandir_next = vim.uv.fs_scandir_next
-				---@diagnostic disable-next-line: duplicate-set-field
-				vim.uv.fs_scandir_next = function(scan)
-					local name = scandir_next(scan)
-					return name, "unknown"
+				for _, platform in ipairs({ "Linux", "Darwin", "Windows_NT" }) do
+					local restore = pruning.scope(h, platform)
+					local ok, err = xpcall(function()
+						local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
+						vim.fn.mkdir(dir, "p")
+						assert(vim.uv.fs_chmod(dir, 448))
+						local old, recent = dir .. "/old.txt", dir .. "/recent.txt"
+						local barrier = dir .. "/zzzz-barrier.txt"
+						h.write_file(old, "old")
+						h.write_file(recent, "recent")
+						h.write_file(barrier, "barrier")
+						local expired = os.time() - vim.uv.uptime() - 86410
+						assert(vim.uv.fs_utime(old, expired, expired))
+						assert(vim.uv.fs_utime(barrier, expired, expired))
+						assert(vim.uv.fs_utime(recent, expired + 86400, expired + 86400))
+						vim.fn.mkdir(dir .. "/subdir", "p")
+						assert(vim.uv.fs_utime(dir .. "/subdir", expired, expired))
+						pruning.scan(function()
+							setup()
+							assert(vim.uv.fs_stat(old), "setup blocked to prune files")
+						end, wait)
+						assert(not vim.uv.fs_stat(barrier), "stale messages were not pruned")
+						assert(not vim.uv.fs_stat(old), "stale message was not pruned")
+						assert(vim.uv.fs_stat(recent), "recent message was pruned")
+						assert(vim.uv.fs_stat(dir .. "/subdir"), "pruning removed a directory")
+					end, debug.traceback)
+					restore()
+					assert(ok, platform .. ": " .. tostring(err))
 				end
-				local ok, err = xpcall(function()
-					setup()
-					assert(vim.uv.fs_stat(old), "setup blocked to prune files")
-					wait(function()
-						return not vim.uv.fs_stat(old)
-					end, "stale message was not pruned")
-					assert(vim.uv.fs_stat(recent), "recent message was pruned")
-					assert(vim.uv.fs_stat(dir .. "/subdir"), "pruning removed a directory")
-				end, debug.traceback)
-				vim.uv.fs_scandir_next = scandir_next
-				assert(ok, err)
-			end),
+				-- Fixtures must exist before the first setup starts its asynchronous scan.
+			end, { setup = false }),
 		},
+
 		{ "test_source_control_utf8_git_commit_message_c_locale", guarded(function()
 			utf8_commit("git")
 		end) },

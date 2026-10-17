@@ -105,7 +105,17 @@ compares against.
 Repository filenames and roots are literal: $NAME text does not expand to an
 environment variable when selecting, opening, saving, or reverting a file.
 Lua API path options are literal too. Paths typed as :LazyVCS sidebar arguments
-expand environment variables and ~ before repository discovery.
+expand environment variables and ~ before repository discovery. Use $$ for a
+literal dollar. Completion protects every dollar in a literal directory name.
+Expansion runs once: $$ becomes $, $NAME expands from the environment, and
+undefined names stay unchanged. Environment values are never expanded again.
+Backslashes and whitespace keep their existing command argument escaping.
+Directory completion hides dot names unless the prefix starts with a dot and
+respects 'wildignore'. Ignore-pattern matching follows 'fileignorecase';
+prefix matching also honors 'wildignorecase'. On Unix, named home paths (~user/)
+expand independently of 'wildignore'. An unresolved home leaves the argument
+unchanged.
+Windows drive-relative paths (C:) are supported.
 
 ==============================================================================
 TOTAL COMPARISON                                           *lazyvcs-comparison*
@@ -467,6 +477,33 @@ Behavior:
   starts. A branch change stops the operation with a retry error.
 - Unstage preserves working-file edits made after staging a new file. Staged
   rename Unstage and Discard cover both the source and destination paths.
+- Tracked-file Discard checks every restore target, including rename sources
+  and destinations. For Git, every proper leading path component is checked
+  asynchronously: a .git entry (file, directory, or link), or a gitlink in the
+  index or HEAD, refuses Discard of paths inside that repository. Each component
+  uses at most one lstat and two Git commands, plus one shared HEAD probe per
+  mutation, within the mutation's deadline. HEAD availability is checked once
+  per mutation. Only a normal, complete rev-parse exit of 1 means HEAD is unborn;
+  unverifiable HEAD checks refuse Discard. Unborn repositories skip HEAD tree
+  queries but still check the index. Index queries parse only the first complete
+  record. Output overflow keeps stdout's beginning, adds a truncation marker,
+  and sets stdout_truncated without stopping the child or changing its exit code.
+  Truncation after that record does not imply a gitlink; an unusable first record
+  refuses Discard because the ancestor check could not complete.
+  Directory obstructions, nested repositories replacing regular files, Windows
+  junctions, special files, and unverifiable filesystem errors are refused. In
+  SVN working copies on Windows, directory symlinks are refused too, because
+  Subversion cannot replace them and its failed revert leaves the working copy
+  locked. Ordinary files, other symlinks, and missing files are accepted.
+  Submodule directory targets require an exact stage-zero gitlink in the index.
+  Staged restores, including rename sources, also require a gitlink or an absent
+  path in HEAD. Directory targets are refused when HEAD contains a blob or tree.
+  Discard disables submodule recursion even when submodule.recurse is true, so
+  pointer restores preserve the populated checkout and its dirty files.
+  Symlink targets and their children remain intact.
+  Windows link classification passes the literal path through the PowerShell
+  child's environment and runs asynchronously. These checks do not make Discard
+  atomic against concurrent external filesystem replacements.
 - Untracked-file Discard deletes only the selected file or symlink. All directory
   rows, including nested repositories, are refused. Symlink targets remain intact.
 - Successful Discard runs Neovim's timestamp check. With 'autoread', unmodified
@@ -496,6 +533,11 @@ Behavior:
 - Tree leaves show basenames, with the original path as rename context.
 - Sort (`S`) and clean visibility (`H`) update the current rows without
   reloading status or discarding known incoming changes.
+
+Preference reads follow symlinks to regular files, then use the opened file's
+type, size, and contents. POSIX opens are nonblocking, so even a FIFO swapped in
+after the path check loads defaults without blocking the editor. An atomic
+replacement by another editor does not truncate a valid document.
 
 Sidebar preferences are stored per project in
 `stdpath('state')/lazyvcs/source_control/<sha256(normalized-root)>.json`.
@@ -845,8 +887,44 @@ A hook or helper that writes output afterwards can fail and abort the mutation.
 Git aborts cleanly in this case without leaving an index.lock.
 Commit message files survive exit in stdpath("cache")/lazyvcs/commit, with a
 private directory (0700) and exclusive files (0600) on POSIX. Each file is removed
-when its command completes while Neovim runs. Setup asynchronously prunes files
-older than one day, ignoring cleanup errors.
+when its command physically completes while Neovim runs. Logical cancellation
+keeps the message until the process exits. Each cached message has an ownership
+record with the creating editor's PID and scope before the consuming command's
+PID is attached. Both processes share that scope. Boot time is derived from
+os.time() minus vim.uv.uptime(). Linux also records the kernel boot ID when
+readable and the PID namespace device and inode. Ownership records are synced
+before rename.
+
+Setup prunes asynchronously, reading one ownership record at a time. Settlement
+or a changed Linux kernel boot ID releases a message. With a Linux boot ID pair,
+attached records otherwise require consumer ESRCH in the same PID namespace.
+PID-less records wait for settlement or a boot ID change, even in a foreign
+namespace. Matching boot IDs take precedence over boot-time estimates.
+
+Without a boot ID pair, attached records require consumer ESRCH where the
+namespace matches, or an mtime more than one day (86400 seconds) before the
+current boot estimate. Foreign Linux namespaces cannot be probed. On macOS and
+Linux without a boot ID pair, PID-less records use the same one-day margin;
+the editor's exit does not prove that its consumer has exited. Windows attached
+records require consumer ESRCH, and PID-less records require creating-editor
+ESRCH, or the one-day margin for either kind. Consumers cannot outlive Neovim on
+Windows (#96). An estimate change alone never releases a message.
+
+When the record or the machine has no boot ID, a PID-less message is kept
+until a boot that starts more than a day after the file was written. On Windows
+the creating editor's exit releases it earlier.
+
+The one-day margin also covers valid legacy PID-less records without an editor
+PID. A forward clock step of more than a day can falsely release a message
+through that margin. PID reuse delays cleanup; permission failures alone do not
+prove exit. A failed deletion after physical exit leaves a settlement receipt
+for later cleanup. No additional boot identity source is used.
+
+Messages with missing, unreadable, invalid, token-mismatched, or foreign-platform
+ownership records also require an mtime more than one day before the current
+boot estimate. Orphaned .owner, .settled, .owner.tmp, and .settled.tmp sidecars
+use the same margin and are removed only when their message is gone. Cleanup
+errors do not interrupt setup.
 If the cache directory cannot be created or protected, that commit uses
 vim.fn.tempname() instead. Such commits cannot outlive the editor and are
 cancelled at shutdown.

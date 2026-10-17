@@ -513,16 +513,17 @@ local function start_commit_command(repo, message, on_done)
 				on_exit(nil, "Commit command is missing the -F message file argument")
 				return
 			end
-			local path, file_err, persistent = require("lazyvcs.source_control.commit_files").create(message)
-			if not path then
+			local commit_files = require("lazyvcs.source_control.commit_files")
+			local file, file_err = commit_files.create(message)
+			if not file then
 				on_exit(nil, file_err)
 				return
 			end
 			local function cleanup()
-				pcall(vim.uv.fs_unlink, path)
+				commit_files.release(file)
 			end
-			command[message_index] = path
-			process_opts.preserve_on_shutdown = process_opts.preserve_on_shutdown and persistent
+			command[message_index] = file.path
+			process_opts.preserve_on_shutdown = process_opts.preserve_on_shutdown and file.persistent
 			local started, handle = pcall(util.system_start, command, process_opts, function(...)
 				cleanup()
 				on_exit(...)
@@ -532,6 +533,7 @@ local function start_commit_command(repo, message, on_done)
 				on_exit(nil, util.truncate((tostring(handle):gsub("[\r\n]+", " ")), 512))
 				return
 			end
+			commit_files.attach(file, handle)
 			return handle
 		end,
 	})
@@ -1179,11 +1181,14 @@ function M.revert_file(state, node)
 		action = "discard_staged"
 		prompt = "Discard staged and working tree changes for " .. relpath .. " in " .. repo.name .. "?"
 		args = status:sub(1, 1) == "A" and { "git", "rm", "-f", "--", relpath }
-			or vim.list_extend({ "git", "restore", "--source=HEAD", "--staged", "--worktree", "--" }, relpaths)
+			or vim.list_extend(
+				{ "git", "restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--" },
+				relpaths
+			)
 	elseif repo.vcs == "git" then
 		action = "discard_unstaged"
 		prompt = "Discard unstaged changes for " .. relpath .. " in " .. repo.name .. "?"
-		args = { "git", "restore", "--worktree", "--", relpath }
+		args = { "git", "restore", "--no-recurse-submodules", "--worktree", "--", relpath }
 	elseif change_kind == "untracked" then
 		util.notify(
 			"Deleting unversioned SVN paths is not supported safely; delete the path explicitly.",
@@ -1218,6 +1223,12 @@ function M.revert_file(state, node)
 					guard_relpaths = relpaths,
 					guard_subtrees = subtrees,
 					svn_discard = svn_discard,
+					tracked_discard = action ~= "delete_untracked"
+							and (not svn_discard or svn_discard.kind == "file")
+							and vim.tbl_map(function(index)
+								return { path = paths[index], relpath = relpaths[index] }
+							end, vim.fn.range(1, #paths))
+						or nil,
 					git_untracked_delete = action == "delete_untracked" and { path = node.path, relpath = relpath }
 						or nil,
 				}
@@ -1244,7 +1255,7 @@ function M.revert_file(state, node)
 				prompt = "Discard deleted SVN directory " .. relpath .. " and its descendants in " .. repo.name .. "?"
 				args = { "svn", "revert", "--depth", "infinity", "--", util.svn_target(relpath) }
 			end
-			discard(recursive and paths or nil, { relpath = relpath, recursive = recursive })
+			discard(recursive and paths or nil, { relpath = relpath, recursive = recursive, kind = info.kind })
 		end
 	)
 end

@@ -5,17 +5,25 @@ local M = {}
 local VERSION = 1
 
 function M.read(path)
-	local stat = vim.uv.fs_stat(path)
-	if not stat or stat.type ~= "file" then
+	-- Follow preference symlinks; a nonblocking open also handles late FIFOs.
+	local inspected, stat = pcall(vim.uv.fs_stat, path)
+	if not inspected or not stat or stat.type ~= "file" then
 		return {}
 	end
-	local fd = vim.uv.fs_open(path, "r", 420)
-	if not fd then
+	local flags = vim.fn.has("win32") == 1 and "r" or bit.bor(vim.uv.constants.O_RDONLY, vim.uv.constants.O_NONBLOCK)
+	local opened, fd = pcall(vim.uv.fs_open, path, flags, 420)
+	if not opened or not fd then
 		return {}
 	end
-	local data = vim.uv.fs_read(fd, stat.size, 0)
-	vim.uv.fs_close(fd)
-	if not data or data == "" then
+	local read_ok, data = pcall(function()
+		local stat = vim.uv.fs_fstat(fd)
+		if not stat or stat.type ~= "file" then
+			return nil
+		end
+		return fs.read_exact(fd, stat.size)
+	end)
+	local close_ok, closed = pcall(vim.uv.fs_close, fd)
+	if not read_ok or not close_ok or not closed or not data or data == "" then
 		return {}
 	end
 

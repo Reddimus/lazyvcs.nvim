@@ -122,7 +122,7 @@ vim.cmd("qa!")
 						if
 							case[1] == "unreadable"
 							and vim.fs.normalize(file) == vim.fs.normalize(path)
-							and flags == "r"
+							and (flags == "r" or type(flags) == "number")
 						then
 							denied = true
 							return nil, "EACCES: permission denied"
