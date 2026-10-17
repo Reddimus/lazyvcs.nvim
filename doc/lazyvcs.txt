@@ -908,6 +908,10 @@ records require consumer ESRCH, and PID-less records require creating-editor
 ESRCH, or the one-day margin for either kind. Consumers cannot outlive Neovim on
 Windows (#96). An estimate change alone never releases a message.
 
+Without a boot ID pair, a PID-less message is kept until a boot that starts
+more than a day after the file was written, unless a Linux boot ID change or
+a Windows creating-editor exit releases it earlier.
+
 The one-day margin also covers valid legacy PID-less records without an editor
 PID. A forward clock step of more than a day can falsely release a message
 through that margin. PID reuse delays cleanup; permission failures alone do not

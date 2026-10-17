@@ -91,11 +91,20 @@ return function(ctx)
 			end, "settled commit message leaked")
 		end)
 	end
-	local function policy(platform)
+	local variants = {
+		{ platform = "Linux", name = "Linux_boot_id" },
+		{ platform = "Linux", name = "Linux_ENOENT", boot_id_error = "ENOENT" },
+		{ platform = "Linux", name = "Linux_EACCES", boot_id_error = "EACCES" },
+		{ platform = "Darwin", name = "Darwin" },
+		{ platform = "Windows_NT", name = "Windows_NT" },
+	}
+	local function policy(platform, opts)
 		local files = require("lazyvcs.source_control.commit_files")
 		local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
 		vim.fn.mkdir(dir, "p")
 		local path = dir .. "/policy.txt"
+		-- Capture inside the caller's scope, so permission stubs delegate to its
+		-- simulated /proc and both cleanup paths restore that same scope.
 		local uname, kill, open, unlink = vim.uv.os_uname, vim.uv.kill, vim.uv.fs_open, vim.uv.fs_unlink
 		local record = {
 			version = 1,
@@ -189,7 +198,8 @@ return function(ctx)
 				)
 				scan()
 				assert(
-					(vim.uv.fs_stat(path) == nil) == (mode == "receipt" or (mode == "boot" and platform == "Linux")),
+					(vim.uv.fs_stat(path) == nil)
+						== (mode == "receipt" or (mode == "boot" and platform == "Linux" and not opts.boot_id_error)),
 					platform .. "/" .. mode .. ": wrong ownership release"
 				)
 			end
@@ -222,6 +232,83 @@ return function(ctx)
 	end
 
 	local extra = {}
+	for _, variant in ipairs(variants) do
+		extra[#extra + 1] = {
+			"test_source_control_commit_previous_boot_" .. variant.name,
+			function(notices)
+				local files = require("lazyvcs.source_control.commit_files")
+				local kill = vim.uv.kill
+				local restore = pruning.scope(h, variant.platform, variant)
+				local file
+				local ok, err = xpcall(function()
+					-- Prove that the machine-side boot ID failure affects recording too.
+					file = assert(files.create("previous boot message"))
+					assert(file.record.platform == variant.platform, "platform simulation was bypassed")
+					assert((file.record.boot_id ~= nil) == (variant.name == "Linux_boot_id"))
+					for _, mode in ipairs({ "attached", "old_pidless", "recent_pidless" }) do
+						local record = vim.deepcopy(file.record)
+						local boot = os.time() - vim.uv.uptime()
+						record.boot = boot - 172800
+						-- First use no boot ID pair, so ESRCH and age must each work alone.
+						record.boot_id, record.pid = nil, nil
+						if mode == "attached" then
+							record.pid = vim.fn.getpid()
+						end
+						h.write_file(file.path, "previous boot message")
+						h.write_file(file.path .. ".owner", vim.json.encode(record))
+						local mtime = boot - (mode == "old_pidless" and 86410 or 10)
+						assert(vim.uv.fs_utime(file.path, mtime, mtime))
+						local probes = 0
+						rawset(vim.uv, "kill", function(pid, signal)
+							probes = probes + 1
+							assert(pid == vim.fn.getpid() and signal == 0)
+							if mode == "attached" then
+								return nil, "ESRCH: previous boot consumer", "ESRCH"
+							end
+							return true -- Keep the Windows creating editor alive.
+						end)
+						prune_scan()
+						assert(
+							(vim.uv.fs_stat(file.path) == nil) == (mode ~= "recent_pidless"),
+							variant.name .. "/" .. mode .. ": wrong previous-boot release"
+						)
+						assert(
+							probes
+								== (
+									mode == "attached" and 1
+									or (variant.platform == "Windows_NT" and mode == "recent_pidless" and 1 or 0)
+								)
+						)
+						if variant.name == "Linux_boot_id" then
+							-- Restore the real boot ID pair: the changed ID releases even
+							-- the recent PID-less record, without any liveness probe.
+							record.boot_id = "previous-boot"
+							if mode ~= "recent_pidless" then
+								h.write_file(file.path, "previous boot message")
+								assert(vim.uv.fs_utime(file.path, mtime, mtime))
+							end
+							h.write_file(file.path .. ".owner", vim.json.encode(record))
+							rawset(vim.uv, "kill", function()
+								error("changed boot ID reached liveness probe")
+							end)
+							prune_scan()
+							assert(
+								not vim.uv.fs_stat(file.path),
+								"changed boot ID did not release previous-boot record"
+							)
+						end
+					end
+					assert(#notices == 0, "previous-boot pruning reported an error")
+				end, debug.traceback)
+				restore()
+				vim.uv.kill = kill
+				if file then
+					files.release(file)
+				end
+				assert(ok, err)
+			end,
+		}
+	end
 	for _, mode in ipairs({ "missing", "unreadable", "malformed", "token", "platform", "version" }) do
 		extra[#extra + 1] = {
 			"test_source_control_commit_prunes_previous_boot_" .. mode .. "_owner",
@@ -419,7 +506,7 @@ return function(ctx)
 		for _, mode in ipairs({ "pending", "attach_failed", "legacy" }) do
 			extra[#extra + 1] = {
 				"test_source_control_commit_pidless_cleanup_" .. platform .. "_" .. mode,
-				function()
+				function(notices)
 					local files = require("lazyvcs.source_control.commit_files")
 					local uname, kill, rename = vim.uv.os_uname, vim.uv.kill, vim.uv.fs_rename
 					local restore_scope = linux_scope()
@@ -431,11 +518,16 @@ return function(ctx)
 							for _, result in ipairs({ "alive", "ESRCH", "EPERM" }) do
 								local file = assert(files.create("pending message"))
 								if mode == "attach_failed" then
+									local before = #notices
 									vim.uv.fs_rename = function()
 										return nil, "EIO: attach failed"
 									end
 									files.attach(file, { process = { pid = vim.fn.getpid() } })
 									vim.uv.fs_rename = rename
+									assert(
+										#notices == before + 1
+											and notices[#notices]:match("Commit message cleanup failed:.*attach failed")
+									)
 								end
 								-- Read the durable record, including a crash before attachment.
 								local record =
@@ -498,7 +590,7 @@ return function(ctx)
 	for _, mode in ipairs({ "pending", "attach_failed" }) do
 		extra[#extra + 1] = {
 			"test_source_control_commit_matching_boot_id_protects_pidless_" .. mode,
-			function()
+			function(notices)
 				local files = require("lazyvcs.source_control.commit_files")
 				local uname, kill, rename = vim.uv.os_uname, vim.uv.kill, vim.uv.fs_rename
 				local restore_scope = linux_scope()
@@ -512,11 +604,16 @@ return function(ctx)
 					for _, foreign in ipairs({ false, true }) do
 						local file = assert(files.create("private pending message"))
 						if mode == "attach_failed" then
+							local before = #notices
 							vim.uv.fs_rename = function()
 								return nil, "EIO: attach failed"
 							end
 							files.attach(file, { process = { pid = vim.fn.getpid() } })
 							vim.uv.fs_rename = rename
+							assert(
+								#notices == before + 1
+									and notices[#notices]:match("Commit message cleanup failed:.*attach failed")
+							)
 						end
 						local record = vim.json.decode(table.concat(vim.fn.readfile(file.path .. ".owner"), "\n"))
 						assert(record.boot_id == "fixture-boot\n" and record.pid == nil)
@@ -636,15 +733,16 @@ return function(ctx)
 	local cases = {
 		{
 			"test_source_control_commit_pruning_requires_ownership_evidence",
-			function()
-				for _, platform in ipairs({ "Linux", "Darwin", "Windows_NT" }) do
-					local restore = pruning.scope(h, platform)
+			function(notices)
+				for _, variant in ipairs(variants) do
+					local restore = pruning.scope(h, variant.platform, variant)
 					local ok, err = xpcall(function()
-						policy(platform)
+						policy(variant.platform, variant)
 					end, debug.traceback)
 					restore()
 					assert(ok, err)
 				end
+				assert(#notices == 0, "ownership policy reported an error")
 			end,
 		},
 		{

@@ -2,7 +2,8 @@ local M = {}
 
 -- Model the kernel scope independently of the machine running the suite.
 -- Non-Linux platforms must not accidentally borrow the host's /proc evidence.
-function M.scope(h, platform)
+function M.scope(h, platform, opts)
+	opts = opts or {}
 	local uname, stat, open = vim.uv.os_uname, vim.uv.fs_stat, vim.uv.fs_open
 	local boot = h.tempdir() .. "/boot_id"
 	h.write_file(boot, "fixture-boot\n")
@@ -11,21 +12,21 @@ function M.scope(h, platform)
 			return { sysname = platform }
 		end)
 	end
-	local function missing(...)
+	local function missing(code, ...)
 		local args = { ... }
 		local cb = args[#args]
 		if type(cb) == "function" then
 			vim.schedule(function()
-				cb("ENOENT: simulated platform has no /proc")
+				cb(code .. ": simulated /proc unavailable")
 			end)
 			return {}
 		end
-		return nil, "ENOENT: simulated platform has no /proc", "ENOENT"
+		return nil, code .. ": simulated /proc unavailable", code
 	end
 	vim.uv.fs_stat = function(path, cb)
 		if path:match("^/proc/") then
 			if vim.uv.os_uname().sysname ~= "Linux" then
-				return missing(cb)
+				return missing("ENOENT", cb)
 			end
 			assert(path == "/proc/self/ns/pid", "unexpected /proc stat")
 			local value = { dev = 12, ino = 34 }
@@ -42,9 +43,12 @@ function M.scope(h, platform)
 	vim.uv.fs_open = function(path, ...)
 		if path:match("^/proc/") then
 			if vim.uv.os_uname().sysname ~= "Linux" then
-				return missing(...)
+				return missing("ENOENT", ...)
 			end
 			assert(path == "/proc/sys/kernel/random/boot_id", "unexpected /proc open")
+			if opts.boot_id_error then
+				return missing(opts.boot_id_error, ...)
+			end
 			path = boot
 		end
 		return open(path, ...)
@@ -54,24 +58,60 @@ function M.scope(h, platform)
 	end
 end
 
--- Wait for the actual end of the scan, independent of entry ordering and speed.
+-- Only a fresh commit-directory scan can satisfy this barrier. Fail clearly if
+-- prune coalesces with an existing scan, even before its scandir has opened.
 function M.scan(run, wait)
-	local next_entry, finished = vim.uv.fs_scandir_next, false
+	local scandir, next_entry, stat = vim.uv.fs_scandir, vim.uv.fs_scandir_next, vim.uv.fs_stat
+	local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
+	local handles, opened, finished, started, running = {}, 0, false, false, false
+	rawset(vim.uv, "fs_stat", function(path, ...)
+		-- Linux gathers its namespace and boot ID asynchronously before scandir.
+		if running and path == "/proc/self/ns/pid" then
+			started = true
+		end
+		return stat(path, ...)
+	end)
+	rawset(vim.uv, "fs_scandir", function(path, cb)
+		if path ~= dir then
+			return scandir(path, cb)
+		end
+		if running then
+			started = true
+		end
+		local function track(entries)
+			if entries then
+				handles[entries], opened = true, opened + 1
+			end
+		end
+		if cb then
+			return scandir(path, function(err, entries)
+				track(entries)
+				cb(err, entries)
+			end)
+		end
+		local entries, err, code = scandir(path)
+		track(entries)
+		return entries, err, code
+	end)
 	rawset(vim.uv, "fs_scandir_next", function(entries)
 		local name, kind = next_entry(entries)
-		if not name then
+		if not name and handles[entries] then
 			finished = true
 		end
 		return name, kind
 	end)
 	local ok, err = xpcall(function()
+		running = true
 		run()
+		running = false
+		assert(started, "pruning did not start a fresh scan (another prune may be running)")
 		assert(not finished, "pruning blocked")
 		wait(function()
 			return finished
 		end, "pruning did not finish", 5000)
+		assert(opened > 0, "pruning never opened the commit message directory")
 	end, debug.traceback)
-	vim.uv.fs_scandir_next = next_entry
+	vim.uv.fs_scandir, vim.uv.fs_scandir_next, vim.uv.fs_stat = scandir, next_entry, stat
 	assert(ok, err)
 end
 
@@ -83,7 +123,9 @@ function M.notified(fn)
 		util.notify = function(message)
 			notices[#notices + 1] = message
 		end
-		local ok, err = xpcall(fn, function(value)
+		local ok, err = xpcall(function()
+			return fn(notices)
+		end, function(value)
 			return type(value) == "table" and value or debug.traceback(tostring(value), 2)
 		end)
 		util.notify = notify
