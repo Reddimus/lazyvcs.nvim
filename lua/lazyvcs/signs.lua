@@ -137,13 +137,13 @@ local function supported_buffer(bufnr)
 		return nil
 	end
 	local size, bo = util.buffer_size(bufnr), vim.bo[bufnr]
-	-- Buffer offsets include a newline per line; capture serializes only the final
-	-- newline that the buffer would write. Full text validation stays in capture.
+	-- The offset counts the final newline 'fixendofline' would write; capture
+	-- omits it for an unmodified buffer. Full text validation stays in capture.
 	if size == 1 and vim.api.nvim_buf_call(bufnr, function()
 		return vim.fn.wordcount().chars == 0
 	end) then
 		size = 0
-	elseif not (bo.endofline or (bo.modified and bo.fixendofline and not bo.binary)) then
+	elseif not bo.endofline and bo.fixendofline and not bo.binary and not bo.modified then
 		size = size - 1
 	end
 	if util.file_size(path) > opts().max_file_bytes or size > opts().max_file_bytes then
@@ -1351,7 +1351,8 @@ local function preview_diff(context)
 			end
 			local latest = request.latest
 			if latest then
-				local valid = latest.valid()
+				local checked, valid = pcall(latest.valid)
+				valid = checked and valid
 				latest.cancel()
 				request.cancel()
 				if valid then

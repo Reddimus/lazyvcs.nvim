@@ -47,6 +47,12 @@ return function(ctx)
 				vim.bo[buf].fixendofline = false
 				state = s.refresh(buf, true)
 				assert(state and state.loaded and #state.hunks == 1, "nofixendofline exact-limit content was rejected")
+				-- Without fixendofline the offset already omits the final newline.
+				s.api.nvim_buf_set_lines(buf, 0, -1, false, { "abcdefghijk" })
+				assert(not vim.bo[buf].endofline and not vim.bo[buf].fixendofline)
+				assert(not s.refresh(buf, true), "nofixendofline content one byte over the limit was admitted")
+				local skipped = s.signs.current_state(buf)
+				assert(not skipped or skipped.skipped, "nofixendofline content one byte over the limit was not skipped")
 			end),
 		}
 	end
