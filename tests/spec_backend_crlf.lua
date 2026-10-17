@@ -275,6 +275,7 @@ return function(ctx)
 						)
 					end)
 					clean(value.details, { " mode change 100644 => 100755 sample.txt", "" })
+					assert(value.loaded.text and #value.left == 0 and #value.right == 0)
 				end)
 			end,
 		},

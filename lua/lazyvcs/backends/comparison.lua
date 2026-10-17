@@ -131,6 +131,35 @@ function M.read_file(task, path, callback)
 	end)
 end
 
+function M.decode_options(path)
+	local text = require("lazyvcs.compare_text")
+	local resolved = util.canonical_path(path)
+	local hint
+	for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+		if util.is_real_file_buffer(buf) and util.canonical_path(vim.api.nvim_buf_get_name(buf)) == resolved then
+			local profile = text.profile(buf)
+			if profile then
+				hint = { fileencoding = profile.fileencoding }
+				break
+			end
+		end
+	end
+	return { hint = hint, fileencodings = vim.o.fileencodings }
+end
+
+function M.decode_side(result, side, bytes, opts)
+	local document, err = require("lazyvcs.compare_text").decode_preview(bytes, opts, M.max_file_bytes)
+	if not document then
+		return nil, (side == "left" and "Base preview: " or "Saved preview: ") .. err
+	end
+	result[side], result[side .. "_document"], result[side .. "_bytes"] = document.lines, document, bytes
+	result.profile_key = table.concat({
+		result.left_document and result.left_document.profile_key or "",
+		result.right_document and result.right_document.profile_key or "",
+	}, "\0")
+	return true
+end
+
 function M.lines(data)
 	if type(data) ~= "string" then
 		return nil, "File contents unavailable"

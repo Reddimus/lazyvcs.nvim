@@ -356,6 +356,14 @@ local function set_panes(s, next_display)
 		if d.load_navigation then
 			navigation.load(s, result, item)
 			local remembered = s.file_views and s.file_views[item.relpath]
+			if
+				remembered
+				and (not result.loaded or result.loaded.text)
+				and remembered.profile_key ~= result.profile_key
+			then
+				s.file_views[item.relpath], remembered = nil, nil
+				d.saved_views, d.saved_reviewed = nil, nil
+			end
 			if not d.saved_views and remembered and remembered.old_path == item.old_path then
 				if s.mode == "metadata" then
 					s.text_views = vim.deepcopy(remembered.views)
@@ -480,6 +488,9 @@ local function result_display(s, result, item, mode)
 		{ mode = mode or "text", result = result, item = item, text_views = s.text_views, stamp = s.preview_stamp }
 	if d.mode == "metadata" then
 		d.left = result.properties or result.details or { "No metadata or property changes for this path." }
+		if result.properties and result.details then
+			d.left = vim.list_extend(vim.deepcopy(result.details), result.properties)
+		end
 		d.right = { ":LazyVCS compare metadata: return to text" }
 		d.left_ft = result.properties and "diff" or ""
 		d.left_label, d.right_label = "METADATA / PROPERTIES: " .. item.relpath, "Return to text"
@@ -490,12 +501,16 @@ local function result_display(s, result, item, mode)
 	end
 	return pane_request(s, d)
 end
+local preview
 local function show_result(s, mode)
 	if s.preview_result and s.shown_item then
+		if mode == "text" and s.preview_result.loaded and not s.preview_result.loaded.text then
+			return preview(s, s.shown_item, "text")
+		end
 		set_panes(s, result_display(s, s.preview_result, s.shown_item, mode))
 	end
 end
-local function preview(s, item, mode, saved_views, intent, saved_reviewed)
+preview = function(s, item, mode, saved_views, intent, saved_reviewed)
 	item = item or selected(s)
 	if not item or not s.snapshot then
 		return
@@ -525,7 +540,7 @@ local function preview(s, item, mode, saved_views, intent, saved_reviewed)
 			return
 		end
 		s.preview_job = nil
-		if stamp ~= file_stamp(path) then
+		if result and (not result.loaded or result.loaded.text) and stamp ~= file_stamp(path) then
 			result, err = nil, "File changed during preview; use :LazyVCS compare refresh"
 		end
 		if not result then
@@ -543,12 +558,15 @@ local function preview(s, item, mode, saved_views, intent, saved_reviewed)
 			)
 			return
 		end
+		if s.preview_mode == "text" and result.loaded and not result.loaded.text then
+			return preview(s, item, "text", saved_views, s.navigation_intent, saved_reviewed)
+		end
 		local d = result_display(s, result, item, s.preview_mode)
 		d.stamp, d.load_navigation, d.intent = stamp, true, s.navigation_intent
 		d.saved_views, d.saved_reviewed = saved_views, saved_reviewed
 		s.navigation_intent = nil
 		set_panes(s, d)
-	end)
+	end, { mode = mode or "text" })
 end
 local function request_preview(s, kind)
 	local item = vim.api.nvim_get_current_win() == s.sidewin and selected(s) or s.shown_item
@@ -558,6 +576,10 @@ local function request_preview(s, kind)
 	end
 	local intent = kind ~= "preview" and navigation.intent(s, item, kind) or nil
 	if item == s.shown_item and s.preview_result then
+		if s.preview_result.loaded and not s.preview_result.loaded.text then
+			preview(s, item, "text", nil, intent)
+			return true
+		end
 		if s.mode ~= "text" then
 			show_result(s, "text")
 		end
@@ -715,6 +737,13 @@ function M.refresh(s, context_checked)
 			if not items then
 				return failure(s, list_err)
 			end
+			local paths = {}
+			for _, item in ipairs(items) do
+				if paths[item.relpath] then
+					return failure(s, "Duplicate comparison path: " .. display(item.relpath))
+				end
+				paths[item.relpath] = true
+			end
 			buffers.reconcile(s, snapshot, items)
 			navigation.reconcile(s, snapshot, items)
 			s.snapshot, s.items = snapshot, items
@@ -783,6 +812,16 @@ function M.jump_to_hunk(direction)
 		request_preview(s, direction == "next" and "first" or "last")
 	else
 		navigation.cancel(s)
+		if s.preview_result and s.preview_result.loaded and not s.preview_result.loaded.text then
+			preview(
+				s,
+				s.shown_item,
+				"text",
+				nil,
+				navigation.intent(s, s.shown_item, direction == "next" and "first" or "last")
+			)
+			return true
+		end
 		if s.preview_result and s.mode ~= "text" then
 			show_result(s, "text")
 		end
@@ -819,6 +858,10 @@ function M.navigate_file(direction, count)
 	vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
 	local intent = navigation.intent(s, item, "file")
 	if item == s.shown_item and s.preview_result then
+		if s.preview_result.loaded and not s.preview_result.loaded.text then
+			preview(s, item, "text", nil, intent)
+			return true
+		end
 		if s.mode ~= "text" then
 			show_result(s, "text")
 		end
@@ -1547,7 +1590,14 @@ function M.blame_target(buf)
 	local item, snapshot, result = s.shown_item, s.snapshot, s.preview_result
 	local side = buf == s.left and "base" or "saved"
 	local lines = side == "base" and result.left or result.right
-	if #lines == 0 or item.kind == "dir" or item.property_only or result.right_label == "SUBMODULE / DIRECTORY" then
+	if
+		#lines == 0
+		or (item.kind == "dir" and not item.kind_before)
+		or (side == "base" and item.kind_before == "dir")
+		or (side == "saved" and item.kind_after == "dir")
+		or item.property_only
+		or result.right_label == "SUBMODULE / DIRECTORY"
+	then
 		return nil, "This preview has no file lines to blame"
 	end
 	return {
@@ -1556,6 +1606,7 @@ function M.blame_target(buf)
 		item = item,
 		side = side,
 		bytes = side == "base" and result.left_bytes or result.right_bytes,
+		text = side == "base" and result.left_document or result.right_document,
 		valid = function()
 			return alive(s) and s.snapshot == snapshot and s.preview_result == result and s.mode == "text"
 		end,

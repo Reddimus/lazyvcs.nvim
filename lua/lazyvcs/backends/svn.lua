@@ -960,9 +960,15 @@ function M.blame_lines_async(path, on_done, opts)
 						end
 					end
 
+					local blame_args = { "svn", "blame", "-v" }
+					if opts.preview then
+						-- Map the captured preview onto BASE, not SVN's current working-file lines.
+						vim.list_extend(blame_args, { "-r", "BASE" })
+					end
+					blame_args[#blame_args + 1] = literal_target(path)
 					task:add(
 						process.lines(
-							{ "svn", "blame", "-v", literal_target(path) },
+							blame_args,
 							{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
 							function(lines, blame_err, raw)
 								if not lines then
@@ -976,7 +982,7 @@ function M.blame_lines_async(path, on_done, opts)
 									return task:finish(nil, blame_err)
 								end
 								task:add(
-									(opts.profile and process.bytes or process.lines)(
+									((opts.profile or opts.preview) and process.bytes or process.lines)(
 										{ "svn", "cat", "-r", "BASE", literal_target(path) },
 										{
 											cwd = root,
@@ -986,7 +992,30 @@ function M.blame_lines_async(path, on_done, opts)
 											if not base then
 												return task:finish(nil, base_err)
 											end
-											if opts.profile then
+											if opts.preview then
+												local common = require("lazyvcs.backends.comparison")
+												local options = common.decode_options(path)
+												options.hint = nil
+												local document, decode_err =
+													require("lazyvcs.compare_text").decode_preview(
+														base,
+														options,
+														common.max_file_bytes
+													)
+												if not document then
+													return task:finish(
+														nil,
+														"SVN BASE for blame: " .. tostring(decode_err)
+													)
+												end
+												if #document.lines ~= #lines then
+													return task:finish(
+														nil,
+														"Unsupported blame line format: SVN and the preview use different lines"
+													)
+												end
+												base = document.lines
+											elseif opts.profile then
 												local format = require("lazyvcs.backends.blame_format")
 												local decoded, decode_err =
 													format.svn_base(base, opts.profile, lines, format.decode_limit())

@@ -222,6 +222,74 @@ function M.decode(bytes, profile, limit_bytes)
 	return { lines = lines, eol = eol, empty = empty, encoding = source, bom = bom, profile_key = profile.key }
 end
 
+---@param bytes string
+---@param opts table
+---@param limit_bytes integer
+---@return LazyVcsText? document, string? err
+function M.decode_preview(bytes, opts, limit_bytes)
+	if #bytes > limit_bytes then
+		return nil, "File exceeds the 1 MiB preview limit"
+	end
+	local encodings = {}
+	if opts.encoding then
+		local encoding = opts.encoding:lower():gsub("^(utf%-16[lb]e)%-bom$", "%1")
+		if encoding == "utf-16" and bytes:sub(1, 2) == "\255\254" then
+			encoding = "utf-16le"
+		end
+		encodings = { encoding }
+	else
+		if opts.hint then
+			encodings[#encodings + 1] = opts.hint.fileencoding
+		end
+		for encoding in (opts.fileencodings or "ucs-bom,utf-8,default,latin1"):gmatch("[^,]+") do
+			if encoding == "ucs-bom" then
+				for _, signature in ipairs(signatures) do
+					if bytes:sub(1, #signature[1]) == signature[1] then
+						encodings[#encodings + 1] = signature[2]
+						break
+					end
+				end
+			else
+				encodings[#encodings + 1] = encoding == "default" and "utf-8" or encoding
+			end
+		end
+		if opts.fileencodings == "" then
+			encodings[#encodings + 1] = "utf-8"
+		end
+	end
+	local failure = "Source encoding could not be determined"
+	for index, encoding in ipairs(encodings) do
+		local profile = {
+			fileencoding = encoding,
+			-- Preview always normalizes CRLF, independent of editor read/write options.
+			fileformat = "dos",
+			bomb = false,
+			binary = false,
+			key = encoding .. ":preview-lf",
+		}
+		local document, err = M.decode(bytes, profile, limit_bytes)
+		if document then
+			document.profile_key = profile.key .. ":" .. tostring(document.bom)
+			return document
+		end
+		failure = err or failure
+		local failed_hint = not opts.encoding and opts.hint and index == 1
+		if not failed_hint and (failure:find("Binary", 1, true) or failure:find("Decoded text exceeds", 1, true)) then
+			break
+		end
+	end
+	if failure:find("Binary", 1, true) then
+		return nil, "Binary file; text preview unavailable"
+	elseif failure:find("exceeds", 1, true) then
+		return nil, "Decoded text exceeds the 1 MiB preview limit"
+	end
+	failure = failure
+		:gsub("the VCS base", "preview text")
+		:gsub("VCS base encoding", "Preview encoding")
+		:gsub("Invalid UCS%-4 base", "Invalid UCS-4 preview text")
+	return nil, failure
+end
+
 local function is_empty(bufnr, lines)
 	return #lines == 1
 		and lines[1] == ""

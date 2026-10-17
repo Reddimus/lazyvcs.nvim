@@ -105,7 +105,7 @@ local function property_lines(raw)
 end
 
 local function load_property_patch(task, snapshot, item, done)
-	if item.kind == "dir" then
+	if item.kind == "dir" or item.status == "R" then
 		return require("lazyvcs.backends.svn_properties").load_directory_patch(task, snapshot, item, done)
 	end
 	local path = snapshot.root .. "/" .. item.relpath
@@ -171,10 +171,60 @@ function M.list(snapshot, include_untracked, callback)
 			seen[relpath] = true
 		end
 		local function finish()
-			table.sort(items, function(a, b)
-				return a.relpath < b.relpath
-			end)
-			task:finish(items)
+			local merged, paths = {}, {}
+			for _, item in ipairs(items) do
+				local previous = paths[item.relpath]
+				if previous then
+					if
+						not (
+							(previous.status == "D" and item.status == "A")
+							or (previous.status == "A" and item.status == "D")
+						)
+					then
+						return task:finish(nil, "Duplicate SVN comparison path: " .. item.relpath)
+					end
+					local before = previous.status == "D" and previous or item
+					local after = previous.status == "A" and previous or item
+					previous.kind_before, previous.kind_after = before.kind, after.kind
+					previous.status, previous.kind = "R", after.kind
+					previous.properties = before.properties or after.properties
+					previous.load_properties, previous.property_only = true, false
+				else
+					paths[item.relpath] = item
+					merged[#merged + 1] = item
+				end
+			end
+			local cursor, retained = 0, {}
+			local function reconcile()
+				if not task:is_active() then
+					return
+				end
+				while cursor < #merged do
+					cursor = cursor + 1
+					local item = merged[cursor]
+					if item.status == "M" and item.kind == "dir" and item.property_only then
+						return require("lazyvcs.backends.svn_properties").load_directory_maps(
+							task,
+							snapshot,
+							item,
+							function(before, after, check_err)
+								if not before or not after or not vim.deep_equal(before, after) then
+									item.property_check_error = check_err
+										or ((not before or not after) and "Property values unavailable" or nil)
+									retained[#retained + 1] = item
+								end
+								schedule(task, reconcile)
+							end
+						)
+					end
+					retained[#retained + 1] = item
+				end
+				table.sort(retained, function(a, b)
+					return a.relpath < b.relpath
+				end)
+				task:finish(retained)
+			end
+			reconcile()
 		end
 		if not include_untracked then
 			return finish()
@@ -280,22 +330,43 @@ function M.list(snapshot, include_untracked, callback)
 	return task
 end
 
-function M.preview(snapshot, item, callback)
+function M.preview(snapshot, item, callback, opts)
 	local task = common.task(callback)
 	local path = snapshot.root .. "/" .. item.relpath
 	local url = require("lazyvcs.backends.svn_url").append_path(snapshot.url, item.relpath)
-	local result = { left_label = snapshot.url .. " @ r" .. snapshot.revision, right_label = "SAVED WORKTREE" }
+	local result = {
+		left_label = snapshot.url .. " @ r" .. snapshot.revision,
+		right_label = "SAVED WORKTREE",
+		loaded = { text = not (opts and opts.mode == "metadata"), metadata = true },
+	}
+	if item.property_check_error then
+		result.details = { "Property validation failed: " .. tostring(item.property_check_error):gsub("%s+", " ") }
+	end
 	local function finish()
-		if not item.properties and not (item.status == "A" and not item.untracked) then
+		if
+			not (
+				item.properties
+				or item.property_only
+				or item.load_properties
+				or (item.status == "A" and not item.untracked)
+			)
+		then
 			return task:finish(result)
 		end
 		load_property_patch(task, snapshot, item, function(lines, err)
 			result.properties = lines
 			if err then
-				result.details = require("lazyvcs.util").split_text_lines("Properties unavailable: " .. err)
+				result.details = vim.list_extend(
+					result.details or {},
+					require("lazyvcs.util").split_text_lines("Properties unavailable: " .. tostring(err))
+				)
 			end
 			task:finish(result)
 		end)
+	end
+	if opts and opts.mode == "metadata" then
+		schedule(task, finish)
+		return task
 	end
 	if item.property_only then
 		load_property_patch(task, snapshot, item, function(lines, err)
@@ -309,9 +380,16 @@ function M.preview(snapshot, item, callback)
 		end)
 		return task
 	end
+	local left_options = common.decode_options(path)
+	local right_options = vim.deepcopy(left_options)
+	left_options.hint = nil
 	local function right()
+		if item.kind_after == "dir" then
+			result.right = { "Directory: " .. vim.fn.strtrans(item.relpath) }
+			return finish()
+		end
 		if item.status == "D" then
-			result.right = {}
+			common.decode_side(result, "right", "", { encoding = "utf-8" })
 			return finish()
 		end
 		common.read_file(task, path, function(data, err)
@@ -322,27 +400,28 @@ function M.preview(snapshot, item, callback)
 			if stat and stat.type == "link" then
 				data = "link " .. data
 			end
-			local lines, line_err = common.lines(data)
-			if not lines then
+			local decoded, line_err = common.decode_side(result, "right", data, right_options)
+			if not decoded then
 				return task:finish(nil, line_err)
 			end
-			result.right = lines
 			finish()
 		end)
 	end
-	if item.status == "A" or item.untracked then
-		result.left = {}
+	if item.kind_before == "dir" then
+		result.left = { "Directory: " .. vim.fn.strtrans(item.relpath) }
+		right()
+	elseif item.status == "A" or item.untracked then
+		common.decode_side(result, "left", "", { encoding = "utf-8" })
 		right()
 	else
 		command(task, snapshot, { "cat", "-r", snapshot.revision, url .. "@" .. snapshot.revision }, function(raw, err)
 			if not raw then
 				return task:finish(nil, err)
 			end
-			local lines, line_err = common.lines(raw)
-			if not lines then
+			local decoded, line_err = common.decode_side(result, "left", raw, left_options)
+			if not decoded then
 				return task:finish(nil, line_err)
 			end
-			result.left = lines
 			right()
 		end)
 	end

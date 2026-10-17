@@ -179,8 +179,8 @@ end
 ---@param task table
 ---@param snapshot table
 ---@param item table
----@param done fun(lines: string[]?, err: string?)
-function M.load_directory_patch(task, snapshot, item, done)
+---@param done fun(before: table?, after: table?, err: string?)
+function M.load_directory_maps(task, snapshot, item, done)
 	local path = snapshot.root .. "/" .. item.relpath
 	local url = require("lazyvcs.backends.svn_url").append_path(snapshot.url, item.relpath)
 	local function read(target, revision, callback)
@@ -203,22 +203,15 @@ function M.load_directory_patch(task, snapshot, item, done)
 			callback(properties, parse_err)
 		end, { output_limit_bytes = 16 * common.max_file_bytes })
 	end
-	local function finish(before, after)
-		local ok, lines, err = pcall(render, item.relpath, before, after)
-		if not ok then
-			return done(nil, "Could not render SVN properties")
-		end
-		done(lines, err)
-	end
 	local function working(before)
 		if item.status == "D" then
-			return finish(before, {})
+			return done(before, {})
 		end
 		read(path, nil, function(after, err)
 			if not after then
-				return done(nil, err)
+				return done(nil, nil, err)
 			end
-			finish(before, after)
+			done(before, after)
 		end)
 	end
 	if item.status == "A" then
@@ -226,11 +219,24 @@ function M.load_directory_patch(task, snapshot, item, done)
 	else
 		read(url, snapshot.revision, function(before, err)
 			if not before then
-				return done(nil, err)
+				return done(nil, nil, err)
 			end
 			working(before)
 		end)
 	end
+end
+
+function M.load_directory_patch(task, snapshot, item, done)
+	M.load_directory_maps(task, snapshot, item, function(before, after, err)
+		if not before or not after then
+			return done(nil, err)
+		end
+		local ok, lines, render_err = pcall(render, item.relpath, before, after)
+		if not ok then
+			return done(nil, "Could not render SVN properties")
+		end
+		done(lines, render_err)
+	end)
 end
 
 return M

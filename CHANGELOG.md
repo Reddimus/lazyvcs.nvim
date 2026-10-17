@@ -28,6 +28,15 @@ and this project adheres to
   overrides.
 - Cancel pending selection blame after further unsaved source edits.
 - Reject UCS-2 blame captures containing characters above U+FFFF.
+- Keep all unresolved Git conflict pairs classified as conflicts in the
+  changed-files picker.
+- Show SVN node replacements as one path with before and after node kinds.
+- Allow SVN property review when binary or oversized content has no text
+  preview.
+- Remove unchanged SVN directory-property rows after checking the pinned
+  revision; show failed validation explicitly.
+- Decode Compare snapshots using each source's encoding while preserving
+  original bytes for blame.
 
 ## [0.11.4] - 2026-10-16
 

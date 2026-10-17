@@ -13,11 +13,9 @@ function M.load(root, relpath, opts, callback)
 		if not bytes then
 			return task:finish(nil, err)
 		end
-		local attributes = {}
-		for path, name, value in bytes:gmatch("([^%z]*)%z([^%z]*)%z([^%z]*)%z") do
-			if path == relpath then
-				attributes[name] = value
-			end
+		local attributes, parse_err = require("lazyvcs.backends.git_attributes").parse(bytes, relpath)
+		if not attributes then
+			return task:finish(nil, parse_err)
 		end
 		task:finish(format.git_policy(opts, attributes))
 	end))

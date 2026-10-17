@@ -127,12 +127,19 @@ the GitHub release.
   on Neovim APIs. Native editable hunks use full documents, including
   empty-content and EOF state. Live diff bounds both raw and decoded content to
   1 MiB per side; signs also honor `signs.max_file_bytes`. Profile changes
-  invalidate decoded bases. Revalidate entry eligibility and the captured
-  context before native replacement.
-- `backends/svn_properties.lua` loads only the selected directory's properties
-  at the pinned revision and in the working copy. XML transport has an 8 MiB
-  stdout limit, separate from each decoded property map's 1 MiB limit and the
-  rendered patch's 1 MiB limit, including headers.
+  invalidate decoded bases. Compare previews reuse the decoder with independent
+  source profiles and retain original bytes for blame. Preview uses only the
+  encoding hint from an exactly matching loaded buffer, with 'fileencodings'
+  fallback when decoding fails. Both sides normalize CRLF to LF regardless of
+  editor fileformat options; lone CR characters remain content. Both profile
+  identities participate in snapshot reuse and review-position invalidation.
+  Revalidate entry eligibility and the captured context before native
+  replacement.
+- `backends/svn_properties.lua` loads shallow properties for directory discovery
+  candidates and selected previews at the pinned revision and in the working
+  copy. XML transport has an 8 MiB stdout limit, separate from each decoded
+  property map's 1 MiB limit and the rendered patch's 1 MiB limit, including
+  headers.
 - `source_control/jobs.lua` bounds and profiles repository/comparison commands.
 - Source-control summaries own branch, upstream, and remote status. Details own
   local rows and counts. Merge each completion into the current repository
@@ -172,7 +179,13 @@ the GitHub release.
   their slots and defers results while the picker router owns a borrowed buffer.
   Failed installations restore the preceding display or invalidate the session.
   Pane closure advances an epoch synchronously; asynchronous results must check
-  that epoch and all pane windows before installation.
+  that epoch and all pane windows before installation. Lists have unique
+  relpaths; SVN deletion/addition pairs coalesce into replacements with
+  before/after kinds. Preview results declare loaded text and metadata
+  capabilities. Navigation from a metadata-only result carries its jump intent
+  through text loading. Property markers reflect SVN summary flags; replacement
+  rows load properties independently of those markers. Metadata-only results
+  never enter the text cache or hunk computation.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_buffers.lua` owns snapshot identity, reload guards, and bounded
@@ -246,8 +259,18 @@ the GitHub release.
   spec is near LuaJIT's local-variable limit.
 
 Comparison discovery parses bounded command output in O(output bytes), sorts
-paths in O(files log files), and loads only the selected preview. Preview reads
-are bounded to 1 MiB. Untracked SVN directory traversal does not follow
+paths in O(files log files), and loads only the selected file content. SVN
+existing-directory property candidates add two serial, cancellable shallow
+property commands per candidate. Discovery therefore also costs O(inspected
+property bytes), with one pair of maps retained at a time. Equal maps suppress a
+candidate only after both reads succeed. Each Git text preview adds at most two
+cancellable `git check-attr` processes for `working-tree-encoding`, submitted in
+parallel. Empty sides skip their attribute read: added or untracked bases and
+deleted saved sides require none. Metadata previews skip both reads. A failed
+`check-attr --source` falls back to 'fileencodings' detection for the blob.
+`util.system_start` forces `LC_ALL=C` for Git children; `jobs.command` uses that
+launcher. The attribute fallback does not depend on the error text. Preview
+reads are bounded to 1 MiB. Untracked SVN directory traversal does not follow
 symlinks. Git rename detection has a limit of 1000 candidates. Repository
 resolution uses at most 512 cached directories and shares concurrent probes for
 one directory. Positive resolutions do not expire on cursor paths. Explicit
@@ -273,13 +296,16 @@ Comparison rows take O(displayed bytes) time and space per snapshot. Width
 changes use cached measurements; cursor movement does not load previews.
 Selection blame sends one bounded request chain, never a command per line. Git
 maps selections to historical ranges on older Git; SVN maps historical blame
-through decoded captured contents. Git receives file bytes with its attributes
-and filters active. Representations that may use a different Git line model
-require bounded full-file blame and record-count validation before selecting
-editor lines. Active Git clean filters also require ordered source-row
-validation, allowing only trailing horizontal whitespace and ident collapse as
-normalization. Ordinary selections and line history keep bounded `-L` requests.
-CI also runs native E2E with Ubuntu 22.04 Git.
+through decoded captured contents. Compare passes raw bytes and a decoded
+document for SVN saved snapshots. SVN blame reads BASE explicitly, decodes that
+source independently, and checks the record count before mapping it onto the
+captured preview. Git receives file bytes with its attributes and filters
+active. Representations that may use a different Git line model require bounded
+full-file blame and record-count validation before selecting editor lines.
+Active Git clean filters also require ordered source-row validation, allowing
+only trailing horizontal whitespace and ident collapse as normalization.
+Ordinary selections and line history keep bounded `-L` requests. CI also runs
+native E2E with Ubuntu 22.04 Git.
 
 Compare file navigation selects its destination in O(1) and loads only that
 preview. Review history stores O(visited paths) view metadata, prunes removed

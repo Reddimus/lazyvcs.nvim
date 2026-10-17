@@ -414,8 +414,15 @@ return function(ctx)
 					})
 					assert(exit, "stage process did not start")
 					vim.cmd("LazyVCS hunk revert")
-					vim.wait(50)
-					assert(resets == 0, "large-file delegated revert consumed unsettled index")
+					-- Backend discovery can outlast a fixed wait; a refresh before the revert holds would cancel it.
+					s.wait(function()
+						local state = s.signs.current_state(buf)
+						return state and (state.native_holds or 0) == 1 and #(state.base_waiters or {}) == 1
+					end, "large-file revert did not wait for staging", 15000)
+					assert(
+						resets == 0 and s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "changed",
+						"large-file delegated revert consumed unsettled index"
+					)
 					-- Refreshes while waiting must retain the command's settlement waiter.
 					s.signs.refresh(buf, false)
 					s.h.write_file(f.file, "one\nstaged\nthree\n")

@@ -12,7 +12,12 @@ function M.cancel(s)
 end
 
 function M.remember(s)
-	if not s.preview_result or not s.shown_item or not s.navigation then
+	if
+		not s.preview_result
+		or (s.preview_result.loaded and not s.preview_result.loaded.text)
+		or not s.shown_item
+		or not s.navigation
+	then
 		return
 	end
 	local views = s.text_views
@@ -29,6 +34,7 @@ function M.remember(s)
 			and { s.navigation.positions[s.leftwin], s.navigation.positions[s.rightwin] },
 		stamp = s.preview_stamp,
 		old_path = s.shown_item.old_path,
+		profile_key = s.preview_result.profile_key,
 	}
 end
 
@@ -65,7 +71,13 @@ end
 
 function M.load(s, result, item)
 	s.navigation = { base = {}, saved = {}, reviewed = false }
-	if item.kind == "dir" or item.property_only or result.right_label == "SUBMODULE / DIRECTORY" then
+	if
+		(result.loaded and not result.loaded.text)
+		or item.kind == "dir"
+		or item.kind_before == "dir"
+		or item.property_only
+		or result.right_label == "SUBMODULE / DIRECTORY"
+	then
 		return
 	end
 	local hunks = diff.compute_hunks(result.left, result.right)
