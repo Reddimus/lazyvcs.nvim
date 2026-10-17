@@ -245,45 +245,50 @@ return function(ctx)
 					file = assert(files.create("previous boot message"))
 					assert(file.record.platform == variant.platform, "platform simulation was bypassed")
 					assert((file.record.boot_id ~= nil) == (variant.name == "Linux_boot_id"))
-					for _, mode in ipairs({ "attached", "old_pidless", "recent_pidless" }) do
+					-- A distinct consumer PID shows which process each rule probes.
+					local consumer, editor = vim.fn.getpid() + 100000, file.record.editor_pid
+					for _, mode in ipairs({ "attached", "old_pidless", "recent_pidless", "editor_gone_pidless" }) do
 						local record = vim.deepcopy(file.record)
 						local boot = os.time() - vim.uv.uptime()
 						record.boot = boot - 172800
 						-- First use no boot ID pair, so ESRCH and age must each work alone.
 						record.boot_id, record.pid = nil, nil
 						if mode == "attached" then
-							record.pid = vim.fn.getpid()
+							record.pid = consumer
 						end
 						h.write_file(file.path, "previous boot message")
 						h.write_file(file.path .. ".owner", vim.json.encode(record))
 						local mtime = boot - (mode == "old_pidless" and 86410 or 10)
 						assert(vim.uv.fs_utime(file.path, mtime, mtime))
-						local probes = 0
+						local probed = {}
 						rawset(vim.uv, "kill", function(pid, signal)
-							probes = probes + 1
-							assert(pid == vim.fn.getpid() and signal == 0)
-							if mode == "attached" then
-								return nil, "ESRCH: previous boot consumer", "ESRCH"
+							assert(signal == 0)
+							probed[#probed + 1] = pid
+							if pid == consumer or mode == "editor_gone_pidless" then
+								return nil, "ESRCH: previous boot process", "ESRCH"
 							end
-							return true -- Keep the Windows creating editor alive.
+							return true -- The creating editor is still running.
 						end)
 						prune_scan()
+						local windows = variant.platform == "Windows_NT"
+						local released = mode == "attached"
+							or mode == "old_pidless"
+							or (mode == "editor_gone_pidless" and windows)
 						assert(
-							(vim.uv.fs_stat(file.path) == nil) == (mode ~= "recent_pidless"),
+							(vim.uv.fs_stat(file.path) == nil) == released,
 							variant.name .. "/" .. mode .. ": wrong previous-boot release"
 						)
+						local expected = mode == "attached" and { consumer }
+							or ((windows and mode ~= "old_pidless") and { editor } or {})
 						assert(
-							probes
-								== (
-									mode == "attached" and 1
-									or (variant.platform == "Windows_NT" and mode == "recent_pidless" and 1 or 0)
-								)
+							vim.deep_equal(probed, expected),
+							variant.name .. "/" .. mode .. ": probed " .. vim.inspect(probed)
 						)
 						if variant.name == "Linux_boot_id" then
 							-- Restore the real boot ID pair: the changed ID releases even
 							-- the recent PID-less record, without any liveness probe.
 							record.boot_id = "previous-boot"
-							if mode ~= "recent_pidless" then
+							if not vim.uv.fs_stat(file.path) then
 								h.write_file(file.path, "previous boot message")
 								assert(vim.uv.fs_utime(file.path, mtime, mtime))
 							end
