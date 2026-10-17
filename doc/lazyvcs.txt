@@ -491,13 +491,15 @@ Behavior:
   Truncation after that record does not imply a gitlink; an unusable first record
   refuses Discard because the ancestor check could not complete.
   Directory obstructions, nested repositories replacing regular files, Windows
-  junctions, special files, and unverifiable filesystem errors are refused.
-  Ordinary files, symlinks, and missing files are accepted. Submodule directory
-  targets require an exact stage-zero gitlink in the index. Staged restores,
-  including rename sources, also require a gitlink or an absent path in HEAD.
-  Directory targets are refused when HEAD contains a blob or tree. Discard
-  disables submodule recursion even when submodule.recurse is true, so pointer
-  restores preserve the populated checkout and its dirty files.
+  junctions, special files, and unverifiable filesystem errors are refused. In
+  SVN working copies on Windows, directory symlinks are refused too, because
+  Subversion cannot replace them and its failed revert leaves the working copy
+  locked. Ordinary files, other symlinks, and missing files are accepted.
+  Submodule directory targets require an exact stage-zero gitlink in the index.
+  Staged restores, including rename sources, also require a gitlink or an absent
+  path in HEAD. Directory targets are refused when HEAD contains a blob or tree.
+  Discard disables submodule recursion even when submodule.recurse is true, so
+  pointer restores preserve the populated checkout and its dirty files.
   Symlink targets and their children remain intact.
   Windows link classification passes the literal path through the PowerShell
   child's environment and runs asynchronously. These checks do not make Discard

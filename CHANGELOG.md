@@ -46,8 +46,10 @@ and this project adheres to
   them.
 - Preserve literal dollar signs in completed sidebar paths.
 - Preserve preferences when another editor atomically replaces their state file.
-- Refuse tracked-file Discard when a directory, nested repository or special
-  file obstructs a restore target, while still restoring submodule pointers.
+- Refuse tracked-file Discard when a directory, nested repository, Windows
+  junction or special file obstructs a restore target, while still restoring
+  submodule pointers. SVN on Windows also refuses directory symlinks, which
+  Subversion cannot replace.
 
 ## [0.11.4] - 2026-10-16
 

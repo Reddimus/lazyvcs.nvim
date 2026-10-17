@@ -377,15 +377,26 @@ function M.start(repo, args, opts, guards, on_exit)
 							)
 						end
 						if stat and stat.type == "link" and vim.fn.has("win32") == 1 then
-							-- libuv reports both junctions and symbolic links as links on Windows.
-							local script = "(Get-Item -Force -ErrorAction Stop -LiteralPath $env:LAZYVCS_LINK).LinkType"
+							-- libuv reports junctions and file and directory symbolic links as links on Windows.
+							local script = "$item = Get-Item -Force -ErrorAction Stop -LiteralPath $env:LAZYVCS_LINK; "
+								.. "'{0}|{1}' -f $item.LinkType, $item.PSIsContainer"
 							return spawn(
 								{ "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script },
 								function(result)
-									if util.trim(result.stdout) ~= "SymbolicLink" then
+									local kind, directory = util.trim(result.stdout):match("^(%a+)|(%a+)$")
+									if kind ~= "SymbolicLink" or (directory ~= "True" and directory ~= "False") then
 										return reject(
 											"Tracked Discard refuses junction or unknown link obstruction at "
 												.. target.relpath
+										)
+									end
+									if directory == "True" and repo.vcs == "svn" then
+										-- Subversion cannot replace a directory link on Windows; revert
+										-- fails and leaves the working copy locked.
+										return reject(
+											"Tracked Discard refuses directory link obstruction at "
+												.. target.relpath
+												.. "; Subversion cannot replace it on Windows"
 										)
 									end
 									check_next()

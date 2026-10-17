@@ -84,17 +84,68 @@ return function(ctx)
 		end
 	end
 	local function symlinks(vcs)
-		local f = vcs == "git" and h.make_git_fixture() or h.make_svn_fixture()
-		local target = h.tempdir()
-		directory(target)
-		local state, node = row(f, vcs, f.file)
-		assert(vim.uv.fs_unlink(f.file))
-		assert(vim.uv.fs_symlink(target, f.file, { dir = true }))
-		ops.revert_file(state, node)
-		finished(f.root)
-		assert(not session.get_repo_job(f.root), "file replaced by symlink could not be discarded")
+		local windows = vim.fn.has("win32") == 1
+		local function fixture()
+			local f = vcs == "git" and h.make_git_fixture() or h.make_svn_fixture()
+			local target = h.tempdir()
+			directory(target)
+			return f, target
+		end
+		local function discard(f, state, node)
+			local start, spawned = util.system_start, false
+			---@diagnostic disable-next-line: duplicate-set-field
+			util.system_start = function(args, ...)
+				if vim.tbl_contains(args, "restore") or vim.tbl_contains(args, "revert") then
+					spawned = true
+				end
+				return start(args, ...)
+			end
+			jobs.clear_history()
+			ops.revert_file(state, node)
+			finished(f.root)
+			util.system_start = start
+			return spawned
+		end
+		-- Replace a deleted tracked file with a link and discard it.
+		local function replaced(link)
+			local f, target = fixture()
+			local state, node = row(f, vcs, f.file)
+			assert(vim.uv.fs_unlink(f.file))
+			link(target, f.file)
+			local spawned = discard(f, state, node)
+			assert(vim.fn.readfile(target .. "/child")[1] == "precious", "symlink target was changed")
+			return f, spawned
+		end
+		local f, spawned = replaced(function(target, path)
+			assert(vim.uv.fs_symlink(target .. "/child", path))
+		end)
+		assert(spawned and not session.get_repo_job(f.root), "file replaced by file symlink could not be discarded")
 		assert(vim.uv.fs_lstat(f.file).type == "file")
-		assert(vim.fn.readfile(target .. "/child")[1] == "precious", "symlink target was changed")
+		f, spawned = replaced(function(target, path)
+			assert(vim.uv.fs_symlink(target, path, { dir = true }))
+		end)
+		if windows and vcs == "svn" then
+			-- Subversion cannot replace a directory link on Windows and would leave
+			-- the working copy locked.
+			assert(not spawned and session.get_repo_job(f.root), "Windows SVN directory link reached svn revert")
+			assert(vim.uv.fs_lstat(f.file).type == "link")
+		else
+			assert(spawned and not session.get_repo_job(f.root), "file replaced by symlink could not be discarded")
+			assert(vim.uv.fs_lstat(f.file).type == "file")
+		end
+		if windows then
+			-- Git restore deletes a junction target's contents.
+			f, spawned = replaced(function(target, path)
+				assert(vim.uv.fs_symlink(target, path, { junction = true }))
+			end)
+			assert(not spawned and session.get_repo_job(f.root), "Windows junction was accepted")
+			if vcs == "svn" then
+				-- Subversion checks svn:special files out as plain files on Windows.
+				return
+			end
+		end
+		local target
+		f, target = fixture()
 		assert(vim.uv.fs_unlink(f.file))
 		assert(vim.uv.fs_symlink(target, f.file, { dir = true }))
 		if vcs == "git" then
@@ -107,22 +158,11 @@ return function(ctx)
 		end
 		assert(vim.uv.fs_unlink(f.file))
 		h.write_file(f.file, "replacement\n")
-		state, node = row(f, vcs, f.file)
-		jobs.clear_history()
-		ops.revert_file(state, node)
-		finished(f.root)
+		local state, node = row(f, vcs, f.file)
+		assert(discard(f, state, node))
 		assert(not session.get_repo_job(f.root), "tracked symlink could not be discarded")
 		assert(vim.uv.fs_lstat(f.file).type == "link")
 		assert(vim.fn.readfile(target .. "/child")[1] == "precious", "tracked symlink target was changed")
-		if vim.fn.has("win32") == 1 then
-			assert(vim.uv.fs_unlink(f.file))
-			assert(vim.uv.fs_symlink(target, f.file, { junction = true }))
-			jobs.clear_history()
-			ops.revert_file(state, node)
-			finished(f.root)
-			assert(session.get_repo_job(f.root), "Windows junction was accepted")
-			assert(vim.fn.readfile(target .. "/child")[1] == "precious")
-		end
 	end
 	local function interrupted()
 		local starter = require("lazyvcs.source_control.mutation_start")
@@ -190,16 +230,27 @@ return function(ctx)
 	local function windows_links(link_name)
 		local has, lstat, start = vim.fn.has, vim.uv.fs_lstat, util.system_start
 		local ok, err = xpcall(function()
+			-- { PowerShell output, path, backend, accepted }
 			local cases = {
-				{ "Junction", "it's a link" },
-				{ "unknown", "it's a link" },
-				{ "SymbolicLink", "it's a link" },
+				{ "Junction|True", "it's a link", "git", false },
+				{ "Junction|True", "it's a link", "svn", false },
+				{ "unknown|False", "it's a link", "git", false },
+				{ "SymbolicLink", "it's a link", "git", false },
+				{ "SymbolicLink|maybe", "it's a link", "git", false },
+				{ "SymbolicLink|True|extra", "it's a link", "git", false },
+				{ "|True", "it's a link", "git", false },
+				{ "", "it's a link", "git", false },
+				{ "SymbolicLink|False", "it's a link", "git", true },
+				{ "SymbolicLink|True", "it's a link", "git", true },
+				{ "SymbolicLink|False", "it's a link", "svn", true },
+				{ "SymbolicLink|True", "it's a link", "svn", false },
 			}
 			if link_name then
-				cases = { { "SymbolicLink", link_name } }
+				cases = { { "SymbolicLink|False", link_name, "git", true } }
 			end
 			for _, case in ipairs(cases) do
-				local kind, path = case[1], "C:/repo/" .. case[2]
+				local output, path, vcs, accepted = case[1], "C:/repo/" .. case[2], case[3], case[4]
+				local label = vcs .. " " .. output
 				local checked, mutated, done, failure = false, false, false, nil
 				vim.fn.has = function(name)
 					return name == "win32" and 1 or has(name)
@@ -221,7 +272,7 @@ return function(ctx)
 								and opts.env.LAZYVCS_TEST == "inherited",
 							"PowerShell path must travel only through the child environment"
 						)
-						cb({ code = 0, stdout = kind .. "\n", stderr = "" })
+						cb({ code = 0, stdout = output .. "\r\n", stderr = "" })
 					else
 						mutated = true
 						cb({ code = 0, stdout = "", stderr = "" })
@@ -229,8 +280,8 @@ return function(ctx)
 					return {}
 				end
 				require("lazyvcs.source_control.mutation_start").start(
-					{ root = "C:/repo", vcs = "git" },
-					{ "git", "restore" },
+					{ root = "C:/repo", vcs = vcs },
+					vcs == "git" and { "git", "restore" } or { "svn", "revert" },
 					{ timeout = 5000, env = { LAZYVCS_TEST = "inherited" } },
 					{ tracked_discard = { { path = path, relpath = case[2] } } },
 					function(_, e)
@@ -239,9 +290,12 @@ return function(ctx)
 				)
 				wait(function()
 					return done
-				end, "Windows link check did not finish")
-				assert(checked and mutated == (kind == "SymbolicLink"), kind .. ": wrong Windows link classification")
-				assert((failure == nil) == mutated)
+				end, label .. ": Windows link check did not finish")
+				assert(checked and mutated == accepted, label .. ": wrong Windows link classification")
+				assert((failure == nil) == mutated, label .. ": " .. tostring(failure))
+				if output == "SymbolicLink|True" and vcs == "svn" then
+					assert(tostring(failure):find("directory link obstruction", 1, true), tostring(failure))
+				end
 			end
 		end, debug.traceback)
 		vim.fn.has, vim.uv.fs_lstat, util.system_start = has, lstat, start

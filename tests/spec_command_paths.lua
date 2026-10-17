@@ -3,6 +3,18 @@ return function(ctx)
 	local function complete(lead)
 		return require("lazyvcs.commands")._complete(lead, "LazyVCS sidebar open " .. lead)
 	end
+	-- Vim joins completed directories with backslashes on Windows unless
+	-- 'shellslash' is set; the sidebar completer always uses forward slashes.
+	local function vim_directories(lead)
+		local expected = vim.fn.getcompletion(lead, "dir", true)
+		if vim.fn.has("win32") == 1 then
+			expected = vim.tbl_map(function(path)
+				return (path:gsub("\\", "/"))
+			end, expected)
+		end
+		table.sort(expected)
+		return expected
+	end
 	local function directory_case(fn, unix_only)
 		return function()
 			if unix_only and vim.fn.has("win32") == 1 then
@@ -39,11 +51,16 @@ return function(ctx)
 				for _, lead in ipairs({ "", dir .. "/" }) do
 					for _, pattern in ipairs({ "skip/", "*/skip", "*/skip/*", "visible/", "*/visible/", "s*" }) do
 						vim.o.wildignore = pattern
-						local expected = vim.fn.getcompletion(lead, "dir", true)
-						table.sort(expected)
+						local expected, actual = vim_directories(lead), complete(lead)
 						assert(
-							vim.deep_equal(complete(lead), expected),
-							pattern .. ": wildignore differs from Vim for " .. lead
+							vim.deep_equal(actual, expected),
+							pattern
+								.. ": wildignore differs from Vim for "
+								.. lead
+								.. ": "
+								.. vim.inspect(actual)
+								.. " ~= "
+								.. vim.inspect(expected)
 						)
 					end
 				end
@@ -59,15 +76,20 @@ return function(ctx)
 						for _, fic in ipairs({ false, true }) do
 							for _, wic in ipairs({ false, true }) do
 								vim.o.fileignorecase, vim.o.wildignorecase = fic, wic
-								local expected = vim.fn.getcompletion(lead, "dir", true)
-								table.sort(expected)
+								local expected, actual = vim_directories(lead), complete(lead)
 								assert(
-									vim.deep_equal(complete(lead), expected),
+									vim.deep_equal(actual, expected),
 									pattern
 										.. ": completion differs with fileignorecase="
 										.. tostring(fic)
 										.. " wildignorecase="
 										.. tostring(wic)
+										.. " for "
+										.. lead
+										.. ": "
+										.. vim.inspect(actual)
+										.. " ~= "
+										.. vim.inspect(expected)
 								)
 							end
 						end

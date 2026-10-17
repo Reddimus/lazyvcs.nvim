@@ -98,24 +98,43 @@ assert(opened == 1 and closed == 1, "FIFO descriptor leaked")
 					{ changes_sort = "path" }, { changes_sort = "status", show_clean = true, hidden = { "repository" } }
 				local open, fstat, read, close = vim.uv.fs_open, vim.uv.fs_fstat, vim.uv.fs_read, vim.uv.fs_close
 				local opened, closed = 0, 0
-				local function replace(value)
+				local function replace(value, target_open)
 					local temp = path .. ".next"
 					h.write_file(temp, vim.json.encode({ version = 1, data = value }))
-					assert(vim.uv.fs_rename(temp, path))
+					local renamed, rename_err = vim.uv.fs_rename(temp, path)
+					local refusal = tostring(rename_err):match("^%u+")
+					if
+						not renamed
+						and target_open
+						and vim.fn.has("win32") == 1
+						and (refusal == "EPERM" or refusal == "EACCES" or refusal == "EBUSY")
+					then
+						-- Windows refuses to rename over a file with an open handle, so the
+						-- reader keeps the document it opened either way.
+						assert(vim.uv.fs_unlink(temp))
+						return
+					end
+					assert(renamed, rename_err)
 				end
 				local ok, err = xpcall(function()
 					for _, seam in ipairs({ "before", "after", "partial", "eof", "fstat", "read", "throw", "malformed" }) do
 						replace(first)
+						-- The reader protects fs_open with pcall; keep fixture failures visible.
+						local seam_err
+						local function during(fn, ...)
+							local done, failure = pcall(fn, ...)
+							seam_err = seam_err or (not done and failure or nil)
+						end
 						vim.uv.fs_open = function(name, ...)
 							if name == path and seam == "before" then
-								replace(second)
+								during(replace, second)
 							end
 							local fd, failure = open(name, ...)
 							if fd then
 								opened = opened + 1
 							end
 							if name == path and seam == "after" then
-								replace(second)
+								during(replace, second, true)
 							end
 							return fd, failure
 						end
@@ -145,6 +164,7 @@ assert(opened == 1 and closed == 1, "FIFO descriptor leaked")
 							h.write_file(path, "{bad")
 						end
 						local value = json.read(path)
+						assert(not seam_err, seam .. ": " .. tostring(seam_err))
 						local expected = seam == "before" and second
 							or ((seam == "after" or seam == "partial") and first or {})
 						assert(vim.deep_equal(value, expected), seam .. ": complete opened JSON document lost")
