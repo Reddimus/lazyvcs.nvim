@@ -1,5 +1,6 @@
 return function(ctx)
 	local h, p, wait = ctx.helpers, require("process_helpers"), ctx.wait_for
+	local pruning = require("commit_file_helpers")
 	local ops, util = require("lazyvcs.source_control.ops"), require("lazyvcs.util")
 	local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
 	local function prune(cache, cwd)
@@ -90,7 +91,7 @@ return function(ctx)
 			end, "settled commit message leaked")
 		end)
 	end
-	local function policy()
+	local function policy(platform)
 		local files = require("lazyvcs.source_control.commit_files")
 		local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
 		vim.fn.mkdir(dir, "p")
@@ -100,13 +101,12 @@ return function(ctx)
 			version = 1,
 			token = "policy",
 			boot = os.time() - vim.uv.uptime(),
-			platform = uname().sysname,
+			platform = platform,
 			pid = vim.fn.getpid(),
 		}
-		if record.platform == "Linux" then
-			local ns = assert(vim.uv.fs_stat("/proc/self/ns/pid"))
-			record.namespace = { dev = ns.dev, ino = ns.ino }
-			record.boot_id = table.concat(vim.fn.readfile("/proc/sys/kernel/random/boot_id"), "\n") .. "\n"
+		if platform == "Linux" then
+			record.namespace = { dev = 12, ino = 34 }
+			record.boot_id = "fixture-boot\n"
 		end
 		local function save(value, receipt)
 			h.write_file(path, "private message")
@@ -120,49 +120,33 @@ return function(ctx)
 			end
 		end
 		local function scan()
-			local marker = dir .. "/zzzz-policy.txt"
-			h.write_file(marker, "finished")
-			local old = os.time() - vim.uv.uptime() - 86410
-			vim.uv.fs_utime(marker, old, old)
-			files.prune()
-			assert(vim.uv.fs_stat(marker), "pruning blocked")
-			wait(function()
-				return not vim.uv.fs_stat(marker)
-			end, "pruning did not finish")
-			vim.wait(30)
+			pruning.scan(files.prune, wait)
 		end
 		local ok, err = xpcall(function()
 			save(record)
 			scan()
 			assert(vim.uv.fs_stat(path), "age alone released an owned message")
-			for _, platform in ipairs({ "Linux", "Darwin", "Windows_NT" }) do
-				for _, result in ipairs({ "alive", "ESRCH", "EPERM" }) do
-					local value = vim.deepcopy(record)
-					value.platform = platform
-					if platform == "Linux" and not value.namespace then
-						value.namespace = { dev = 1, ino = 2 }
+			for _, result in ipairs({ "alive", "ESRCH", "EPERM" }) do
+				rawset(vim.uv, "kill", function(pid, signal)
+					assert(pid == record.pid and signal == 0)
+					if result == "alive" then
+						return true
 					end
-					vim.uv.os_uname = function()
-						return { sysname = platform }
-					end
-					rawset(vim.uv, "kill", function(pid, signal)
-						assert(pid == record.pid and signal == 0)
-						if result == "alive" then
-							return true
-						end
-						return nil, result .. ": probe", result
-					end)
-					save(value)
-					scan()
-					local linux_scope = platform ~= "Linux" or record.platform == "Linux"
-					assert(
-						(vim.uv.fs_stat(path) == nil) == (result == "ESRCH" and linux_scope),
-						platform .. ": wrong liveness release"
-					)
-				end
+					return nil, result .. ": probe", result
+				end)
+				save(record)
+				scan()
+				assert((vim.uv.fs_stat(path) == nil) == (result == "ESRCH"), platform .. ": wrong liveness release")
 			end
-			vim.uv.os_uname, vim.uv.kill = uname, kill
-			for _, mode in ipairs({ "foreign", "unknown", "permission", "receipt", "wrong_receipt", "boot" }) do
+			for _, mode in ipairs({
+				"foreign",
+				"unknown",
+				"permission",
+				"receipt",
+				"wrong_receipt",
+				"boot",
+				"missing_boot_id",
+			}) do
 				local value = vim.deepcopy(record)
 				if mode == "foreign" and value.namespace then
 					value.namespace.ino = value.namespace.ino + 1
@@ -170,8 +154,11 @@ return function(ctx)
 				if mode == "unknown" or (mode == "foreign" and not value.namespace) then
 					value.pid = nil
 				end
-				if mode == "boot" then
+				if mode == "boot" or mode == "missing_boot_id" then
 					value.boot, value.boot_id, value.pid = value.boot - 100, "another boot", nil
+					if mode == "missing_boot_id" then
+						value.boot_id = nil
+					end
 				end
 				rawset(vim.uv, "kill", function()
 					error("unverifiable scope reached liveness probe")
@@ -202,8 +189,8 @@ return function(ctx)
 				)
 				scan()
 				assert(
-					(vim.uv.fs_stat(path) == nil) == (mode == "receipt" or mode == "boot"),
-					mode .. ": wrong ownership release"
+					(vim.uv.fs_stat(path) == nil) == (mode == "receipt" or (mode == "boot" and platform == "Linux")),
+					platform .. "/" .. mode .. ": wrong ownership release"
 				)
 			end
 			vim.uv.kill, vim.uv.fs_open = kill, open
@@ -226,44 +213,14 @@ return function(ctx)
 		assert(ok, err)
 	end
 
-	-- Model Linux scope explicitly so these cases also run on macOS and Windows.
 	local function linux_scope()
-		local stat, open = vim.uv.fs_stat, vim.uv.fs_open
-		local boot = h.tempdir() .. "/boot_id"
-		h.write_file(boot, "fixture-boot\n")
-		vim.uv.fs_stat = function(path, cb)
-			if path == "/proc/self/ns/pid" then
-				local value = { dev = 12, ino = 34 }
-				if cb then
-					vim.schedule(function()
-						cb(nil, value)
-					end)
-					return {}
-				end
-				return value
-			end
-			return stat(path, cb)
-		end
-		vim.uv.fs_open = function(path, ...)
-			return open(path == "/proc/sys/kernel/random/boot_id" and boot or path, ...)
-		end
-		return function()
-			vim.uv.fs_stat, vim.uv.fs_open = stat, open
-		end
+		return pruning.scope(h)
 	end
 
 	local function prune_scan()
-		local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
-		local marker = dir .. "/zzzz-review.txt"
-		h.write_file(marker, "barrier")
-		local old = os.time() - vim.uv.uptime() - 86410
-		assert(vim.uv.fs_utime(marker, old, old))
-		require("lazyvcs.source_control.commit_files").prune()
-		wait(function()
-			return not vim.uv.fs_stat(marker)
-		end, "pruning did not finish", 5000)
-		vim.wait(30)
+		pruning.scan(require("lazyvcs.source_control.commit_files").prune, wait)
 	end
+
 	local extra = {}
 	for _, mode in ipairs({ "missing", "unreadable", "malformed", "token", "platform", "version" }) do
 		extra[#extra + 1] = {
@@ -591,6 +548,7 @@ return function(ctx)
 		function()
 			local files = require("lazyvcs.source_control.commit_files")
 			local uname, kill = vim.uv.os_uname, vim.uv.kill
+			local restore_scope = linux_scope()
 			local ok, err = xpcall(function()
 				vim.uv.os_uname = function()
 					return { sysname = "Linux" }
@@ -630,6 +588,7 @@ return function(ctx)
 					end
 				end
 			end, debug.traceback)
+			restore_scope()
 			vim.uv.os_uname, vim.uv.kill = uname, kill
 			assert(ok, err)
 		end,
@@ -675,7 +634,19 @@ return function(ctx)
 	end
 
 	local cases = {
-		{ "test_source_control_commit_pruning_requires_ownership_evidence", policy },
+		{
+			"test_source_control_commit_pruning_requires_ownership_evidence",
+			function()
+				for _, platform in ipairs({ "Linux", "Darwin", "Windows_NT" }) do
+					local restore = pruning.scope(h, platform)
+					local ok, err = xpcall(function()
+						policy(platform)
+					end, debug.traceback)
+					restore()
+					assert(ok, err)
+				end
+			end,
+		},
 		{
 			"test_source_control_commit_pruning_preserves_active_message",
 			function()
@@ -693,5 +664,8 @@ return function(ctx)
 		},
 	}
 	vim.list_extend(cases, extra)
+	for _, case in ipairs(cases) do
+		case[2] = pruning.notified(case[2])
+	end
 	return cases
 end
