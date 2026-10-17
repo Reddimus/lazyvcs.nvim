@@ -465,9 +465,19 @@ when the commit process exits. Message length does not consume process argument
 space. Failed or cancelled commits preserve the draft. Sidebar Git commits store
 UTF-8 messages without changing repository configuration.
 
+Refresh restores previously loaded or loading expanded changes and preserves
+section and folder expansion. Enter on "Press <CR> to load changes" loads the
+changes without collapsing the repository.
+Repository actions refresh local rows in sibling sidebars across tabs. Sibling
+reconciliation reads local status; it does not request another remote check.
+SVN commits, updates, and switches discard shared incoming metadata until the
+next remote check. Reverting a file preserves that metadata.
+
+Generated sidebar buffers do not retain undo history.
 Sidebar windows disable native folding locally so expanded rows stay visible.
 Editor folding is preserved. Manual sidebar resizing survives rendering and
-reopening an existing sidebar window.
+reopening an existing sidebar window. Filenames and metadata reflow after
+resizing.
 
 Pressing `e` outside a commit-message row toggles sidebar auto-fit. The width is
 capped by `source_control.auto_expand_max_width_ratio`, then restored when `e`

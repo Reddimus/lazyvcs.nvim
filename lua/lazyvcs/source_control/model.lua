@@ -16,6 +16,11 @@ local remote_snapshots = require("lazyvcs.source_control.remote_refresh")
 ---@field details_loaded boolean
 ---@field loading_summary? boolean
 ---@field loading_details? boolean
+---@field refreshing_summary? boolean
+---@field draft? string
+---@field order? number
+---@field relpath? string
+---@field path_label? string
 ---@field remote_snapshot? table[]
 ---@field remote_local? {items: table[], version: number}
 ---@field remote_unknown? boolean
@@ -170,7 +175,11 @@ local function placeholder_status(repo, previous)
 	}
 end
 
-local function apply_repo_job(status)
+---@param status lazyvcs.RepositoryStatus
+---@return lazyvcs.RepositoryStatus
+local function present_status(status)
+	status = vim.tbl_extend("force", {}, status)
+	status.sync = vim.tbl_extend("force", {}, status.sync or {})
 	local job = runtime_state.get_repo_job(status.root)
 	if not job then
 		status.job = nil
@@ -198,11 +207,11 @@ function M.make_error(repo, previous, err, opts)
 	status.loading_details = false
 	status.loading_summary = false
 	status.refreshing_summary = false
-	return apply_repo_job(status)
+	return status
 end
 
 function M.make_placeholder(repo, previous)
-	return apply_repo_job(placeholder_status(repo, previous))
+	return placeholder_status(repo, previous)
 end
 
 local function scan_repos(root, max_depth, depth, repos, seen)
@@ -576,7 +585,7 @@ local function build_git_summary(repo, opts, status_stdout, fetch_error)
 	local previous = opts.previous or {}
 	local branch_info, counts = parse_git_summary(util.split_lines(status_stdout))
 
-	return apply_repo_job({
+	return {
 		root = repo.root,
 		name = repo.name,
 		vcs = repo.vcs,
@@ -600,7 +609,7 @@ local function build_git_summary(repo, opts, status_stdout, fetch_error)
 		details_loaded = previous.details_loaded or false,
 		loading_details = false,
 		loading_summary = false,
-	})
+	}
 end
 
 local function git_status_entries(raw)
@@ -785,7 +794,7 @@ local function build_git_detail(repo, opts, status_stdout, raw_stdout)
 	)
 	summary.details_loaded = true
 	summary.loading_details = false
-	return apply_repo_job(summary)
+	return summary
 end
 
 local function build_svn_sync(counts)
@@ -1000,7 +1009,7 @@ local function compose_status(status)
 	if status.error or status.remote_error or status.detail_error then
 		status.sync = vim.tbl_extend("force", status.sync, sync_badge("!", "error", "DiagnosticError"))
 	end
-	return apply_repo_job(status)
+	return status
 end
 
 ---@param current? lazyvcs.RepositoryStatus
@@ -1609,7 +1618,7 @@ local function make_repo_change_children(repo, source_opts, state)
 		return children
 	end
 
-	local message
+	local message, action
 	if disabled then
 		message = primary.label
 	elseif repo.loading_details then
@@ -1620,6 +1629,7 @@ local function make_repo_change_children(repo, source_opts, state)
 		message = "Working tree clean"
 	else
 		message = "Press <CR> to load changes"
+		action = "load_repo_details"
 	end
 
 	children[#children + 1] = {
@@ -1628,6 +1638,7 @@ local function make_repo_change_children(repo, source_opts, state)
 		name = message,
 		extra = {
 			repo_root = repo.root,
+			action = action,
 			disabled = disabled,
 			busy_label = primary.label,
 		},
@@ -1794,10 +1805,12 @@ function M.collect(state, opts)
 
 	local loaded = {}
 	for _, spec in ipairs(repo_specs) do
-		local status = apply_repo_job(repo_cache[spec.root] or placeholder_status(spec))
+		local status = present_status(repo_cache[spec.root] or placeholder_status(spec))
 		if status.loading_summary and status.summary_loaded then
 			status.refreshing_summary = true
-		elseif status.loading_summary then
+		elseif
+			status.loading_summary and not (status.vcs == "svn" and (status.remote_snapshot or status.remote_unknown))
+		then
 			status.sync = sync_badge("…", "loading", "LazyVcsBusy")
 			status.refreshing_summary = false
 		end
@@ -1836,7 +1849,6 @@ function M.collect(state, opts)
 
 	local repo_selector_nodes = {}
 	for _, repo in ipairs(loaded) do
-		repo_cache[repo.root] = repo
 		repo_selector_nodes[#repo_selector_nodes + 1] = make_repo_selector_node(repo, state)
 	end
 

@@ -142,7 +142,12 @@ the GitHub release.
   `source_control/remote_refresh.lua`, independently of sidebar lifetimes and
   admission deadlines. Version tokens reject superseded or invalidated results.
   Retention is bounded to 512 roots and 4 MiB; copying costs O(incoming bytes).
-  One native listener updates active states at publication and invalidation.
+  One native listener updates active states at publication and invalidation. Job
+  badges are presentation copies and never enter repository caches. Mutation
+  settlement reconciles every sidebar containing the root with local reads and
+  restores previously requested expanded details. On SVN cancellation, a pending
+  sibling local summary may merge before a fresh local read; its live
+  `remote_unknown` flag survives both completions.
 - Sidebar window ownership requires the window to display its sidebar buffer.
   Pending opens capture the originating editor and buffer, and reject replaced
   owners or destinations. `editor_target.lua` shares destination eligibility and

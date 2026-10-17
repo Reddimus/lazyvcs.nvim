@@ -14,6 +14,10 @@ and this project adheres to
 - Remove owned CopilotChat request files after cancellation, timeout, or
   failure.
 - Stop CopilotChat transports within the shared editor-exit cleanup deadlines.
+- Avoid retaining generated sidebar rows in undo history.
+- Reflow sidebar filenames and metadata after resizing.
+- Restore expanded changes after refresh and make load prompts actionable.
+- Refresh sibling sidebar rows and job badges after repository actions.
 
 ## [0.11.4] - 2026-10-16
 
