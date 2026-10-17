@@ -322,5 +322,42 @@ return function(ctx)
 			end)
 		end),
 	}
+	cases[#cases + 1] = {
+		"test_live_diff_resession_preexisting_diff_marker_folds_untouched",
+		guarded(function()
+			-- A window already in diff mode keeps its own foldmethod when the live diff opens.
+			local f = h.make_git_fixture()
+			local lines = {}
+			for i = 1, 60 do
+				lines[i] = "plain " .. i
+			end
+			lines[1], lines[3], lines[5], lines[6], lines[13], lines[14] =
+				"Q {{{", "q }}}", "P {{{", "C {{{", "c }}}", "p }}}"
+			h.write_file(f.file, table.concat(lines, "\n") .. "\n")
+			h.exec({ "git", "add", "." }, f.root)
+			h.exec({ "git", "commit", "-m", "markers" }, f.root)
+			lines[40] = "changed"
+			h.write_file(f.file, table.concat(lines, "\n") .. "\n")
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local buf, win = api.nvim_get_current_buf(), api.nvim_get_current_win()
+			vim.cmd.diffthis()
+			vim.wo[win].foldminlines, vim.wo[win].foldmarker = 0, "{{{,}}}"
+			vim.wo[win].foldmethod = "marker"
+			vim.cmd("normal! zR")
+			vim.cmd("1normal! zc")
+			vim.cmd("5normal! zc")
+			-- Merge the parent and child markers so a closed parent shares its range with an open child.
+			api.nvim_buf_set_lines(0, 12, 14, true, { "c }}} p }}}" })
+			api.nvim_buf_set_lines(0, 4, 6, true, { "P {{{ C {{{" })
+			assert(vim.fn.foldlevel(5) == 2 and vim.fn.foldclosed(5) == 5, "coincident marker fixture")
+			require("lazyvcs").open()
+			assert(vim.wait(15000, function()
+				return require("lazyvcs.state").get(buf) ~= nil
+			end))
+			local s = assert(require("lazyvcs.state").get(buf))
+			assert(s.editable_win == win and util.get_win_option(win, "foldmethod") == "marker")
+			intact(s, win)
+		end),
+	}
 	return cases
 end

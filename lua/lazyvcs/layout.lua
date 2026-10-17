@@ -353,7 +353,11 @@ function M.prepare_sessions_save(sessions, transaction)
 		local session = token.session
 		for win, record in pairs(token.windows) do
 			for name, value in pairs(session.editable_window_options) do
-				if record.options[name] == session.editable_applied_options[name] then
+				-- Reassigning an unchanged foldmethod recomputes non-diff folds.
+				if
+					record.options[name] == session.editable_applied_options[name]
+					and util.get_win_option(win, name) ~= value
+				then
 					util.set_win_option_noautocmd(win, name, value)
 				end
 			end
