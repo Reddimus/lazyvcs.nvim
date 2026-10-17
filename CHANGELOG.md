@@ -10,19 +10,21 @@ and this project adheres to
 
 ### Fixed
 
-- Reap CopilotChat transports after successful streaming commit generation.
-- Remove owned CopilotChat request files after cancellation, timeout, or
-  failure.
-- Stop CopilotChat transports within the shared editor-exit cleanup deadlines.
+- Stop leftover CopilotChat curl processes after successful commit message
+  generation.
+- Remove CopilotChat request files, which contain the diff, after cancellation,
+  timeout, or failure.
+- Stop running CopilotChat requests when Neovim exits.
 - Avoid retaining generated sidebar rows in undo history.
 - Reflow sidebar filenames and metadata after resizing.
 - Restore expanded changes after refresh and make load prompts actionable.
 - Refresh sibling sidebar rows and job badges after repository actions.
-- Revert exactly the confirmed hunk when gitsigns reports refined boundaries.
+- Revert only the confirmed hunk when gitsigns uses linematch.
 - Resume native signs after staging resolved conflicts or smaller replacement
   bases.
-- Generate large native previews without blocking the editor on histogram diff.
-- Support exact-limit files without a final newline.
+- Keep the editor responsive while previewing large native hunks.
+- Show signs for files exactly at `signs.max_file_bytes` without a final
+  newline.
 - Preserve significant saved whitespace edits in Compare blame on older Git.
 - Restore inherited source options when closing split blame and preserve user
   overrides.
@@ -33,22 +35,17 @@ and this project adheres to
 - Show SVN node replacements as one path with before and after node kinds.
 - Allow SVN property review when binary or oversized content has no text
   preview.
-- Remove unchanged SVN directory-property rows after checking the pinned
-  revision; show failed validation explicitly.
-- Decode Compare snapshots using each source's encoding while preserving
-  original bytes for blame.
+- Stop listing a clean SVN root as a property change in Compare.
+- Show Compare snapshots in their own encodings, including Git
+  `working-tree-encoding` files.
 - Preserve custom namespace global-only highlight links during diffs.
-- Leave non-diff folds untouched when Resession saves live diffs.
+- Keep closed nested folds when Resession saves live diffs.
 - Interpret fractional absolute base widths as columns.
 - Release read-only diff sessions when their panes display another buffer.
-- Refuse tracked-file Discard when a directory or special file occupies a
-  restore target.
 - Protect commit message files while active or preserved commands still need
   them.
 - Preserve literal dollar signs in completed sidebar paths.
 - Preserve preferences when another editor atomically replaces their state file.
-- Refuse tracked-file Discard when a directory or special file obstructs a
-  regular tracked file, while allowing tracked submodule pointer restores.
 - Refuse tracked-file Discard when a directory, nested repository or special
   file obstructs a restore target, while still restoring submodule pointers.
 
