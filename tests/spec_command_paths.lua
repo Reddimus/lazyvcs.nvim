@@ -6,6 +6,7 @@ return function(ctx)
 	local function directory_case(fn)
 		return function()
 			local cwd, ignore = vim.fn.getcwd(), vim.o.wildignore
+			local fic, wic = vim.o.fileignorecase, vim.o.wildignorecase
 			local dir = h.tempdir()
 			vim.fn.mkdir(dir .. "/.git")
 			vim.fn.mkdir(dir .. "/visible")
@@ -17,6 +18,7 @@ return function(ctx)
 			end, debug.traceback)
 			vim.cmd.cd(cwd)
 			vim.o.wildignore = ignore
+			vim.o.fileignorecase, vim.o.wildignorecase = fic, wic
 			assert(ok, err)
 		end
 	end
@@ -43,6 +45,63 @@ return function(ctx)
 					end
 				end
 			end),
+		},
+		{
+			"test_core_directory_completion_wildignore_uses_fileignorecase",
+			directory_case(function(dir)
+				vim.fn.mkdir(dir .. "/MiXeD")
+				for _, lead in ipairs({ "", dir .. "/" }) do
+					for _, pattern in ipairs({ "mixed/", "*/mixed", "*/mixed/", "*/mixed/*" }) do
+						vim.o.wildignore = pattern
+						for _, fic in ipairs({ false, true }) do
+							for _, wic in ipairs({ false, true }) do
+								vim.o.fileignorecase, vim.o.wildignorecase = fic, wic
+								local expected = vim.fn.getcompletion(lead, "dir", true)
+								table.sort(expected)
+								assert(
+									vim.deep_equal(complete(lead), expected),
+									pattern
+										.. ": completion differs with fileignorecase="
+										.. tostring(fic)
+										.. " wildignorecase="
+										.. tostring(wic)
+								)
+							end
+						end
+					end
+				end
+			end),
+		},
+		{
+			"test_core_named_home_expansion_ignores_wildignore",
+			directory_case(function()
+				local user = assert(vim.uv.os_get_passwd()).username
+				local home = vim.fn.expand("~" .. user, true)
+				assert(home ~= "" and home ~= "~" .. user, "current user home did not resolve")
+				vim.o.wildignore = "*"
+				assert(vim.fn.expand("~" .. user) == "", "wildignore fixture did not suppress expand")
+				assert(
+					util.expand_user_path("~" .. user .. "/project") == home:gsub("[/\\]$", "") .. "/project",
+					"wildignore rewrote named home to the filesystem root"
+				)
+			end),
+		},
+		{
+			"test_core_named_home_empty_expansion_preserves_argument",
+			function()
+				local expand = vim.fn.expand
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.expand = function(path, ...)
+					if path == "~lazyvcs_missing_user" then
+						return ""
+					end
+					return expand(path, ...)
+				end
+				local ok, result = pcall(util.expand_user_path, "~lazyvcs_missing_user/project")
+				vim.fn.expand = expand
+				assert(ok, result)
+				assert(result == "~lazyvcs_missing_user/project", "empty home rewrote path")
+			end,
 		},
 		{
 			"test_core_directory_completion_expands_named_home",

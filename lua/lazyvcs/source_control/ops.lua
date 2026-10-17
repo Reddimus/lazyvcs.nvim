@@ -1181,11 +1181,14 @@ function M.revert_file(state, node)
 		action = "discard_staged"
 		prompt = "Discard staged and working tree changes for " .. relpath .. " in " .. repo.name .. "?"
 		args = status:sub(1, 1) == "A" and { "git", "rm", "-f", "--", relpath }
-			or vim.list_extend({ "git", "restore", "--source=HEAD", "--staged", "--worktree", "--" }, relpaths)
+			or vim.list_extend(
+				{ "git", "restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--" },
+				relpaths
+			)
 	elseif repo.vcs == "git" then
 		action = "discard_unstaged"
 		prompt = "Discard unstaged changes for " .. relpath .. " in " .. repo.name .. "?"
-		args = { "git", "restore", "--worktree", "--", relpath }
+		args = { "git", "restore", "--no-recurse-submodules", "--worktree", "--", relpath }
 	elseif change_kind == "untracked" then
 		util.notify(
 			"Deleting unversioned SVN paths is not supported safely; delete the path explicitly.",

@@ -235,7 +235,158 @@ return function(ctx)
 		assert(ok, err)
 	end
 
+	local function submodule_discard(staged)
+		local source, f = h.make_git_fixture(), h.make_git_fixture()
+		h.exec({ "git", "restore", "sample.txt" }, source.root)
+		h.exec(
+			{ "git", "-c", "protocol.file.allow=always", "submodule", "add", "file://" .. source.root, "sub" },
+			f.root
+		)
+		h.exec({ "git", "add", "sample.txt" }, f.root)
+		h.exec({ "git", "commit", "-m", "add submodule" }, f.root)
+		local original = util.trim(h.exec({ "git", "rev-parse", "HEAD:sub" }, f.root))
+		h.exec({ "git", "config", "submodule.recurse", "true" }, f.root)
+		h.write_file(source.file, "next submodule commit\n")
+		h.exec({ "git", "commit", "-am", "advance" }, source.root)
+		h.exec({ "git", "-c", "protocol.file.allow=always", "fetch" }, f.root .. "/sub")
+		local next_commit = util.trim(h.exec({ "git", "rev-parse", "HEAD" }, source.root))
+		h.exec({ "git", "checkout", next_commit }, f.root .. "/sub")
+		h.write_file(f.root .. "/sub/sample.txt", "dirty submodule work\n")
+		jobs.clear_history()
+		if staged then
+			h.exec({ "git", "add", "sub" }, f.root)
+		end
+		local state, node = row(f, "git", f.root .. "/sub", staged and "staged" or "changes")
+		local start, ran = util.system_start, false
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.system_start = function(args, ...)
+			if args[2] == "restore" then
+				ran = true
+			end
+			return start(args, ...)
+		end
+		ops.revert_file(state, node)
+		finished(f.root)
+		util.system_start = start
+		assert(ran, "submodule discard did not run restore")
+		assert(not session.get_repo_job(f.root), "tracked submodule discard was refused")
+		assert(
+			vim.fn.readfile(f.root .. "/sub/sample.txt")[1] == "dirty submodule work",
+			"recursive restore overwrote dirty submodule file"
+		)
+		assert(util.trim(h.exec({ "git", "rev-parse", ":sub" }, f.root)) == original, "staged pointer was not restored")
+		assert(
+			util.trim(h.exec({ "git", "rev-parse", "HEAD" }, f.root .. "/sub")) == next_commit,
+			"submodule checkout changed"
+		)
+	end
+
+	local function embedded_replacement(kind)
+		local f, nested = h.make_git_fixture(), h.make_git_fixture()
+		local target = f.file
+		if kind == "tree" then
+			assert(vim.uv.fs_unlink(target))
+			vim.fn.mkdir(target)
+			h.write_file(target .. "/sample.txt", "committed outer child\n")
+			h.exec({ "git", "add", "-A" }, f.root)
+			h.exec({ "git", "commit", "-m", "tree" }, f.root)
+			h.exec({ "git", "rm", "-r", "--cached", "--", "sample.txt" }, f.root)
+			assert(vim.fn.delete(target, "rf") == 0)
+		else
+			assert(vim.uv.fs_unlink(target))
+		end
+		assert(vim.uv.fs_rename(nested.root, target))
+		h.write_file(target .. "/untracked", "untracked private work\n")
+		h.exec({ "git", "add", "-A", "--", "sample.txt" }, f.root)
+		local commit = h.exec({ "git", "rev-parse", "HEAD" }, target)
+		local before = h.exec({ "git", "status", "--porcelain" }, f.root)
+		local state, node
+		if kind == "blob" then
+			state, node = row(f, "git", target, "staged")
+		end
+		local start, ran = util.system_start, false
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.system_start = function(args, ...)
+			if args[2] == "restore" then
+				ran = true
+			end
+			return start(args, ...)
+		end
+		if kind == "blob" then
+			ops.revert_file(state, node)
+			finished(f.root)
+		else
+			-- Git reports a tree-to-gitlink replacement as separate add/delete rows.
+			-- Exercise the restore guard with the exact staged Discard command.
+			local done
+			require("lazyvcs.source_control.mutation_start").start(
+				{ root = f.root, vcs = "git" },
+				{
+					"git",
+					"restore",
+					"--no-recurse-submodules",
+					"--source=HEAD",
+					"--staged",
+					"--worktree",
+					"--",
+					"sample.txt",
+				},
+				{ cwd = f.root, timeout = 5000 },
+				{ tracked_discard = { { path = target, relpath = "sample.txt" } } },
+				function()
+					done = true
+				end
+			)
+			wait(function()
+				return done
+			end, "tree replacement discard did not settle")
+		end
+		util.system_start = start
+		assert(vim.uv.fs_stat(target .. "/.git"), "staged Discard deleted embedded .git")
+		assert(h.exec({ "git", "rev-parse", "HEAD" }, target) == commit, "embedded commit lost")
+		assert(vim.fn.readfile(target .. "/sample.txt")[2] == "changed", "embedded tracked file overwritten")
+		assert(vim.fn.readfile(target .. "/untracked")[1] == "untracked private work", "untracked work lost")
+		assert(not ran, "HEAD obstruction reached restore")
+		assert(h.exec({ "git", "status", "--porcelain" }, f.root) == before, "outer index changed")
+	end
+
+	local function rename_source_replacement()
+		local f, nested = h.make_git_fixture(), h.make_git_fixture()
+		h.exec({ "git", "restore", "sample.txt" }, f.root)
+		h.exec({ "git", "mv", "sample.txt", "renamed.txt" }, f.root)
+		local state, node = row(f, "git", f.root .. "/renamed.txt", "staged")
+		assert(vim.uv.fs_rename(nested.root, f.file))
+		h.write_file(f.file .. "/untracked", "private work\n")
+		-- A queued row can outlive an external index change at its rename source.
+		h.exec({ "git", "add", "--", "sample.txt" }, f.root)
+		local commit = h.exec({ "git", "rev-parse", "HEAD" }, f.file)
+		local before = h.exec({ "git", "status", "--porcelain" }, f.root)
+		ops.revert_file(state, node)
+		finished(f.root)
+		assert(vim.uv.fs_stat(f.file .. "/.git"), "rename source embedded repository deleted")
+		assert(h.exec({ "git", "rev-parse", "HEAD" }, f.file) == commit, "rename source commit lost")
+		assert(vim.fn.readfile(f.file .. "/sample.txt")[2] == "changed")
+		assert(vim.fn.readfile(f.file .. "/untracked")[1] == "private work")
+		assert(h.exec({ "git", "status", "--porcelain" }, f.root) == before, "rename source index changed")
+	end
+
 	return {
+		{
+			"test_source_control_staged_discard_preserves_embedded_rename_source",
+			guarded(rename_source_replacement),
+		},
+		{
+			"test_source_control_staged_discard_preserves_embedded_repo_over_blob",
+			guarded(function()
+				embedded_replacement("blob")
+			end),
+		},
+		{
+			"test_source_control_staged_discard_preserves_embedded_repo_over_tree",
+			guarded(function()
+				embedded_replacement("tree")
+			end),
+		},
 		{ "test_source_control_windows_link_paths_use_environment", guarded(windows_links) },
 		{
 			"test_source_control_windows_link_typographic_quote_uses_environment",
@@ -252,39 +403,13 @@ return function(ctx)
 		{
 			"test_source_control_tracked_discard_allows_submodules",
 			guarded(function()
-				local source, f = h.make_git_fixture(), h.make_git_fixture()
-				h.exec({ "git", "restore", "sample.txt" }, source.root)
-				h.exec(
-					{ "git", "-c", "protocol.file.allow=always", "submodule", "add", "file://" .. source.root, "sub" },
-					f.root
-				)
-				h.exec({ "git", "add", "sample.txt" }, f.root)
-				h.exec({ "git", "commit", "-m", "add submodule" }, f.root)
-				local original = util.trim(h.exec({ "git", "rev-parse", "HEAD:sub" }, f.root))
-				h.write_file(source.file, "next submodule commit\n")
-				h.exec({ "git", "commit", "-am", "advance" }, source.root)
-				h.exec({ "git", "-c", "protocol.file.allow=always", "fetch" }, f.root .. "/sub")
-				local next_commit = util.trim(h.exec({ "git", "rev-parse", "HEAD" }, source.root))
-				h.exec({ "git", "checkout", next_commit }, f.root .. "/sub")
-				for _, staged in ipairs({ false, true }) do
-					jobs.clear_history()
-					if staged then
-						h.exec({ "git", "add", "sub" }, f.root)
-					end
-					local state, node = row(f, "git", f.root .. "/sub", staged and "staged" or "changes")
-					ops.revert_file(state, node)
-					finished(f.root)
-					assert(not session.get_repo_job(f.root), "tracked submodule discard was refused")
-					assert(vim.fn.readfile(f.root .. "/sub/sample.txt")[1] == "next submodule commit")
-					assert(
-						util.trim(h.exec({ "git", "rev-parse", ":sub" }, f.root)) == original,
-						"staged pointer was not restored"
-					)
-					assert(
-						util.trim(h.exec({ "git", "rev-parse", "HEAD" }, f.root .. "/sub")) == next_commit,
-						"submodule checkout changed"
-					)
-				end
+				submodule_discard(false)
+			end),
+		},
+		{
+			"test_source_control_staged_discard_preserves_dirty_submodule",
+			guarded(function()
+				submodule_discard(true)
 			end),
 		},
 		{

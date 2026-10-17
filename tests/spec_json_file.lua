@@ -2,6 +2,68 @@ return function(ctx)
 	local h = ctx.helpers
 	return {
 		{
+			"test_source_control_json_read_follows_regular_symlink",
+			function()
+				local dir = h.tempdir()
+				local data = { show_clean = true, changes_sort = "path" }
+				h.write_file(dir .. "/target", vim.json.encode({ version = 1, data = data }))
+				assert(vim.uv.fs_symlink(dir .. "/target", dir .. "/state.json"))
+				assert(
+					vim.deep_equal(require("lazyvcs.json_file").read(dir .. "/state.json"), data),
+					"symlinked preferences loaded defaults"
+				)
+			end,
+		},
+		{
+			"test_source_control_json_read_rejects_fifo_swapped_before_open",
+			function()
+				if vim.fn.has("win32") == 1 then
+					error({ lazyvcs_skip = "POSIX FIFO fixture requires mkfifo" })
+				end
+				local dir = h.tempdir()
+				local path = dir .. "/state.json"
+				h.write_file(path, '{"version":1,"data":{"show_clean":true}}')
+				-- A child bounds the actual open: a regression must not hang this suite.
+				local script = dir .. "/read.lua"
+				h.write_file(
+					script,
+					string.format(
+						[[
+vim.opt.runtimepath:prepend(%q)
+local open = vim.uv.fs_open
+local opened, closed, flags_seen = 0, 0, false
+local close = vim.uv.fs_close
+vim.uv.fs_open = function(name, flags, ...)
+	if name == %q then
+		assert(vim.uv.fs_unlink(name))
+		assert(vim.system({"mkfifo", name}):wait().code == 0)
+		flags_seen = type(flags) == "number" and bit.band(flags, vim.uv.constants.O_NONBLOCK) ~= 0
+	end
+	local fd, err = open(name, flags, ...)
+	if fd then opened = opened + 1 end
+	return fd, err
+end
+vim.uv.fs_close = function(fd)
+	closed = closed + 1
+	return close(fd)
+end
+assert(vim.deep_equal(require("lazyvcs.json_file").read(%q), {}), "FIFO did not load defaults")
+assert(flags_seen, "FIFO open was not nonblocking")
+assert(opened == 1 and closed == 1, "FIFO descriptor leaked")
+]],
+						vim.fn.getcwd(),
+						path,
+						path
+					)
+				)
+				local result = vim.system(
+					{ vim.v.progpath, "--headless", "-u", "NONE", "-l", script },
+					{ text = true, timeout = 3000 }
+				):wait()
+				assert(result.code == 0, "FIFO preference read blocked or failed: " .. (result.stderr or ""))
+			end,
+		},
+		{
 			"test_source_control_json_read_rejects_fifo_before_open",
 			function()
 				if vim.fn.has("win32") == 1 then

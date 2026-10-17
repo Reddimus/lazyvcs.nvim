@@ -99,6 +99,8 @@ function M.create(message)
 	if persistent then
 		local record = scope()
 		record.version, record.token, record.pending = 1, token, true
+		-- The consumer inherits this editor's platform and PID namespace.
+		record.editor_pid = vim.fn.getpid()
 		file.record = record
 		local saved, err = write_record(path .. ".owner", record)
 		if not saved then
@@ -208,17 +210,13 @@ local function valid_record(record, current, token)
 		and (record.boot_id == nil or type(record.boot_id) == "string")
 end
 
-local function gone(record, current)
+local function gone(record, current, mtime)
 	local changed = math.abs(record.boot - current.boot) > 5
 	if record.boot_id and current.boot_id then
 		if record.boot_id ~= current.boot_id then
 			return true
 		end
 		changed = false
-	end
-	-- Wall-clock steps change the estimate even while the consumer is alive.
-	if changed and record.pid == nil then
-		return true
 	end
 	if current.platform == "Linux" then
 		if
@@ -227,8 +225,21 @@ local function gone(record, current)
 			or record.namespace.dev ~= current.namespace.dev
 			or record.namespace.ino ~= current.namespace.ino
 		then
-			return false
+			-- Without a boot ID pair, foreign namespaces can only use legacy age.
+			return changed and mtime < current.boot - 5
 		end
+	end
+	if record.pid == nil then
+		-- Pending records survive clock steps unless the creating editor is
+		-- provably gone in scope. Older PID-less records use the legacy rule.
+		local pid = record.editor_pid
+		if changed and type(pid) == "number" and pid > 0 and pid % 1 == 0 then
+			local alive, _, code = vim.uv.kill(pid, 0)
+			if not alive and code == "ESRCH" then
+				return true
+			end
+		end
+		return mtime < current.boot - 5
 	end
 	if type(record.pid) ~= "number" or record.pid <= 0 or record.pid % 1 ~= 0 then
 		return false
@@ -321,7 +332,7 @@ function M.prune()
 									local settled = decode(receipt)
 									if
 										(type(record.token) == "string" and settled and settled.token == record.token)
-										or gone(record, current)
+										or gone(record, current, stat.mtime.sec)
 									then
 										return remove(path)
 									end

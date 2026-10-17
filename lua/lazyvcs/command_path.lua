@@ -9,8 +9,8 @@ function M.expand(argument)
 	end)
 	local user = argument:match("^~([^/\\]*)")
 	if user and user:match("^[%w_.-]*$") then
-		local home = user == "" and vim.uv.os_homedir() or vim.fn.expand("~" .. user)
-		if home and home ~= "~" .. user then
+		local home = user == "" and vim.uv.os_homedir() or vim.fn.expand("~" .. user, true)
+		if home and home ~= "" and home ~= "~" .. user then
 			expanded = home:gsub("[/\\]$", "") .. expanded:sub(#user + 2)
 		end
 	end
@@ -43,7 +43,7 @@ function M.complete(lead)
 		if not candidate:match("^[/\\]") and not candidate:match("^%a:[/\\]") then
 			full = full:gsub("[/\\]$", "")
 		end
-		local case = vim.o.wildignorecase and "\\c" or "\\C"
+		local case = vim.o.fileignorecase and "\\c" or "\\C"
 		for _, pattern in ipairs(ignored) do
 			local regex = case .. pattern.regex
 			if

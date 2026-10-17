@@ -111,8 +111,10 @@ Expansion runs once: $$ becomes $, $NAME expands from the environment, and
 undefined names stay unchanged. Environment values are never expanded again.
 Backslashes and whitespace keep their existing command argument escaping.
 Directory completion hides dot names unless the prefix starts with a dot and
-respects 'wildignore' and 'wildignorecase'. Named home paths (~user/) and Windows
-drive-relative paths (C:) are supported.
+respects 'wildignore'. Ignore-pattern matching follows 'fileignorecase';
+prefix matching also honors 'wildignorecase'. Named home paths (~user/) expand
+independently of 'wildignore'. An unresolved home leaves the argument unchanged.
+Windows drive-relative paths (C:) are supported.
 
 ==============================================================================
 TOTAL COMPARISON                                           *lazyvcs-comparison*
@@ -477,9 +479,13 @@ Behavior:
 - Tracked-file Discard checks every restore target, including rename sources.
   Directory obstructions, nested repositories replacing regular files, Windows
   junctions, special files, and unverifiable filesystem errors are refused.
-  Ordinary files, symlinks, missing files, and tracked submodule directories are
-  accepted. Submodule Discard restores the index pointer without changing the
-  populated submodule checkout. Symlink targets and their children remain intact.
+  Ordinary files, symlinks, and missing files are accepted. Submodule directory
+  targets require an exact stage-zero gitlink in the index. Staged restores,
+  including rename sources, also require a gitlink or an absent path in HEAD.
+  Directory targets are refused when HEAD contains a blob or tree. Discard
+  disables submodule recursion even when submodule.recurse is true, so pointer
+  restores preserve the populated checkout and its dirty files.
+  Symlink targets and their children remain intact.
   Windows link classification passes the literal path through the PowerShell
   child's environment and runs asynchronously. These checks do not make Discard
   atomic against concurrent external filesystem replacements.
@@ -513,9 +519,10 @@ Behavior:
 - Sort (`S`) and clean visibility (`H`) update the current rows without
   reloading status or discarding known incoming changes.
 
-Preference reads reject non-regular paths before opening, then use the opened
-file's type, size, and contents. An atomic replacement by another editor does not
-truncate a valid document.
+Preference reads follow symlinks to regular files, then use the opened file's
+type, size, and contents. POSIX opens are nonblocking, so even a FIFO swapped in
+after the path check loads defaults without blocking the editor. An atomic
+replacement by another editor does not truncate a valid document.
 
 Sidebar preferences are stored per project in
 `stdpath('state')/lazyvcs/source_control/<sha256(normalized-root)>.json`.
@@ -867,20 +874,25 @@ Commit message files survive exit in stdpath("cache")/lazyvcs/commit, with a
 private directory (0700) and exclusive files (0600) on POSIX. Each file is removed
 when its command physically completes while Neovim runs. Logical cancellation
 keeps the message until the process exits. Each cached message has an ownership
-record with the consuming command's PID and boot time, derived from os.time()
-minus vim.uv.uptime(). Linux also records the kernel boot ID when readable and
-the PID namespace device and inode. Ownership records are synced before rename.
+record with the creating editor's PID and scope before the consuming command's
+PID is attached. Both processes share that scope. Boot time is derived from
+os.time() minus vim.uv.uptime(). Linux also records the kernel boot ID when
+readable and the PID namespace device and inode. Ownership records are synced
+before rename.
 
 Setup prunes asynchronously, reading one ownership record at a time. A changed
 Linux boot ID, a matching settlement receipt, or a signal-zero PID probe
 returning ESRCH releases a message. Matching Linux boot IDs take precedence over
-boot-time estimates. Without a boot ID pair, estimated boot times differing by
-more than five seconds release a message only if the consumer PID is missing or
-a same-scope probe returns ESRCH. A wall-clock step cannot release a live PID's
-message. Linux probes only within the recorded PID namespace; macOS and Windows
-probe the consuming PID. PID reuse delays cleanup. PID probes cannot release
-records on permission failures or across namespaces. A failed deletion after
-physical exit leaves a settlement receipt for later cleanup.
+boot-time estimates. A boot-estimate change alone never releases a message.
+For a PID-less record, including a failed PID attachment, an estimate change of
+more than five seconds requires a same-scope ESRCH probe of the creating editor.
+Otherwise PID-less records use the legacy mtime rule below. Linux probes only
+within the recorded PID namespace; macOS and Windows probe the recorded PID.
+Without a boot ID pair, a changed estimate and a foreign Linux namespace also
+use the legacy mtime rule. A wall-clock step can therefore release a message
+through that age fallback if its mtime appears to precede boot. PID reuse delays
+cleanup, and permission failures do not prove that a process exited. A failed
+deletion after physical exit leaves a settlement receipt for later cleanup.
 
 Messages with missing, unreadable, invalid, token-mismatched, or foreign-platform
 ownership records use the legacy rule: setup prunes them only if their mtime is

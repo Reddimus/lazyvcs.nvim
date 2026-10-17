@@ -5,12 +5,13 @@ local M = {}
 local VERSION = 1
 
 function M.read(path)
-	-- Reject FIFOs before open; descriptor metadata still owns the read size.
-	local inspected, stat = pcall(vim.uv.fs_lstat, path)
+	-- Follow preference symlinks; a nonblocking open also handles late FIFOs.
+	local inspected, stat = pcall(vim.uv.fs_stat, path)
 	if not inspected or not stat or stat.type ~= "file" then
 		return {}
 	end
-	local opened, fd = pcall(vim.uv.fs_open, path, "r", 420)
+	local flags = vim.fn.has("win32") == 1 and "r" or bit.bor(vim.uv.constants.O_RDONLY, vim.uv.constants.O_NONBLOCK)
+	local opened, fd = pcall(vim.uv.fs_open, path, flags, 420)
 	if not opened or not fd then
 		return {}
 	end

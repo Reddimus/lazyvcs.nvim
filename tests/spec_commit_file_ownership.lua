@@ -376,6 +376,118 @@ return function(ctx)
 		end,
 	}
 
+	for _, mode in ipairs({ "pending", "attach_failed", "legacy" }) do
+		extra[#extra + 1] = {
+			"test_source_control_commit_clock_step_protects_pidless_" .. mode,
+			function()
+				local files = require("lazyvcs.source_control.commit_files")
+				local uname, kill, rename = vim.uv.os_uname, vim.uv.kill, vim.uv.fs_rename
+				local ok, err = xpcall(function()
+					for _, platform in ipairs({ "Linux", "Darwin", "Windows_NT" }) do
+						vim.uv.os_uname = function()
+							return { sysname = platform }
+						end
+						for _, result in ipairs({ "alive", "EPERM", "ESRCH" }) do
+							local file = assert(files.create("pending message"))
+							if mode == "attach_failed" then
+								vim.uv.fs_rename = function()
+									return nil, "EIO: attach failed"
+								end
+								files.attach(file, { process = { pid = vim.fn.getpid() } })
+								vim.uv.fs_rename = rename
+							end
+							local record = vim.json.decode(table.concat(vim.fn.readfile(file.path .. ".owner"), "\n"))
+							assert(record.pid == nil, "fixture unexpectedly attached PID")
+							record.boot, record.boot_id = record.boot - 100, nil
+							if mode == "legacy" then
+								record.editor_pid = nil
+							end
+							h.write_file(file.path .. ".owner", vim.json.encode(record))
+							local probes = 0
+							rawset(vim.uv, "kill", function(pid, signal)
+								probes = probes + 1
+								assert(
+									mode ~= "legacy" and pid == vim.fn.getpid() and signal == 0,
+									"PID-less probe used the wrong owner"
+								)
+								if result == "alive" then
+									return true
+								end
+								return nil, result, result
+							end)
+							prune_scan()
+							local released = mode ~= "legacy" and result == "ESRCH"
+							assert(
+								(vim.uv.fs_stat(file.path) == nil) == released,
+								platform .. "/" .. result .. ": estimate alone released PID-less message"
+							)
+							if mode ~= "legacy" then
+								assert(
+									record.editor_pid == vim.fn.getpid() and probes == 1,
+									"pending ownership did not record/probe the creating editor"
+								)
+							end
+							if not released then
+								local old = os.time() - vim.uv.uptime() - 10
+								assert(vim.uv.fs_utime(file.path, old, old))
+								prune_scan()
+								assert(not vim.uv.fs_stat(file.path), "PID-less legacy age fallback leaked message")
+							end
+							files.release(file)
+						end
+					end
+				end, debug.traceback)
+				vim.uv.os_uname, vim.uv.kill, vim.uv.fs_rename = uname, kill, rename
+				assert(ok, err)
+			end,
+		}
+	end
+	extra[#extra + 1] = {
+		"test_source_control_commit_foreign_namespace_uses_legacy_boot_age",
+		function()
+			local files = require("lazyvcs.source_control.commit_files")
+			local uname, kill = vim.uv.os_uname, vim.uv.kill
+			local ok, err = xpcall(function()
+				vim.uv.os_uname = function()
+					return { sysname = "Linux" }
+				end
+				rawset(vim.uv, "kill", function()
+					error("foreign namespace PID was probed")
+				end)
+				for _, pending in ipairs({ false, true }) do
+					for _, changed in ipairs({ false, true }) do
+						for _, old in ipairs({ false, true }) do
+							local file = assert(files.create("foreign message"))
+							local record = vim.deepcopy(file.record)
+							record.pid = vim.fn.getpid()
+							if pending then
+								record.pid = nil
+							end
+							record.namespace = { dev = -1, ino = -1 }
+							record.boot_id = nil
+							if changed then
+								record.boot = record.boot - 100
+							end
+							h.write_file(file.path .. ".owner", vim.json.encode(record))
+							if old then
+								local age = os.time() - vim.uv.uptime() - 10
+								assert(vim.uv.fs_utime(file.path, age, age))
+							end
+							prune_scan()
+							assert(
+								(vim.uv.fs_stat(file.path) == nil) == (changed and old),
+								"foreign namespace did not apply changed-boot legacy age rule"
+							)
+							files.release(file)
+						end
+					end
+				end
+			end, debug.traceback)
+			vim.uv.os_uname, vim.uv.kill = uname, kill
+			assert(ok, err)
+		end,
+	}
+
 	local cases = {
 		{ "test_source_control_commit_pruning_requires_ownership_evidence", policy },
 		{

@@ -282,17 +282,51 @@ function M.start(repo, args, opts, guards, on_exit)
 				end
 				filesystem(vim.uv.fs_lstat, function(stat)
 					if stat and stat.type == "directory" and repo.vcs == "git" and args[2] == "restore" then
-						-- A populated gitlink is a directory, but restore does not remove it.
+						-- Validate the source restore will write, including rename sources.
+						local from_head = false
+						for _, argument in ipairs(args) do
+							if argument == "--" then
+								break
+							end
+							from_head = from_head or argument == "--source=HEAD"
+						end
+						local function is_gitlink(result, head)
+							if result.stdout_truncated then
+								return false
+							end
+							local output = result.stdout
+							if head and output == "" then
+								return true
+							end
+							local mode, kind, path
+							if head then
+								mode, kind, path = output:match("^(%d+) (%w+) %x+\t([^%z]+)%z$")
+							else
+								mode, kind, path = output:match("^(%d+) %x+ (%d)\t([^%z]+)%z$")
+							end
+							return mode == "160000" and kind == (head and "commit" or "0") and path == target.relpath
+						end
+						local function refuse()
+							return reject("Tracked Discard refuses directory obstruction at " .. target.relpath)
+						end
 						return spawn(
 							{ "git", "--literal-pathspecs", "ls-files", "--stage", "-z", "--", target.relpath },
 							function(result)
-								for entry in result.stdout:gmatch("[^%z]+") do
-									local mode, stage, path = entry:match("^(%d+) %x+ (%d)\t(.*)$")
-									if mode == "160000" and stage == "0" and path == target.relpath then
+								if not is_gitlink(result, false) then
+									return refuse()
+								end
+								if not from_head then
+									return check_next()
+								end
+								return spawn(
+									{ "git", "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", target.relpath },
+									function(tree)
+										if not is_gitlink(tree, true) then
+											return refuse()
+										end
 										return check_next()
 									end
-								end
-								return reject("Tracked Discard refuses directory obstruction at " .. target.relpath)
+								)
 							end
 						)
 					end
