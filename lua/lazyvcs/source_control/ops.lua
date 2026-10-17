@@ -293,6 +293,14 @@ local function set_repo_job(state, repo_root, job)
 	navigate_if_visible(state)
 end
 
+local function repository_changed(state, root, remote_refresh, cancelled)
+	if state.lazyvcs_repository_changed then
+		return state.lazyvcs_repository_changed(state, root, remote_refresh, cancelled)
+	end
+	invalidate_repo(state, root, remote_refresh)
+	navigate_if_visible(state)
+end
+
 local function finish_repo_job(state, repo, spec, result, err, raw)
 	local current = session_state.get_repo_job(repo.root)
 	if current and current.generation and current.generation ~= spec.generation then
@@ -300,8 +308,7 @@ local function finish_repo_job(state, repo, spec, result, err, raw)
 	end
 	if raw and raw.cancelled then
 		session_state.clear_repo_job(repo.root)
-		invalidate_repo(state, repo.root, false)
-		navigate_if_visible(state)
+		repository_changed(state, repo.root, false, true)
 		return
 	end
 	if err then
@@ -313,9 +320,8 @@ local function finish_repo_job(state, repo, spec, result, err, raw)
 			error = err,
 			timed_out = raw and raw.timed_out == true or false,
 		})
-		invalidate_repo(state, repo.root, false)
-		navigate_if_visible(state)
-		util.notify(err, vim.log.levels.ERROR)
+		repository_changed(state, repo.root, false)
+		util.notify(tostring(err):gsub("[\r\n]+", " "), vim.log.levels.ERROR)
 		return
 	end
 
@@ -332,8 +338,7 @@ local function finish_repo_job(state, repo, spec, result, err, raw)
 	if type(spec.after_success) == "function" then
 		spec.after_success(result)
 	end
-	invalidate_repo(state, repo.root, spec.remote_refresh)
-	navigate_if_visible(state)
+	repository_changed(state, repo.root, spec.remote_refresh)
 end
 
 local function start_repo_job(state, repo, spec)
@@ -815,7 +820,16 @@ local function start_git_integrate(repo, sync, on_done)
 	end)
 end
 
-local function ensure_repo_details(state, repo)
+function M.load_repo_details(state, root)
+	local repo = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[root]
+	if
+		not repo
+		or not window_exists(state)
+		or state.lazyvcs_target_owner_valid and not state.lazyvcs_target_owner_valid(state)
+		or repo_is_busy(root)
+	then
+		return repo
+	end
 	if repo.details_loaded then
 		return repo
 	end
@@ -826,7 +840,6 @@ local function ensure_repo_details(state, repo)
 	state.lazyvcs_loading_details = state.lazyvcs_loading_details or {}
 	state.lazyvcs_loading_details[repo.root] = true
 	state.lazyvcs_repo_cache[repo.root] = vim.tbl_extend("force", repo, { loading_details = true })
-	navigate_if_visible(state)
 
 	local generation = repo_generation(state, repo.root)
 	local bg = config.get().source_control.background
@@ -847,20 +860,34 @@ local function ensure_repo_details(state, repo)
 			priority = 10,
 		}, on_done)
 	end, function(detail, err)
-		if repo_generation(state, repo.root) ~= generation then
-			return
-		end
-		state.lazyvcs_loading_details[repo.root] = nil
-		if detail then
-			state.lazyvcs_repo_cache[repo.root] = model.merge_details(state.lazyvcs_repo_cache[repo.root], detail)
-		else
+		local ok, failure = pcall(function()
+			if repo_generation(state, repo.root) ~= generation then
+				return
+			end
+			state.lazyvcs_loading_details[repo.root] = nil
+			if state.lazyvcs_target_owner_valid and not state.lazyvcs_target_owner_valid(state) then
+				local cached = state.lazyvcs_repo_cache[repo.root]
+				if cached then
+					cached.loading_details = false
+					state.lazyvcs_restore_details = state.lazyvcs_restore_details or {}
+					state.lazyvcs_restore_details[repo.root] = true
+				end
+				return
+			end
+			if detail then
+				state.lazyvcs_repo_cache[repo.root] = model.merge_details(state.lazyvcs_repo_cache[repo.root], detail)
+			else
+				state.lazyvcs_repo_cache[repo.root] =
+					model.merge_details(state.lazyvcs_repo_cache[repo.root], model.make_error(repo, repo, err))
+				util.notify(tostring(err):gsub("[\r\n]+", " "), vim.log.levels.WARN)
+			end
 			state.lazyvcs_repo_cache[repo.root] =
-				model.merge_details(state.lazyvcs_repo_cache[repo.root], model.make_error(repo, repo, err))
-			util.notify(err, vim.log.levels.WARN)
+				model.with_remote_snapshot(state.lazyvcs_repo_cache[repo.root], remote_snapshots.read(repo.root))
+			navigate_if_visible(state)
+		end)
+		if not ok then
+			util.notify(tostring(failure):gsub("[\r\n]+", " "), vim.log.levels.ERROR)
 		end
-		state.lazyvcs_repo_cache[repo.root] =
-			model.with_remote_snapshot(state.lazyvcs_repo_cache[repo.root], remote_snapshots.read(repo.root))
-		navigate_if_visible(state)
 	end)
 	return state.lazyvcs_repo_cache[repo.root]
 end
@@ -1331,7 +1358,7 @@ function M.focus_repo(state, node, activate_changes)
 	end
 
 	if activate_changes and not repo_is_busy(repo.root) then
-		repo = ensure_repo_details(state, repo)
+		repo = M.load_repo_details(state, repo.root)
 		state.lazyvcs_force_expand = state.lazyvcs_force_expand or {}
 		state.lazyvcs_force_expand[model.repo_changes_id(repo.root)] = true
 	end
@@ -1371,21 +1398,26 @@ function M.open_repo(state, node, _toggle_node)
 	if not repo then
 		return
 	end
-	if repo_changes_expanded(state, node, repo) then
+	local expanded = repo_changes_expanded(state, node, repo)
+	local busy = repo_is_busy(repo.root)
+	if expanded and (repo.details_loaded or busy or repo.loading_details or repo.detail_error) then
 		return set_repo_changes_expanded(state, repo, false)
 	end
-	local busy = repo_is_busy(repo.root)
+	if not repo.details_loaded then
+		if busy then
+			return
+		end
+		if not expanded then
+			state.lazyvcs_force_expand = state.lazyvcs_force_expand or {}
+			state.lazyvcs_force_expand[model.repo_changes_id(repo.root)] = true
+		end
+		M.load_repo_details(state, repo.root)
+		return navigate(state)
+	end
 	if busy then
 		return
 	end
-	if repo.details_loaded then
-		return set_repo_changes_expanded(state, repo, true)
-	end
-
-	state.lazyvcs_force_expand = state.lazyvcs_force_expand or {}
-	state.lazyvcs_force_expand[model.repo_changes_id(repo.root)] = true
-	ensure_repo_details(state, repo)
-	navigate(state)
+	return set_repo_changes_expanded(state, repo, true)
 end
 
 local function repo_actions(repo)

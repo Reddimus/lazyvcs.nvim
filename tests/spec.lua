@@ -2571,7 +2571,7 @@ local function test_source_control_open_repo_recreates_force_expand_after_interm
 	model.load_repo_details_async = previous_load
 end
 
-local function test_source_control_open_repo_collapses_expanded_stale_node_first()
+local function test_source_control_open_repo_loads_expanded_stale_node()
 	local ops = require("lazyvcs.source_control.ops")
 	local model = require("lazyvcs.source_control.model")
 	local repo = {
@@ -2615,9 +2615,9 @@ local function test_source_control_open_repo_collapses_expanded_stale_node_first
 
 	ops.open_repo(state, node)
 
-	eq(state.lazyvcs_expanded[model.repo_changes_id(repo.root)], false)
-	eq(state.lazyvcs_force_expand[model.repo_changes_id(repo.root)], nil)
-	eq(loaded, false)
+	eq(state.lazyvcs_expanded[model.repo_changes_id(repo.root)], true)
+	eq(state.lazyvcs_force_expand[model.repo_changes_id(repo.root)], true)
+	eq(loaded, true)
 
 	model.load_repo_details_async = previous_load
 end
@@ -6991,8 +6991,8 @@ local cases = {
 		test_source_control_open_repo_recreates_force_expand_after_intermediate_navigate,
 	},
 	{
-		"test_source_control_open_repo_collapses_expanded_stale_node_first",
-		test_source_control_open_repo_collapses_expanded_stale_node_first,
+		"test_source_control_open_repo_loads_expanded_stale_node",
+		test_source_control_open_repo_loads_expanded_stale_node,
 	},
 	{
 		"test_source_control_open_repo_expands_loaded_collapsed_node",
@@ -7173,6 +7173,9 @@ vim.list_extend(cases, require("spec_commit_messages")({ helpers = helpers, wait
 vim.list_extend(cases, require("spec_ai_drafts")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_ai_context")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_switch_refs")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_source_control_geometry")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_source_control_reload")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_source_control_coherence")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_source_control_refresh")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_source_control_sidebar")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_persistence")({ helpers = helpers, wait_for = wait_for }))
