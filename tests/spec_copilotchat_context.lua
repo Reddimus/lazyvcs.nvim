@@ -19,6 +19,8 @@ return function(ctx)
 		package.loaded["plenary.job"] = {
 			new = function() end,
 			shutdown = function() end,
+			_shutdown = function() end,
+			_stop = function() end,
 			add_on_exit_callback = function() end,
 		}
 		local chat = {

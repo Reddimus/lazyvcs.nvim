@@ -1,47 +1,14 @@
+local runtime = require("lazyvcs.process_runtime")
+
 local M = {}
 local scopes = setmetatable({}, { __mode = "k" })
 local installed = setmetatable({}, { __mode = "k" })
-local pending_scope
-
-local function terminate(job)
-	local handle = job.handle
-	if job.is_shutdown or not handle or handle:is_closing() then
-		return
-	end
-	local exited = false
-	local on_exit = job._user_on_exit
-	if on_exit then
-		job._user_on_exit = function(self, code, signal)
-			exited = true
-			-- A signal-only exit has code 0 in libuv. Plenary curl checks only
-			-- the code, so route it to on_error instead of parsing missing output.
-			if code == 0 and signal and signal ~= 0 then
-				code = 128 + signal
-			end
-			return on_exit(self, code, signal)
-		end
-	end
-	local timer = assert(vim.uv.new_timer())
-	local function close_timer()
-		if not timer:is_closing() then
-			timer:stop()
-			timer:close()
-		end
-	end
-	job:add_on_exit_callback(close_timer)
-	-- Keep the process handle open so libuv reaps the child before plenary's
-	-- spawn exit callback shuts down the Job. Job:shutdown closes it too early.
-	pcall(handle.kill, handle, 15)
-	timer:start(2000, 0, function()
-		close_timer()
-		-- Plenary's exit chain can stop early if a callback throws; never signal a reaped pid.
-		if not exited and not job.is_shutdown and not handle:is_closing() and handle:is_active() then
-			pcall(handle.kill, handle, 9)
-		end
-	end)
-end
+local pending_scope, pending_files
 
 function M.new_scope()
+	if runtime.is_shutting_down() then
+		return nil
+	end
 	local ok_curl, curl = pcall(require, "plenary.curl")
 	local ok_job, Job = pcall(require, "plenary.job")
 	local ok_chat, chat_curl = pcall(require, "CopilotChat.utils.curl")
@@ -54,6 +21,8 @@ function M.new_scope()
 		or type(curl) ~= "table"
 		or type(Job) ~= "table"
 		or type(Job.shutdown) ~= "function"
+		or type(Job._shutdown) ~= "function"
+		or type(Job._stop) ~= "function"
 		or type(Job.add_on_exit_callback) ~= "function"
 		or type(Job.new) ~= "function"
 		or type(curl.get) ~= "function"
@@ -71,15 +40,20 @@ function M.new_scope()
 			local original = curl[name]
 			if type(original) == "function" then
 				curl[name] = function(url, opts)
-					local scope = pending_scope
-					pending_scope = nil
+					local scope, files = pending_scope, pending_files
+					pending_scope, pending_files = nil, nil
+					if files then
+						files:adopt(opts)
+					end
+					if scope and runtime.is_shutting_down() then
+						error("CopilotChat transport is shutting down", 0)
+					end
 					local result = original(url, opts)
 					if scope and type(result) == "table" and type(result.shutdown) == "function" then
+						local owned = require("lazyvcs.source_control.copilotchat_job").adopt(result, scope, files)
+						files.attached = true
 						if scope.terminal then
-							-- Let the normal error callback resume CopilotChat, even for late leaves.
-							terminate(result)
-						else
-							scope.jobs[result] = true
+							owned:stop("cancelled")
 						end
 					end
 					return result
@@ -95,10 +69,24 @@ function M.new_scope()
 			-- the handoff synchronous and clears it even if the leaf throws before
 			-- reaching curl (for example, while serializing a request body).
 			local invoke = async.wrap(function(scope, url, opts, callback)
-				pending_scope = scope
+				local files = require("lazyvcs.source_control.copilotchat_files").new()
+				local tmpname, tempname = os.tmpname, vim.fn.tempname
+				---@diagnostic disable-next-line: duplicate-set-field
+				os.tmpname = function()
+					return files:record(tmpname())
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.fn.tempname = function()
+					return files:record(tempname())
+				end
+				pending_scope, pending_files = scope, files
 				local ok, err = pcall(original, url, opts, callback)
-				pending_scope = nil
+				pending_scope, pending_files = nil, nil
+				os.tmpname, vim.fn.tempname = tmpname, tempname
 				if not ok then
+					if not files.attached then
+						files:release()
+					end
 					callback(nil, err)
 				end
 			end, 4)
@@ -132,15 +120,12 @@ function M.new_scope()
 	end
 	function scope:cancel()
 		self.terminal = true
-		local jobs = self.jobs
-		self.jobs = {}
-		for job in pairs(jobs) do
-			terminate(job)
+		for _, owned in pairs(self.jobs) do
+			owned:stop("cancelled")
 		end
 	end
 	function scope:close()
-		self.terminal = true
-		self.jobs = {}
+		self:cancel()
 	end
 	return scope
 end
