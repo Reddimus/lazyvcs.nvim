@@ -226,6 +226,32 @@ return function(ctx)
 		assert(ok, err)
 	end
 
+	-- Model Linux scope explicitly so these cases also run on macOS and Windows.
+	local function linux_scope()
+		local stat, open = vim.uv.fs_stat, vim.uv.fs_open
+		local boot = h.tempdir() .. "/boot_id"
+		h.write_file(boot, "fixture-boot\n")
+		vim.uv.fs_stat = function(path, cb)
+			if path == "/proc/self/ns/pid" then
+				local value = { dev = 12, ino = 34 }
+				if cb then
+					vim.schedule(function()
+						cb(nil, value)
+					end)
+					return {}
+				end
+				return value
+			end
+			return stat(path, cb)
+		end
+		vim.uv.fs_open = function(path, ...)
+			return open(path == "/proc/sys/kernel/random/boot_id" and boot or path, ...)
+		end
+		return function()
+			vim.uv.fs_stat, vim.uv.fs_open = stat, open
+		end
+	end
+
 	local function prune_scan()
 		local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
 		local marker = dir .. "/zzzz-review.txt"
@@ -319,22 +345,24 @@ return function(ctx)
 		function()
 			local files = require("lazyvcs.source_control.commit_files")
 			local uname, kill = vim.uv.os_uname, vim.uv.kill
+			local restore_scope = linux_scope()
 			local ok, err = xpcall(function()
 				for _, platform in ipairs({ "Linux", "Darwin", "Windows_NT" }) do
+					vim.uv.os_uname = function()
+						return { sysname = platform }
+					end
 					local file = assert(files.create("live message"))
 					files.attach(file, { process = { pid = vim.fn.getpid() } })
 					local record = vim.deepcopy(file.record)
 					record.boot, record.boot_id, record.platform = record.boot - 100, nil, platform
 					h.write_file(file.path .. ".owner", vim.json.encode(record))
-					vim.uv.os_uname = function()
-						return { sysname = platform }
-					end
 					prune_scan()
 					assert(vim.uv.fs_stat(file.path), platform .. ": clock step deleted a live consumer message")
 					files.release(file)
 					vim.uv.os_uname = uname
 				end
 			end, debug.traceback)
+			restore_scope()
 			vim.uv.os_uname, vim.uv.kill = uname, kill
 			assert(ok, err)
 		end,
@@ -382,6 +410,7 @@ return function(ctx)
 			function()
 				local files = require("lazyvcs.source_control.commit_files")
 				local uname, kill, rename = vim.uv.os_uname, vim.uv.kill, vim.uv.fs_rename
+				local restore_scope = linux_scope()
 				local ok, err = xpcall(function()
 					for _, platform in ipairs({ "Linux", "Darwin", "Windows_NT" }) do
 						vim.uv.os_uname = function()
@@ -416,32 +445,90 @@ return function(ctx)
 								return nil, result, result
 							end)
 							prune_scan()
-							local released = mode ~= "legacy" and result == "ESRCH"
+							local released = mode ~= "legacy" and platform == "Windows_NT" and result == "ESRCH"
 							assert(
 								(vim.uv.fs_stat(file.path) == nil) == released,
 								platform .. "/" .. result .. ": estimate alone released PID-less message"
 							)
-							if mode ~= "legacy" then
-								assert(
-									record.editor_pid == vim.fn.getpid() and probes == 1,
-									"pending ownership did not record/probe the creating editor"
-								)
-							end
 							if not released then
 								local old = os.time() - vim.uv.uptime() - 10
 								assert(vim.uv.fs_utime(file.path, old, old))
 								prune_scan()
-								assert(not vim.uv.fs_stat(file.path), "PID-less legacy age fallback leaked message")
+								assert(
+									(vim.uv.fs_stat(file.path) == nil) == (mode == "legacy"),
+									platform .. ": old mtime released a PID-less editor record"
+								)
+								if mode ~= "legacy" then
+									h.write_file(file.path .. ".settled", vim.json.encode({ token = file.token }))
+									prune_scan()
+									assert(not vim.uv.fs_stat(file.path), "settlement did not release PID-less record")
+								end
+							end
+							if mode ~= "legacy" then
+								assert(
+									record.editor_pid == vim.fn.getpid()
+										and probes == (platform == "Windows_NT" and (released and 1 or 2) or 0),
+									"pending ownership did not record/probe the creating editor"
+								)
 							end
 							files.release(file)
 						end
 					end
 				end, debug.traceback)
+				restore_scope()
 				vim.uv.os_uname, vim.uv.kill, vim.uv.fs_rename = uname, kill, rename
 				assert(ok, err)
 			end,
 		}
 	end
+	for _, mode in ipairs({ "pending", "attach_failed" }) do
+		extra[#extra + 1] = {
+			"test_source_control_commit_matching_boot_id_protects_pidless_" .. mode,
+			function()
+				local files = require("lazyvcs.source_control.commit_files")
+				local uname, kill, rename = vim.uv.os_uname, vim.uv.kill, vim.uv.fs_rename
+				local restore_scope = linux_scope()
+				local ok, err = xpcall(function()
+					vim.uv.os_uname = function()
+						return { sysname = "Linux" }
+					end
+					rawset(vim.uv, "kill", function()
+						error("Linux PID-less editor record reached a PID probe")
+					end)
+					for _, foreign in ipairs({ false, true }) do
+						local file = assert(files.create("private pending message"))
+						if mode == "attach_failed" then
+							vim.uv.fs_rename = function()
+								return nil, "EIO: attach failed"
+							end
+							files.attach(file, { process = { pid = vim.fn.getpid() } })
+							vim.uv.fs_rename = rename
+						end
+						local record = vim.json.decode(table.concat(vim.fn.readfile(file.path .. ".owner"), "\n"))
+						assert(record.boot_id == "fixture-boot\n" and record.pid == nil)
+						record.boot = record.boot - 100
+						if foreign then
+							record.namespace.ino = -1
+						end
+						h.write_file(file.path .. ".owner", vim.json.encode(record))
+						local old = os.time() - vim.uv.uptime() - 10
+						assert(vim.uv.fs_utime(file.path, old, old))
+						prune_scan()
+						assert(vim.uv.fs_stat(file.path), "matching boot IDs released PID-less editor record")
+						record.boot_id = "previous-boot"
+						h.write_file(file.path .. ".owner", vim.json.encode(record))
+						prune_scan()
+						assert(not vim.uv.fs_stat(file.path), "reboot did not release PID-less editor record")
+						files.release(file)
+					end
+				end, debug.traceback)
+				restore_scope()
+				vim.uv.os_uname, vim.uv.kill, vim.uv.fs_rename = uname, kill, rename
+				assert(ok, err)
+			end,
+		}
+	end
+
 	extra[#extra + 1] = {
 		"test_source_control_commit_foreign_namespace_uses_legacy_boot_age",
 		function()
@@ -454,14 +541,17 @@ return function(ctx)
 				rawset(vim.uv, "kill", function()
 					error("foreign namespace PID was probed")
 				end)
-				for _, pending in ipairs({ false, true }) do
+				for _, mode in ipairs({ "attached", "pending", "legacy" }) do
 					for _, changed in ipairs({ false, true }) do
 						for _, old in ipairs({ false, true }) do
 							local file = assert(files.create("foreign message"))
 							local record = vim.deepcopy(file.record)
 							record.pid = vim.fn.getpid()
-							if pending then
+							if mode ~= "attached" then
 								record.pid = nil
+							end
+							if mode == "legacy" then
+								record.editor_pid = nil
 							end
 							record.namespace = { dev = -1, ino = -1 }
 							record.boot_id = nil
@@ -475,7 +565,7 @@ return function(ctx)
 							end
 							prune_scan()
 							assert(
-								(vim.uv.fs_stat(file.path) == nil) == (changed and old),
+								(vim.uv.fs_stat(file.path) == nil) == (changed and old and mode ~= "pending"),
 								"foreign namespace did not apply changed-boot legacy age rule"
 							)
 							files.release(file)

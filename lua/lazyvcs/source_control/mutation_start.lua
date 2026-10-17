@@ -280,79 +280,137 @@ function M.start(repo, args, opts, guards, on_exit)
 						finish(result, nil, result)
 					end, true)
 				end
-				filesystem(vim.uv.fs_lstat, function(stat)
-					if stat and stat.type == "directory" and repo.vcs == "git" and args[2] == "restore" then
-						-- Validate the source restore will write, including rename sources.
-						local from_head = false
-						for _, argument in ipairs(args) do
-							if argument == "--" then
-								break
+				local function check_target()
+					filesystem(vim.uv.fs_lstat, function(stat)
+						if stat and stat.type == "directory" and repo.vcs == "git" and args[2] == "restore" then
+							-- Validate the source restore will write, including rename sources.
+							local from_head = false
+							for _, argument in ipairs(args) do
+								if argument == "--" then
+									break
+								end
+								from_head = from_head or argument == "--source=HEAD"
 							end
-							from_head = from_head or argument == "--source=HEAD"
+							local function is_gitlink(result, head)
+								if result.stdout_truncated then
+									return false
+								end
+								local output = result.stdout
+								if head and output == "" then
+									return true
+								end
+								local mode, kind, path
+								if head then
+									mode, kind, path = output:match("^(%d+) (%w+) %x+\t([^%z]+)%z$")
+								else
+									mode, kind, path = output:match("^(%d+) %x+ (%d)\t([^%z]+)%z$")
+								end
+								return mode == "160000"
+									and kind == (head and "commit" or "0")
+									and path == target.relpath
+							end
+							local function refuse()
+								return reject("Tracked Discard refuses directory obstruction at " .. target.relpath)
+							end
+							return spawn(
+								{ "git", "--literal-pathspecs", "ls-files", "--stage", "-z", "--", target.relpath },
+								function(result)
+									if not is_gitlink(result, false) then
+										return refuse()
+									end
+									if not from_head then
+										return check_next()
+									end
+									return spawn(
+										{ "git", "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", target.relpath },
+										function(tree)
+											if not is_gitlink(tree, true) then
+												return refuse()
+											end
+											return check_next()
+										end
+									)
+								end
+							)
 						end
-						local function is_gitlink(result, head)
-							if result.stdout_truncated then
-								return false
-							end
-							local output = result.stdout
-							if head and output == "" then
+						if stat and stat.type ~= "file" and stat.type ~= "link" then
+							return reject(
+								"Tracked Discard refuses " .. stat.type .. " obstruction at " .. target.relpath
+							)
+						end
+						if stat and stat.type == "link" and vim.fn.has("win32") == 1 then
+							-- libuv reports both junctions and symbolic links as links on Windows.
+							local script = "(Get-Item -Force -ErrorAction Stop -LiteralPath $env:LAZYVCS_LINK).LinkType"
+							return spawn(
+								{ "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script },
+								function(result)
+									if util.trim(result.stdout) ~= "SymbolicLink" then
+										return reject(
+											"Tracked Discard refuses junction or unknown link obstruction at "
+												.. target.relpath
+										)
+									end
+									check_next()
+								end,
+								nil,
+								{ LAZYVCS_LINK = target.path }
+							)
+						end
+						check_next()
+					end, target.path, true)
+				end
+				if repo.vcs ~= "git" then
+					return check_target()
+				end
+				-- Check proper ancestors even for file/missing targets: restore can
+				-- replace an index gitlink while writing a descendant from HEAD.
+				local offset = 1
+				local function check_ancestor()
+					local separator = target.relpath:find("/", offset, true)
+					if not separator then
+						return check_target()
+					end
+					offset = separator + 1
+					local prefix = target.relpath:sub(1, separator - 1)
+					local function refuse()
+						return reject("Tracked Discard refuses nested repository ancestor at " .. prefix)
+					end
+					local function contains_gitlink(result)
+						if result.stdout_truncated then
+							return true
+						end
+						for entry in result.stdout:gmatch("[^%z]+") do
+							local mode, path = entry:match("^(%d+) [^\t]+\t(.*)$")
+							if mode == "160000" and path == prefix then
 								return true
 							end
-							local mode, kind, path
-							if head then
-								mode, kind, path = output:match("^(%d+) (%w+) %x+\t([^%z]+)%z$")
-							else
-								mode, kind, path = output:match("^(%d+) %x+ (%d)\t([^%z]+)%z$")
-							end
-							return mode == "160000" and kind == (head and "commit" or "0") and path == target.relpath
 						end
-						local function refuse()
-							return reject("Tracked Discard refuses directory obstruction at " .. target.relpath)
+						return false
+					end
+					filesystem(vim.uv.fs_lstat, function(stat)
+						if stat then
+							return refuse()
 						end
-						return spawn(
-							{ "git", "--literal-pathspecs", "ls-files", "--stage", "-z", "--", target.relpath },
+						spawn(
+							{ "git", "--literal-pathspecs", "ls-files", "--stage", "-z", "--", prefix },
 							function(result)
-								if not is_gitlink(result, false) then
+								if contains_gitlink(result) then
 									return refuse()
 								end
-								if not from_head then
-									return check_next()
-								end
-								return spawn(
-									{ "git", "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", target.relpath },
+								spawn(
+									{ "git", "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", prefix },
 									function(tree)
-										if not is_gitlink(tree, true) then
+										if contains_gitlink(tree) then
 											return refuse()
 										end
-										return check_next()
+										check_ancestor()
 									end
 								)
 							end
 						)
-					end
-					if stat and stat.type ~= "file" and stat.type ~= "link" then
-						return reject("Tracked Discard refuses " .. stat.type .. " obstruction at " .. target.relpath)
-					end
-					if stat and stat.type == "link" and vim.fn.has("win32") == 1 then
-						-- libuv reports both junctions and symbolic links as links on Windows.
-						local script = "(Get-Item -Force -ErrorAction Stop -LiteralPath $env:LAZYVCS_LINK).LinkType"
-						return spawn(
-							{ "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script },
-							function(result)
-								if util.trim(result.stdout) ~= "SymbolicLink" then
-									return reject(
-										"Tracked Discard refuses junction or unknown link obstruction at "
-											.. target.relpath
-									)
-								end
-								check_next()
-							end,
-							nil,
-							{ LAZYVCS_LINK = target.path }
-						)
-					end
-					check_next()
-				end, target.path, true)
+					end, repo.root .. "/" .. prefix .. "/.git", true)
+				end
+				check_ancestor()
 			end
 			return check_next()
 		end

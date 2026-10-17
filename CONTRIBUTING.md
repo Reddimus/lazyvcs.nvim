@@ -178,13 +178,17 @@ the GitHub release.
   path-limited status, native lstat, and nonrecursive unlink. Cancellation waits
   for pending filesystem callbacks before releasing the worker. Tracked-file
   Discard checks every restore target, including rename sources, with
-  asynchronous lstat before startup. Files, symlinks, and ENOENT are accepted.
-  Git directory restore targets require an exact stage-zero index gitlink.
-  Staged rows and rename sources also require an exact HEAD gitlink or a path
-  absent from HEAD. Every Discard restore disables submodule recursion. Windows
-  links also require an asynchronous PowerShell LinkType check to exclude
-  junctions; pass the path through the child's environment. SVN revalidates its
-  recorded node kind before choosing file or directory scope.
+  asynchronous lstat before startup. Git targets also check each proper path
+  prefix for a .git entry or an index/HEAD gitlink and refuse descendants of
+  nested repositories. This check uses at most one lstat and two Git commands
+  per prefix, within the same worker and deadline. Files, symlinks, and ENOENT
+  are accepted after these checks. Git directory restore targets require an
+  exact stage-zero index gitlink. Staged rows and rename sources also require an
+  exact HEAD gitlink or a path absent from HEAD. Every Discard restore disables
+  submodule recursion. Windows links also require an asynchronous PowerShell
+  LinkType check to exclude junctions; pass the path through the child's
+  environment. SVN revalidates its recorded node kind before choosing file or
+  directory scope.
 - `compare.lua` owns review tabs, source-control navigation, and read-only
   previews. Its `set_panes()` transition installs both panes before publishing
   their slots and defers results while the picker router owns a borrowed buffer.
@@ -213,8 +217,11 @@ the GitHub release.
   ownership record at a time and syncs records before rename. Pending records
   include the creating editor's PID in the same scope. Settlement, a changed
   kernel boot ID, or a same-scope consumer ESRCH probe releases a message.
-  PID-less records require a changed boot estimate and an editor ESRCH probe, or
-  the legacy mtime rule. Without a boot ID pair, a changed estimate and a
+  PID-less records with an editor PID survive clock steps and old mtimes; a
+  changed boot ID or settlement releases them. Windows also accepts editor ESRCH
+  after a changed boot estimate because consumers cannot outlive Neovim there
+  (#96). Only PID-less legacy records without an editor PID use the mtime rule.
+  Without a boot ID pair, a changed estimate and an attached consumer in a
   foreign Linux namespace also use that rule. Legacy cleanup requires an mtime
   more than five seconds before boot. It covers missing or invalid ownership
   records, including token or platform mismatches, and orphaned ownership,

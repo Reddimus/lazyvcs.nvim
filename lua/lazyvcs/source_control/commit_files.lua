@@ -218,6 +218,16 @@ local function gone(record, current, mtime)
 		end
 		changed = false
 	end
+	if record.pid == nil and record.editor_pid ~= nil then
+		-- A preserved consumer can outlive its editor on Unix. Only Windows
+		-- terminates consumers at editor exit; age cannot settle these records.
+		local pid = record.editor_pid
+		if current.platform == "Windows_NT" and changed and type(pid) == "number" and pid > 0 and pid % 1 == 0 then
+			local alive, _, code = vim.uv.kill(pid, 0)
+			return not alive and code == "ESRCH"
+		end
+		return false
+	end
 	if current.platform == "Linux" then
 		if
 			type(record.namespace) ~= "table"
@@ -225,20 +235,12 @@ local function gone(record, current, mtime)
 			or record.namespace.dev ~= current.namespace.dev
 			or record.namespace.ino ~= current.namespace.ino
 		then
-			-- Without a boot ID pair, foreign namespaces can only use legacy age.
+			-- Without a boot ID pair, foreign consumer namespaces use legacy age.
 			return changed and mtime < current.boot - 5
 		end
 	end
 	if record.pid == nil then
-		-- Pending records survive clock steps unless the creating editor is
-		-- provably gone in scope. Older PID-less records use the legacy rule.
-		local pid = record.editor_pid
-		if changed and type(pid) == "number" and pid > 0 and pid % 1 == 0 then
-			local alive, _, code = vim.uv.kill(pid, 0)
-			if not alive and code == "ESRCH" then
-				return true
-			end
-		end
+		-- True legacy PID-less records have no creating editor identity.
 		return mtime < current.boot - 5
 	end
 	if type(record.pid) ~= "number" or record.pid <= 0 or record.pid % 1 ~= 0 then

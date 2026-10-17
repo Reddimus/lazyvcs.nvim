@@ -3,8 +3,11 @@ return function(ctx)
 	local function complete(lead)
 		return require("lazyvcs.commands")._complete(lead, "LazyVCS sidebar open " .. lead)
 	end
-	local function directory_case(fn)
+	local function directory_case(fn, unix_only)
 		return function()
+			if unix_only and vim.fn.has("win32") == 1 then
+				error({ lazyvcs_skip = "Neovim expands ~user only on Unix" })
+			end
 			local cwd, ignore = vim.fn.getcwd(), vim.o.wildignore
 			local fic, wic = vim.o.fileignorecase, vim.o.wildignorecase
 			local dir = h.tempdir()
@@ -84,7 +87,7 @@ return function(ctx)
 					util.expand_user_path("~" .. user .. "/project") == home:gsub("[/\\]$", "") .. "/project",
 					"wildignore rewrote named home to the filesystem root"
 				)
-			end),
+			end, true),
 		},
 		{
 			"test_core_named_home_empty_expansion_preserves_argument",

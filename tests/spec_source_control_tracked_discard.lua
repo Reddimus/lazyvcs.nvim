@@ -300,9 +300,12 @@ return function(ctx)
 		h.exec({ "git", "add", "-A", "--", "sample.txt" }, f.root)
 		local commit = h.exec({ "git", "rev-parse", "HEAD" }, target)
 		local before = h.exec({ "git", "status", "--porcelain" }, f.root)
-		local state, node
-		if kind == "blob" then
-			state, node = row(f, "git", target, "staged")
+		local selected = kind == "tree" and (target .. "/sample.txt") or target
+		local state, node = row(f, "git", selected, "staged")
+		if kind == "tree" then
+			assert(node.extra.status:sub(1, 1) == "D", "fixture did not select the real staged delete row")
+			assert(util.relpath(f.root, selected) == "sample.txt/sample.txt", "entry guard rejected nested path")
+			assert(not require("lazyvcs.source_control.buffer_guard").error(f.root, { selected }))
 		end
 		local start, ran = util.system_start, false
 		---@diagnostic disable-next-line: duplicate-set-field
@@ -312,35 +315,8 @@ return function(ctx)
 			end
 			return start(args, ...)
 		end
-		if kind == "blob" then
-			ops.revert_file(state, node)
-			finished(f.root)
-		else
-			-- Git reports a tree-to-gitlink replacement as separate add/delete rows.
-			-- Exercise the restore guard with the exact staged Discard command.
-			local done
-			require("lazyvcs.source_control.mutation_start").start(
-				{ root = f.root, vcs = "git" },
-				{
-					"git",
-					"restore",
-					"--no-recurse-submodules",
-					"--source=HEAD",
-					"--staged",
-					"--worktree",
-					"--",
-					"sample.txt",
-				},
-				{ cwd = f.root, timeout = 5000 },
-				{ tracked_discard = { { path = target, relpath = "sample.txt" } } },
-				function()
-					done = true
-				end
-			)
-			wait(function()
-				return done
-			end, "tree replacement discard did not settle")
-		end
+		ops.revert_file(state, node)
+		finished(f.root)
 		util.system_start = start
 		assert(vim.uv.fs_stat(target .. "/.git"), "staged Discard deleted embedded .git")
 		assert(h.exec({ "git", "rev-parse", "HEAD" }, target) == commit, "embedded commit lost")
@@ -348,6 +324,76 @@ return function(ctx)
 		assert(vim.fn.readfile(target .. "/untracked")[1] == "untracked private work", "untracked work lost")
 		assert(not ran, "HEAD obstruction reached restore")
 		assert(h.exec({ "git", "status", "--porcelain" }, f.root) == before, "outer index changed")
+	end
+
+	local function ancestor_obstruction(kind)
+		local f = h.make_git_fixture()
+		local parent, relative = "outer/inner", "outer/inner/sample.txt"
+		vim.fn.mkdir(f.root .. "/" .. parent, "p")
+		h.exec({ "git", "mv", "sample.txt", relative }, f.root)
+		h.exec({ "git", "commit", "-m", "nested ordinary file" }, f.root)
+		local path = f.root .. "/" .. relative
+		h.write_file(path, "private work\n")
+		local state, node = row(f, "git", path)
+		local marker = f.root .. "/" .. parent .. "/.git"
+		if kind == "directory_marker" then
+			vim.fn.mkdir(marker)
+		elseif kind == "file_marker" then
+			h.write_file(marker, "gitdir: private metadata\n")
+		else
+			local oid = util.trim(h.exec({ "git", "rev-parse", "HEAD" }, f.root))
+			h.exec({ "git", "update-index", "--force-remove", "--", relative }, f.root)
+			h.exec({ "git", "update-index", "--add", "--cacheinfo", "160000", oid, parent }, f.root)
+			if kind == "head_gitlink" then
+				h.exec({ "git", "commit", "-m", "gitlink ancestor" }, f.root)
+				-- A stale row must also be safe when only HEAD retains the gitlink.
+				h.exec({ "git", "update-index", "--force-remove", "--", parent }, f.root)
+				h.exec({ "git", "add", "--", relative }, f.root)
+			end
+		end
+		local before = h.exec({ "git", "ls-files", "--stage" }, f.root)
+		local start, ran = util.system_start, false
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.system_start = function(args, ...)
+			if args[2] == "restore" then
+				ran = true
+			end
+			return start(args, ...)
+		end
+		ops.revert_file(state, node)
+		finished(f.root)
+		assert(not ran, kind .. ": ancestor obstruction reached restore")
+		assert(vim.fn.readfile(path)[1] == "private work", "nested file overwritten")
+		assert(h.exec({ "git", "ls-files", "--stage" }, f.root) == before, "ancestor index changed")
+		if kind:find("marker", 1, true) then
+			assert(vim.uv.fs_lstat(marker), "repository marker removed")
+		end
+	end
+
+	local function rename_ancestor_obstruction(source)
+		local f = h.make_git_fixture()
+		vim.fn.mkdir(f.root .. "/outer/inner", "p")
+		h.exec({ "git", "mv", "sample.txt", "outer/inner/sample.txt" }, f.root)
+		h.exec({ "git", "commit", "-m", "nested file" }, f.root)
+		vim.fn.mkdir(f.root .. "/destination", "p")
+		h.exec({ "git", "mv", "outer/inner/sample.txt", "destination/renamed.txt" }, f.root)
+		local state, node = row(f, "git", f.root .. "/destination/renamed.txt", "staged")
+		assert(node.extra.status:sub(1, 1) == "R", "fixture did not select rename")
+		local marker = f.root .. (source and "/outer/.git" or "/destination/.git")
+		h.write_file(marker, "gitdir: private metadata\n")
+		local start, ran = util.system_start, false
+		---@diagnostic disable-next-line: duplicate-set-field
+		util.system_start = function(args, ...)
+			if args[2] == "restore" then
+				ran = true
+			end
+			return start(args, ...)
+		end
+		ops.revert_file(state, node)
+		finished(f.root)
+		assert(not ran, "rename ancestor obstruction reached restore")
+		assert(vim.uv.fs_lstat(marker), "rename ancestor marker removed")
+		assert(vim.uv.fs_stat(f.root .. "/destination/renamed.txt"), "rename destination removed")
 	end
 
 	local function rename_source_replacement()
@@ -370,7 +416,25 @@ return function(ctx)
 		assert(h.exec({ "git", "status", "--porcelain" }, f.root) == before, "rename source index changed")
 	end
 
-	return {
+	local extra = {}
+	for _, kind in ipairs({ "directory_marker", "file_marker", "index_gitlink", "head_gitlink" }) do
+		extra[#extra + 1] = {
+			"test_source_control_tracked_discard_refuses_ancestor_" .. kind,
+			guarded(function()
+				ancestor_obstruction(kind)
+			end),
+		}
+	end
+	for _, source in ipairs({ false, true }) do
+		extra[#extra + 1] = {
+			"test_source_control_rename_discard_refuses_ancestor_" .. (source and "source" or "destination"),
+			guarded(function()
+				rename_ancestor_obstruction(source)
+			end),
+		}
+	end
+
+	local cases = {
 		{
 			"test_source_control_staged_discard_preserves_embedded_rename_source",
 			guarded(rename_source_replacement),
@@ -382,7 +446,7 @@ return function(ctx)
 			end),
 		},
 		{
-			"test_source_control_staged_discard_preserves_embedded_repo_over_tree",
+			"test_source_control_staged_delete_discard_preserves_nested_repository_file",
 			guarded(function()
 				embedded_replacement("tree")
 			end),
@@ -589,4 +653,5 @@ return function(ctx)
 			end),
 		},
 	}
+	return vim.list_extend(cases, extra)
 end
