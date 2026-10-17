@@ -341,9 +341,11 @@ Large native sign comparisons and previews run histogram diff in a worker
 thread. Results from older edits or bases are discarded. Preview completion also
 checks the originating window and focus. Editing, leaving the window, or
 reloading the base cancels a pending preview. Duplicate pending previews share
-one worker. If threaded diff is unavailable, large native previews report that
-limitation. Small comparisons run synchronously. Preview reports insufficient
-editor space without allocating a scratch buffer.
+one worker. Requests made while a cancelled worker finishes retain the newest
+request and start it after completion if its context is still valid. If threaded
+diff is unavailable, large native previews report that limitation. Small
+comparisons run synchronously. Preview reports insufficient editor space without
+allocating a scratch buffer.
 
 Commands:
 

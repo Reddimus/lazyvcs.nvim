@@ -136,7 +136,17 @@ local function supported_buffer(bufnr)
 	if not path then
 		return nil
 	end
-	if util.file_size(path) > opts().max_file_bytes or util.buffer_size(bufnr) > opts().max_file_bytes + 1 then
+	local size, bo = util.buffer_size(bufnr), vim.bo[bufnr]
+	-- Buffer offsets include a newline per line; capture serializes only the final
+	-- newline that the buffer would write. Full text validation stays in capture.
+	if size == 1 and vim.api.nvim_buf_call(bufnr, function()
+		return vim.fn.wordcount().chars == 0
+	end) then
+		size = 0
+	elseif not (bo.endofline or (bo.modified and bo.fixendofline and not bo.binary)) then
+		size = size - 1
+	end
+	if util.file_size(path) > opts().max_file_bytes or size > opts().max_file_bytes then
 		return nil, "too_large", path
 	end
 
@@ -896,6 +906,21 @@ local function after_gitsigns_refresh(context, state, release, on_ready)
 	return true
 end
 
+-- Match gitsigns' all-or-nothing DOS normalization, preserving an unterminated
+-- last line (and LF base blobs) when it has no CR to strip.
+local function strip_gitsigns_cr(lines)
+	for i = 1, #lines - 1 do
+		if lines[i]:sub(-1) ~= "\r" then
+			return lines
+		end
+	end
+	local result = {}
+	for i, line in ipairs(lines) do
+		result[i] = line:sub(-1) == "\r" and line:sub(1, -2) or line
+	end
+	return result
+end
+
 -- Only the native size limit is bypassed; gitsigns still owns eligibility and hunks.
 local function revert_large_gitsigns_hunk(context)
 	local bufnr = context.bufnr
@@ -984,6 +1009,10 @@ local function revert_large_gitsigns_hunk(context)
 			end
 			local reverted = with_unchanged_buffer(context, function()
 				local added, removed = selected.added, selected.removed
+				local added_lines, removed_lines = added.lines, removed.lines
+				if vim.bo[bufnr].fileformat == "dos" then
+					added_lines, removed_lines = strip_gitsigns_cr(added_lines), strip_gitsigns_cr(removed_lines)
+				end
 				local start_row = added.count == 0 and added.start or math.max(added.start - 1, 0)
 				local end_row = start_row + added.count
 				local line_count = vim.api.nvim_buf_line_count(bufnr)
@@ -992,7 +1021,7 @@ local function revert_large_gitsigns_hunk(context)
 					or #removed.lines ~= removed.count
 					or start_row < 0
 					or end_row > line_count
-					or not vim.deep_equal(vim.api.nvim_buf_get_lines(bufnr, start_row, end_row, false), added.lines)
+					or not vim.deep_equal(vim.api.nvim_buf_get_lines(bufnr, start_row, end_row, false), added_lines)
 				then
 					util.notify("Reported hunk no longer matches the buffer; nothing was reverted", vim.log.levels.WARN)
 					return false
@@ -1009,7 +1038,7 @@ local function revert_large_gitsigns_hunk(context)
 				if empty and added.count == 0 and start_row == 0 then
 					end_row = -1
 				end
-				diff.reset_hunk_lines(bufnr, start_row, end_row, removed.lines, base_eol)
+				diff.reset_hunk_lines(bufnr, start_row, end_row, removed_lines, base_eol)
 				return true
 			end)
 			release()
@@ -1224,16 +1253,81 @@ local function show_preview(text)
 	end
 end
 
+local function preview_request(context, loaded, release)
+	local bufnr = context.bufnr
+	local generation, base = loaded.base_generation, loaded.base_text
+	local request = { context = context }
+	function request.valid()
+		return loaded.preview_pending == request
+			and buffers[bufnr] == loaded
+			and not runtime.is_shutting_down()
+			and loaded.base_text == base
+			and loaded.base_generation == generation
+			and vim.api.nvim_get_current_win() == context.winid
+			and util.buffer_context_is_unchanged(context)
+	end
+	local group = vim.api.nvim_create_augroup("lazyvcs_preview_" .. bufnr, { clear = true })
+	loaded.preview_pending = request
+	function request.cancel()
+		if loaded.preview_pending ~= request then
+			return
+		end
+		loaded.preview_pending = nil
+		pcall(vim.api.nvim_del_augroup_by_id, group)
+		release()
+	end
+	local configured, configure_err = pcall(function()
+		vim.api.nvim_create_autocmd(
+			{ "TextChanged", "TextChangedI", "BufLeave", "WinLeave", "BufFilePost", "BufUnload", "VimLeavePre" },
+			{
+				group = group,
+				buffer = bufnr,
+				callback = util.safe_callback(request.cancel),
+			}
+		)
+		vim.api.nvim_create_autocmd("WinClosed", {
+			group = group,
+			pattern = tostring(context.winid),
+			callback = util.safe_callback(request.cancel),
+		})
+	end)
+	if not configured then
+		request.cancel()
+		util.notify(configure_err, vim.log.levels.WARN)
+		return nil
+	end
+	return request
+end
+
 local function preview_diff(context)
 	if call_gitsigns("preview_hunk") then
 		return true
 	end
 	local bufnr = context.bufnr
-	if preview_workers[bufnr] then
+	local function queue_if_busy()
+		local busy = preview_workers[bufnr]
+		if not busy then
+			return false
+		end
+		local state = buffers[bufnr]
+		if state then
+			local pending = state.preview_pending
+			if pending and pending.valid() then
+				return true
+			end
+			if pending then
+				pending.cancel()
+			end
+			-- Queue only the context. A cancelled physical worker owns no command hold.
+			busy.latest = preview_request(context, state, function() end)
+		end
+		return true
+	end
+	if queue_if_busy() then
 		return true
 	end
 	return with_current_state(context, function(loaded, release)
-		if preview_workers[bufnr] then
+		if queue_if_busy() then
 			release()
 			return true
 		end
@@ -1243,55 +1337,29 @@ local function preview_diff(context)
 			release()
 			return show_preview(compat.diff(left, right, { algorithm = "histogram", result_type = "unified" }))
 		end
-		local generation = loaded.base_generation
-		local request = {}
-		local group = vim.api.nvim_create_augroup("lazyvcs_preview_" .. bufnr, { clear = true })
-		loaded.preview_pending = request
-		function request.cancel()
-			if loaded.preview_pending ~= request then
-				return
-			end
-			loaded.preview_pending = nil
-			pcall(vim.api.nvim_del_augroup_by_id, group)
-			release()
-		end
-		local configured, configure_err = pcall(function()
-			vim.api.nvim_create_autocmd(
-				{ "TextChanged", "TextChangedI", "BufLeave", "WinLeave", "BufFilePost", "BufUnload", "VimLeavePre" },
-				{
-					group = group,
-					buffer = bufnr,
-					callback = util.safe_callback(request.cancel),
-				}
-			)
-			vim.api.nvim_create_autocmd("WinClosed", {
-				group = group,
-				pattern = tostring(context.winid),
-				callback = util.safe_callback(request.cancel),
-			})
-		end)
-		if not configured then
-			request.cancel()
-			util.notify(configure_err, vim.log.levels.WARN)
+		local request = preview_request(context, loaded, release)
+		if not request then
 			return true
 		end
 		local work, err
 		work, err = start_diff_work(left, right, "unified", function(supported, output, diff_err)
-			if preview_workers[bufnr] == work then
+			if preview_workers[bufnr] == request then
 				preview_workers[bufnr] = nil
 			end
 			if loaded.preview_work == work then
 				loaded.preview_work = nil
 			end
-			local ok, valid = pcall(function()
-				return loaded.preview_pending == request
-					and buffers[bufnr] == loaded
-					and not runtime.is_shutting_down()
-					and loaded.base_text == base
-					and loaded.base_generation == generation
-					and vim.api.nvim_get_current_win() == context.winid
-					and util.buffer_context_is_unchanged(context)
-			end)
+			local latest = request.latest
+			if latest then
+				local valid = latest.valid()
+				latest.cancel()
+				request.cancel()
+				if valid then
+					preview_diff(latest.context)
+				end
+				return
+			end
+			local ok, valid = pcall(request.valid)
 			request.cancel()
 			if not ok then
 				return util.notify(valid, vim.log.levels.WARN)
@@ -1308,7 +1376,7 @@ local function preview_diff(context)
 			show_preview(output)
 		end)
 		loaded.preview_work = work
-		preview_workers[bufnr] = work
+		preview_workers[bufnr] = work and request or nil
 		if not work then
 			request.cancel()
 			util.notify(err, vim.log.levels.WARN)

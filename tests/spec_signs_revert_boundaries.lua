@@ -202,5 +202,60 @@ return function(ctx)
 			end),
 		}
 	end
+	for _, variant in ipairs({ "crlf", "crlf_no_eol", "lf" }) do
+		cases[#cases + 1] = {
+			"test_signs_large_revert_dos_" .. variant,
+			s.guard(function()
+				local f, buf = s.fixture(false, { use_gitsigns = true, signs = { max_file_bytes = 1 } })
+				local eol = variant ~= "crlf_no_eol"
+				local edited = { "one", "two changed", "three changed" }
+				local bytes = table.concat(edited, "\r\n") .. (eol and "\r\n" or "")
+				local handle = assert(io.open(f.file, "wb"))
+				handle:write(bytes)
+				handle:close()
+				vim.cmd("edit!")
+				assert(vim.bo[buf].fileformat == "dos", "fixture did not load as dos")
+				local resolved = false
+				require("lazyvcs.backends").resolve_async(f.file, function()
+					resolved = true
+				end)
+				s.wait(function()
+					return resolved
+				end, "dos repository did not resolve", 15000)
+				local removed = variant == "lf" and { "two", "three" } or { "two\r", "three" .. (eol and "\r" or "") }
+				package.loaded.gitsigns = {
+					get_hunks = function()
+						return {
+							{
+								removed = { start = 2, count = 2, lines = removed, no_nl_at_eof = not eol },
+								added = {
+									start = 2,
+									count = 2,
+									lines = { "two changed\r", "three changed" .. (eol and "\r" or "") },
+									no_nl_at_eof = not eol,
+								},
+							},
+						}
+					end,
+				}
+				s.api.nvim_win_set_cursor(0, { 2, 0 })
+				-- End the reload's undo block before invoking the user command.
+				vim.bo[buf].undolevels = vim.bo[buf].undolevels
+				vim.cmd("LazyVCS hunk revert")
+				s.wait(function()
+					local state = s.signs.current_state(buf)
+					return state and (state.native_holds or 0) == 0
+				end, "dos revert did not settle", 15000)
+				assert(
+					vim.deep_equal(s.api.nvim_buf_get_lines(buf, 0, -1, false), { "one", "two", "three" }),
+					"dos revert failed or inserted literal CR"
+				)
+				assert(vim.bo[buf].fileformat == "dos" and vim.bo[buf].endofline == eol, "dos options changed")
+				assert(table.concat(vim.fn.readfile(f.file, "b"), "\n") == bytes, "dos revert changed disk")
+				vim.cmd.undo()
+				assert(vim.deep_equal(s.api.nvim_buf_get_lines(buf, 0, -1, false), edited), "dos undo lost edits")
+			end),
+		}
+	end
 	return cases
 end

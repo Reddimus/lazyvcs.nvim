@@ -28,7 +28,15 @@ return function(ctx)
 		---@diagnostic disable-next-line: duplicate-set-field
 		vim.uv.new_work = function(_, done)
 			local request = { done = done }
-			function request:queue(_, _, result_type)
+			function request:queue(left, right, result_type)
+				if result_type == "indices" then
+					local result = compat.diff(left, right, { algorithm = "histogram", result_type = "indices" })
+					vim.schedule(function()
+						done(true, vim.mpack.encode(result))
+					end)
+					return true
+				end
+				self.left, self.right = left, right
 				self.result_type = result_type
 				requests[#requests + 1] = self
 				return true
@@ -144,72 +152,137 @@ return function(ctx)
 		"test_signs_preview_rejects_stale_completion",
 		s.guard(function()
 			local original = vim.uv.new_work
-			for _, change in ipairs({
-				"edit",
-				"base",
-				"rename",
-				"unload",
-				"replace",
-				"close",
-				"focus",
-				"focus_return",
-				"cursor",
-				"options",
-				"supersede",
-			}) do
-				vim.uv.new_work = original
-				local f, buf, state, expected = fixture(false, 4000)
-				local source = s.api.nvim_get_current_win()
-				local requests = hold()
-				vim.cmd("LazyVCS preview")
-				assert(#requests == 1, "preview did not defer publication")
-				local mutation
-				if change == "edit" then
-					s.edit(buf, { "edited again" })
-				elseif change == "base" then
-					mutation = s.signs.begin_base_change(f.root, { f.file })
-				elseif change == "rename" then
-					s.api.nvim_buf_set_name(buf, f.file .. ".renamed")
-				elseif change == "unload" then
-					vim.cmd("enew!")
-					s.api.nvim_buf_delete(buf, { force = true })
-				elseif change == "replace" then
-					vim.cmd("enew!")
-				elseif change == "close" then
-					vim.cmd.split()
-					s.api.nvim_win_close(source, true)
-				elseif change == "focus" or change == "focus_return" then
-					vim.cmd.split()
-					if change == "focus_return" then
-						s.api.nvim_set_current_win(source)
-					end
-				elseif change == "cursor" then
-					s.api.nvim_win_set_cursor(0, { 20, 0 })
-				elseif change == "options" then
-					vim.bo[buf].endofline = false
-				else
-					s.signs.refresh(buf, true)
-				end
-				if change == "edit" then
+			for _, queued in ipairs({ false, true }) do
+				for _, change in ipairs({
+					"edit",
+					"base",
+					"rename",
+					"unload",
+					"replace",
+					"close",
+					"focus",
+					"focus_return",
+					"cursor",
+					"options",
+					"supersede",
+				}) do
+					vim.uv.new_work = original
+					local f, buf, state, expected = fixture(false, 4000)
+					local source = s.api.nvim_get_current_win()
+					local requests = hold()
 					vim.cmd("LazyVCS preview")
-					assert(#requests == 1, "cancelled preview queued a second physical worker")
+					assert(#requests == 1, "preview did not defer publication")
+					if queued then
+						state.preview_pending.cancel()
+						assert(
+							state.native_holds == 0 and state.preview_work,
+							"cancel did not release hold immediately"
+						)
+						vim.cmd("LazyVCS preview")
+						assert(
+							#requests == 1 and state.native_holds == 0,
+							"queued retry retained a hold or started work"
+						)
+					end
+					local mutation
+					if change == "edit" then
+						s.edit(buf, { "edited again" })
+						assert(
+							state.native_holds == 0 and not state.preview_pending,
+							"edit did not release preview hold immediately"
+						)
+					elseif change == "base" then
+						mutation = s.signs.begin_base_change(f.root, { f.file })
+					elseif change == "rename" then
+						s.api.nvim_buf_set_name(buf, f.file .. ".renamed")
+					elseif change == "unload" then
+						vim.cmd("enew!")
+						s.api.nvim_buf_delete(buf, { force = true })
+					elseif change == "replace" then
+						vim.cmd("enew!")
+					elseif change == "close" then
+						vim.cmd.split()
+						s.api.nvim_win_close(source, true)
+					elseif change == "focus" or change == "focus_return" then
+						vim.cmd.split()
+						if change == "focus_return" then
+							s.api.nvim_set_current_win(source)
+						end
+					elseif change == "cursor" then
+						s.api.nvim_win_set_cursor(0, { 20, 0 })
+					elseif change == "options" then
+						vim.bo[buf].endofline = false
+					else
+						s.signs.refresh(buf, true)
+					end
+					if change == "edit" then
+						vim.cmd("LazyVCS preview")
+						assert(#requests == 1, "cancelled preview queued a second physical worker")
+					end
+					local wins = #s.api.nvim_list_wins()
+					requests[1].done(true, expected)
+					if change == "edit" then
+						s.wait(function()
+							return #requests == 2
+						end, "new preview request was dropped after edit")
+						assert(#s.api.nvim_list_wins() == wins, "cancelled preview opened stale text")
+						local latest = compat.diff(
+							requests[2].left,
+							requests[2].right,
+							{ algorithm = "histogram", result_type = "unified" }
+						)
+						requests[2].done(true, latest)
+						s.wait(function()
+							return vim.bo.filetype == "diff"
+						end, "latest preview did not open")
+						preview_text(latest)
+					end
+					s.wait(function()
+						return state.native_holds == 0 and not state.preview_work
+					end, "stale preview retained hold")
+					assert(
+						#s.api.nvim_list_wins() == wins and vim.bo.filetype ~= "diff",
+						"stale preview opened after " .. change
+					)
+					assert(not state.preview_work, "completed stale worker retained bookkeeping")
+					if mutation then
+						s.signs.finish_base_change(mutation)
+					end
+					s.h.cleanup()
+					vim.cmd("silent! only!")
 				end
-				local wins = #s.api.nvim_list_wins()
-				requests[1].done(true, expected)
-				s.wait(function()
-					return state.native_holds == 0 and not state.preview_work
-				end, "stale preview retained hold")
-				assert(
-					#s.api.nvim_list_wins() == wins and vim.bo.filetype ~= "diff",
-					"stale preview opened after " .. change
-				)
-				assert(not state.preview_work, "completed stale worker retained bookkeeping")
-				if mutation then
-					s.signs.finish_base_change(mutation)
-				end
-				s.h.cleanup()
-				vim.cmd("silent! only!")
 			end
+		end),
+	}
+	cases[#cases + 1] = {
+		"test_signs_preview_retries_cancelled_worker_with_latest_context",
+		s.guard(function()
+			local _, buf, state, expected = fixture(false, 4000)
+			local source = s.api.nvim_get_current_win()
+			local requests = hold()
+			vim.cmd("LazyVCS preview")
+			s.edit(buf, { "second preview text" })
+			assert(state.native_holds == 0 and state.preview_work, "cancellation retained the command hold")
+			vim.cmd("LazyVCS preview")
+			-- The newest request replaces the queued context while the physical worker drains.
+			s.edit(buf, { "newest preview text" })
+			vim.cmd("LazyVCS preview")
+			vim.cmd("LazyVCS preview")
+			assert(#requests == 1 and state.native_holds == 0, "retry started another worker or retained a hold")
+			requests[1].done(true, expected)
+			s.wait(function()
+				return #requests == 2
+			end, "cancelled worker dropped the newest preview")
+			assert(requests[2].right == "newest preview text\n", "retry captured outdated text")
+			assert(s.api.nvim_get_current_win() == source, "cancelled worker published a preview")
+			local latest =
+				compat.diff(requests[2].left, requests[2].right, { algorithm = "histogram", result_type = "unified" })
+			requests[2].done(true, latest)
+			s.wait(function()
+				return vim.bo.filetype == "diff"
+			end, "newest preview did not open")
+			preview_text(latest)
+			assert(state.native_holds == 0 and not state.preview_work, "retry retained work or hold")
 		end),
 	}
 	return cases

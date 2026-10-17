@@ -50,5 +50,46 @@ return function(ctx)
 			end),
 		}
 	end
+	cases[#cases + 1] = {
+		"test_signs_one_byte_over_limit_uses_large_revert",
+		s.guard(function()
+			local f, buf = s.fixture(false, { use_gitsigns = true, signs = { max_file_bytes = 10 } })
+			s.h.write_file(f.file, "123456789\n")
+			s.h.exec({ "git", "add", "sample.txt" }, f.root)
+			s.h.exec({ "git", "commit", "-m", "exact limit" }, f.root)
+			vim.cmd("edit!")
+			s.refresh(buf, true)
+			s.edit(buf, { "1234567890" })
+			vim.bo[buf].fixendofline = true
+			assert(not s.refresh(buf, false), "oversized buffer was admitted")
+			local state = s.signs.current_state(buf)
+			assert(state and state.skipped and not state.loaded, "serialized limit + 1 was not marked too_large")
+			local reads, loads = 0, 0
+			package.loaded.gitsigns = {
+				get_hunks = function()
+					reads = reads + 1
+					return {
+						{
+							removed = { start = 1, count = 1, lines = { "123456789" } },
+							added = { start = 1, count = 1, lines = { "1234567890" } },
+						},
+					}
+				end,
+			}
+			local backends = require("lazyvcs.backends")
+			local load = backends.load_base_async
+			---@diagnostic disable-next-line: duplicate-set-field
+			backends.load_base_async = function(...)
+				loads = loads + 1
+				return load(...)
+			end
+			vim.cmd("LazyVCS hunk revert")
+			s.wait(function()
+				return s.api.nvim_buf_get_lines(buf, 0, 1, false)[1] == "123456789"
+			end, "one-byte-over-limit revert did not finish")
+			assert(reads > 0 and loads == 0, "oversized revert used the native base path")
+			assert(table.concat(vim.fn.readfile(f.file, "b"), "\n") == "123456789\n", "revert changed disk")
+		end),
+	}
 	return cases
 end
