@@ -34,13 +34,13 @@ return function(ctx)
 			local config = require("lazyvcs.config")
 			local settings = vim.deepcopy(config.get())
 			local load, resolve = backends.load_base_async, backends.resolve_async
-			local timer, notify, open = vim.uv.new_timer, vim.notify, api.nvim_open_win
+			local timer, notify, open, work = vim.uv.new_timer, vim.notify, api.nvim_open_win, vim.uv.new_work
 			local errmsg = vim.v.errmsg
 			local gs, hidden, rows = package.loaded.gitsigns, vim.o.hidden, vim.o.lines
 			local preload = package.preload.gitsigns
 			local ok, err = xpcall(fn, debug.traceback)
 			backends.load_base_async, backends.resolve_async = load, resolve
-			vim.uv.new_timer, vim.notify, api.nvim_open_win = timer, notify, open
+			vim.uv.new_timer, vim.notify, api.nvim_open_win, vim.uv.new_work = timer, notify, open, work
 			package.loaded.gitsigns, vim.o.hidden, vim.o.lines = gs, hidden, rows
 			package.preload.gitsigns = preload
 			config.setup(settings)

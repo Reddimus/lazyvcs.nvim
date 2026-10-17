@@ -302,28 +302,34 @@ filter driver, `git cat-file --filters` supplies checkout-form content. Backgrou
 base loads never invoke external smudge drivers. Files with a filter driver keep
 raw index content. Historical object comparisons also keep raw content.
 
-When `use_gitsigns` is true (the default), lazyvcs delegates Git signs and hunk
-commands when gitsigns.nvim can report this buffer's hunks. Unattached buffers,
-including untracked files under default gitsigns settings, use native fallback.
-lazyvcs always renders SVN signs. If gitsigns detaches, the next edit resumes
-native signs automatically. Attached gitsigns buffers keep their normal gutter.
+When `use_gitsigns` is true (the default), lazyvcs delegates Git signs, hunk
+navigation, and previews when gitsigns.nvim can report this buffer's hunks.
+Unattached buffers, including untracked files under default gitsigns settings,
+use native fallback. lazyvcs always renders SVN signs. If gitsigns detaches,
+the next edit resumes native signs automatically. Attached gitsigns buffers
+keep their normal gutter.
 
 `signs.enabled` controls gutter decorations. Standalone hunk commands and previews
 remain available when signs are disabled, without automatic base reads.
-Oversized files resume automatic signs after both the buffer and saved file fall
-below `signs.max_file_bytes`. Unloading a buffer releases its native sign state.
+Oversized files resume automatic signs after both the buffer and saved file fit
+`signs.max_file_bytes`. The exact serialized content size enforces the buffer
+limit, including final-newline handling. Clean files at the limit without a final
+newline remain supported. Temporarily unavailable bases, including unmerged or
+oversized index entries, retain eligibility metadata so signs resume after a
+matching LazyVCS mutation.
+Unloading a buffer releases its native sign state.
 LazyVCS index and SVN BASE mutations invalidate matching bases at process startup
 and settlement. Commands wait for settlement, and pending revert confirmations
 reject changed base generations. External VCS mutations require
 `:LazyVCS signs refresh` to reload a cached base. Within the native size limit,
-delegated hunk reverts load a settled native base and check its generation and
-identity before resetting. These reverts use the native hunk after waiting for a
-mutation. Otherwise, gitsigns reset requires matching ranges, text, and
-final-newline state. Above `signs.max_file_bytes`, attached gitsigns handles
-reverts after pending LazyVCS base mutations settle and this buffer emits
-`User GitSignsUpdate`. LazyVCS requests a gitsigns refresh when its public API is
-available. A just-settled mutation also requires this buffer's next update before
-large-file or matching-gitsigns reverts can use its hunks. Only that update
+hunk reverts load a settled native base, check its generation and identity, and
+apply exactly the confirmed native hunk without waiting for gitsigns. Above
+`signs.max_file_bytes`, LazyVCS applies exactly the confirmed gitsigns-reported
+hunk after validating its buffer slice and final-newline state. Pending LazyVCS
+base mutations must settle before these large-file reverts, and this buffer must
+emit `User GitSignsUpdate` after settlement. LazyVCS requests a gitsigns refresh
+when its public API is available. A just-settled mutation also requires this
+buffer's next update before large-file reverts can use its hunks. Only that update
 clears this requirement. If no update arrives within two seconds, nothing is
 reverted and LazyVCS asks you to retry after the signs update. A retry requests
 another refresh and waits again. A new base mutation cancels a waiting refresh
@@ -331,9 +337,15 @@ with a warning. Buffer unload cancels it silently. A second large-file revert
 reports that a command is already pending. Confirmation checks gitsigns hunks and
 rejects matching base mutations that begin or settle while open.
 
-Large native sign comparisons run histogram diff in a worker thread. Results from
-older edits or bases are discarded. Small comparisons run synchronously. Preview
-reports insufficient editor space without allocating a scratch buffer.
+Large native sign comparisons and previews run histogram diff in a worker
+thread. Results from older edits or bases are discarded. Preview completion also
+checks the originating window and focus. Editing, leaving the window, or
+reloading the base cancels a pending preview. Duplicate pending previews share
+one worker. Requests made while a cancelled worker finishes retain the newest
+request and start it after completion if its context is still valid. If threaded
+diff is unavailable, large native previews report that limitation. Small
+comparisons run synchronously. Preview reports insufficient editor space without
+allocating a scratch buffer.
 
 Commands:
 

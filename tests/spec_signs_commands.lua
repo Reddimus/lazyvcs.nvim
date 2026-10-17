@@ -68,9 +68,10 @@ return function(ctx)
 				end
 				vim.cmd(operation == "preview" and "LazyVCS preview" or "LazyVCS hunk " .. operation)
 				s.wait(function()
-					return #calls == i
+					return operation == "revert" and s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "two"
+						or #calls == i
 				end, "cold cache dropped " .. operation, 15000)
-				assert(calls[i] == operation and #s.marks(buf) == 0)
+				assert((operation == "revert" and #calls == 3 or calls[i] == operation) and #s.marks(buf) == 0)
 			end
 			local resolve, pending = backends.resolve_async, nil
 			---@diagnostic disable-next-line: duplicate-set-field
@@ -95,7 +96,7 @@ return function(ctx)
 					s.api.nvim_buf_delete(buf, { unload = true, force = true })
 				end
 				pending({ name = "git" })
-				assert(#calls == 4, "stale command executed after " .. change)
+				assert(#calls == 3, "stale command executed after " .. change)
 			end
 			backends.resolve_async = resolve
 		end),
@@ -424,7 +425,10 @@ return function(ctx)
 				assert(result[1] == nil and result[2] == "Injected native load failure")
 			end
 			assert(state.native_holds == 0, "failed load retained a command hold")
-			assert(s.signs.current_state(buf) == nil, "failed load recreated a detached state")
+			assert(
+				s.signs.current_state(buf) == state and not state.loaded and not state.base_text,
+				"failed load lost eligibility or retained contents"
+			)
 		end),
 	}
 	cases[#cases + 1] = {
@@ -553,11 +557,15 @@ return function(ctx)
 				end
 				for _, operation in ipairs({ "next", "prev", "preview", "revert" }) do
 					local n = #calls
+					if operation == "revert" then
+						s.api.nvim_buf_set_lines(buf, 1, 2, false, { "changed" })
+					end
 					vim.cmd(operation == "preview" and "LazyVCS preview" or "LazyVCS hunk " .. operation)
 					s.wait(function()
-						return #calls > n
+						return operation == "revert" and s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "two"
+							or #calls > n
 					end, "oversized buffer dropped " .. operation, 15000)
-					assert(calls[n + 1] == operation)
+					assert(operation == "revert" and #calls == n or calls[n + 1] == operation)
 					local state = s.signs.current_state(buf)
 					assert(not state or (state.skipped and not state.loaded and not state.base_text))
 					assert(not state or (state.native_holds or 0) == 0, "delegated command retained a hold")

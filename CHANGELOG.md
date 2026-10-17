@@ -18,6 +18,11 @@ and this project adheres to
 - Reflow sidebar filenames and metadata after resizing.
 - Restore expanded changes after refresh and make load prompts actionable.
 - Refresh sibling sidebar rows and job badges after repository actions.
+- Revert exactly the confirmed hunk when gitsigns reports refined boundaries.
+- Resume native signs after staging resolved conflicts or smaller replacement
+  bases.
+- Generate large native previews without blocking the editor on histogram diff.
+- Support exact-limit files without a final newline.
 
 ## [0.11.4] - 2026-10-16
 
