@@ -5,7 +5,7 @@ local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
 vim.fn.mkdir(dir, "p")
 local marker = dir .. "/zzzz-prune-barrier.txt"
 vim.fn.writefile({ "abandoned" }, marker)
-local old = os.time() - vim.uv.uptime() - 86400
+local old = os.time() - vim.uv.uptime() - 86410
 vim.uv.fs_utime(marker, old, old)
 require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
 assert(

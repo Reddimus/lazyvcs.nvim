@@ -161,7 +161,7 @@ return function(ctx)
 			end),
 		},
 		{
-			"test_source_control_setup_prunes_only_previous_boot_legacy_commit_files_asynchronously",
+			"test_source_control_setup_prunes_legacy_commit_files_with_one_day_margin_asynchronously",
 			guarded(function()
 				local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
 				vim.fn.mkdir(dir, "p")
@@ -169,8 +169,9 @@ return function(ctx)
 				local old, recent = dir .. "/old.txt", dir .. "/recent.txt"
 				vim.fn.writefile({ "old" }, old)
 				vim.fn.writefile({ "recent" }, recent)
-				local expired = os.time() - vim.uv.uptime() - 10
+				local expired = os.time() - vim.uv.uptime() - 86410
 				assert(vim.uv.fs_utime(old, expired, expired))
+				assert(vim.uv.fs_utime(recent, expired + 86400, expired + 86400))
 				vim.fn.mkdir(dir .. "/subdir", "p")
 				assert(vim.uv.fs_utime(dir .. "/subdir", expired, expired))
 				local scandir_next = vim.uv.fs_scandir_next
@@ -185,6 +186,7 @@ return function(ctx)
 					wait(function()
 						return not vim.uv.fs_stat(old)
 					end, "stale message was not pruned")
+					vim.wait(50)
 					assert(vim.uv.fs_stat(recent), "recent message was pruned")
 					assert(vim.uv.fs_stat(dir .. "/subdir"), "pruning removed a directory")
 				end, debug.traceback)

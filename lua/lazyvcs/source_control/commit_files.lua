@@ -211,29 +211,21 @@ local function valid_record(record, current, token)
 end
 
 local function gone(record, current, mtime)
-	local changed = math.abs(record.boot - current.boot) > 5
-	if record.boot_id and current.boot_id then
-		if record.boot_id ~= current.boot_id then
-			return true
-		end
-		changed = false
-	end
-	if current.platform == "Windows_NT" and changed then
-		-- Consumers cannot outlive Neovim on Windows (#96).
+	local boot_pair = current.platform == "Linux" and record.boot_id and current.boot_id
+	if boot_pair and record.boot_id ~= current.boot_id then
 		return true
 	end
-	if record.pid == nil then
-		if current.platform == "Windows_NT" then
-			local pid = record.editor_pid
-			if type(pid) == "number" and pid > 0 and pid % 1 == 0 then
-				local alive, _, code = vim.uv.kill(pid, 0)
-				return not alive and code == "ESRCH"
-			end
-			return mtime < current.boot - 5
+	-- Estimates also move with wall-clock steps. Only the one-day margin can
+	-- establish age without a kernel boot ID pair.
+	local old = not boot_pair and mtime < current.boot - 86400
+	local pid = record.pid
+	if pid == nil then
+		if current.platform ~= "Windows_NT" then
+			-- A Unix consumer may outlive its creating editor.
+			return old
 		end
-		-- A Unix consumer may outlive its editor. Matching boot IDs protect it;
-		-- without a pair, allow a day of clock error before using boot age.
-		return not (record.boot_id and current.boot_id) and mtime < current.boot - 86400
+		-- Consumers cannot outlive Neovim on Windows (#96).
+		pid = record.editor_pid
 	end
 	if current.platform == "Linux" then
 		if
@@ -242,14 +234,16 @@ local function gone(record, current, mtime)
 			or record.namespace.dev ~= current.namespace.dev
 			or record.namespace.ino ~= current.namespace.ino
 		then
-			-- Without a boot ID pair, foreign consumer namespaces use legacy age.
-			return changed and mtime < current.boot - 5
+			return old
 		end
 	end
-	if type(record.pid) ~= "number" or record.pid <= 0 or record.pid % 1 ~= 0 then
+	if old then
+		return true
+	end
+	if type(pid) ~= "number" or pid <= 0 or pid % 1 ~= 0 then
 		return false
 	end
-	local alive, _, code = vim.uv.kill(record.pid, 0)
+	local alive, _, code = vim.uv.kill(pid, 0)
 	return not alive and code == "ESRCH"
 end
 
@@ -300,7 +294,7 @@ function M.prune()
 						return vim.uv.fs_lstat(
 							sidecar,
 							callback(function(_, stat)
-								if not stat or stat.type ~= "file" or stat.mtime.sec >= current.boot - 5 then
+								if not stat or stat.type ~= "file" or stat.mtime.sec >= current.boot - 86400 then
 									return next_entry()
 								end
 								vim.uv.fs_lstat(
@@ -328,7 +322,7 @@ function M.prune()
 							read_async(path .. ".owner", function(data)
 								local record = decode(data)
 								if not record or not valid_record(record, current, name:sub(1, -5)) then
-									if stat.mtime.sec < current.boot - 5 then
+									if stat.mtime.sec < current.boot - 86400 then
 										return remove(path)
 									end
 									return next_entry()

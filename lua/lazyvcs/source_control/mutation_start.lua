@@ -122,17 +122,34 @@ function M.start(repo, args, opts, guards, on_exit)
 				return
 			end
 			child = nil
-			local code = (raw or result or {}).code
-			if terminal or ((err or code ~= 0) and not (allowed_code and code == allowed_code)) then
-				return finish(result, err, raw or result)
+			-- Use one authoritative object for both the exit check and continuation.
+			local output = raw or result or {}
+			local code = output.code
+			if terminal then
+				return finish(result, err, output)
 			end
-			local continued, continuation_err = pcall(continuation, result or raw)
+			if allowed_code then
+				-- Only a normal rev-parse exit of 1 means HEAD is unborn. Synthetic
+				-- failures have no exit signal, and incomplete output proves nothing.
+				local exited = output.signal == 0 and not output.cancelled and not output.timed_out
+				local complete = not output.stdout_truncated and not output.stderr_truncated
+				local expected_error = code == allowed_code and (not err or err == util.system_error(output))
+				if not exited or not complete or not ((code == 0 and not err) or expected_error) then
+					return reject(
+						"Cannot verify HEAD for tracked Discard: " .. tostring(err or "incomplete process result")
+					)
+				end
+			elseif err or code ~= 0 then
+				return finish(result, err, output)
+			end
+			local continued, continuation_err = pcall(continuation, output)
 			if not continued then
 				reject((tostring(continuation_err):gsub("[\r\n]+", " ")))
 			end
 		end)
 		if not ok then
-			return reject((tostring(started):gsub("[\r\n]+", " ")))
+			local prefix = allowed_code and "Cannot verify HEAD for tracked Discard: " or ""
+			return reject(prefix .. (tostring(started):gsub("[\r\n]+", " ")))
 		end
 		if not done and not exited and serial == current then
 			child = started

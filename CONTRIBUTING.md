@@ -181,20 +181,25 @@ the GitHub release.
   asynchronous lstat before startup. Git targets also check each proper path
   prefix for a .git entry or an index/HEAD gitlink and refuse descendants of
   nested repositories. HEAD availability is checked once per mutation and
-  cached; unborn repositories skip HEAD tree queries. Each prefix uses at most
-  one lstat and two Git commands within the same worker and deadline. Index
-  queries can enumerate descendants, but only the first NUL-terminated record is
-  parsed. Retained output is bounded by the job's output limit (1 MiB by
-  default, split equally between stdout and stderr); Git's enumeration work can
-  scale with the subtree at each prefix. An incomplete first record refuses
-  Discard with a check failure, while truncation after a complete first record
-  does not imply a gitlink. Files, symlinks, and ENOENT are accepted after these
-  checks. Git directory restore targets require an exact stage-zero index
-  gitlink. Staged rows and rename sources also require an exact HEAD gitlink or
-  a path absent from HEAD. Every Discard restore disables submodule recursion.
-  Windows links also require an asynchronous PowerShell LinkType check to
-  exclude junctions; pass the path through the child's environment. SVN
-  revalidates its recorded node kind before choosing file or directory scope.
+  cached; only a normal, complete `rev-parse` exit of 1 means HEAD is unborn.
+  Unverifiable HEAD checks refuse Discard. Unborn repositories skip HEAD tree
+  queries but still check the index. Each prefix uses at most one lstat and two
+  Git commands, plus one shared HEAD probe per mutation, within the same worker
+  and deadline. Index queries can enumerate descendants, but only the first
+  NUL-terminated record is parsed. Retained output is bounded by the job's
+  output limit (1 MiB by default, split equally between stdout and stderr).
+  Overflow keeps the beginning of stdout, adds a truncation marker, and sets
+  `stdout_truncated`; it does not stop the child or turn a successful exit into
+  an error. Git's enumeration work can scale with the subtree at each prefix. An
+  incomplete first record refuses Discard with a check failure, while truncation
+  after a complete first record does not imply a gitlink. Files, symlinks, and
+  ENOENT are accepted after these checks. Git directory restore targets require
+  an exact stage-zero index gitlink. Staged rows and rename sources also require
+  an exact HEAD gitlink or a path absent from HEAD. Every Discard restore
+  disables submodule recursion. Windows links also require an asynchronous
+  PowerShell LinkType check to exclude junctions; pass the path through the
+  child's environment. SVN revalidates its recorded node kind before choosing
+  file or directory scope.
 - `compare.lua` owns review tabs, source-control navigation, and read-only
   previews. Its `set_panes()` transition installs both panes before publishing
   their slots and defers results while the picker router owns a borrowed buffer.
@@ -221,20 +226,21 @@ the GitHub release.
   and spawn failure. `source_control/commit_files.lua` records the consuming
   PID, boot identity, and Linux PID namespace. Setup prunes one bounded
   ownership record at a time and syncs records before rename. Pending records
-  include the creating editor's PID in the same scope. Settlement, a changed
-  kernel boot ID, or a same-scope consumer ESRCH probe releases a message.
-  Matching Linux boot IDs keep PID-less records until settlement or a boot ID
-  change. Without a boot ID pair, macOS and Linux PID-less records require an
-  mtime more than one day before the current boot estimate. A forward clock step
-  of more than a day can falsely release a still-needed PID-less message.
-  Windows accepts a boot-estimate change or same-boot editor ESRCH for PID-less
-  records, and same-boot consumer ESRCH for attached records, because consumers
-  cannot outlive Neovim there (#96). Without a boot ID pair, a changed estimate
-  and an attached consumer in a foreign Linux namespace use the legacy mtime
-  rule. Legacy cleanup requires an mtime more than five seconds before boot. It
-  covers missing or invalid ownership records, including token or platform
-  mismatches, and orphaned ownership, settlement, and temporary sidecars. Clock
-  steps can affect this fallback.
+  include the creating editor's PID in the same scope. Settlement or a changed
+  Linux kernel boot ID releases a message. With a Linux boot ID pair, attached
+  records otherwise require consumer ESRCH in the same PID namespace; PID-less
+  records wait for settlement or a boot ID change. Without a boot ID pair,
+  attached records require consumer ESRCH where the namespace matches, or an
+  mtime more than one day before the current boot estimate. Foreign Linux
+  namespaces cannot be probed. On macOS and Linux without a boot ID pair,
+  PID-less records use the same one-day margin. Windows attached records require
+  consumer ESRCH, and PID-less records require creating-editor ESRCH, or the
+  one-day margin for either kind. Consumers cannot outlive Neovim on Windows
+  (#96). An estimate change alone never releases a message. The one-day margin
+  also covers missing or invalid ownership records, including token or platform
+  mismatches, and orphaned ownership, settlement, and temporary sidecars. A
+  forward clock step of more than a day can falsely release messages through
+  that margin. PID reuse delays cleanup; EPERM alone does not prove exit.
 - Sidebar AI drafts belong to one state and repository root. Request tickets and
   draft revisions reject superseded responses. Context commands use the
   scheduler; repository cancellation also stops provider requests after context

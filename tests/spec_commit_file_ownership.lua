@@ -122,7 +122,7 @@ return function(ctx)
 		local function scan()
 			local marker = dir .. "/zzzz-policy.txt"
 			h.write_file(marker, "finished")
-			local old = os.time() - vim.uv.uptime() - 10
+			local old = os.time() - vim.uv.uptime() - 86410
 			vim.uv.fs_utime(marker, old, old)
 			files.prune()
 			assert(vim.uv.fs_stat(marker), "pruning blocked")
@@ -256,7 +256,7 @@ return function(ctx)
 		local dir = vim.fn.stdpath("cache") .. "/lazyvcs/commit"
 		local marker = dir .. "/zzzz-review.txt"
 		h.write_file(marker, "barrier")
-		local old = os.time() - vim.uv.uptime() - 10
+		local old = os.time() - vim.uv.uptime() - 86410
 		assert(vim.uv.fs_utime(marker, old, old))
 		require("lazyvcs.source_control.commit_files").prune()
 		wait(function()
@@ -272,7 +272,7 @@ return function(ctx)
 				local files = require("lazyvcs.source_control.commit_files")
 				local open = vim.uv.fs_open
 				local ok, err = xpcall(function()
-					for _, old in ipairs({ false, true }) do
+					for _, age in ipairs({ 0, 10, 86390, 86410 }) do
 						local file = assert(files.create("private"))
 						local owner = file.path .. ".owner"
 						if mode == "missing" then
@@ -302,12 +302,15 @@ return function(ctx)
 							end
 							h.write_file(owner, vim.json.encode(record))
 						end
-						if old then
-							local before_boot = os.time() - vim.uv.uptime() - 10
+						if age > 0 then
+							local before_boot = os.time() - vim.uv.uptime() - age
 							assert(vim.uv.fs_utime(file.path, before_boot, before_boot))
 						end
 						prune_scan()
-						assert((vim.uv.fs_stat(file.path) == nil) == old, mode .. ": wrong legacy age release")
+						assert(
+							(vim.uv.fs_stat(file.path) == nil) == (age > 86400),
+							mode .. ": wrong legacy age release"
+						)
 						vim.uv.fs_open = open
 						files.release(file)
 					end
@@ -325,12 +328,13 @@ return function(ctx)
 				local file = assert(files.create("private"))
 				local sidecar = file.path .. suffix
 				h.write_file(sidecar, "sidecar")
-				local old = os.time() - vim.uv.uptime() - 10
+				local old = os.time() - vim.uv.uptime() - 86410
 				assert(vim.uv.fs_utime(sidecar, old, old))
 				prune_scan()
 				assert(vim.uv.fs_stat(sidecar), "owned sidecar was removed")
 				assert(vim.uv.fs_unlink(file.path))
-				assert(vim.uv.fs_utime(sidecar, os.time(), os.time()))
+				local recent = os.time() - vim.uv.uptime() - 10
+				assert(vim.uv.fs_utime(sidecar, recent, recent))
 				prune_scan()
 				assert(vim.uv.fs_stat(sidecar), "fresh orphan was removed")
 				assert(vim.uv.fs_utime(sidecar, old, old))
@@ -341,7 +345,7 @@ return function(ctx)
 		}
 	end
 	extra[#extra + 1] = {
-		"test_source_control_commit_clock_step_uses_platform_consumer_policy",
+		"test_source_control_commit_clock_step_requires_consumer_evidence",
 		function()
 			local files = require("lazyvcs.source_control.commit_files")
 			local uname, kill = vim.uv.os_uname, vim.uv.kill
@@ -351,17 +355,29 @@ return function(ctx)
 					vim.uv.os_uname = function()
 						return { sysname = platform }
 					end
-					local file = assert(files.create("live message"))
-					files.attach(file, { process = { pid = vim.fn.getpid() } })
-					local record = vim.deepcopy(file.record)
-					record.boot, record.boot_id, record.platform = record.boot - 100, nil, platform
-					h.write_file(file.path .. ".owner", vim.json.encode(record))
-					prune_scan()
-					assert(
-						(vim.uv.fs_stat(file.path) == nil) == (platform == "Windows_NT"),
-						platform .. ": wrong changed-boot consumer release"
-					)
-					files.release(file)
+					for _, result in ipairs({ "alive", "EPERM", "ESRCH" }) do
+						local file = assert(files.create("live message"))
+						files.attach(file, { process = { pid = vim.fn.getpid() } })
+						local record = vim.deepcopy(file.record)
+						record.boot, record.boot_id = record.boot - 100, nil
+						h.write_file(file.path .. ".owner", vim.json.encode(record))
+						local probes = 0
+						rawset(vim.uv, "kill", function(pid, signal)
+							assert(pid == record.pid and signal == 0)
+							probes = probes + 1
+							if result == "alive" then
+								return true
+							end
+							return nil, result, result
+						end)
+						prune_scan()
+						assert(
+							(vim.uv.fs_stat(file.path) == nil) == (result == "ESRCH"),
+							platform .. "/" .. result .. ": estimate change alone released consumer message"
+						)
+						assert(probes == 1, "consumer was not probed after estimate change")
+						files.release(file)
+					end
 					vim.uv.os_uname = uname
 				end
 			end, debug.traceback)
@@ -419,8 +435,8 @@ return function(ctx)
 						vim.uv.os_uname = function()
 							return { sysname = platform }
 						end
-						for _, changed in ipairs({ false, true }) do
-							for _, result in ipairs({ "ESRCH", "alive", "EPERM" }) do
+						for _, changed in ipairs({ true, false }) do
+							for _, result in ipairs({ "alive", "ESRCH", "EPERM" }) do
 								local file = assert(files.create("pending message"))
 								if mode == "attach_failed" then
 									vim.uv.fs_rename = function()
@@ -451,13 +467,12 @@ return function(ctx)
 									return nil, result, result
 								end)
 								prune_scan()
-								local released = platform == "Windows_NT"
-									and (changed or (mode ~= "legacy" and result == "ESRCH"))
+								local released = platform == "Windows_NT" and mode ~= "legacy" and result == "ESRCH"
 								assert(
 									(vim.uv.fs_stat(file.path) == nil) == released,
 									platform .. "/" .. result .. ": wrong fresh PID-less release"
 								)
-								if platform ~= "Windows_NT" then
+								if not released then
 									local boot = os.time() - vim.uv.uptime()
 									for _, age in ipairs({ 10, 86390, 86410 }) do
 										assert(vim.uv.fs_utime(file.path, boot - age, boot - age))
@@ -470,7 +485,11 @@ return function(ctx)
 								end
 								assert(
 									probes
-										== ((platform == "Windows_NT" and not changed and mode ~= "legacy") and 1 or 0),
+										== (
+											(platform == "Windows_NT" and mode ~= "legacy")
+												and (released and 1 or 3)
+											or 0
+										),
 									"PID-less cleanup probed an unverifiable owner"
 								)
 								files.release(file)
@@ -533,7 +552,7 @@ return function(ctx)
 	end
 
 	extra[#extra + 1] = {
-		"test_source_control_commit_foreign_namespace_uses_legacy_boot_age",
+		"test_source_control_commit_foreign_namespace_requires_one_day_margin",
 		function()
 			local files = require("lazyvcs.source_control.commit_files")
 			local uname, kill = vim.uv.os_uname, vim.uv.kill
@@ -546,7 +565,7 @@ return function(ctx)
 				end)
 				for _, mode in ipairs({ "attached", "pending", "legacy" }) do
 					for _, changed in ipairs({ false, true }) do
-						for _, old in ipairs({ false, true }) do
+						for _, age in ipairs({ 0, 10, 86390, 86410 }) do
 							local file = assert(files.create("foreign message"))
 							local record = vim.deepcopy(file.record)
 							record.pid = vim.fn.getpid()
@@ -562,14 +581,14 @@ return function(ctx)
 								record.boot = record.boot - 100
 							end
 							h.write_file(file.path .. ".owner", vim.json.encode(record))
-							if old then
-								local age = os.time() - vim.uv.uptime() - 10
-								assert(vim.uv.fs_utime(file.path, age, age))
+							if age > 0 then
+								local mtime = os.time() - vim.uv.uptime() - age
+								assert(vim.uv.fs_utime(file.path, mtime, mtime))
 							end
 							prune_scan()
 							assert(
-								(vim.uv.fs_stat(file.path) == nil) == (changed and old and mode == "attached"),
-								"foreign namespace did not apply changed-boot legacy age rule"
+								(vim.uv.fs_stat(file.path) == nil) == (age > 86400),
+								"foreign namespace did not apply one-day margin"
 							)
 							files.release(file)
 						end
@@ -580,6 +599,45 @@ return function(ctx)
 			assert(ok, err)
 		end,
 	}
+
+	for _, platform in ipairs({ "Darwin", "Linux", "Windows_NT" }) do
+		extra[#extra + 1] = {
+			"test_source_control_commit_attached_one_day_margin_" .. platform,
+			function()
+				local files = require("lazyvcs.source_control.commit_files")
+				local uname, kill = vim.uv.os_uname, vim.uv.kill
+				local restore_scope = linux_scope()
+				local ok, err = xpcall(function()
+					vim.uv.os_uname = function()
+						return { sysname = platform }
+					end
+					for _, result in ipairs({ "alive", "EPERM" }) do
+						local file = assert(files.create("attached message"))
+						files.attach(file, { process = { pid = vim.fn.getpid() } })
+						local record = vim.deepcopy(file.record)
+						record.boot_id = nil
+						h.write_file(file.path .. ".owner", vim.json.encode(record))
+						rawset(vim.uv, "kill", function()
+							if result == "alive" then
+								return true
+							end
+							return nil, result, result
+						end)
+						for _, age in ipairs({ 10, 86390, 86410 }) do
+							local mtime = os.time() - vim.uv.uptime() - age
+							assert(vim.uv.fs_utime(file.path, mtime, mtime))
+							prune_scan()
+							assert((vim.uv.fs_stat(file.path) == nil) == (age > 86400), "wrong attached age release")
+						end
+						files.release(file)
+					end
+				end, debug.traceback)
+				restore_scope()
+				vim.uv.os_uname, vim.uv.kill = uname, kill
+				assert(ok, err)
+			end,
+		}
+	end
 
 	local cases = {
 		{ "test_source_control_commit_pruning_requires_ownership_evidence", policy },

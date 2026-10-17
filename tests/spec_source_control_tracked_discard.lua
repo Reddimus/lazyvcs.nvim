@@ -451,24 +451,51 @@ return function(ctx)
 		}
 	end
 
-	for _, mode in ipairs({ "unborn", "truncated_subtree", "incomplete_record" }) do
+	for _, mode in ipairs({
+		"unborn",
+		"truncated_subtree",
+		"incomplete_record",
+		"processed_head",
+		"head_spawn_error",
+		"head_scheduler_rejection",
+		"head_output_overflow",
+		"head_nonexit_error",
+		"head_spawn_throw",
+		"unborn_index_gitlink",
+		"first_gitlink_truncated",
+	}) do
 		extra[#extra + 1] = {
 			"test_source_control_tracked_discard_ancestor_" .. mode,
 			guarded(function()
+				local unborn = mode == "unborn" or mode == "unborn_index_gitlink"
+				local gitlink = mode == "unborn_index_gitlink" or mode == "first_gitlink_truncated"
 				local f
-				if mode == "unborn" then
+				if unborn then
 					f = { root = h.tempdir() }
 					h.exec({ "git", "init" }, f.root)
 				else
 					f = h.make_git_fixture()
 				end
 				vim.fn.mkdir(f.root .. "/d/nested", "p")
-				local relative = "d/nested/f"
+				local relative = "d/nested/" .. (mode == "incomplete_record" and string.rep("f", 150) or "f")
 				local path = f.root .. "/" .. relative
 				h.write_file(path, "index version\n")
 				h.exec({ "git", "add", "--", relative }, f.root)
 				h.write_file(path, "working version\n")
 				local state, node = row(f, "git", path, "changes")
+				if gitlink then
+					local oid = util.trim(h.exec({ "git", "hash-object", "-w", path }, f.root))
+					h.exec({ "git", "update-index", "--force-remove", "--", relative }, f.root)
+					h.exec({ "git", "update-index", "--add", "--cacheinfo", "160000", oid, "d" }, f.root)
+				end
+				-- Real Git output exceeds the 128-byte stdout budget. For the gitlink
+				-- case, extra siblings follow the exact ancestor in the index order.
+				for i = 1, 8 do
+					local name = (gitlink and "z-padding-" or "d/nested/z-padding-") .. i
+					h.write_file(f.root .. "/" .. name, "padding\n")
+					h.exec({ "git", "add", "--", name }, f.root)
+				end
+				local before = h.exec({ "git", "ls-files", "--stage" }, f.root)
 				local start, ran, injected, heads, trees = util.system_start, false, false, 0, 0
 				local message
 				---@diagnostic disable-next-line: duplicate-set-field
@@ -477,8 +504,35 @@ return function(ctx)
 				end
 				---@diagnostic disable-next-line: duplicate-set-field
 				util.system_start = function(args, opts, cb)
-					if vim.tbl_contains(args, "rev-parse") and vim.tbl_contains(args, "HEAD^{commit}") then
+					local head = vim.tbl_contains(args, "rev-parse") and vim.tbl_contains(args, "HEAD^{commit}")
+					if head then
 						heads = heads + 1
+						if mode == "head_spawn_throw" then
+							error("spawn rejected")
+						elseif mode == "head_spawn_error" then
+							return start({ "lazyvcs-missing-head-command" }, opts, cb)
+						elseif mode == "head_scheduler_rejection" or mode == "head_nonexit_error" then
+							vim.schedule(function()
+								cb(nil, "scheduler rejected", {
+									code = 1,
+									stdout = "",
+									stderr = "",
+									signal = mode == "head_nonexit_error" and 0 or nil,
+								})
+							end)
+							return {}
+						elseif mode == "head_output_overflow" then
+							return start(
+								{ "git", "ls-files", "--stage", "-z" },
+								vim.tbl_extend("force", opts, { output_limit = 256 }),
+								cb
+							)
+						elseif mode == "processed_head" then
+							return start(args, opts, function(result, err, raw)
+								assert(result, err)
+								cb({ stdout = result.stdout, stderr = result.stderr }, nil, raw)
+							end)
+						end
 					end
 					if vim.tbl_contains(args, "ls-tree") then
 						trees = trees + 1
@@ -486,36 +540,66 @@ return function(ctx)
 					if args[2] == "restore" then
 						ran = true
 					end
-					if mode ~= "unborn" and vim.tbl_contains(args, "ls-files") and args[#args] == "d" then
-						injected = true
-						return start(args, opts, function(result, err, raw)
-							assert(result, err)
-							local first = assert(result.stdout:match("^[^%z]+%z"))
-							result.stdout = mode == "incomplete_record" and first:sub(1, 12)
-								or (first .. "100644 partial descendant")
-							result.stdout_truncated = true
-							cb(result, nil, raw)
-						end)
+					if
+						(
+							mode == "truncated_subtree"
+							or mode == "incomplete_record"
+							or mode == "first_gitlink_truncated"
+						)
+						and vim.tbl_contains(args, "ls-files")
+						and args[#args] == "d"
+					then
+						local command = vim.deepcopy(args)
+						if gitlink then
+							-- Enumerate siblings too, to exercise a gitlink followed by overflow.
+							table.remove(command)
+						end
+						return start(
+							command,
+							vim.tbl_extend("force", opts, { output_limit = 256 }),
+							function(result, err, raw)
+								assert(
+									result and not err and result.code == 0,
+									"overflow did not preserve successful exit"
+								)
+								assert(
+									result.stdout_truncated and #result.stdout <= 128,
+									"real output limit was not exercised"
+								)
+								assert(result.stdout:match("^%d+ %x+ %d\t"), "overflow did not keep stdout beginning")
+								injected = true
+								cb(result, err, raw)
+							end
+						)
 					end
 					return start(args, opts, cb)
 				end
 				ops.revert_file(state, node)
 				finished(f.root)
-				if mode == "incomplete_record" then
-					assert(injected and not ran, "incomplete ancestor check reached restore")
+				if gitlink then
+					assert(not ran, mode .. ": gitlink ancestor reached restore")
+					assert(message and message:find("nested repository ancestor at d", 1, true), tostring(message))
+					assert(mode ~= "first_gitlink_truncated" or injected, "gitlink overflow was not exercised")
+					assert(heads == 0 and trees == 0, "index refusal unnecessarily queried HEAD")
+				elseif mode == "incomplete_record" or mode:match("^head_") then
+					assert(not ran, mode .. ": unverifiable ancestor reached restore")
+					local expected = mode == "incomplete_record" and "ancestor check could not complete at d"
+						or "Cannot verify HEAD for tracked Discard"
 					assert(
-						message
-							and message:find("ancestor check could not complete at d", 1, true)
-							and not message:find("nested repository", 1, true),
-						"incomplete check misreported a nested repository: " .. tostring(message)
+						message and message:find(expected, 1, true),
+						"unclear verification failure: " .. tostring(message)
 					)
-					assert(vim.fn.readfile(path)[1] == "working version", "incomplete check changed file")
+					assert(trees == 0, "unverifiable HEAD queried ls-tree")
 				else
 					assert(ran and not session.get_repo_job(f.root), mode .. ": safe restore was refused")
 					assert(vim.fn.readfile(path)[1] == "index version", "Discard did not restore index bytes")
 					assert(heads == 1, "HEAD availability was not cached once per mutation")
-					assert(mode ~= "unborn" or trees == 0, "unborn repository queried ls-tree HEAD")
+					assert(unborn and trees == 0 or not unborn and trees >= 1, "wrong HEAD tree query count")
 					assert(mode ~= "truncated_subtree" or injected, "subtree truncation was not exercised")
+				end
+				if not ran then
+					assert(vim.fn.readfile(path)[1] == "working version", "refused check changed file")
+					assert(h.exec({ "git", "ls-files", "--stage" }, f.root) == before, "refused check changed index")
 				end
 			end),
 		}
