@@ -1,5 +1,7 @@
 return function(ctx)
 	local h = ctx.helpers
+	-- Child editors load the plugin from this checkout, whatever the suite's working directory.
+	local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
 	return {
 		{
 			"test_source_control_json_read_follows_regular_symlink",
@@ -51,7 +53,7 @@ assert(vim.deep_equal(require("lazyvcs.json_file").read(%q), {}), "FIFO did not 
 assert(flags_seen, "FIFO open was not nonblocking")
 assert(opened == 1 and closed == 1, "FIFO descriptor leaked")
 ]],
-						vim.fn.getcwd(),
+						root,
 						path,
 						path
 					)
