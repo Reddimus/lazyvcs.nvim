@@ -35,6 +35,7 @@ function M.normalize(line, policy)
 	return (line:gsub("[ \t]+$", ""))
 end
 
+---@return string[]? selected, string? err, string[]? validated_source_lines
 function M.select(lines, opts, policy)
 	if not M.full_file(opts) and not (policy and policy.validate) then
 		return lines
@@ -53,6 +54,7 @@ function M.select(lines, opts, policy)
 	if not opts.text or #records ~= #opts.text.lines then
 		return nil, "Unsupported blame line format: Git and the editor use different lines"
 	end
+	local validated_source_lines
 	if policy and policy.validate then
 		local source = {}
 		for _, item in ipairs(records) do
@@ -73,6 +75,7 @@ function M.select(lines, opts, policy)
 		if #decoded.lines ~= #records then
 			return nil, "Unsupported blame line format: Git and the editor use different lines"
 		end
+		validated_source_lines = decoded.lines
 		for number, line in ipairs(decoded.lines) do
 			if M.normalize(line, policy) ~= M.normalize(opts.text.lines[number], policy) then
 				return nil, "Unsupported blame line format: Git and the editor use different lines"
@@ -88,7 +91,7 @@ function M.select(lines, opts, policy)
 			vim.list_extend(selected, item.lines)
 		end
 	end
-	return selected
+	return selected, nil, validated_source_lines
 end
 
 function M.svn_base(bytes, profile, records, limit)
