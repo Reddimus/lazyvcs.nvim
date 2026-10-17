@@ -123,11 +123,17 @@ content limit. A preview never materializes omitted files.
 
 Snapshots decode each source to UTF-8 before display and hunk navigation. Git
 working-tree-encoding applies to saved files; normalized blobs use UTF-8. Other
-sources use compatible loaded-buffer encoding hints or 'fileencodings' and
-'fileformats'. Unsupported, lossy, binary, or oversized conversions show an
-unavailable reason. Both raw and decoded text are limited to 1 MiB per side.
-Blame retains the original source bytes. Encoding-profile changes invalidate
-cached snapshots and remembered review positions.
+sources try the encoding of an exactly matching loaded file buffer, then
+'fileencodings' if that hint cannot decode the bytes. Preview ignores buffer
+'fileformat' and 'fileformats': both sides normalize CRLF to LF, and a lone CR
+stays inside its line. Git UTF-16LE-BOM and UTF-16BE-BOM encoding names are
+accepted without regard to case. Unsupported, lossy, binary, or oversized
+conversions show an unavailable reason that names the preview side. Both raw and
+decoded text are limited to 1 MiB per side. Blame retains the original source
+bytes. SVN saved-preview blame maps decoded BASE lines onto the captured preview
+text, so encoding and CRLF changes preserve unchanged-line attribution.
+Encoding-profile changes invalidate cached snapshots and remembered review
+positions.
 
 SVN metadata includes properties on added versioned files, even when SVN's summary
 reports no property changes. Directory properties compare only the selected path
@@ -137,12 +143,17 @@ limited to 1 MiB per selected path, including generated headers. If optional
 properties are unavailable, metadata shows the reason and the text preview
 remains available. Metadata loads independently, so binary or oversized file
 content does not prevent property review. Returning to text retries content
-loading and shows its unavailable reason if necessary.
+loading and shows its unavailable reason if necessary. ]v and [v from a
+metadata-only result load text and then jump to the first or last hunk.
+Untracked paths show "No metadata or property changes for this path." without
+requesting SVN properties.
 
 SVN directory-to-file and file-to-directory replacements appear as one R row.
 Each file side shows its content; each directory side names the directory.
-Metadata compares the path's pinned and working-copy properties. Deleted
-children remain separate rows. Directory-property candidates are omitted only
+Metadata compares the path's pinned and working-copy properties even when
+neither summary side reports property changes. The [props] marker appears only
+when a summary side reports property changes. Deleted children remain separate
+rows. Directory-property candidates are omitted only
 when both shallow property reads succeed and their byte values match. Failed
 validation retains the row with a property-check warning.
 

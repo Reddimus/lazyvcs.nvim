@@ -272,7 +272,8 @@ function M.load(target, contents, callback, capture)
 			task:add(backend.blame_lines_async(target.path, finish, {
 				root = root,
 				contents = contents,
-				text = capture and capture.text,
+				text = target.text or (capture and capture.text),
+				preview = target.text ~= nil,
 				profile = capture and capture.profile,
 				line_start = target.first,
 				line_end = target.last,

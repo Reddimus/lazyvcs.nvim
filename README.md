@@ -91,7 +91,9 @@ installation mappings use `<leader>vc` to compare and `<leader>vC` to choose a
 base. Deleted files focus the base pane; binary and oversized files remain
 listed without a text preview. SVN properties remain available through metadata.
 Snapshots decode each source to UTF-8 for display, including Git
-`working-tree-encoding` files, while blame retains the original bytes.
+`working-tree-encoding` files, while blame retains the original bytes. Display
+normalizes CRLF to LF on both sides and preserves lone CR characters as content.
+Hunk navigation from metadata loads the text before jumping.
 
 Snapshots are unlisted and loaded on demand; ordinary buffer cycling stays
 unchanged. Compare keeps up to 32 cached files, plus current, visible, or

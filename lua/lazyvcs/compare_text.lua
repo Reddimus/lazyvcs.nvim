@@ -232,17 +232,15 @@ function M.decode_preview(bytes, opts, limit_bytes)
 	end
 	local encodings = {}
 	if opts.encoding then
-		local encoding = opts.encoding:lower()
+		local encoding = opts.encoding:lower():gsub("^(utf%-16[lb]e)%-bom$", "%1")
 		if encoding == "utf-16" and bytes:sub(1, 2) == "\255\254" then
 			encoding = "utf-16le"
 		end
 		encodings = { encoding }
-	elseif opts.hint then
-		if opts.hint.binary then
-			return nil, "Binary file; text preview unavailable"
-		end
-		encodings = { opts.hint.fileencoding }
 	else
+		if opts.hint then
+			encodings[#encodings + 1] = opts.hint.fileencoding
+		end
 		for encoding in (opts.fileencodings or "ucs-bom,utf-8,default,latin1"):gmatch("[^,]+") do
 			if encoding == "ucs-bom" then
 				for _, signature in ipairs(signatures) do
@@ -256,39 +254,27 @@ function M.decode_preview(bytes, opts, limit_bytes)
 			end
 		end
 		if opts.fileencodings == "" then
-			encodings = { "utf-8" }
+			encodings[#encodings + 1] = "utf-8"
 		end
 	end
 	local failure = "Source encoding could not be determined"
-	for _, encoding in ipairs(encodings) do
+	for index, encoding in ipairs(encodings) do
 		local profile = {
 			fileencoding = encoding,
-			fileformat = "unix",
+			-- Preview always normalizes CRLF, independent of editor read/write options.
+			fileformat = "dos",
 			bomb = false,
 			binary = false,
-			key = encoding .. ":unix",
+			key = encoding .. ":preview-lf",
 		}
 		local document, err = M.decode(bytes, profile, limit_bytes)
 		if document then
-			local decoded = M.serialize(document)
-			local formats = "," .. (opts.fileformats or "unix,dos") .. ","
-			local format = opts.hint and opts.hint.fileformat or "unix"
-			if not opts.hint then
-				if formats:find(",dos,", 1, true) and decoded:find("\r\n", 1, true) then
-					format = "dos"
-				elseif
-					formats:find(",mac,", 1, true)
-					and not decoded:find("\n", 1, true)
-					and decoded:find("\r", 1, true)
-				then
-					format = "mac"
-				end
-			end
-			profile.fileformat, profile.key = format, encoding .. ":" .. format .. ":" .. tostring(document.bom)
-			return M.decode(bytes, profile, limit_bytes)
+			document.profile_key = profile.key .. ":" .. tostring(document.bom)
+			return document
 		end
 		failure = err or failure
-		if failure:find("Binary", 1, true) or failure:find("Decoded text exceeds", 1, true) then
+		local failed_hint = not opts.encoding and opts.hint and index == 1
+		if not failed_hint and (failure:find("Binary", 1, true) or failure:find("Decoded text exceeds", 1, true)) then
 			break
 		end
 	end
@@ -297,6 +283,10 @@ function M.decode_preview(bytes, opts, limit_bytes)
 	elseif failure:find("exceeds", 1, true) then
 		return nil, "Decoded text exceeds the 1 MiB preview limit"
 	end
+	failure = failure
+		:gsub("the VCS base", "preview text")
+		:gsub("VCS base encoding", "Preview encoding")
+		:gsub("Invalid UCS%-4 base", "Invalid UCS-4 preview text")
 	return nil, failure
 end
 

@@ -812,6 +812,16 @@ function M.jump_to_hunk(direction)
 		request_preview(s, direction == "next" and "first" or "last")
 	else
 		navigation.cancel(s)
+		if s.preview_result and s.preview_result.loaded and not s.preview_result.loaded.text then
+			preview(
+				s,
+				s.shown_item,
+				"text",
+				nil,
+				navigation.intent(s, s.shown_item, direction == "next" and "first" or "last")
+			)
+			return true
+		end
 		if s.preview_result and s.mode ~= "text" then
 			show_result(s, "text")
 		end
@@ -1596,6 +1606,7 @@ function M.blame_target(buf)
 		item = item,
 		side = side,
 		bytes = side == "base" and result.left_bytes or result.right_bytes,
+		text = side == "base" and result.left_document or result.right_document,
 		valid = function()
 			return alive(s) and s.snapshot == snapshot and s.preview_result == result and s.mode == "text"
 		end,

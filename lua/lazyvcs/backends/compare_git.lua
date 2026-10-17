@@ -449,7 +449,7 @@ function M.preview(snapshot, item, callback, opts)
 		command(task, snapshot, args, function(raw, err)
 			if not raw then
 				-- Older Git versions cannot inspect attributes from a tree.
-				if revision and tostring(err):find("unknown option", 1, true) then
+				if revision then
 					return done({})
 				end
 				return task:finish(nil, err)
@@ -461,14 +461,32 @@ function M.preview(snapshot, item, callback, opts)
 			done(attrs)
 		end)
 	end
-	read_attributes(item.relpath, nil, function(attrs)
-		right_options.encoding = attributes.encoding(attrs)
-		blob_options.encoding = right_options.encoding and "utf-8" or nil
-		read_attributes(item.old_path or item.relpath, snapshot.revision, function(before)
-			left_options.encoding = attributes.encoding(before) and "utf-8" or nil
+	local empty_left = item.status == "A" or item.original_status == "A" or item.untracked
+	local empty_right = item.status == "D"
+	local pending = (empty_left and 0 or 1) + (empty_right and 0 or 1)
+	local function ready()
+		pending = pending - 1
+		if pending == 0 and task:is_active() then
 			left()
-		end)
-	end)
+		end
+	end
+	if pending == 0 then
+		left()
+	else
+		if not empty_right then
+			read_attributes(item.relpath, nil, function(attrs)
+				right_options.encoding = attributes.encoding(attrs)
+				blob_options.encoding = right_options.encoding and "utf-8" or nil
+				ready()
+			end)
+		end
+		if not empty_left then
+			read_attributes(item.old_path or item.relpath, snapshot.revision, function(before)
+				left_options.encoding = attributes.encoding(before) and "utf-8" or nil
+				ready()
+			end)
+		end
+	end
 	return task
 end
 

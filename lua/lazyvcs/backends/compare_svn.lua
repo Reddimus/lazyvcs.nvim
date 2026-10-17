@@ -187,7 +187,8 @@ function M.list(snapshot, include_untracked, callback)
 					local after = previous.status == "A" and previous or item
 					previous.kind_before, previous.kind_after = before.kind, after.kind
 					previous.status, previous.kind = "R", after.kind
-					previous.properties, previous.property_only = true, false
+					previous.properties = before.properties or after.properties
+					previous.load_properties, previous.property_only = true, false
 				else
 					paths[item.relpath] = item
 					merged[#merged + 1] = item
@@ -342,7 +343,14 @@ function M.preview(snapshot, item, callback, opts)
 		result.details = { "Property validation failed: " .. tostring(item.property_check_error):gsub("%s+", " ") }
 	end
 	local function finish()
-		if not item.properties and not (item.status == "A" and not item.untracked) then
+		if
+			not (
+				item.properties
+				or item.property_only
+				or item.load_properties
+				or (item.status == "A" and not item.untracked)
+			)
+		then
 			return task:finish(result)
 		end
 		load_property_patch(task, snapshot, item, function(lines, err)
@@ -357,16 +365,7 @@ function M.preview(snapshot, item, callback, opts)
 		end)
 	end
 	if opts and opts.mode == "metadata" then
-		load_property_patch(task, snapshot, item, function(lines, err)
-			result.properties = lines
-			if err then
-				result.details = vim.list_extend(
-					result.details or {},
-					require("lazyvcs.util").split_text_lines("Properties unavailable: " .. tostring(err))
-				)
-			end
-			task:finish(result)
-		end)
+		schedule(task, finish)
 		return task
 	end
 	if item.property_only then
