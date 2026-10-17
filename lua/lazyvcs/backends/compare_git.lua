@@ -346,10 +346,13 @@ local function load_saved_side(task, snapshot, item, done)
 	end)
 end
 
-function M.preview(snapshot, item, callback)
+function M.preview(snapshot, item, callback, opts)
 	local task = common.task(callback)
-	local result =
-		{ left_label = snapshot.base .. " @ " .. snapshot.revision:sub(1, 12), right_label = "SAVED WORKTREE" }
+	local result = {
+		left_label = snapshot.base .. " @ " .. snapshot.revision:sub(1, 12),
+		right_label = "SAVED WORKTREE",
+		loaded = { text = not (opts and opts.mode == "metadata"), metadata = true },
+	}
 	local function finish()
 		local args = { "diff", "--no-ext-diff", "--no-textconv", "--summary", snapshot.revision, "--", item.relpath }
 		if item.old_path then
@@ -364,6 +367,10 @@ function M.preview(snapshot, item, callback)
 			end
 			task:finish(result)
 		end)
+	end
+	if opts and opts.mode == "metadata" then
+		finish()
+		return task
 	end
 	local stat = vim.uv.fs_lstat(snapshot.root .. "/" .. item.relpath)
 	if stat and stat.type == "directory" then
@@ -384,47 +391,84 @@ function M.preview(snapshot, item, callback)
 		)
 		return task
 	end
+	local left_options = common.decode_options(snapshot.root .. "/" .. (item.old_path or item.relpath))
+	left_options.hint = nil
+	local right_options = common.decode_options(snapshot.root .. "/" .. item.relpath)
+	local blob_options = vim.deepcopy(right_options)
+	blob_options.hint = nil
 	local function right()
 		if item.status == "D" then
-			result.right = {}
+			common.decode_side(result, "right", "", { encoding = "utf-8" })
 			return finish()
 		end
 		load_saved_side(task, snapshot, item, function(data, source, err)
 			if not data then
 				return task:finish(nil, err)
 			end
-			local lines, line_err = common.lines(data)
-			if not lines then
+			local decoded, line_err =
+				common.decode_side(result, "right", data, source and blob_options or right_options)
+			if not decoded then
 				return task:finish(nil, line_err)
 			end
-			result.right, result.right_bytes, result.right_source = lines, data, source
+			result.right_source = source
 			if source then
 				result.right_label = "INDEX (sparse checkout)"
 			end
 			finish()
 		end)
 	end
-	if item.status == "A" or item.original_status == "A" or item.untracked then
-		result.left = {}
-		right()
-	else
-		command(
-			task,
-			snapshot,
-			{ "show", "--no-ext-diff", snapshot.revision .. ":" .. (item.old_path or item.relpath) },
-			function(data, err)
-				if not data then
-					return task:finish(nil, err)
+	local function left()
+		if item.status == "A" or item.original_status == "A" or item.untracked then
+			common.decode_side(result, "left", "", { encoding = "utf-8" })
+			right()
+		else
+			command(
+				task,
+				snapshot,
+				{ "show", "--no-ext-diff", snapshot.revision .. ":" .. (item.old_path or item.relpath) },
+				function(data, err)
+					if not data then
+						return task:finish(nil, err)
+					end
+					local decoded, line_err = common.decode_side(result, "left", data, left_options)
+					if not decoded then
+						return task:finish(nil, line_err)
+					end
+					right()
 				end
-				local lines, line_err = common.lines(data)
-				if not lines then
-					return task:finish(nil, line_err)
-				end
-				result.left, result.left_bytes = lines, data
-				right()
-			end
-		)
+			)
+		end
 	end
+	local attributes = require("lazyvcs.backends.git_attributes")
+	local function read_attributes(path, revision, done)
+		local args = { "check-attr", "-z" }
+		if revision then
+			args[#args + 1] = "--source=" .. revision
+		end
+		vim.list_extend(args, { "working-tree-encoding", "--", path })
+		command(task, snapshot, args, function(raw, err)
+			if not raw then
+				-- Older Git versions cannot inspect attributes from a tree.
+				if revision and tostring(err):find("unknown option", 1, true) then
+					return done({})
+				end
+				return task:finish(nil, err)
+			end
+			local attrs, parse_err = attributes.parse(raw, path)
+			if not attrs then
+				return task:finish(nil, parse_err)
+			end
+			done(attrs)
+		end)
+	end
+	read_attributes(item.relpath, nil, function(attrs)
+		right_options.encoding = attributes.encoding(attrs)
+		blob_options.encoding = right_options.encoding and "utf-8" or nil
+		read_attributes(item.old_path or item.relpath, snapshot.revision, function(before)
+			left_options.encoding = attributes.encoding(before) and "utf-8" or nil
+			left()
+		end)
+	end)
 	return task
 end
 

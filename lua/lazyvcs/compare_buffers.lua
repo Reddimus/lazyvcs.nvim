@@ -317,6 +317,7 @@ function M.store(s, item, result)
 		or not vim.api.nvim_buf_is_valid(pair.left)
 		or not vim.api.nvim_buf_is_valid(pair.right)
 		or pair.stale
+		or pair.profile_key ~= result.profile_key
 	then
 		if pair then
 			discard(s, pair)
@@ -347,6 +348,7 @@ function M.store(s, item, result)
 			s.keymaps[side[2]] = s.pane_mappings
 		end
 	end
+	pair.profile_key = result.profile_key
 	pair.version = (pair.version or 0) + 1
 	for _, buf in ipairs({ pair.left, pair.right }) do
 		if not vim.api.nvim_buf_is_loaded(buf) then

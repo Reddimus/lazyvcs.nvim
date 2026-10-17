@@ -130,14 +130,9 @@ end
 
 -- Only built-in ident expansion is safe for background checkout-form reads.
 local function index_encoding(records)
-	local attrs = {}
-	for name, value in records:gmatch("[^%z]*%z([^%z]*)%z([^%z]*)%z") do
-		attrs[name] = value
-	end
-	local attribute = attrs["working-tree-encoding"]
-	if attribute == "unspecified" or attribute == "unset" then
-		attribute = nil
-	end
+	local attributes = require("lazyvcs.backends.git_attributes")
+	local attrs = attributes.parse(records) or {}
+	local attribute = attributes.encoding(attrs)
 	local filter = attrs.filter
 	local checkout = attrs.ident == "set" and (filter == "unspecified" or filter == "unset")
 	return { encoding = not checkout and attribute and "utf-8" or nil, attribute = attribute, checkout = checkout }
@@ -770,7 +765,8 @@ function M.parse_status(raw, root)
 	local items = {}
 	for _, item in ipairs(records) do
 		local index, worktree = item.status:sub(1, 1), item.status:sub(2, 2)
-		local code = worktree ~= " " and worktree or index
+		local code = require("lazyvcs.backends.git_status").is_unmerged(item.status) and "U"
+			or (worktree ~= " " and worktree or index)
 		items[#items + 1] = {
 			status = code,
 			label = status_label(code),

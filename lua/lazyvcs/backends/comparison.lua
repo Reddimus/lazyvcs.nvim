@@ -131,6 +131,29 @@ function M.read_file(task, path, callback)
 	end)
 end
 
+function M.decode_options(path)
+	local text = require("lazyvcs.compare_text")
+	local buf = vim.fn.bufnr(path)
+	return {
+		hint = buf > 0 and text.profile(buf) or nil,
+		fileencodings = vim.o.fileencodings,
+		fileformats = vim.o.fileformats,
+	}
+end
+
+function M.decode_side(result, side, bytes, opts)
+	local document, err = require("lazyvcs.compare_text").decode_preview(bytes, opts, M.max_file_bytes)
+	if not document then
+		return nil, err
+	end
+	result[side], result[side .. "_document"], result[side .. "_bytes"] = document.lines, document, bytes
+	result.profile_key = table.concat({
+		result.left_document and result.left_document.profile_key or "",
+		result.right_document and result.right_document.profile_key or "",
+	}, "\0")
+	return true
+end
+
 function M.lines(data)
 	if type(data) ~= "string" then
 		return nil, "File contents unavailable"

@@ -222,6 +222,84 @@ function M.decode(bytes, profile, limit_bytes)
 	return { lines = lines, eol = eol, empty = empty, encoding = source, bom = bom, profile_key = profile.key }
 end
 
+---@param bytes string
+---@param opts table
+---@param limit_bytes integer
+---@return LazyVcsText? document, string? err
+function M.decode_preview(bytes, opts, limit_bytes)
+	if #bytes > limit_bytes then
+		return nil, "File exceeds the 1 MiB preview limit"
+	end
+	local encodings = {}
+	if opts.encoding then
+		local encoding = opts.encoding:lower()
+		if encoding == "utf-16" and bytes:sub(1, 2) == "\255\254" then
+			encoding = "utf-16le"
+		end
+		encodings = { encoding }
+	elseif opts.hint then
+		if opts.hint.binary then
+			return nil, "Binary file; text preview unavailable"
+		end
+		encodings = { opts.hint.fileencoding }
+	else
+		for encoding in (opts.fileencodings or "ucs-bom,utf-8,default,latin1"):gmatch("[^,]+") do
+			if encoding == "ucs-bom" then
+				for _, signature in ipairs(signatures) do
+					if bytes:sub(1, #signature[1]) == signature[1] then
+						encodings[#encodings + 1] = signature[2]
+						break
+					end
+				end
+			else
+				encodings[#encodings + 1] = encoding == "default" and "utf-8" or encoding
+			end
+		end
+		if opts.fileencodings == "" then
+			encodings = { "utf-8" }
+		end
+	end
+	local failure = "Source encoding could not be determined"
+	for _, encoding in ipairs(encodings) do
+		local profile = {
+			fileencoding = encoding,
+			fileformat = "unix",
+			bomb = false,
+			binary = false,
+			key = encoding .. ":unix",
+		}
+		local document, err = M.decode(bytes, profile, limit_bytes)
+		if document then
+			local decoded = M.serialize(document)
+			local formats = "," .. (opts.fileformats or "unix,dos") .. ","
+			local format = opts.hint and opts.hint.fileformat or "unix"
+			if not opts.hint then
+				if formats:find(",dos,", 1, true) and decoded:find("\r\n", 1, true) then
+					format = "dos"
+				elseif
+					formats:find(",mac,", 1, true)
+					and not decoded:find("\n", 1, true)
+					and decoded:find("\r", 1, true)
+				then
+					format = "mac"
+				end
+			end
+			profile.fileformat, profile.key = format, encoding .. ":" .. format .. ":" .. tostring(document.bom)
+			return M.decode(bytes, profile, limit_bytes)
+		end
+		failure = err or failure
+		if failure:find("Binary", 1, true) or failure:find("Decoded text exceeds", 1, true) then
+			break
+		end
+	end
+	if failure:find("Binary", 1, true) then
+		return nil, "Binary file; text preview unavailable"
+	elseif failure:find("exceeds", 1, true) then
+		return nil, "Decoded text exceeds the 1 MiB preview limit"
+	end
+	return nil, failure
+end
+
 local function is_empty(bufnr, lines)
 	return #lines == 1
 		and lines[1] == ""

@@ -7260,6 +7260,12 @@ vim.list_extend(cases, require("spec_live_diff_alignment")({ helpers = helpers, 
 
 vim.list_extend(cases, require("spec_integrations_resession_batch")({ helpers = helpers, wait_for = wait_for }))
 
+vim.list_extend(cases, require("spec_git_conflicts")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_compare_svn_content")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_compare_encoding")({ helpers = helpers, wait_for = wait_for }))
+
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,
 }

@@ -587,6 +587,7 @@ return function(ctx)
 					left = { "latest" },
 					right = { "latest" },
 					left_label = "BASE",
+					profile_key = pair.profile_key,
 					right_label = "SAVED WORKTREE",
 				})
 				assert(pair.reload_job == nil and vim.api.nvim_buf_get_lines(pair.right, 0, 1, false)[1] == "latest")

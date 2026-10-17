@@ -271,7 +271,8 @@ return function(ctx)
 						git.preview(
 							snapshot(h.tempdir()),
 							{ relpath = "sample.txt", status = "D", original_status = "A" },
-							done
+							done,
+							{ mode = "metadata" }
 						)
 					end)
 					clean(value.details, { " mode change 100644 => 100755 sample.txt", "" })

@@ -49,6 +49,11 @@ function M.build(items)
 			marks[#marks + 1] = { #line, #line + 8, "Property" }
 			line = line .. " [props]"
 		end
+		if item.property_check_error then
+			local start = #line
+			line = line .. " [property check failed]"
+			marks[#marks + 1] = { start, #line, "Conflict" }
+		end
 		if parent then
 			local start = #line
 			line = line .. "  " .. M.display(parent)

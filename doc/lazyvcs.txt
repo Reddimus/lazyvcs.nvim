@@ -83,6 +83,7 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
                       current buffer.
 
 :LazyVCS files        Pick individual changed and nonignored untracked files.
+                     All seven unresolved Git status pairs show as U/conflicted.
                      SVN property changes are included; clean external markers
                      are excluded.
 
@@ -120,13 +121,30 @@ when Git confirms a stage-zero, regular skip-worktree entry. Present files
 still use saved filesystem contents. Sparse snapshots receive the full 1 MiB
 content limit. A preview never materializes omitted files.
 
+Snapshots decode each source to UTF-8 before display and hunk navigation. Git
+working-tree-encoding applies to saved files; normalized blobs use UTF-8. Other
+sources use compatible loaded-buffer encoding hints or 'fileencodings' and
+'fileformats'. Unsupported, lossy, binary, or oversized conversions show an
+unavailable reason. Both raw and decoded text are limited to 1 MiB per side.
+Blame retains the original source bytes. Encoding-profile changes invalidate
+cached snapshots and remembered review positions.
+
 SVN metadata includes properties on added versioned files, even when SVN's summary
 reports no property changes. Directory properties compare only the selected path
 against the pinned numeric revision, without descendant properties. Property-only
 patches also appear through p and :LazyVCS compare metadata. Property patches are
 limited to 1 MiB per selected path, including generated headers. If optional
 properties are unavailable, metadata shows the reason and the text preview
-remains available.
+remains available. Metadata loads independently, so binary or oversized file
+content does not prevent property review. Returning to text retries content
+loading and shows its unavailable reason if necessary.
+
+SVN directory-to-file and file-to-directory replacements appear as one R row.
+Each file side shows its content; each directory side names the directory.
+Metadata compares the path's pinned and working-copy properties. Deleted
+children remain separate rows. Directory-property candidates are omitted only
+when both shallow property reads succeed and their byte values match. Failed
+validation retains the row with a property-check warning.
 
 A base choice is remembered per worktree and branch, or per SVN working-copy URL.
 Detached Git choices last only for the comparison session. Each refresh pins

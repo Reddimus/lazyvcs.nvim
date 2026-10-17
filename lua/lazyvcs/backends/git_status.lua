@@ -1,5 +1,9 @@
 local M = {}
 
+function M.is_unmerged(status)
+	return ({ DD = true, AU = true, UA = true, UD = true, DU = true, AA = true, UU = true })[status] == true
+end
+
 function M.parse(raw)
 	local entries, cursor = {}, 1
 	raw = raw or ""

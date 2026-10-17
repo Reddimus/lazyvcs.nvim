@@ -127,12 +127,15 @@ the GitHub release.
   on Neovim APIs. Native editable hunks use full documents, including
   empty-content and EOF state. Live diff bounds both raw and decoded content to
   1 MiB per side; signs also honor `signs.max_file_bytes`. Profile changes
-  invalidate decoded bases. Revalidate entry eligibility and the captured
-  context before native replacement.
-- `backends/svn_properties.lua` loads only the selected directory's properties
-  at the pinned revision and in the working copy. XML transport has an 8 MiB
-  stdout limit, separate from each decoded property map's 1 MiB limit and the
-  rendered patch's 1 MiB limit, including headers.
+  invalidate decoded bases. Compare previews reuse the decoder with independent
+  source profiles and retain original bytes for blame. Both profile identities
+  participate in snapshot reuse and review-position invalidation. Revalidate
+  entry eligibility and the captured context before native replacement.
+- `backends/svn_properties.lua` loads shallow properties for directory discovery
+  candidates and selected previews at the pinned revision and in the working
+  copy. XML transport has an 8 MiB stdout limit, separate from each decoded
+  property map's 1 MiB limit and the rendered patch's 1 MiB limit, including
+  headers.
 - `source_control/jobs.lua` bounds and profiles repository/comparison commands.
 - Source-control summaries own branch, upstream, and remote status. Details own
   local rows and counts. Merge each completion into the current repository
@@ -172,7 +175,11 @@ the GitHub release.
   their slots and defers results while the picker router owns a borrowed buffer.
   Failed installations restore the preceding display or invalidate the session.
   Pane closure advances an epoch synchronously; asynchronous results must check
-  that epoch and all pane windows before installation.
+  that epoch and all pane windows before installation. Lists have unique
+  relpaths; SVN deletion/addition pairs coalesce into replacements with
+  before/after kinds. Preview results declare loaded text and metadata
+  capabilities. Metadata-only results never enter the text cache or hunk
+  computation.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_buffers.lua` owns snapshot identity, reload guards, and bounded
@@ -246,24 +253,28 @@ the GitHub release.
   spec is near LuaJIT's local-variable limit.
 
 Comparison discovery parses bounded command output in O(output bytes), sorts
-paths in O(files log files), and loads only the selected preview. Preview reads
-are bounded to 1 MiB. Untracked SVN directory traversal does not follow
-symlinks. Git rename detection has a limit of 1000 candidates. Repository
-resolution uses at most 512 cached directories and shares concurrent probes for
-one directory. Positive resolutions do not expire on cursor paths. Explicit
-refresh forces discovery. BufEnter and BufWritePost revalidate asynchronously at
-most once per directory every five seconds. Failed repository reads invalidate
-ownership and retry once, excluding cancellation, timeouts, and output limits.
-Root command output loses exactly one record terminator; supplied root hints
-retain every pathname byte. SVN ignore patterns are compiled once per discovery
-and matched in O(pattern tokens times filename bytes) with bounded row storage.
-Git retained-file reconciliation batches at most 128 paths and 24 KB of argument
-budget per command, preserving per-path clean filters. Wrapped alignment takes
-O(log hunks + visible units) time and O(visible units) space. The scheduler uses
-a priority heap with O(log queued) enqueue/dequeue and a 4096-job limit per
-queue. Editor commands have separate queues with two Git workers and one SVN
-worker, so background operations cannot consume their capacity. Sidebar
-cancellation leaves editor requests running.
+paths in O(files log files), and loads only the selected file content. SVN
+existing-directory property candidates add two serial, cancellable shallow
+property commands per candidate. Discovery therefore also costs O(inspected
+property bytes), with one pair of maps retained at a time. Equal maps suppress a
+candidate only after both reads succeed. Preview reads are bounded to 1 MiB.
+Untracked SVN directory traversal does not follow symlinks. Git rename detection
+has a limit of 1000 candidates. Repository resolution uses at most 512 cached
+directories and shares concurrent probes for one directory. Positive resolutions
+do not expire on cursor paths. Explicit refresh forces discovery. BufEnter and
+BufWritePost revalidate asynchronously at most once per directory every five
+seconds. Failed repository reads invalidate ownership and retry once, excluding
+cancellation, timeouts, and output limits. Root command output loses exactly one
+record terminator; supplied root hints retain every pathname byte. SVN ignore
+patterns are compiled once per discovery and matched in O(pattern tokens times
+filename bytes) with bounded row storage. Git retained-file reconciliation
+batches at most 128 paths and 24 KB of argument budget per command, preserving
+per-path clean filters. Wrapped alignment takes O(log hunks + visible units)
+time and O(visible units) space. The scheduler uses a priority heap with O(log
+queued) enqueue/dequeue and a 4096-job limit per queue. Editor commands have
+separate queues with two Git workers and one SVN worker, so background
+operations cannot consume their capacity. Sidebar cancellation leaves editor
+requests running.
 
 Use disposable repositories for mutation tests. For live terminal validation,
 exercise keyboard and mouse actions in both vanilla Neovim and AstroNvim; verify

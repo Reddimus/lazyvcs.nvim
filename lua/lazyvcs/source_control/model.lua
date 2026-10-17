@@ -699,7 +699,7 @@ local function parse_git_entries(root, raw, sort_key)
 					change_kind = "untracked",
 				}
 			)
-		elseif index == "U" or worktree == "U" or status == "AA" or status == "DD" then
+		elseif require("lazyvcs.backends.git_status").is_unmerged(status) then
 			sections.merge.items[#sections.merge.items + 1] = make_file_item({ root = root, vcs = "git" }, "merge", {
 				path = abs_path,
 				relpath = relpath,
