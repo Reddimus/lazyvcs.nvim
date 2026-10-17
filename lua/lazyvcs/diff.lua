@@ -89,15 +89,26 @@ end
 ---@param current LazyVcsText
 ---@param hunk table
 function M.reset_text_hunk(bufnr, base, current, hunk)
-	if current.empty then
-		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, base.lines)
-	else
-		M.reset_hunk(bufnr, base.lines, hunk)
-	end
+	local start_row = hunk.current_count == 0 and hunk.current_start or math.max(hunk.current_start - 1, 0)
+	local end_row = current.empty and -1 or start_row + hunk.current_count
+	local base_eol
 	if hunk.covers_eof then
-		local changed = vim.bo[bufnr].endofline ~= base.eol
-		vim.bo[bufnr].endofline = base.eol
-		if not base.eol then
+		base_eol = base.eol
+	end
+	M.reset_hunk_lines(bufnr, start_row, end_row, util.slice(base.lines, hunk.base_start, hunk.base_count), base_eol)
+end
+
+---@param bufnr integer
+---@param start_row integer
+---@param end_row integer
+---@param replacement string[]
+---@param base_eol boolean?
+function M.reset_hunk_lines(bufnr, start_row, end_row, replacement, base_eol)
+	vim.api.nvim_buf_set_lines(bufnr, start_row, end_row, false, replacement)
+	if base_eol ~= nil then
+		local changed = vim.bo[bufnr].endofline ~= base_eol
+		vim.bo[bufnr].endofline = base_eol
+		if not base_eol then
 			vim.bo[bufnr].fixendofline = false
 		end
 		-- With 'fixendofline' set, Neovim ignores 'endofline' when deciding whether the

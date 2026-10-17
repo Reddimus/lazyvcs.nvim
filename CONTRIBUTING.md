@@ -232,13 +232,16 @@ the GitHub release.
   namespaces.
 - `signs.lua` and `blame.lua` own loaded-buffer state and cancel stale
   generations. Native signs retain only eligibility metadata for size-skipped
-  buffers and release state on unload. Hunk computation and gutter rendering
-  have separate caches. Large sign comparisons keep histogram diff options and
-  run in a worker thread, with synchronous fallback if the runtime lacks
-  threaded `vim.diff`. Results must match the state object, buffer text
-  identity, and base generation. Index and SVN BASE mutation hooks run after
-  preflight at process startup and settlement. Logical cancellation does not
-  release base ownership.
+  buffers or unavailable bases and release state on unload. Matching base
+  mutations retry suspended records without retaining their contents. Hunk
+  computation and gutter rendering have separate caches. Large sign comparisons
+  and native previews share a histogram diff worker. Signs fall back
+  synchronously if threaded `vim.diff` is unavailable; large previews report the
+  limitation. Preview cancellation releases command ownership while retaining
+  physical-worker bookkeeping until completion. Results must match the state
+  object, buffer text identity, and base generation. Index and SVN BASE mutation
+  hooks run after preflight at process startup and settlement. Logical
+  cancellation does not release base ownership.
 - New regression cases belong in sibling `tests/spec_*.lua` modules. The main
   spec is near LuaJIT's local-variable limit.
 

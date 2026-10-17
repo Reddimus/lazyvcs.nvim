@@ -215,7 +215,7 @@ return function(ctx)
 				end, "first revert was orphaned")
 				pending.confirmation()()
 				s.wait(function()
-					return pending.resets == 1
+					return s.api.nvim_buf_get_lines(pending.buf, 1, 2, false)[1] == "staged"
 				end, "first revert never completed")
 				assert((s.signs.current_state(pending.buf).native_holds or 0) == 0)
 			end),
@@ -252,20 +252,25 @@ return function(ctx)
 					s.wait(function()
 						return refreshes == 1 or type(vim.fn.maparg("1", "n", false, true).callback) == "function"
 					end, "recent settlement command did not start", 15000)
-					assert(refreshes == 1, "recent settlement consumed stale gitsigns hunks")
-					assert(type(vim.fn.maparg("1", "n", false, true).callback) ~= "function")
-					local other = s.api.nvim_create_buf(false, true)
-					s.api.nvim_exec_autocmds("User", { pattern = "GitSignsUpdate", data = { buffer = other } })
-					assert(type(vim.fn.maparg("1", "n", false, true).callback) ~= "function")
-					hunks[1].removed.lines = { "staged" }
-					s.api.nvim_exec_autocmds("User", { pattern = "GitSignsUpdate", data = { buffer = buf } })
-					s.wait(function()
-						return type(vim.fn.maparg("1", "n", false, true).callback) == "function"
-					end, "matching update did not open confirmation")
+					if large then
+						assert(refreshes == 1, "recent settlement consumed stale gitsigns hunks")
+						assert(type(vim.fn.maparg("1", "n", false, true).callback) ~= "function")
+						local other = s.api.nvim_create_buf(false, true)
+						s.api.nvim_exec_autocmds("User", { pattern = "GitSignsUpdate", data = { buffer = other } })
+						assert(type(vim.fn.maparg("1", "n", false, true).callback) ~= "function")
+						s.api.nvim_buf_delete(other, { force = true })
+						hunks[1].removed.lines = { "staged" }
+						s.api.nvim_exec_autocmds("User", { pattern = "GitSignsUpdate", data = { buffer = buf } })
+						s.wait(function()
+							return type(vim.fn.maparg("1", "n", false, true).callback) == "function"
+						end, "matching update did not open confirmation")
+					else
+						assert(refreshes == 0, "native revert waited for gitsigns freshness")
+					end
 					assert(#s.marks(buf) == 0)
 					vim.fn.maparg("1", "n", false, true).callback()
 					s.wait(function()
-						return resets == 1
+						return s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "staged"
 					end, "matching refreshed hunk did not delegate", 15000)
 					assert(s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "staged")
 					-- Once the update arrives, a later revert does not wait again.
@@ -274,9 +279,8 @@ return function(ctx)
 					s.wait(function()
 						return type(vim.fn.maparg("1", "n", false, true).callback) == "function"
 					end, "settlement mark was not cleared", 15000)
-					assert(refreshes == 1)
+					assert(refreshes == (large and 1 or 0))
 					vim.fn.maparg("3", "n", false, true).callback()
-					s.api.nvim_buf_delete(other, { force = true })
 				end
 			end),
 		},
@@ -354,9 +358,9 @@ return function(ctx)
 				end)
 				vim.cmd("LazyVCS hunk revert")
 				s.wait(function()
-					return resets > 0
+					return s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] ~= "changed"
 				end, "large-file revert did not reach attached gitsigns")
-				assert(resets == 1 and s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "two")
+				assert(resets == 0 and s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "two")
 				assert((s.signs.current_state(buf).native_holds or 0) == 0 and #s.marks(buf) == 0)
 			end),
 		},
@@ -418,10 +422,10 @@ return function(ctx)
 					s.h.exec({ "git", "add", "sample.txt" }, f.root)
 					exit({ code = 0, stdout = "", stderr = "" }, nil, { code = 0 })
 					s.wait(function()
-						return resets > 0
+						return s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] ~= "changed"
 					end, "large-file revert did not resume after staging")
 					assert(
-						resets == 1 and s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "staged",
+						resets == 0 and s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "staged",
 						"waited revert reset against stale pre-stage gitsigns hunks"
 					)
 					assert((s.signs.current_state(buf).native_holds or 0) == 0)
@@ -470,7 +474,7 @@ return function(ctx)
 				end, "refreshed hunks did not open confirmation")
 				pending.confirmation()()
 				s.wait(function()
-					return pending.resets == 1
+					return s.api.nvim_buf_get_lines(pending.buf, 1, 2, false)[1] == "staged"
 				end, "refreshed hunk was not reset")
 				assert(
 					s.api.nvim_buf_get_lines(pending.buf, 1, 2, false)[1] == "staged",
@@ -498,7 +502,7 @@ return function(ctx)
 				assert(pending.resets == 0)
 				pending.confirmation()()
 				s.wait(function()
-					return pending.resets == 1
+					return s.api.nvim_buf_get_lines(pending.buf, 1, 2, false)[1] == "staged"
 				end, "refreshed hunk was not reset")
 				assert(s.api.nvim_buf_get_lines(pending.buf, 1, 2, false)[1] == "staged")
 				assert((s.signs.current_state(pending.buf).native_holds or 0) == 0)
@@ -518,7 +522,7 @@ return function(ctx)
 				end, "watcher update did not open confirmation")
 				pending.confirmation()()
 				s.wait(function()
-					return pending.resets == 1
+					return s.api.nvim_buf_get_lines(pending.buf, 1, 2, false)[1] == "staged"
 				end, "watcher hunk was not reset")
 				assert(s.api.nvim_buf_get_lines(pending.buf, 1, 2, false)[1] == "staged")
 				assert((s.signs.current_state(pending.buf).native_holds or 0) == 0)
@@ -660,13 +664,14 @@ return function(ctx)
 					end
 					vim.cmd("LazyVCS hunk revert")
 					s.wait(function()
-						return resets > 0 or s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "two"
+						return s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] ~= "changed"
+							or s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "two"
 					end, "revert absent", 15000)
 					assert(
 						s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "two",
 						"stale gitsigns hunk reset the buffer"
 					)
-					assert(resets == (mode == "matching" and 1 or 0), "incompatible gitsigns hunk was delegated")
+					assert(resets == 0, "native revert delegated hunk selection")
 					assert((s.signs.current_state(buf).native_holds or 0) == 0 and #s.marks(buf) == 0)
 				end
 			end),
