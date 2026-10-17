@@ -255,20 +255,33 @@ return function(ctx)
 					api.nvim_set_hl(source, "LazyVCSEdgeCycleA", { link = "LazyVCSEdgeCycleB" })
 					api.nvim_set_hl(source, "LazyVCSEdgeCycleB", { link = "LazyVCSEdgeCycleA" })
 					api.nvim_set_hl(source, "LazyVCSEdgeMissing", { link = "LazyVCSEdgeAbsent" })
+					local definitions = api.nvim_get_hl(source, {})
+					local capability = api.nvim_create_namespace("lazyvcs-edge-link-capability")
+					local global_links =
+						pcall(api.nvim_set_hl, capability, "LazyVCSEdgeProbe", { link_global = "Normal" })
 					guard.refresh(win)
-					assert(
-						api.nvim_get_hl(pooled, { name = "LazyVCSEdgeSelf" }).fg == 0x12ee34,
-						"self-link did not fall back through the source parent"
-					)
-					assert(
-						api.nvim_get_hl(pooled, { name = "LazyVCSEdgeChain" }).fg == 0x12ee34,
-						"chained link lost its source parent"
-					)
-					for _, name in ipairs({ "LazyVCSEdgeMissing", "LazyVCSEdgeCycleA", "LazyVCSEdgeCycleB" }) do
+					if global_links then
 						assert(
-							not api.nvim_get_hl(pooled, { name = name }).fg,
-							"missing or cyclic link acquired colors"
+							api.nvim_get_hl_ns({ winid = win }) == source,
+							"ambiguous self-link did not retain its source"
 						)
+						assert(vim.deep_equal(api.nvim_get_hl(source, {}), definitions), "source link graph changed")
+						assert(foreground(win) == expected, "source-preserving refresh changed colors")
+					else
+						assert(
+							api.nvim_get_hl(pooled, { name = "LazyVCSEdgeSelf" }).fg == 0x12ee34,
+							"self-link did not fall back through the source parent"
+						)
+						assert(
+							api.nvim_get_hl(pooled, { name = "LazyVCSEdgeChain" }).fg == 0x12ee34,
+							"chained link lost its source parent"
+						)
+						for _, name in ipairs({ "LazyVCSEdgeMissing", "LazyVCSEdgeCycleA", "LazyVCSEdgeCycleB" }) do
+							assert(
+								not api.nvim_get_hl(pooled, { name = name }).fg,
+								"missing or cyclic link acquired colors"
+							)
+						end
 					end
 				end)
 				guard.release(win)

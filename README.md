@@ -127,8 +127,13 @@ Defaults avoid remote refreshes unless requested. Git signs are delegated to
 `gitsigns.nvim` when installed. Optional pickers and commit-message providers
 are detected automatically. See `:help lazyvcs-configuration` for all options.
 
-Diff panes use normal syntax colors, including code an LSP marks inactive. Set
-`diff_highlighting = "editor"` to keep LSP semantic colors in comparisons.
+Diff panes use normal syntax colors, including code an LSP marks inactive. On
+Neovim versions with `link_global`, a custom namespace stays active if any link
+target resolves differently in that namespace and globally, including through
+link chains. Semantic overlays remain visible in those windows because the API
+cannot distinguish ordinary links from global-only links. Other custom
+namespaces keep normal diff highlighting. Set `diff_highlighting = "editor"` to
+keep LSP semantic colors in every comparison.
 
 ## Help and contribute
 

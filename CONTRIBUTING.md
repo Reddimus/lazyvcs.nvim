@@ -235,14 +235,21 @@ the GitHub release.
   cannot run during serialization. Projection visits only active sessions in
   scope and adds no VCS work. Capture each affected tab and window once before
   projecting any session. Restore all owned options and update each diff tab
-  before restoring folds and views. Disabled folds require no line scan. Save
-  bookkeeping costs O(sessions + unique windows + lines with enabled folds),
-  excluding native diff recomputation. Storage is O(sessions + unique windows +
-  closed folds).
+  before restoring folds and views. `fold_state.lua` captures hidden closed
+  descendants and restores children before parents using exact ranges and
+  depths. Fold inspection restores raw fold options and views. Disabled folds
+  require no line scan. Save bookkeeping costs O(sessions + unique windows +
+  lines with enabled folds + closed folds), excluding native fold and diff
+  recomputation. Buffer changes invalidate saved diff folds throughout the
+  affected tab. Storage is O(sessions + unique windows + closed folds).
 - `highlighting.lua` uses native `winhighlight` overlays for inherited colors
   and strips copied overlays from unowned windows. Only explicit theme
   namespaces use its pool, which grows with concurrently managed custom
-  namespaces.
+  namespaces. On runtimes supporting `link_global`, keep the source namespace
+  when any link target resolves differently in the source and global graphs.
+  Follow chains and ignore definition defaults when comparing resolved colors.
+  Recheck on refresh, release pool slots on fallback, and respect later external
+  namespace owners. Source-preserving windows keep semantic overlays.
 - `signs.lua` and `blame.lua` own loaded-buffer state and cancel stale
   generations. Native signs retain only eligibility metadata for size-skipped
   buffers or unavailable bases and release state on unload. Matching base

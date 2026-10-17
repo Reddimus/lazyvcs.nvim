@@ -2,6 +2,7 @@ local util = require("lazyvcs.util")
 local aerial = require("lazyvcs.integrations.aerial")
 local editor = require("lazyvcs.integrations.editor")
 local highlighting = require("lazyvcs.highlighting")
+local fold_state = require("lazyvcs.fold_state")
 
 local M = {}
 local departed_buffers = {}
@@ -278,47 +279,6 @@ local function save_owned(token)
 		and valid_pair(s)
 end
 
--- Changing diff/foldmethod can recompute folds in every diff window in the tab.
--- winsaveview does not include which folds the user opened.
-local function capture_folds(win)
-	if not util.get_win_option(win, "foldenable") then
-		return nil
-	end
-	return vim.api.nvim_win_call(win, function()
-		local closed, line = {}, 1
-		while line <= vim.api.nvim_buf_line_count(0) do
-			local first = vim.fn.foldclosed(line)
-			if first == -1 then
-				line = line + 1
-			else
-				closed[#closed + 1] = first
-				line = vim.fn.foldclosedend(line) + 1
-			end
-		end
-		return closed
-	end)
-end
-
-local function restore_folds(win, closed)
-	vim.api.nvim_win_call(win, function()
-		local line = 1
-		while line <= vim.api.nvim_buf_line_count(0) do
-			if vim.fn.foldclosed(line) == -1 then
-				line = line + 1
-			else
-				vim.api.nvim_win_set_cursor(win, { line, 0 })
-				local last = vim.fn.foldclosedend(line)
-				vim.cmd("silent! noautocmd keepjumps normal! zO")
-				line = math.max(line + 1, last + 1)
-			end
-		end
-		for _, first in ipairs(closed) do
-			vim.api.nvim_win_set_cursor(win, { first, 0 })
-			vim.cmd("silent! noautocmd keepjumps normal! zc")
-		end
-	end)
-end
-
 local function save_window_owned(win, record)
 	return util.win_is_valid(win)
 		and vim.api.nvim_win_get_buf(win) == record.buf
@@ -356,13 +316,14 @@ function M.prepare_sessions_save(sessions, transaction)
 			if by_window[win] or diff then
 				local owner = require("lazyvcs.state").for_window(win)
 				local record = {
+					tab = tab,
 					buf = buf,
 					owner = owner,
 					owner_id = owner and owner.id,
 					changedtick = vim.api.nvim_buf_get_changedtick(buf),
 					view = vim.api.nvim_win_call(win, vim.fn.winsaveview),
 					foldenable = util.get_win_option(win, "foldenable"),
-					folds = capture_folds(win),
+					folds = fold_state.capture(win),
 				}
 				transaction.windows[win] = record
 				local token = by_buffer[buf]
@@ -446,11 +407,24 @@ function M.finish_sessions_save(transaction)
 				end)
 			end
 		end
+		local changed_tabs = {}
+		for _, record in pairs(transaction.windows) do
+			if
+				not util.buf_is_valid(record.buf)
+				or vim.api.nvim_buf_get_changedtick(record.buf) ~= record.changedtick
+			then
+				changed_tabs[record.tab] = true
+			end
+		end
 		for win, record in pairs(transaction.windows) do
 			if save_window_owned(win, record) then
 				restore(util.set_win_option_noautocmd, win, "foldenable", record.foldenable)
-				if record.folds and vim.api.nvim_buf_get_changedtick(record.buf) == record.changedtick then
-					restore(restore_folds, win, record.folds)
+				if
+					record.folds
+					and vim.api.nvim_buf_get_changedtick(record.buf) == record.changedtick
+					and not (record.folds.method == "diff" and changed_tabs[record.tab])
+				then
+					restore(fold_state.restore, win, record.folds)
 				end
 			end
 		end

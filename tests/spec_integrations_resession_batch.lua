@@ -23,6 +23,8 @@ return function(ctx)
 		return function()
 			integration.teardown()
 			local original = package.loaded.resession
+			local folds = require("lazyvcs.fold_state")
+			local capture, restore = folds.capture, folds.restore
 			local foldclosed, setter, notify = vim.fn.foldclosed, util.set_win_option_noautocmd, util.notify
 			local columns, lines, diffopt = vim.o.columns, vim.o.lines, vim.o.diffopt
 			hooks = { pre_save = {}, post_save = {} }
@@ -43,6 +45,7 @@ return function(ctx)
 			vim.o.columns, vim.o.lines = 220, 45
 			local ok, err = xpcall(fn, debug.traceback)
 			vim.fn.foldclosed, util.set_win_option_noautocmd, util.notify = foldclosed, setter, notify
+			folds.capture, folds.restore = capture, restore
 			integration.teardown()
 			package.loaded.resession = original
 			h.cleanup()
@@ -135,18 +138,15 @@ return function(ctx)
 			assert(state.get(s.editable_bufnr) == s and s.phase == "active")
 		end
 	end
-	local function scans()
-		local foldclosed, counts = vim.fn.foldclosed, {}
-		---@diagnostic disable-next-line: duplicate-set-field
-		vim.fn.foldclosed = function(line)
-			if line == 1 then
-				local win = api.nvim_get_current_win()
-				counts[win] = (counts[win] or 0) + 1
-			end
-			return foldclosed(line)
+	local function scans(method)
+		local folds = require("lazyvcs.fold_state")
+		local original, counts = folds[method], {}
+		folds[method] = function(win, ...)
+			counts[win] = (counts[win] or 0) + 1
+			return original(win, ...)
 		end
 		return counts, function()
-			vim.fn.foldclosed = foldclosed
+			folds[method] = original
 		end
 	end
 	local cases = {
@@ -229,14 +229,14 @@ return function(ctx)
 			function()
 				local sessions, wins = fixture(true)
 				local before = snapshot(wins)
-				local captures, stop = scans()
+				local captures, stop = scans("capture")
 				dispatch("pre_save")
 				stop()
 				for _, win in ipairs(wins) do
 					assert(captures[win] == 1, "window fold capture repeated: " .. tostring(captures[win]))
 				end
 				local restores
-				restores, stop = scans()
+				restores, stop = scans("restore")
 				dispatch("post_save")
 				stop()
 				for _, win in ipairs(wins) do

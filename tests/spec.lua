@@ -7267,6 +7267,13 @@ vim.list_extend(cases, require("spec_compare_svn_content")({ helpers = helpers, 
 vim.list_extend(cases, require("spec_compare_encoding")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_compare_review")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_config_width")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_live_diff_ownership")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_live_diff_nested_folds")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_highlighting_links")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,

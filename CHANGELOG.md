@@ -37,6 +37,10 @@ and this project adheres to
   revision; show failed validation explicitly.
 - Decode Compare snapshots using each source's encoding while preserving
   original bytes for blame.
+- Preserve custom namespace global-only highlight links during diffs.
+- Preserve closed nested folds when Resession saves live diffs.
+- Interpret fractional absolute base widths as columns.
+- Release read-only diff sessions when their panes display another buffer.
 
 ## [0.11.4] - 2026-10-16
 
