@@ -7286,6 +7286,8 @@ vim.list_extend(cases, require("spec_source_control_tracked_discard")({ helpers 
 vim.list_extend(cases, require("spec_commit_file_ownership")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_commit_file_helpers")({ helpers = helpers, wait_for = wait_for }))
 
+vim.list_extend(cases, require("spec_svn_summary")({ helpers = helpers, wait_for = wait_for }))
+
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,
 }

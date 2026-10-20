@@ -130,7 +130,15 @@ end
 function M.list(snapshot, include_untracked, callback)
 	local task = common.task(callback)
 	local root = local_path(snapshot.root)
-	command(task, snapshot, {
+	local function summarize(args, done)
+		command(task, snapshot, args, function(raw, err)
+			if not raw and type(err) == "string" and err:find("E145001", 1, true) then
+				return require("lazyvcs.backends.svn_summary").load(task, snapshot, command, done, local_path)
+			end
+			done(raw, err)
+		end)
+	end
+	summarize({
 		"diff",
 		"--summarize",
 		"--xml",
