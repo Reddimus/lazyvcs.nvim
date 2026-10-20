@@ -293,6 +293,21 @@ jobs:
           nvim --headless -u NONE -c "helptags doc" -c "quitall"
           nvim --headless -u NONE -c "set rtp+=." -c "runtime plugin/lazyvcs.lua" -c "checkhealth lazyvcs" -c "quitall"
 
+      - name: Native macOS terminal E2E
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/e2e-python"
+          "${RUNNER_TEMP}/e2e-python/bin/pip" install pexpect==4.9.0
+          LAZYVCS_E2E_PYTHON="${RUNNER_TEMP}/e2e-python/bin/python" E2E_ARTIFACT_DIR="${RUNNER_TEMP}/macos-e2e" tests/e2e/host-native.sh
+
+      - name: Upload native macOS E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/macos-e2e
+          if-no-files-found: warn
+          retention-days: 14
+
   e2e:
     name: Ubuntu and AstroNvim E2E
     runs-on: ubuntu-24.04

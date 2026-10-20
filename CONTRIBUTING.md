@@ -146,6 +146,11 @@ the GitHub release.
   property map's 1 MiB limit and the rendered patch's 1 MiB limit, including
   headers.
 - `source_control/jobs.lua` bounds and profiles repository/comparison commands.
+- `backends/svn_summary.lua` recovers SVN's E145001 replacement-summary failure
+  by comparing the pinned base with BASE and reconciling changed working paths.
+  Recovery retains the async job owner, limits paths to 10,000 and generated
+  summary output to 4 MiB, and shares a 30-second command-admission deadline.
+  Small files use bounded byte and property reads to remove net-clean changes.
 - Source-control summaries own branch, upstream, and remote status. Details own
   local rows and counts. Merge each completion into the current repository
   generation without clearing the other request's loading flag. Manual refresh
@@ -372,3 +377,13 @@ paths, and resets when the pinned base changes. Snapshots use an O(1) LRU cache
 with a default limit of 32 file pairs, plus current, visible, or pending files.
 Each side is bounded to 1 MiB. The cache does not alter AstroNvim's ordinary
 buffer list.
+
+### Native host terminal checks
+
+`tests/e2e/host-native.sh` exercises Compare with Git and SVN, and SVN blame
+through keyboard and terminal mouse input. It uses private XDG directories
+without changing your installed Neovim configuration. Install `pexpect==4.9.0`
+in a virtual environment and set `LAZYVCS_E2E_PYTHON` to its Python executable.
+Set `E2E_ARTIFACT_DIR` to keep terminal transcripts and assertion snapshots. The
+macOS verification job runs this against native Subversion as well as the
+headless suite.

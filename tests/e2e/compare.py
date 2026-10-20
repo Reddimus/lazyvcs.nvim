@@ -13,7 +13,11 @@ artifacts = pathlib.Path(sys.argv[1])
 artifacts.mkdir(parents=True, exist_ok=True)
 env = os.environ.copy()
 env["TERM"] = "xterm-256color"
-child = pexpect.spawn("nvim", [], env=env, dimensions=(40, 160), encoding="utf-8", timeout=40)
+ready = artifacts / "startup-ready"
+ready.unlink(missing_ok=True)
+env["LAZYVCS_E2E_READY"] = str(ready.resolve())
+startup = ["--cmd", "lua vim.api.nvim_create_autocmd('VimEnter',{once=true,callback=function() vim.fn.writefile({'ready'},vim.env.LAZYVCS_E2E_READY) end})"]
+child = pexpect.spawn("nvim", startup, env=env, dimensions=(40, 160), encoding="utf-8", timeout=40)
 sequence = 0
 deleted_name = "gone-" + "x" * 70 + ".txt"
 
@@ -28,7 +32,15 @@ def pause(seconds):
 
 
 def ex(command):
-    child.send(":" + command + "\r")
+    # Keep reading while writing: macOS PTY input and output queues are small,
+    # and command-line redraws can fill output while a long write is blocked.
+    data = ":" + command + "\r"
+    for offset in range(0, len(data), 128):
+        child.send(data[offset:offset + 128])
+        try:
+            child.read_nonblocking(65536, timeout=0.01)
+        except pexpect.TIMEOUT:
+            pass
 
 
 def snapshot():
@@ -86,6 +98,16 @@ def assert_editor(name, line):
 with (artifacts / "compare-terminal.log").open("w") as transcript:
     child.logfile = transcript
     try:
+        # Drain startup output before sending a long Ex command. macOS PTYs
+        # may still be canonical until Neovim has attached its terminal UI.
+        deadline = time.monotonic() + 30
+        while not ready.exists():
+            if time.monotonic() >= deadline:
+                raise AssertionError("Neovim did not finish terminal startup")
+            try:
+                child.read_nonblocking(65536, timeout=0.05)
+            except pexpect.TIMEOUT:
+                pass
         # Configure only the test fixture and base input. Feature actions below
         # use keyboard or terminal mouse events, never their Lua callbacks.
         ex("set mouse=a nomore")
