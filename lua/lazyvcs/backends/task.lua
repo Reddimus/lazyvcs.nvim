@@ -25,6 +25,62 @@ function M.new(on_done, opts)
 		end
 	end
 
+	local deadline_timer
+	local function stop_deadline()
+		local timer = deadline_timer
+		deadline_timer = nil
+		if timer then
+			timer:stop()
+			if not timer:is_closing() then
+				timer:close()
+			end
+		end
+	end
+
+	-- A deadline belongs to the whole operation, including non-command
+	-- callbacks. Complete before stopping children so cancellation callbacks
+	-- cannot deliver a late result or replace the timeout error.
+	function task:set_deadline(timeout_ms, message)
+		assert(
+			type(timeout_ms) == "number"
+				and timeout_ms >= 1
+				and timeout_ms < 2147483647
+				and timeout_ms == math.floor(timeout_ms)
+		)
+		if not self:is_active() or deadline_timer then
+			return self
+		end
+		deadline_timer = vim.uv.new_timer()
+		if not deadline_timer then
+			self:finish(nil, "Comparison deadline unavailable")
+			return self
+		end
+		deadline_timer:start(
+			timeout_ms,
+			0,
+			vim.schedule_wrap(function()
+				if not self:is_active() then
+					stop_deadline()
+					return
+				end
+				self.done = true
+				stop_deadline()
+				for _, handle in ipairs(self.handles) do
+					stop_handle(handle, 15)
+				end
+				local callbacks = self.cancel_callbacks
+				self.cancel_callbacks = {}
+				for _, callback in ipairs(callbacks) do
+					pcall(callback, self)
+				end
+				if type(on_done) == "function" then
+					on_done(nil, message or "Comparison timed out")
+				end
+			end)
+		)
+		return self
+	end
+
 	function task:add(handle)
 		if handle == nil or self.done then
 			return handle
@@ -58,6 +114,7 @@ function M.new(on_done, opts)
 			return false
 		end
 		self.done = true
+		stop_deadline()
 		self.cancel_callbacks = {}
 		if type(on_done) == "function" then
 			on_done(...)
@@ -70,6 +127,7 @@ function M.new(on_done, opts)
 			return false
 		end
 		self.cancelled = true
+		stop_deadline()
 		for _, handle in ipairs(self.handles) do
 			stop_handle(handle, signal)
 		end

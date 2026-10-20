@@ -133,7 +133,7 @@ function M.list(snapshot, include_untracked, callback)
 	local function summarize(args, done)
 		command(task, snapshot, args, function(raw, err)
 			if not raw and type(err) == "string" and err:find("E145001", 1, true) then
-				return require("lazyvcs.backends.svn_summary").load(task, snapshot, command, done)
+				return require("lazyvcs.backends.svn_summary").load(task, snapshot, command, done, local_path)
 			end
 			done(raw, err)
 		end)

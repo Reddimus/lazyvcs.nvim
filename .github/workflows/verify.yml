@@ -296,7 +296,7 @@ jobs:
       - name: Native macOS terminal E2E
         run: |
           python3 -m venv "${RUNNER_TEMP}/e2e-python"
-          "${RUNNER_TEMP}/e2e-python/bin/pip" install pexpect==4.9.0
+          "${RUNNER_TEMP}/e2e-python/bin/pip" install --require-hashes -r tests/e2e/requirements.txt
           LAZYVCS_E2E_PYTHON="${RUNNER_TEMP}/e2e-python/bin/python" E2E_ARTIFACT_DIR="${RUNNER_TEMP}/macos-e2e" tests/e2e/host-native.sh
 
       - name: Upload native macOS E2E artifacts

@@ -149,8 +149,9 @@ the GitHub release.
 - `backends/svn_summary.lua` recovers SVN's E145001 replacement-summary failure
   by comparing the pinned base with BASE and reconciling changed working paths.
   Recovery retains the async job owner, limits paths to 10,000 and generated
-  summary output to 4 MiB, and shares a 30-second command-admission deadline.
-  Small files use bounded byte and property reads to remove net-clean changes.
+  summary output to 4 MiB, and shares a 30-second owner deadline that cancels
+  all outstanding work. Small files use bounded byte and property reads to
+  remove net-clean changes.
 - Source-control summaries own branch, upstream, and remote status. Details own
   local rows and counts. Merge each completion into the current repository
   generation without clearing the other request's loading flag. Manual refresh
@@ -382,8 +383,9 @@ buffer list.
 
 `tests/e2e/host-native.sh` exercises Compare with Git and SVN, and SVN blame
 through keyboard and terminal mouse input. It uses private XDG directories
-without changing your installed Neovim configuration. Install `pexpect==4.9.0`
-in a virtual environment and set `LAZYVCS_E2E_PYTHON` to its Python executable.
-Set `E2E_ARTIFACT_DIR` to keep terminal transcripts and assertion snapshots. The
+without changing your installed Neovim configuration. Install
+`tests/e2e/requirements.txt` with `pip install --require-hashes -r` in a virtual
+environment and set `LAZYVCS_E2E_PYTHON` to its Python executable. Set
+`E2E_ARTIFACT_DIR` to keep terminal transcripts and assertion snapshots. The
 macOS verification job runs this against native Subversion as well as the
 headless suite.

@@ -110,7 +110,7 @@ with (artifacts / "compare-terminal.log").open("w") as transcript:
                 pass
         # Configure only the test fixture and base input. Feature actions below
         # use keyboard or terminal mouse events, never their Lua callbacks.
-        ex("set mouse=a nomore")
+        ex("set mouse=a mousetime=500 nomore")
         for vcs in ("git", "svn"):
             setup = " ".join([
                 "local root=vim.env.LAZYVCS_E2E_PLUGIN_ROOT or '/work/lazyvcs.nvim';",
@@ -144,7 +144,11 @@ with (artifacts / "compare-terminal.log").open("w") as transcript:
             release = f"\x1b[<0;{state['col']};{state['row']}m"
             child.send(mouse + release)
             expect_focus("list")
-            child.send(mouse + release)
+            # State capture can take longer than 'mousetime' on a busy host.
+            # Finish the single-click check, then send an actual double click
+            # as one terminal write rather than timing it across an Ex query.
+            pause(0.6)
+            child.send(mouse + release + mouse + release)
             reviewed = expect_focus("saved", 8)
             child.send("e")
             assert expect_focus("saved", 8)["width"] == reviewed["width"]

@@ -9,7 +9,8 @@ local function escape(value)
 	return (value:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;"))
 end
 
-function M.load(task, snapshot, command, done)
+function M.load(task, snapshot, command, done, local_path)
+	task:set_deadline(30000, "SVN replacement comparison timed out; narrow the comparison")
 	local deadline = vim.uv.hrtime() / 1e6 + 30000
 	local candidates, rows, count, bytes = {}, {}, 0, 0
 	local function request(args, callback, opts)
@@ -33,7 +34,7 @@ function M.load(task, snapshot, command, done)
 				end)
 			)
 		end
-		return util.relative_literal_path(snapshot.root, xml.local_path(path))
+		return util.relative_literal_path(local_path(snapshot.root), local_path(path))
 	end
 	local function candidate(path)
 		if not common.relative(path) then
@@ -53,7 +54,12 @@ function M.load(task, snapshot, command, done)
 			return false, "SVN returned an unsupported comparison node kind"
 		end
 		local target = snapshot.root .. (path == "." and "" or "/" .. path)
-		local row = ('<path kind="%s" item="%s" props="modified">%s</path>'):format(kind, status, escape(target))
+		local row = ('<path kind="%s" item="%s" props="%s">%s</path>'):format(
+			kind,
+			status,
+			status == "deleted" and "none" or "modified",
+			escape(target)
+		)
 		bytes = bytes + #row
 		if bytes > 4 * 1024 * 1024 then
 			return false, "SVN replacement comparison exceeded its output limit"
@@ -134,7 +140,13 @@ function M.load(task, snapshot, command, done)
 					end
 					---@type string|false
 					local after = stat and (stat.type == "directory" and "dir" or "file") or false
-					if entry.status == "deleted" or entry.status == "missing" or entry.status == "unversioned" then
+					if
+						entry.status == "deleted"
+						or entry.status == "missing"
+						or entry.status == "unversioned"
+						or entry.status == "ignored"
+						or entry.status == "external"
+					then
 						after = false
 					end
 					local function compare(before)
@@ -274,7 +286,7 @@ function M.load(task, snapshot, command, done)
 				entry.before = false
 			end
 		end
-		request({ "status", "--xml", snapshot.root .. "@" }, function(status, failure)
+		request({ "status", "--xml", "--ignore-externals", snapshot.root .. "@" }, function(status, failure)
 			if not status then
 				return done(nil, failure)
 			end
