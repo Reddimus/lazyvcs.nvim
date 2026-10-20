@@ -960,12 +960,9 @@ function M.blame_lines_async(path, on_done, opts)
 						end
 					end
 
-					local blame_args = { "svn", "blame", "-v" }
-					if opts.preview then
-						-- Map the captured preview onto BASE, not SVN's current working-file lines.
-						vim.list_extend(blame_args, { "-r", "BASE" })
-					end
-					blame_args[#blame_args + 1] = literal_target(path)
+					-- Map BASE attribution onto captured or saved contents exactly once.
+					-- SVN's default WORKING blame already includes saved local edits.
+					local blame_args = { "svn", "blame", "-v", "-r", "BASE", literal_target(path) }
 					task:add(
 						process.lines(
 							blame_args,

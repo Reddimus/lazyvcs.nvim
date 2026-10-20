@@ -177,6 +177,7 @@ run_logged plugin-registration timeout 180s nvim --headless "+Lazy! sync" \
 	"+qa"
 run_logged checkhealth timeout 180s nvim --headless "+checkhealth lazyvcs" "+qa"
 run_logged compare-terminal timeout 180s python3 /work/lazyvcs.nvim/tests/e2e/compare.py /artifacts/compare
+run_logged blame-terminal timeout 180s python3 /work/lazyvcs.nvim/tests/e2e/blame.py /artifacts/blame
 
 WORKSPACE=/tmp/lazyvcs-e2e-workspace
 SVN_REPO=/tmp/lazyvcs-e2e-svn-store

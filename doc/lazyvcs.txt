@@ -414,7 +414,10 @@ report an unsupported line format, even when the row count stays unchanged.
 Historical blob blame does not inherit the worktree filter policy.
 SVN blame rejects UTF-16, UCS-2, UCS-4, and incompatible separator models.
 Supported SVN representations require lossless BASE decoding and matching record
-counts before mapping unsaved edits.
+counts before mapping saved and unsaved edits. SVN loads committed attribution
+and matching text from working-copy BASE, then maps them onto captured contents.
+New or changed lines remain uncommitted after saving; unchanged lines keep their
+history.
 
 Inline blame refreshes after a buffer is unloaded and reopened or reread with
 :edit!. Cursor movement reuses cached attribution between changes.

@@ -109,6 +109,9 @@ Select lines, then run `:LazyVCS blame`. Vim supplies the selected range. This
 also works in Compare's text panes. `q` closes the report. Unsaved edits are
 marked uncommitted in editor buffers.
 
+SVN blame maps working-copy BASE history onto saved and unsaved edits. New or
+changed lines stay uncommitted after saving; unchanged lines keep their history.
+
 Optional visual mapping:
 
 ```lua
