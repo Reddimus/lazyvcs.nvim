@@ -7219,6 +7219,7 @@ vim.list_extend(cases, require("spec_blame_window_options")({ helpers = helpers,
 vim.list_extend(cases, require("spec_blame_selection_changes")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_ucs2")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_saved_filters")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_blame_svn_saved")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_line_models")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_inline")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_lifecycle")({ helpers = helpers, wait_for = wait_for }))

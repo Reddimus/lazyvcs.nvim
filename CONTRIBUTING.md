@@ -56,6 +56,10 @@ tests/e2e/ubuntu-native.sh
 tests/e2e/ubuntu-astronvim.sh
 ```
 
+Both container suites run terminal checks for Compare and SVN blame. Blame
+checks cover saved insertions, deletions, undo, redo, and revision attribution
+in inline text, splits, selected-line reports, and line history.
+
 Without `svn` installed, the Subversion specs report `SKIP` rather than failing.
 A green run on an svn-less machine therefore covers less than CI does.
 

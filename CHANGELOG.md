@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.6] - 2026-10-19
+
+### Fixed
+
+- Preserve SVN blame after saved insertions and deletions. Unchanged lines keep
+  their committed history when local edits move them, including edits that keep
+  the same line count. Stop reporting an unsupported line format for these
+  edits.
+
 ## [0.11.5] - 2026-10-17
 
 ### Fixed
@@ -777,3 +786,4 @@ First tagged release.
 [0.11.3]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.2...v0.11.3
 [0.11.4]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.3...v0.11.4
 [0.11.5]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.4...v0.11.5
+[0.11.6]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.5...v0.11.6

@@ -162,6 +162,7 @@ PY
 
 LAZYVCS_E2E_WORKSPACE="${workspace}" python3 /tmp/lazyvcs-pty-smoke.py >/artifacts/pty-smoke.log 2>&1
 python3 /work/lazyvcs.nvim/tests/e2e/compare.py /artifacts/compare >/artifacts/compare.log 2>&1
+python3 /work/lazyvcs.nvim/tests/e2e/blame.py /artifacts/blame >/artifacts/blame.log 2>&1
 CONTAINER
 
 printf 'lazyvcs native E2E artifacts: %s\n' "${ARTIFACT_DIR}"
