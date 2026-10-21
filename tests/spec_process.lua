@@ -4,7 +4,7 @@ return function(ctx)
 	local function windows_cancel_commands(commands)
 		local jobs = require("lazyvcs.source_control.jobs")
 		local original, has = vim.system, vim.fn.has
-		local taskkills, exit, handle = 0, nil, nil
+		local taskkills, exit, handle, wrapped = 0, nil, nil, false
 		local failures = {}
 		---@diagnostic disable-next-line: duplicate-set-field
 		vim.fn.has = function(name)
@@ -19,6 +19,7 @@ return function(ctx)
 				end)
 				return {}
 			end
+			wrapped = args[1] == vim.v.progpath and args[2] == "-ll"
 			exit = cb
 			local closing = false
 			return {
@@ -38,7 +39,7 @@ return function(ctx)
 		end
 		local ok, err = xpcall(function()
 			for _, command in ipairs(commands) do
-				taskkills, exit, handle = 0, nil, nil
+				taskkills, exit, handle, wrapped = 0, nil, nil, false
 				local completed = false
 				local function done()
 					completed = true
@@ -70,7 +71,8 @@ return function(ctx)
 					ctx.wait_for(function()
 						return completed
 					end, "cancelled process did not finish")
-					assert(taskkills == (command.tree and 1 or 0), command.label .. ": taskkill count " .. taskkills)
+					assert(wrapped == (command.tree == true), command.label .. ": command-tree ownership changed")
+					assert(taskkills == 0, command.label .. ": owned or direct cancellation spawned taskkill")
 				end, debug.traceback)
 				if exit then
 					exit({ code = 1, stdout = "", stderr = "" })
@@ -451,7 +453,7 @@ vim.cmd("qa!")
 			end,
 		},
 		{
-			"test_core_process_windows_remote_cancellation_uses_taskkill",
+			"test_core_process_windows_remote_cancellation_owns_command_tree",
 			function()
 				windows_cancel_commands({
 					{
@@ -718,7 +720,7 @@ vim.cmd("qa!")
 				end
 				local ok, err = xpcall(function()
 					local repo = { root = h.tempdir(), vcs = "svn" }
-					local id = jobs.command(repo, "buffer", { "held" }, { scope = "mutation", kill_grace_ms = 20 })
+					jobs.command(repo, "buffer", { "held" }, { timeout_ms = 20, kill_grace_ms = 20 })
 					jobs.command(repo, "buffer", { "next" }, {
 						start = function(_, _, done)
 							recovered = true
@@ -726,9 +728,6 @@ vim.cmd("qa!")
 							return {}
 						end,
 					})
-					jobs.cancel(function(job)
-						return job.id == id
-					end)
 					ctx.wait_for(function()
 						return killed
 					end, "hung taskkill prevented forced parent termination", 3500)
@@ -753,7 +752,7 @@ vim.cmd("qa!")
 			end,
 		},
 		{
-			"test_core_process_windows_taskkill_and_parent_fallback",
+			"test_core_process_windows_owned_and_fallback_cancellation",
 			function()
 				local original, has = vim.system, vim.fn.has
 				local process_exit, taskkill, fail, closing
@@ -787,8 +786,8 @@ vim.cmd("qa!")
 				end
 				local ok, err = pcall(function()
 					local commands = {
-						{ { "fake" }, { scope = "mutation" } },
-						{ { "fake" }, { scope = "mutation" }, fail = true },
+						{ { "fake" }, { timeout_ms = 20 }, fallback = true },
+						{ { "fake" }, { timeout_ms = 20 }, fallback = true, fail = true },
 						{ { "fake" }, { scope = "mutation" }, closing = true },
 						{ { "git", "fetch" } },
 						{ { "git", "pull" } },
@@ -805,8 +804,12 @@ vim.cmd("qa!")
 						local handle = assert(util.system_start(command[1], command[2], function()
 							calls = calls + 1
 						end))
-						handle:cancel("test")
-						if closing or command.direct then
+						if command.fallback then
+							vim.wait(40)
+						else
+							handle:cancel("test")
+						end
+						if closing or not command.fallback then
 							assert(taskkill == nil, "taskkill targeted an exited parent or routine read")
 						else
 							assert(

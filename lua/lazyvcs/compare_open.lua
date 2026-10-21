@@ -53,7 +53,13 @@ function M.setup(s, actions)
 		callback = protected(function(args)
 			local win, buf = vim.api.nvim_get_current_win(), args.buf
 			local owned = slots()[win]
-			if not valid() or s.resizing or (s.swapping or 0) > 0 or not owned then
+			if
+				not valid()
+				or s.resizing
+				or (s.swapping or 0) > 0
+				or not owned
+				or not vim.api.nvim_buf_is_valid(owned)
+			then
 				return
 			end
 			if buf == owned then
@@ -81,6 +87,18 @@ function M.setup(s, actions)
 				if not valid() or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= buf then
 					pending[win] = nil
 					actions.resume()
+					return
+				end
+				local expected = slots()[win]
+				if expected and not vim.api.nvim_buf_is_loaded(expected) then
+					pending[win] = nil
+					actions.resume()
+					return
+				end
+				-- Buffer removal can replace the pane before the worktree's deferred
+				-- reconciliation. Do not route that alternate buffer as a picker result.
+				if s.worktree and (s.worktree.unloading or s.worktree.deleted) then
+					pending[win] = nil
 					return
 				end
 				local focused = vim.api.nvim_get_current_win() == win

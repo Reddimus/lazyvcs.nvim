@@ -26,6 +26,7 @@ local session_sequence = 0
 local target_sequence = 0
 local TEXT_LIMIT = 1024 * 1024
 local pending_opens = {}
+local pending_open_windows = setmetatable({}, { __mode = "k" })
 local source_attachments = {}
 local transfer
 
@@ -48,7 +49,7 @@ end
 -- navigation.
 local function build_session_async(bufnr, on_done)
 	if not util.is_real_file_buffer(bufnr) then
-		return on_done(nil, "lazyvcs only opens on normal file buffers")
+		return on_done(nil, "lazyvcs only opens on normal file buffers", { code = "special_buffer" })
 	end
 
 	local path = util.buf_path(bufnr)
@@ -58,7 +59,7 @@ local function build_session_async(bufnr, on_done)
 
 	local captured, capture_err = compare_text.capture(bufnr, TEXT_LIMIT)
 	if not captured then
-		return on_done(nil, capture_err)
+		return on_done(nil, capture_err, { code = "unsupported_text" })
 	end
 	local profile, profile_err = compare_text.profile(bufnr)
 	if not profile then
@@ -66,9 +67,9 @@ local function build_session_async(bufnr, on_done)
 	end
 	return backends.load_async(
 		path,
-		util.safe_callback(function(result, err)
+		util.safe_callback(function(result, err, rejection)
 			if not result then
-				return on_done(nil, err or "Unable to load VCS base")
+				return on_done(nil, err or "Unable to load VCS base", rejection)
 			end
 			local live_profile = compare_text.profile(bufnr)
 			if not live_profile or live_profile.key ~= profile.key or util.buf_path(bufnr) ~= path then
@@ -161,7 +162,7 @@ end
 local close_session
 close_session = function(session, opts, automatic_retry)
 	opts = opts or {}
-	if not session or session.close_running or state.get(session.editable_bufnr) ~= session then
+	if not session or session.close_running or not state.owns(session) then
 		return
 	end
 
@@ -223,7 +224,7 @@ close_session = function(session, opts, automatic_retry)
 		if not session.close_retry_used then
 			session.close_retry_used = true
 			vim.schedule(util.safe_callback(function()
-				if state.get(session.editable_bufnr) == session then
+				if state.owns(session) then
 					close_session(session, opts, true)
 				end
 			end))
@@ -272,10 +273,50 @@ local function commit_transfer(old, replacement)
 	end
 end
 
+local function pause_transfer(old, target, path, reason)
+	local close = old.opts.session_keymaps and old.opts.keymaps.close or ":LazyVCS diff close"
+	local paused = {
+		editable_bufnr = target,
+		source_path = path,
+		backend = old.backend,
+		root = old.root,
+		relpath = path and vim.fs.basename(path) or "unavailable",
+		opts = old.opts,
+		base_lines = {
+			"Diff paused",
+			"",
+			(reason or "This file has no editable VCS comparison."):gsub("[\r\n]+", " "),
+			"",
+			"Select a supported file to resume.",
+			"Close with " .. close .. ".",
+		},
+		base_label = "PAUSED",
+		paused = true,
+	}
+	session_sequence = session_sequence + 1
+	paused.id = session_sequence
+	clear_session_maps(old)
+	if old.augroup then
+		vim.api.nvim_del_augroup_by_id(old.augroup)
+	end
+	if old.refresh_job then
+		pcall(old.refresh_job.kill, old.refresh_job, 15)
+	end
+	editor.restore_buffer(old.editor_state)
+	layout.rebind(old, paused)
+	state.replace(old, paused)
+	old.closing, old.phase = true, "closed"
+	paused.phase = "paused"
+	set_session_maps(paused)
+	attach_session(paused)
+	return paused
+end
+
 transfer = require("lazyvcs.live_transfer").new({
 	build = build_session_async,
 	close = close_automatically,
 	commit = commit_transfer,
+	pause = pause_transfer,
 	attach_source = function(session)
 		attach_source(session, true)
 	end,
@@ -418,43 +459,8 @@ local function schedule_refresh(bufnr)
 	end, session.opts.debounce_ms)
 end
 
-local function capture_buffer_map(bufnr, mode, lhs)
-	if not lhs or lhs == false or not util.buf_is_valid(bufnr) then
-		return nil
-	end
-	local captured
-	pcall(vim.api.nvim_buf_call, bufnr, function()
-		local value = vim.fn.maparg(lhs, mode, false, true)
-		if type(value) == "table" and value.buffer == 1 then
-			captured = vim.deepcopy(value)
-		end
-	end)
-	return captured
-end
-
-local function restore_buffer_map(bufnr, mode, lhs, captured)
-	if not lhs or lhs == false or not util.buf_is_valid(bufnr) then
-		return
-	end
-	pcall(compat.keymap_del, mode, lhs, { buffer = bufnr })
-	if not captured then
-		return
-	end
-
-	pcall(vim.api.nvim_buf_call, bufnr, function()
-		vim.fn.mapset(mode, false, captured)
-	end)
-end
-
 clear_session_maps = function(session)
-	if not session.opts.session_keymaps then
-		return
-	end
-
-	for _, item in ipairs(session.map_snapshots or {}) do
-		restore_buffer_map(item.bufnr, item.mode, item.lhs, item.previous)
-	end
-	session.map_snapshots = nil
+	require("lazyvcs.window_controls").unregister(session)
 	session.maps_installed = false
 end
 
@@ -560,42 +566,50 @@ set_session_maps = function(session)
 	if not session.opts.session_keymaps then
 		return
 	end
-
 	local maps = session.opts.keymaps
-	local definitions = {
-		{ "n", maps.next_hunk, session.editable_bufnr, M.next_hunk, "lazyvcs next hunk" },
-		{ "n", maps.prev_hunk, session.editable_bufnr, M.prev_hunk, "lazyvcs previous hunk" },
-		{ "n", maps.close, session.editable_bufnr, M.close, "lazyvcs close diff view" },
-		{ "n", maps.close, session.base_bufnr, M.close, "lazyvcs close diff view" },
-	}
+	local close = { { key = maps.close, callback = M.close, desc = "lazyvcs close diff view" } }
+	local base = vim.deepcopy(close)
 	if maps.close ~= "<leader>q" then
-		definitions[#definitions + 1] = { "n", "<leader>q", session.base_bufnr, M.close, "lazyvcs close diff view" }
+		base[#base + 1] = { key = "<leader>q", callback = M.close, desc = "lazyvcs close diff view" }
 	end
-	if not session.readonly_comparison then
-		table.insert(
-			definitions,
-			3,
-			{ "n", maps.revert_hunk, session.editable_bufnr, M.revert_hunk, "lazyvcs revert current hunk" }
-		)
-	end
-	session.map_snapshots = {}
-	for _, item in ipairs(definitions) do
-		local mode, lhs, bufnr, rhs, desc = unpack(item)
-		if lhs and lhs ~= false then
-			session.map_snapshots[#session.map_snapshots + 1] = {
-				mode = mode,
-				lhs = lhs,
-				bufnr = bufnr,
-				previous = capture_buffer_map(bufnr, mode, lhs),
-			}
-			compat.keymap_set(mode, lhs, rhs, { silent = true, buffer = bufnr, desc = desc })
+	for _, definition in ipairs(base) do
+		if definition.key and definition.key ~= false then
+			compat.keymap_set("n", definition.key, definition.callback, {
+				buffer = session.base_bufnr,
+				silent = true,
+				desc = definition.desc,
+			})
 		end
 	end
+	local source = vim.list_extend(vim.deepcopy(close), {
+		{ key = maps.next_hunk, callback = M.next_hunk, desc = "lazyvcs next hunk" },
+		{ key = maps.prev_hunk, callback = M.prev_hunk, desc = "lazyvcs previous hunk" },
+	})
+	if not session.readonly_comparison and not session.paused then
+		source[#source + 1] = { key = maps.revert_hunk, callback = M.revert_hunk, desc = "lazyvcs revert current hunk" }
+	end
+	require("lazyvcs.window_controls").register(session, function(win, buf)
+		if session.closing or session.phase == "closed" or vim.w[win].lazyvcs_compare then
+			return
+		end
+		if win == session.base_win and buf == session.base_bufnr then
+			return base
+		end
+		if
+			buf == session.editable_bufnr
+			and (
+				win == session.editable_win
+				or (vim.wo[win].diff and vim.api.nvim_win_get_tabpage(win) == session.tabpage)
+			)
+		then
+			return session.phase == "active" and source or close
+		end
+	end, 10)
 	session.maps_installed = true
 end
 
 attach_source = function(session, reattach)
-	if not session.readonly_comparison and not source_attachments[session.editable_bufnr] then
+	if not session.paused and not session.readonly_comparison and not source_attachments[session.editable_bufnr] then
 		source_attachments[session.editable_bufnr] = vim.api.nvim_buf_attach(session.editable_bufnr, false, {
 			on_lines = safe_callback(function(_, bufnr)
 				local live = state.get(bufnr)
@@ -620,14 +634,18 @@ end
 
 attach_session = function(session)
 	attach_source(session)
-	session.augroup = vim.api.nvim_create_augroup("lazyvcs_" .. session.editable_bufnr, { clear = true })
+	session.augroup = vim.api.nvim_create_augroup("lazyvcs_view_" .. session.view_id, { clear = true })
 
 	vim.api.nvim_create_autocmd("OptionSet", {
 		group = session.augroup,
 		pattern = { "fileencoding", "fileformat", "bomb", "binary", "endofline", "fixendofline" },
 		callback = safe_callback(function()
 			if vim.api.nvim_get_current_buf() == session.editable_bufnr then
-				schedule_refresh(session.editable_bufnr)
+				if session.paused then
+					transfer.retry(session)
+				else
+					schedule_refresh(session.editable_bufnr)
+				end
 			end
 		end),
 	})
@@ -669,12 +687,24 @@ attach_session = function(session)
 		group = session.augroup,
 		buffer = session.editable_bufnr,
 		callback = safe_callback(function()
+			if session.paused then
+				return transfer.retry(session)
+			end
 			session.base_invalid, session.hunks = true, {}
 			vim.schedule(safe_callback(function()
 				close_automatically(session)
 			end))
 		end),
 	})
+	if session.paused then
+		vim.api.nvim_create_autocmd({ "BufWritePost", "BufReadPost" }, {
+			group = session.augroup,
+			buffer = session.editable_bufnr,
+			callback = safe_callback(function()
+				transfer.retry(session)
+			end),
+		})
+	end
 
 	vim.api.nvim_create_autocmd("WinScrolled", {
 		group = session.augroup,
@@ -721,7 +751,7 @@ attach_session = function(session)
 			-- deletion.
 			session.base_wiping = true
 			vim.schedule(safe_callback(function()
-				if state.get(session.editable_bufnr) == session then
+				if state.owns(session) then
 					close_automatically(session)
 				end
 			end))
@@ -745,7 +775,7 @@ attach_session = function(session)
 			state.clear_pending_transfer(session.editable_win)
 			session.phase = "closed"
 			vim.schedule(safe_callback(function()
-				if state.get(session.editable_bufnr) == session then
+				if state.owns(session) then
 					close_automatically(session)
 				end
 			end))
@@ -759,7 +789,7 @@ attach_session = function(session)
 			state.clear_pending_transfer(session.editable_win)
 			session.phase = "closed"
 			vim.schedule(safe_callback(function()
-				if state.get(session.editable_bufnr) == session then
+				if state.owns(session) then
 					close_automatically(session)
 				end
 			end))
@@ -779,12 +809,19 @@ end
 
 function M.open(opts)
 	opts = opts or {}
+	if vim.w[opts.winid or vim.api.nvim_get_current_win()].lazyvcs_compare then
+		return util.notify("Open the file in an editing window before starting a live diff", vim.log.levels.INFO)
+	end
 	ensure_global_autocmds()
 
 	local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
 	local invoking_win = opts.winid or vim.api.nvim_get_current_win()
 	local invoking_tab = util.win_is_valid(invoking_win) and vim.api.nvim_win_get_tabpage(invoking_win)
 	local owner = state.for_window(invoking_win)
+	if owner and owner.paused then
+		transfer.retry(owner)
+		return owner
+	end
 	if owner and owner.readonly_comparison then
 		transfer.reconcile_now(owner)
 		owner = state.for_window(invoking_win)
@@ -830,6 +867,7 @@ function M.open(opts)
 	-- Resolve and read the base asynchronously; working-copy locks must not freeze the UI.
 	local source_path = util.buf_path(bufnr)
 	local request = {}
+	pending_open_windows[request] = invoking_win
 	local task
 	pending_opens[bufnr] = request
 	task = build_session_async(bufnr, function(session, err)
@@ -869,6 +907,9 @@ function M.open(opts)
 	end)
 	if pending_opens[bufnr] == request then
 		pending_opens[bufnr] = task
+		if task then
+			pending_open_windows[task] = invoking_win
+		end
 	end
 	if task and type(task.on_cancel) == "function" then
 		pcall(task.on_cancel, task, function()
@@ -1076,22 +1117,43 @@ function M.open_target(comparison, opts)
 end
 
 function M.close(target)
+	if target == nil and vim.w.lazyvcs_compare then
+		return false
+	end
+	if type(target) == "table" then
+		return close_session(target)
+	end
 	local bufnr = type(target) == "number" and target or vim.api.nvim_get_current_buf()
 	-- Cancel an open that is still resolving, so closing before the backend
 	-- returns does not leave a session that appears moments later.
 	local pending = pending_opens[bufnr]
-	if pending and type(pending.kill) == "function" then
+	if
+		pending
+		and (target ~= nil or pending_open_windows[pending] == vim.api.nvim_get_current_win())
+		and type(pending.kill) == "function"
+	then
 		pcall(pending.kill, pending, 15)
 		pending_opens[bufnr] = nil
 	end
-	local session = state.get(bufnr)
-	if not session and target == nil then
-		session = state.for_window(vim.api.nvim_get_current_win())
+	local session
+	if target == nil then
+		session = state.current()
+	else
+		session = state.get(bufnr)
+	end
+	if not session and target ~= nil then
+		for _, view in ipairs(state.list()) do
+			if view.paused and view.editable_bufnr == bufnr then
+				session = view
+				break
+			end
+		end
 	end
 	if not session then
 		for _, pending_transfer in pairs(state.pending_transfers) do
 			if
-				util.win_is_valid(pending_transfer.editable_win)
+				(target ~= nil or pending_transfer.editable_win == vim.api.nvim_get_current_win())
+				and util.win_is_valid(pending_transfer.editable_win)
 				and vim.api.nvim_win_get_buf(pending_transfer.editable_win) == bufnr
 			then
 				session = state.for_window(pending_transfer.editable_win)
@@ -1105,18 +1167,21 @@ end
 function M.toggle()
 	local session = state.current()
 	if session then
-		return M.close(session.editable_bufnr)
+		return M.close(session)
 	end
 	local current_bufnr = vim.api.nvim_get_current_buf()
-	if pending_opens[current_bufnr] then
-		return M.close(current_bufnr)
+	if
+		pending_opens[current_bufnr]
+		and pending_open_windows[pending_opens[current_bufnr]] == vim.api.nvim_get_current_win()
+	then
+		return M.close()
 	end
 	return M.open()
 end
 
 function M.revert_hunk()
 	if require("lazyvcs.compare_navigation").owns(require("lazyvcs.compare").current()) then
-		util.notify("This comparison is read-only", vim.log.levels.WARN)
+		util.notify("Hunk revert is unavailable in Compare", vim.log.levels.WARN)
 		return false
 	end
 	local session = state.current()
@@ -1345,6 +1410,9 @@ end
 
 function M.refresh_current()
 	local session = state.current()
+	if session and session.paused then
+		return transfer.retry(session)
+	end
 	if session and not session.comparison then
 		backends.invalidate(session.source_path)
 	end
@@ -1353,7 +1421,12 @@ end
 
 function M.rebalance(target)
 	local bufnr = type(target) == "number" and target or vim.api.nvim_get_current_buf()
-	local session = state.get(bufnr)
+	local session
+	if type(target) == "number" then
+		session = state.get(bufnr)
+	else
+		session = state.current()
+	end
 	if session then
 		return layout.rebalance(session)
 	end

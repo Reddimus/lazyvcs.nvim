@@ -110,7 +110,7 @@ return function(ctx)
 				assert(not vim.uv.fs_lstat(f.root .. "/" .. path), "preview materialized an omitted file")
 				local oid = result.right_source.oid
 				local compare = require("lazyvcs.compare")
-				local s = assert(compare.open({ path = f.root, base = "HEAD^" }))
+				local s = assert(compare.open({ editable = false, path = f.root, base = "HEAD^" }))
 				ctx.wait_for(function()
 					return s.snapshot and not s.job and not s.preview_job
 				end, "sparse UI did not load", 15000)

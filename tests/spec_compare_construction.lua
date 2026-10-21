@@ -95,8 +95,10 @@ return function(ctx)
 				vim.o.winwidth = 40
 				vim.o.winminwidth = 40
 				local tabs = #api.nvim_list_tabpages()
-				local s =
-					assert(compare.open({ path = f.root, base = "HEAD" }), "feasible stacked comparison did not open")
+				local s = assert(
+					compare.open({ editable = false, path = f.root, base = "HEAD" }),
+					"feasible stacked comparison did not open"
+				)
 				loaded(s)
 				local left, right = api.nvim_win_get_position(s.leftwin), api.nvim_win_get_position(s.rightwin)
 				assert(s.stacked and left[2] == right[2] and left[1] < right[1], "comparison panes were not stacked")
@@ -187,7 +189,7 @@ return function(ctx)
 						assert(not buffers.is_managed(buf), "orphan managed resource")
 					end
 				end
-				local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+				local s = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
 				loaded(s)
 				compare.close(s)
 			end),

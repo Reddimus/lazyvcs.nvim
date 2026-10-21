@@ -122,7 +122,11 @@ return function(ctx)
 					local restored = api.nvim_buf_call(buf, function()
 						return vim.fn.maparg("q", "n", false, true)
 					end)
-					assert(restored.rhs == mapping.rhs, "detach lost original buffer mapping")
+					if command == "bdelete" then
+						assert(next(restored) == nil, "native :bdelete should clear buffer mappings")
+					else
+						assert(restored.rhs == mapping.rhs, "detach lost original buffer mapping")
+					end
 					assert(not vim.wo[win].diff, "departed buffer retained diff mode after " .. command)
 				end
 				h.cleanup()

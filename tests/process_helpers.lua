@@ -80,7 +80,7 @@ function M.dead(dir)
 end
 
 -- File-backed stdio prevents inherited pipes from holding the outer test open.
-function M.editor(script, dir, args)
+function M.editor(script, dir, args, timeout_ms)
 	local stdout = assert(vim.uv.fs_open(dir .. "/editor.out", "w", 384))
 	local stderr = assert(vim.uv.fs_open(dir .. "/editor.err", "w", 384))
 	local code
@@ -94,14 +94,20 @@ function M.editor(script, dir, args)
 	end))
 	vim.uv.fs_close(stdout)
 	vim.uv.fs_close(stderr)
-	local exited = vim.wait(10000, function()
+	local exited = vim.wait(timeout_ms or 10000, function()
 		return code ~= nil
 	end, 10)
 	if not exited then
 		handle:kill(9)
 	end
 	handle:close()
-	assert(exited, "nested editor did not exit")
+	assert(
+		exited,
+		"nested editor did not exit: "
+			.. table.concat(args or {}, " ")
+			.. "\n"
+			.. table.concat(vim.fn.readfile(dir .. "/editor.err"), "\n")
+	)
 	assert(code == 0, "nested editor failed: " .. table.concat(vim.fn.readfile(dir .. "/editor.err"), "\n"))
 end
 

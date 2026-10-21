@@ -192,7 +192,7 @@ function M.system_result(args, opts)
 	-- Convert that into a normal non-zero result so callers can handle it via
 	-- the usual result.code path instead of crashing.
 	local ok, proc = pcall(vim.system, args, opts)
-	if not ok then
+	if not ok or not proc then
 		return { code = 127, stdout = "", stderr = M.spawn_error(args, proc) }
 	end
 
@@ -343,8 +343,12 @@ function M.system_start(args, opts, on_exit)
 	local complete_exit
 	local reap_windows
 	local windows = vim.fn.has("win32") == 1
+	local owned_windows_tree = windows and (preserve_on_shutdown or tree_termination)
 	local wrapper = {}
-	opts.detach = not windows
+	-- Windows libuv assigns non-detached children to Neovim's kill-on-close
+	-- job. Only started mutations may outlive the editor; explicit cancellation
+	-- still uses taskkill /T for their complete process tree.
+	opts.detach = not windows or preserve_on_shutdown == true
 
 	local function group_alive()
 		if windows or group_gone or not process or not process.pid or process.pid <= 0 then
@@ -372,6 +376,15 @@ function M.system_start(args, opts, on_exit)
 			if process.pid and process.pid > 0 then
 				pcall(vim.uv.kill, -process.pid, signal)
 			else
+				pcall(process.kill, process, signal)
+			end
+		elseif owned_windows_tree then
+			-- Before the helper establishes its restrictive job it has no
+			-- children; afterward killing it closes the job and its entire tree.
+			local ok, closing = pcall(function()
+				return process:is_closing()
+			end)
+			if not done and not (ok and closing) then
 				pcall(process.kill, process, signal)
 			end
 		else
@@ -438,7 +451,7 @@ function M.system_start(args, opts, on_exit)
 	-- Both supported Neovim versions keep these handles in SystemObj._state;
 	-- there is no public method for closing its output pipes.
 	reap_windows = function()
-		if done or reap_timer or not process.is_closing then
+		if done or reap_timer or not process or not process.is_closing then
 			return
 		end
 		if process:is_closing() then
@@ -732,8 +745,16 @@ function M.system_start(args, opts, on_exit)
 		end
 		complete(bounded_raw, nil, bounded_raw)
 	end
-	local ok, proc =
-		pcall(vim.system, args, vim.tbl_extend("keep", opts, { text = true }), M.safe_callback(complete_exit))
+	local spawn_args, spawn_opts = args, opts
+	if owned_windows_tree then
+		spawn_args, spawn_opts = require("lazyvcs.windows_process").wrap(args, opts)
+	end
+	local ok, proc = pcall(
+		vim.system,
+		spawn_args,
+		vim.tbl_extend("keep", spawn_opts, { text = true }),
+		M.safe_callback(complete_exit)
+	)
 	if not ok then
 		local result = { code = 127, stdout = "", stderr = M.spawn_error(args, proc) }
 		result = bounded_result(result)

@@ -184,7 +184,7 @@ return function(ctx)
 			function()
 				local fixture = ctx.helpers.make_git_fixture()
 				local compare = require("lazyvcs.compare")
-				local s = assert(compare.open({ path = fixture.root, base = "HEAD" }))
+				local s = assert(compare.open({ editable = false, path = fixture.root, base = "HEAD" }))
 				ctx.wait_for(function()
 					return s.preview_result
 				end, "comparison did not load", 15000)

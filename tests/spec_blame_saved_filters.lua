@@ -57,7 +57,7 @@ return function(ctx)
 						local pinned = vim.trim(t.h.exec({ "git", "rev-parse", "HEAD" }, f.root))
 						t.h.write_file(f.file, "ONE\n" .. second .. suffix .. "\n")
 						local compare = require("lazyvcs.compare")
-						local session = assert(compare.open({ path = f.root, base = "HEAD" }))
+						local session = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
 						t.cleanups[#t.cleanups + 1] = function()
 							compare.close(session)
 						end

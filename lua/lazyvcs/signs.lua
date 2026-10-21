@@ -214,36 +214,7 @@ local function render_signs(bufnr, state)
 	end
 end
 
----@param left string
----@param right string
----@param result_type "indices"|"unified"
----@return boolean, string, string?
-local function diff_worker(left, right, result_type)
-	if type(vim.diff) ~= "function" then
-		return false, ""
-	end
-	local success, raw = pcall(vim.diff, left, right, { algorithm = "histogram", result_type = result_type })
-	if not success then
-		return true, "", tostring(raw)
-	end
-	if result_type == "indices" then
-		return true, vim.mpack.encode(raw)
-	end
-	---@cast raw string
-	return true, raw
-end
-
-local function start_diff_work(left, right, result_type, done)
-	local work
-	local ok, err = pcall(function()
-		work = assert(vim.uv.new_work(diff_worker, vim.schedule_wrap(util.safe_callback(done))))
-		assert(work:queue(left, right, result_type))
-	end)
-	if not ok then
-		return nil, tostring(err)
-	end
-	return work
-end
+local start_diff_work = require("lazyvcs.diff_work").start
 
 local delegate_to_gitsigns
 local threaded_diff
@@ -636,7 +607,7 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 	state.loading = true
 	local job = require("lazyvcs.backends.task").new()
 	local resolved_backend = false
-	local function loaded_impl(result, err)
+	local function loaded_impl(result, err, rejection)
 		local live = buffers[bufnr]
 		if not live or live ~= state or live.generation ~= generation then
 			return
@@ -673,6 +644,7 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 			end
 			if
 				err
+				and not rejection
 				and err:match("tracked") == nil
 				and not err:match("No Git or SVN working copy found")
 				and not err:match("^Cancelled")

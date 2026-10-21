@@ -4649,7 +4649,7 @@ local function test_live_diff_cancelled_open_task_allows_future_open()
 		end
 
 		local first_task = actions.open({ silent = true })
-		assert(first_task:kill(), "the first open task should be cancellable")
+		assert(assert(first_task):kill(), "the first open task should be cancellable")
 		local second_task = actions.open({
 			silent = true,
 			on_open = function(session)
@@ -4658,7 +4658,7 @@ local function test_live_diff_cancelled_open_task_allows_future_open()
 		})
 		assert(second_task ~= first_task, "a cancelled task must not remain cached as the pending open")
 		eq(#tasks, 2, "a later open must start a fresh backend request")
-		assert(second_task:finish(fake_git_load_result(path, root)))
+		assert(assert(second_task):finish(fake_git_load_result(path, root)))
 		assert(opened, "the replacement open should create a live diff session")
 	end, debug.traceback)
 	backends.load_async = previous_load_async
@@ -4755,7 +4755,7 @@ local function test_live_diff_close_restores_exact_buffer_mapping()
 	local restored = vim.fn.maparg("q", "n", false, true)
 	-- The round trip is the actual guarantee: whatever maparg() reported before
 	-- must come back identical afterwards.
-	eq(restored, original, "closing LazyVCS must round-trip every attribute of the overwritten mapping")
+	eq(restored, original, "mapping round trip: " .. vim.inspect({ original = original, restored = restored }))
 	-- Neovim 0.11 omits replace_keycodes from maparg() entirely while 0.12
 	-- reports it, so pin the concrete values only where the running version
 	-- exposes them.
@@ -6594,8 +6594,9 @@ local function test_source_control_switch_repo_closes_matching_sessions_and_refr
 		opts.run_mutation(repo, { short = "main" }, { "git", "switch", "main" }, { cwd = repo.root })
 	end
 	---@diagnostic disable-next-line: duplicate-set-field
-	actions.close = function(bufnr)
-		closed[#closed + 1] = bufnr
+	actions.close = function(session)
+		assert(type(session) == "table", "repository cleanup must target the exact view")
+		closed[#closed + 1] = session.editable_bufnr
 	end
 	---@diagnostic disable-next-line: duplicate-set-field
 	util.system_start = function(_args, _opts, on_exit)
@@ -6712,9 +6713,9 @@ local function test_svn_buffer_transfer_handles_added_and_untracked_files()
 			and diff_window_count() == 0
 	end)
 
-	eq(state.current(), nil, "SVN untracked transfer should close the active session")
+	assert(state.current() and state.current().paused, "SVN untracked transfer should pause the view")
 	eq(diff_window_count(), 0, "SVN untracked transfer should clear tab diff state")
-	eq(#vim.api.nvim_tabpage_list_wins(0), 1, "SVN untracked transfer should not leave a stale base split")
+	eq(#vim.api.nvim_tabpage_list_wins(0), 2, "SVN untracked transfer should retain a paused base split")
 end
 
 local function test_transfer_to_unsupported_buffer_closes_session()
@@ -7195,6 +7196,7 @@ vim.list_extend(cases, require("spec_integrations_resession")({ helpers = helper
 vim.list_extend(cases, require("spec_integrations_editor")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_process_shutdown")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_process_flows")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_windows_process")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_process")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_copilotchat_files")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_copilotchat_lifecycle")({ helpers = helpers, wait_for = wait_for }))
@@ -7287,6 +7289,10 @@ vim.list_extend(cases, require("spec_commit_file_ownership")({ helpers = helpers
 vim.list_extend(cases, require("spec_commit_file_helpers")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_svn_summary")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_window_controls")())
+vim.list_extend(cases, require("spec_diff_work")())
+vim.list_extend(cases, require("spec_compare_worktree")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_live_diff_pause")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,
@@ -7358,6 +7364,9 @@ for _, case in ipairs(cases) do
 end
 
 pcall(vim.fn.delete, STORE_DIR, "rf")
+if passed + skipped + #failures == 0 then
+	failures[#failures + 1] = "No test matched the selected group/case"
+end
 print(string.format("\nlazyvcs %s tests: %d passed, %d skipped, %d failed", selected_group, passed, skipped, #failures))
 if #failures > 0 then
 	print("FAILED: " .. table.concat(failures, ", "))

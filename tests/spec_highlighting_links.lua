@@ -125,7 +125,7 @@ return function(ctx)
 		assert(foreground(win) == 0x12f034, "editor policy changed rendered color")
 		api.nvim_win_set_hl_ns(win, -1)
 		local compare = require("lazyvcs.compare")
-		local review = assert(compare.open({ path = f.root, base = "HEAD" }))
+		local review = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
 		ctx.wait_for(function()
 			return review.preview_result ~= nil
 		end, "link review did not load", 15000)

@@ -403,7 +403,7 @@ return function(ctx)
 						local buf = vim.api.nvim_get_current_buf()
 						local state, _, node = node_for(f, "changes", "sample.txt")
 						local compare = require("lazyvcs.compare")
-						local review = assert(compare.open({ path = f.root, base = "HEAD" }))
+						local review = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
 						ctx.wait_for(function()
 							return review.preview_result ~= nil
 						end, "Compare snapshots did not load", 15000)

@@ -25,7 +25,7 @@ return function(ctx)
 	local function open()
 		local task = actions.open({ silent = true })
 		ctx.wait_for(function()
-			return task.done
+			return task and task.done
 		end, "live open")
 		return assert(require("lazyvcs.state").current())
 	end

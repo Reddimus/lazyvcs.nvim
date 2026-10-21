@@ -8,7 +8,7 @@ Linux, macOS, and Windows. No required Lua dependencies.
 
 ## Requirements
 
-- Neovim 0.11 or newer.
+- Neovim 0.11 or newer. On Windows, use a standard LuaJIT build.
 - `git` or `svn` for the repositories you use.
 - A Nerd Font for icons, optional.
 
@@ -70,19 +70,23 @@ Omitted sparse-checkout files use read-only index snapshots.
 
 Git compares the common ancestor with your saved working tree, including
 committed, staged, unstaged, and nonignored untracked changes. SVN compares the
-selected repository revision with the working copy. Save buffers before
-refreshing to include their latest edits.
+selected repository revision with the working copy. The file list reflects saved
+changes; save and refresh to discover new paths.
 
 The comparison uses native Neovim buffers and windows. Press `Enter` or
 double-click a file in the list to focus its first hunk. `]v` and `[v` cycle
 hunks; `]b` and `[b` cycle files and restore your position. Both wrap, and file
 counts work, such as `3]b`. These mappings apply only in Compare.
 
-Text panes keep normal Vim motions, search, macros, marks, and jump history.
-Both panes are read-only snapshots of saved contents. Use `<leader>vf` for the
-file list, `<leader>ve` to edit at your review position, or `<leader>v?` for
+Text panes keep normal Vim motions, search, macros, marks, and jump history. The
+right pane edits the real file, including unsaved changes; the left stays
+read-only. Save with `:write`. Edited buffers survive closing Compare. Symlinks,
+deleted files, and other unsupported paths use read-only snapshots. Set
+`compare.editable = false` to use snapshots throughout. Use `<leader>vf` for the
+file list, `<leader>ve` for your original editing window, or `<leader>v?` for
 help. File and grep searches, including AstroNvim's `<leader>ff` and
-`<leader>fw`, open actual files in your editing window.
+`<leader>fw`, open other files in your editing window. Searching within the
+displayed working file jumps directly in its editable pane.
 
 In the file list, `P` previews, `e` fits the width, `o` edits, `R` refreshes,
 `b` changes the base, `p` toggles metadata, and `q` closes. From any Compare
@@ -95,9 +99,10 @@ Snapshots decode each source to UTF-8 for display, including Git
 normalizes CRLF to LF on both sides and preserves lone CR characters as content.
 Hunk navigation from metadata loads the text before jumping.
 
-Snapshots are unlisted and loaded on demand; ordinary buffer cycling stays
-unchanged. Compare keeps up to 32 cached files, plus current, visible, or
-pending files. Eviction drops snapshot marks and jumps; review positions remain
+Files load on demand; Compare does not fill your ordinary buffer list. Editing a
+file adds it to that list. Controls apply only while a Compare pane has focus.
+Compare keeps up to 32 cached snapshots, plus current, visible, or pending
+files. Eviction drops snapshot marks and jumps; review positions remain
 remembered. Set `compare.max_cached_files = 0` for an unlimited cache. Customize
 or disable pane shortcuts with
 `compare.keymaps = { files = "<leader>vf", edit = "<leader>ve", help = "<leader>v?" }`;

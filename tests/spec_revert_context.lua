@@ -174,7 +174,7 @@ return function(ctx)
 			vim.cmd.edit(vim.fn.fnameescape(f.file1))
 			local task = actions.open({ silent = true })
 			ctx.wait_for(function()
-				return task.done
+				return task and task.done
 			end, "open")
 			return f, assert(state.current())
 		end
@@ -270,16 +270,20 @@ return function(ctx)
 					end
 					vim.cmd.edit(vim.fn.fnameescape(path))
 					ctx.wait_for(function()
-						return #messages > 0
+						local view = state.for_window(s.editable_win)
+						return view and view.paused
 					end, "transfer rejection")
 					local buf = api.nvim_get_current_buf()
-					local transfer_message = messages[1]
+					local paused = assert(state.for_window(s.editable_win))
+					local transfer_message = table.concat(paused.base_lines, "\n")
+					assert(#messages == 0, "expected rejection should remain in the paused pane")
 					messages = {}
 					local transfer_clean = state.get(buf) == nil and state.get(s.editable_bufnr) == nil
+					actions.close(paused)
 					local task = actions.open({ silent = true })
 					if task then
 						ctx.wait_for(function()
-							return task.done
+							return task and task.done
 						end, "fresh open")
 					end
 					local opened = state.get(buf)
@@ -347,7 +351,7 @@ return function(ctx)
 				vim.cmd("vsplit " .. vim.fn.fnameescape(f.file2))
 				local task = actions.open({ silent = true })
 				ctx.wait_for(function()
-					return task.done
+					return task and task.done
 				end, "second open")
 				local other = assert(state.current())
 				assert(other ~= s)

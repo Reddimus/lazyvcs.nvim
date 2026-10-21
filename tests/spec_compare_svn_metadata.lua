@@ -274,7 +274,7 @@ return function(ctx)
 					assert(contains(result.right, "-BEFORE") and contains(result.right, "+AFTER"))
 				end
 				assert(require("lazyvcs.backends.svn_url").append_path(url, ".") == url)
-				local s = assert(compare.open({ path = f.root, base = base }))
+				local s = assert(compare.open({ editable = false, path = f.root, base = base }))
 				local ok, err = xpcall(function()
 					ctx.wait_for(function()
 						return s.preview_result
@@ -401,7 +401,7 @@ return function(ctx)
 				local command, start = common.command, util.system_start
 				local s
 				local ok, failure = xpcall(function()
-					s = assert(compare.open({ path = f.root, base = h.file_url(f.repo) .. "@2" }))
+					s = assert(compare.open({ editable = false, path = f.root, base = h.file_url(f.repo) .. "@2" }))
 					ctx.wait_for(function()
 						return s.preview_result
 					end, "directory comparison did not load", 15000)
@@ -493,7 +493,7 @@ return function(ctx)
 				local f = h.make_svn_fixture()
 				h.exec({ "svn", "revert", f.file }, f.root)
 				h.exec({ "svn", "propset", "custom:review", "changed value", f.file }, f.root)
-				local s = assert(compare.open({ path = f.root, base = h.file_url(f.repo) .. "@1" }))
+				local s = assert(compare.open({ editable = false, path = f.root, base = h.file_url(f.repo) .. "@1" }))
 				local ok, err = xpcall(function()
 					ctx.wait_for(function()
 						return s.preview_result
@@ -644,7 +644,7 @@ return function(ctx)
 					contains(assert(preview("sample.txt")).right, "custom:file"),
 					"file property-only preview changed"
 				)
-				local s = assert(compare.open({ path = f.root, base = h.file_url(f.repo) .. "@1" }))
+				local s = assert(compare.open({ editable = false, path = f.root, base = h.file_url(f.repo) .. "@1" }))
 				ctx.wait_for(function()
 					return s.preview_result
 				end, "SVN comparison did not load", 15000)

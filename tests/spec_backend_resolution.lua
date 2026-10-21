@@ -161,7 +161,7 @@ return function(ctx)
 					local s = require("lazyvcs.state").current()
 					return s and not s.refresh_job
 				end, "diff refresh did not complete", 15000)
-				local s = require("lazyvcs.state").current()
+				local s = assert(require("lazyvcs.state").current())
 				assert(s.root == f.root .. "/inner", "explicit refresh kept outer repository")
 				assert(s.base_lines[1] == "inner base")
 				local function cache_outer()

@@ -58,7 +58,7 @@ return function(ctx)
 				vim.cmd.write()
 				local raw = "caf\233\nnew\n"
 				assert(bytes(f.root .. "/" .. path) == raw)
-				local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+				local s = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
 				ctx.wait_for(function()
 					return s.preview_result
 				end, "Compare encoding", 15000)
@@ -198,7 +198,7 @@ return function(ctx)
 				local a = decode("abc\n", { encoding = "latin1" })
 				local b = decode("abc\n", { encoding = "utf-8" })
 				assert(a.profile_key ~= b.profile_key, "encoding profiles collided")
-				local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+				local s = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
 				ctx.wait_for(function()
 					return s.preview_result
 				end, "profile UI", 15000)

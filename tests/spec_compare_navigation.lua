@@ -30,9 +30,11 @@ return function(ctx)
 		end
 		ctx.helpers.write_file(f.file, table.concat(lines, "\n") .. "\n")
 		vim.cmd.edit(vim.fn.fnameescape(f.file))
-		local s = assert(
-			compare.open({ path = f.root, base = vcs == "svn" and ctx.helpers.file_url(f.repo) .. "@2" or "HEAD" })
-		)
+		local s = assert(compare.open({
+			editable = false,
+			path = f.root,
+			base = vcs == "svn" and ctx.helpers.file_url(f.repo) .. "@2" or "HEAD",
+		}))
 		ready(s)
 		vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path["sample.txt"], 0 })
 		if s.shown_item.relpath ~= "sample.txt" then
@@ -99,7 +101,7 @@ return function(ctx)
 			compare.close(s)
 			vim.fn.delete(f.file)
 			vim.fn.writefile({}, f.root .. "/empty.txt")
-			s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			s = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
 			ready(s)
 			vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path["sample.txt"], 0 })
 			keys("<CR>")

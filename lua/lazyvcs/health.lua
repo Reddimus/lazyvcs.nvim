@@ -12,6 +12,14 @@ function M.check()
 		health.error("Neovim 0.11+ is required (config validation uses the 0.11 vim.validate signature)")
 	end
 
+	if vim.fn.has("win32") == 1 then
+		if pcall(require, "ffi") then
+			health.ok("LuaJIT FFI is available for Windows command-tree ownership")
+		else
+			health.error("Windows command-tree ownership requires a standard LuaJIT Neovim build")
+		end
+	end
+
 	local git = vim.fn.executable("git") == 1
 	local svn = vim.fn.executable("svn") == 1
 	if git then

@@ -258,7 +258,7 @@ local function close_sessions_for_repo(repo_root)
 	local actions = require("lazyvcs.actions")
 	for _, session in ipairs(session_state.list()) do
 		if session.root == repo_root then
-			actions.close(session.editable_bufnr)
+			actions.close(session)
 		end
 	end
 end

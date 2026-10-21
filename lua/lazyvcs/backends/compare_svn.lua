@@ -419,19 +419,43 @@ function M.preview(snapshot, item, callback, opts)
 		result.left = { "Directory: " .. vim.fn.strtrans(item.relpath) }
 		right()
 	elseif item.status == "A" or item.untracked then
+		result.left_kind = "missing"
 		common.decode_side(result, "left", "", { encoding = "utf-8" })
 		right()
 	else
-		command(task, snapshot, { "cat", "-r", snapshot.revision, url .. "@" .. snapshot.revision }, function(raw, err)
-			if not raw then
-				return task:finish(nil, err)
-			end
-			local decoded, line_err = common.decode_side(result, "left", raw, left_options)
-			if not decoded then
-				return task:finish(nil, line_err)
-			end
-			right()
-		end)
+		local function read_base()
+			command(
+				task,
+				snapshot,
+				{ "cat", "-r", snapshot.revision, url .. "@" .. snapshot.revision },
+				function(raw, err)
+					if not raw then
+						return task:finish(nil, err)
+					end
+					local decoded, line_err = common.decode_side(result, "left", raw, left_options)
+					if not decoded then
+						return task:finish(nil, line_err)
+					end
+					right()
+				end
+			)
+		end
+		if opts and opts.editable then
+			command(
+				task,
+				snapshot,
+				{ "proplist", "--xml", "-r", snapshot.revision, url .. "@" .. snapshot.revision },
+				function(raw, err)
+					if not raw then
+						return task:finish(nil, err)
+					end
+					result.left_kind = raw:match('name="svn:special"') and "symlink" or "regular"
+					read_base()
+				end
+			)
+		else
+			read_base()
+		end
 	end
 	return task
 end

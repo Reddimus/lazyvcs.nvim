@@ -355,9 +355,9 @@ local function load_payload_async(path, on_done, opts, base_only)
 			return task:finish(nil, path_err)
 		end
 		task:add(entry.classify_async(path, function(kind, kind_err)
-			local valid, eligibility_err = entry.editable(kind, kind_err)
+			local valid, eligibility_err, rejection = entry.editable(kind, kind_err)
 			if not valid then
-				return task:finish(nil, eligibility_err)
+				return task:finish(nil, eligibility_err, rejection)
 			end
 			task:add(process.start({ "svn", "info", literal_target(path) }, {
 				cwd = cwd,
@@ -368,7 +368,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 				end
 				if tracked_err then
 					if is_unversioned_error(tracked_err, tracked_raw) then
-						return task:finish(nil, "File is not tracked by SVN")
+						return task:finish(nil, "File is not tracked by SVN", { code = "untracked" })
 					end
 					return task:finish(nil, tracked_err)
 				end
@@ -408,7 +408,11 @@ local function load_payload_async(path, on_done, opts, base_only)
 											return task:finish(nil, props_err)
 										end
 										if props.stdout:match('name="svn:special"') then
-											return task:finish(nil, "Editable hunks do not support SVN special entries")
+											return task:finish(
+												nil,
+												"Editable hunks do not support SVN special entries",
+												{ code = "unsupported_entry", kind = "symlink" }
+											)
 										end
 										task:add(
 											process.bytes(

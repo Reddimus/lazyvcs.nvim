@@ -83,6 +83,86 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_source_control_native_commit_message_survives_editor_exit",
+			function()
+				local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+				local f = h.make_git_fixture()
+				h.exec({ "git", "add", "sample.txt" }, f.root)
+				local before = h.exec({ "git", "rev-parse", "HEAD" }, f.root)
+				local message = "Native shutdown message\n\n" .. string.rep("full body\n", 1000) .. "Tail"
+				h.write_file(f.root .. "/message", message)
+				local function quote(value)
+					return "'" .. value:gsub("\\", "/"):gsub("'", "'\\''") .. "'"
+				end
+				h.write_file(
+					f.root .. "/.git/hooks/pre-commit",
+					"#!/bin/sh\nexec "
+						.. quote(vim.v.progpath)
+						.. " --headless -u NONE -i NONE -l "
+						.. quote(root .. "/tests/fixtures/process_native_child.lua")
+						.. " "
+						.. quote(f.root)
+						.. " parent\n"
+				)
+				vim.uv.fs_chmod(f.root .. "/.git/hooks/pre-commit", 493)
+				p.guarded(f.root, function()
+					p.editor(root .. "/tests/fixtures/process_native_commit_shutdown.lua", f.root, { root, f.root })
+					assert(p.alive(p.pid(f.root .. "/parent.pid")), "commit hook died with editor")
+					if vim.fn.has("win32") == 1 then
+						assert(vim.fn.readfile(f.root .. "/leaf.console")[1] == "0", "Git hook opened a console window")
+					end
+					local path = vim.fn.readfile(f.root .. "/message-path")[1]
+					assert(vim.fn.filereadable(path) == 1, "private message disappeared at exit")
+					h.write_file(f.root .. "/release", "finish")
+					ctx.wait_for(function()
+						return h.exec({ "git", "rev-parse", "HEAD" }, f.root) ~= before
+					end, "commit failed after editor exit", 10000)
+					assert(
+						h.exec({ "git", "cat-file", "commit", "HEAD" }, f.root):match("\n\n(.*)$") == message .. "\n",
+						"message changed after exit"
+					)
+					assert(vim.fn.filereadable(f.root .. "/.git/index.lock") == 0, "commit left index lock")
+				end)
+			end,
+		},
+		{
+			"test_source_control_native_process_shutdown_and_explicit_cancel",
+			function()
+				local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+				for _, mode in ipairs({ "survive", "cancel", "timeout" }) do
+					local dir = h.tempdir()
+					p.guarded(dir, function()
+						p.editor(root .. "/tests/fixtures/process_native_shutdown.lua", dir, { root, dir, mode }, 30000)
+						if vim.fn.has("win32") == 1 then
+							print(
+								"native console baseline: "
+									.. table.concat(vim.fn.readfile(dir .. "/console-baseline"), ", ")
+							)
+						end
+						ctx.wait_for(function()
+							return p.dead(dir .. "/reader")
+						end, "read process tree survived", 3000)
+						if mode == "survive" then
+							assert(p.alive(p.pid(dir .. "/mutation/parent.pid")), "mutation parent died at exit")
+							assert(p.alive(p.pid(dir .. "/mutation/leaf.pid")), "mutation descendant died at exit")
+							h.write_file(dir .. "/mutation/release", "finish")
+							ctx.wait_for(function()
+								return vim.fn.filereadable(dir .. "/mutation/parent.done") == 1
+							end, "mutation did not finish after exit", 10000)
+							assert(vim.fn.filereadable(dir .. "/mutation/leaf.done") == 1)
+							assert(
+								vim.fn.filereadable(dir .. "/mutation/callback") == 0,
+								"shutdown delivered application callback"
+							)
+						end
+						ctx.wait_for(function()
+							return p.dead(dir)
+						end, "native process fixture leaked", 3000)
+					end)
+				end
+			end,
+		},
+		{
 			"test_source_control_popup_exit_kills_context_and_provider",
 			function()
 				if vim.fn.has("win32") == 1 then
