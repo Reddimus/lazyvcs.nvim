@@ -14,9 +14,13 @@ and this project adheres to
 
 - Keep Compare's diff mode, scroll binding, diff folds, and `WORKTREE` label out
   of editor windows that show a real Compare buffer, including after `o`,
-  `<leader>ve`, picker selections, and closing Compare.
+  `<leader>ve`, picker selections, and closing Compare. A window's own diff
+  stays on, and statusline plugins that replace the winbar no longer hide the
+  copied options.
 - Keep a Compare buffer and its undo history when one command edits and saves
   it, such as `:%s/old/new/ | write`, or a macro edits and undoes it.
+- Keep an untouched Compare buffer out of the buffer list when `:checktime` or
+  `autoread` rereads it.
 - Restore a paused live diff that returns to its file before the next file
   loads, instead of leaving "Loading comparison..." in the base pane.
 - Keep diff mode in another live diff when a paused view sharing its buffer

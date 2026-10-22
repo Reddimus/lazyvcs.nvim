@@ -222,6 +222,12 @@ the GitHub release.
   through text loading. Property markers reflect SVN summary flags; replacement
   rows load properties independently of those markers. Metadata-only results
   never enter the text cache or hunk computation.
+- `compare_worktree.lua` borrows real buffers for the editable pane.
+  `window_records.lua` models Neovim's per-buffer window option records from
+  plugin load, so Compare resets pane options copied into an editor window and
+  leaves a window's own record, diff mode included, alone. Its spec compares the
+  model with the options Neovim copies; update both when Neovim changes
+  `get_winopts()`.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_buffers.lua` owns snapshot identity, reload guards, and bounded
