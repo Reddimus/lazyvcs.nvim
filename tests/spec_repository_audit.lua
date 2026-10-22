@@ -81,6 +81,43 @@ return function()
 			end,
 		},
 		{
+			"test_core_changelog_versions_have_link_references",
+			function()
+				local changelog = read("CHANGELOG.md")
+				local base = "https://github.com/Reddimus/lazyvcs.nvim/"
+				local versions, refs, problems = {}, {}, {}
+				for line in vim.gsplit(changelog, "\n", { plain = true }) do
+					local version = line:match("^## %[(%d+%.%d+%.%d+)%] %- %d%d%d%d%-%d%d%-%d%d$")
+					if version then
+						versions[#versions + 1] = version
+					elseif line:match("^## %[") and not line:match("^## %[Unreleased%]$") then
+						problems[#problems + 1] = "malformed heading: " .. line
+					end
+					local name, url = line:match("^%[([^%]]+)%]: (%S+)$")
+					if name then
+						refs[name] = url
+					end
+				end
+				assert(#versions > 0, "no release headings found")
+				local function expect(name, url)
+					if refs[name] ~= url then
+						problems[#problems + 1] =
+							string.format("[%s] should link to %s, found %s", name, url, tostring(refs[name]))
+					end
+				end
+				expect("Unreleased", base .. "compare/v" .. versions[1] .. "...HEAD")
+				for index, version in ipairs(versions) do
+					local older = versions[index + 1]
+					expect(
+						version,
+						older and string.format("%scompare/v%s...v%s", base, older, version)
+							or base .. "releases/tag/v" .. version
+					)
+				end
+				assert(#problems == 0, table.concat(problems, "\n"))
+			end,
+		},
+		{
 			"test_core_buffer_mappings_use_compat_helper",
 			function()
 				local offenders = {}

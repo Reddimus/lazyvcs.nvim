@@ -8,7 +8,31 @@ and this project adheres to
 
 ## [Unreleased]
 
-## [0.12.0] - 2026-10-21
+## [0.12.1] - 2026-10-22
+
+### Fixed
+
+- Keep Compare's diff mode, scroll binding, diff folds, and `WORKTREE` label out
+  of editor windows that show a real Compare buffer, including after `o`,
+  `<leader>ve`, picker selections, and closing Compare.
+- Keep a Compare buffer and its undo history when one command edits and saves
+  it, such as `:%s/old/new/ | write`, or a macro edits and undoes it.
+- Restore a paused live diff that returns to its file before the next file
+  loads, instead of leaving "Loading comparison..." in the base pane.
+- Keep diff mode in another live diff when a paused view sharing its buffer
+  resumes on a supported file.
+- Restore `]v`, `[v`, and hunk revert when a live diff returns to its file
+  before a pending transfer finishes.
+
+### Changed
+
+- Use `vim.text.diff` in the threaded diff worker when available, keeping
+  `vim.diff` for Neovim 0.11.
+- Document the complete default configuration, commit-message provider names and
+  `"off"`, `:LazyVCS blame selection`, and the sidebar `?` key. The README and
+  help install specs now match.
+
+## [0.12.0] - 2026-10-22
 
 ### Added
 
@@ -807,6 +831,8 @@ First tagged release.
 [0.8.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.7.0...v0.7.1
 [0.8.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.8.0...v0.8.1
+[0.9.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.8.1...v0.9.0
+[0.10.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.9.0...v0.10.0
 [0.11.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.10.0...v0.11.0
 [0.11.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.0...v0.11.1
 [0.11.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.1...v0.11.2
@@ -814,3 +840,7 @@ First tagged release.
 [0.11.4]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.3...v0.11.4
 [0.11.5]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.4...v0.11.5
 [0.11.6]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.5...v0.11.6
+[0.11.7]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.6...v0.11.7
+[0.12.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.7...v0.12.0
+[0.12.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.0...v0.12.1
+[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.1...HEAD
