@@ -146,9 +146,13 @@ return function(ctx)
 		end,
 	}
 	-- Run in a fresh editor so the plugin's BufWinEnter handler precedes LazyVCS.
-	for _, from in ipairs({ "side", "right" }) do
+	for _, variant in ipairs({ { "side" }, { "right" }, { "side", "peer" } }) do
+		local from, peer = variant[1], variant[2]
 		cases[#cases + 1] = {
-			"test_core_compare_worktree_edit_from_" .. from .. "_survives_winbar_plugins",
+			"test_core_compare_worktree_edit_from_"
+				.. from
+				.. (peer and "_beside_user_diff" or "")
+				.. "_survives_winbar_plugins",
 			function()
 				local repo = vim.fs.normalize(
 					vim.fn.fnamemodify(
@@ -169,6 +173,7 @@ return function(ctx)
 					repo,
 					output,
 					from,
+					peer or "",
 				}, { text = true }):wait(60000)
 				assert(result.code == 0, "nested editor failed: " .. tostring(result.stderr))
 				local values = vim.json.decode(table.concat(vim.fn.readfile(output), "\n"))
@@ -187,6 +192,9 @@ return function(ctx)
 						step .. " inherited Compare pane options: " .. vim.inspect(v)
 					)
 					assert(v.winbar == "%f", step .. " lost the plugin winbar: " .. vim.inspect(v.winbar))
+				end
+				if peer then
+					assert(vim.deep_equal(values.peers, { true, true }), "edit changed the user's diff pair")
 				end
 			end,
 		}
@@ -213,6 +221,29 @@ return function(ctx)
 			vim.cmd.edit(vim.fn.fnameescape(f.root .. "/b.txt"))
 			vim.cmd.buffer(buf)
 			assert(vim.wo[origin].diff, "returning to the buffer turned off the user's diff")
+			vim.cmd("diffoff")
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_core_compare_worktree_keeps_single_window_user_diff_while_open",
+		function()
+			require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false }, blame = { persist = false } })
+			local f = h.make_git_fixture()
+			h.write_file(f.root .. "/a.txt", "first\n")
+			h.write_file(f.root .. "/b.txt", "second\n")
+			vim.cmd.edit(vim.fn.fnameescape(f.root .. "/a.txt"))
+			local origin, buf = api.nvim_get_current_win(), api.nvim_get_current_buf()
+			-- A deliberate diff with no peer window, kept while Compare shows the buffer.
+			vim.cmd("diffthis")
+			local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			ready(s)
+			assert(s.right == buf and vim.wo[s.rightwin].diff, "Compare did not show the existing buffer")
+			api.nvim_set_current_win(origin)
+			vim.cmd.edit(vim.fn.fnameescape(f.root .. "/b.txt"))
+			vim.cmd.buffer(buf)
+			assert(vim.wo[origin].diff, "returning to the buffer turned off the user's diff")
+			compare.close(s)
+			assert(vim.wo[origin].diff, "closing Compare turned off the user's diff")
 			vim.cmd("diffoff")
 		end,
 	}

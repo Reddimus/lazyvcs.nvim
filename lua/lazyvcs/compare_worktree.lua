@@ -2,11 +2,27 @@
 -- be discarded only until the user modifies, lists, or displays it elsewhere.
 local text = require("lazyvcs.compare_text")
 local util = require("lazyvcs.util")
+local window_records = require("lazyvcs.window_records")
 local M = {}
 local records = {}
 local attachments = {}
 local pane_labels = {}
 local installed = false
+
+-- :diffoff restores the options saved before diff mode, such as an ftplugin
+-- fold method.
+local function reset(win, clear_winbar)
+	util.diff_off(win)
+	util.set_win_options(win, { scrollbind = false, cursorbind = false })
+	if clear_winbar then
+		util.set_win_option(win, "winbar", "")
+	end
+	if util.get_win_option(win, "foldmethod") == "diff" then
+		for _, name in ipairs({ "foldmethod", "foldcolumn", "foldenable" }) do
+			util.set_win_option(win, name, vim.api.nvim_get_option_value(name, { win = win, scope = "global" }))
+		end
+	end
+end
 
 local function valid(record)
 	return record and vim.api.nvim_buf_is_valid(record.buf)
@@ -177,17 +193,25 @@ local function setup()
 			end
 		end),
 	})
-	-- A window without its own option record for a buffer copies the buffer's
-	-- last window options. Remove Compare pane state copied into ordinary windows.
-	vim.api.nvim_create_autocmd("BufWinEnter", {
-		group = group,
-		callback = util.safe_callback(function(args)
-			local win = vim.api.nvim_get_current_win()
-			if pane_labels[args.buf] and not vim.w[win].lazyvcs_compare then
-				M.neutralize(win, args.buf)
-			end
-		end),
-	})
+	-- A window without its own option record for a buffer copies another
+	-- window's options for it. Remove Compare pane state copied into ordinary
+	-- windows; a window's own record, diff mode included, stays as it is.
+	window_records.setup()
+	window_records.add_marker(function(win, buf)
+		local labels = pane_labels[buf]
+		return labels ~= nil and labels[util.get_win_option(win, "winbar")] == true
+	end)
+	window_records.on_enter(function(win, buf, source)
+		local labels = pane_labels[buf]
+		if not labels or vim.w[win].lazyvcs_compare or source == "own" then
+			return
+		end
+		-- A statusline plugin may already have replaced a copied label.
+		local labelled = labels[util.get_win_option(win, "winbar")]
+		if source == "pane" or labelled then
+			reset(win, labelled)
+		end
+	end)
 	vim.api.nvim_create_autocmd("BufWipeout", {
 		group = group,
 		callback = util.safe_callback(function(args)
@@ -293,60 +317,10 @@ function M.mark_pane(buf, winbar)
 	pane_labels[buf] = labels
 end
 
--- Plugins such as statuslines may replace a copied label on BufWinEnter before
--- Compare sees it. Diff mode is then the evidence, but only while a Compare
--- pane displays the buffer: Neovim copies options from a window showing it, and
--- panes are reset before they release a buffer, so afterwards a diff in an
--- editor window is the user's own (a single-window :diffthis included). It is
--- a copy unless a live diff owns the window or another editor diff in its tab
--- explains it.
-local function copied_diff(win, buf)
-	local state = require("lazyvcs.state")
-	if not util.get_win_option(win, "diff") or state.for_window(win) then
-		return false
-	end
-	local shown = false
-	for _, other in ipairs(vim.fn.win_findbuf(buf)) do
-		if other ~= win and vim.w[other].lazyvcs_compare then
-			shown = true
-		end
-	end
-	if not shown then
-		return false
-	end
-	for _, other in ipairs(vim.api.nvim_tabpage_list_wins(vim.api.nvim_win_get_tabpage(win))) do
-		if
-			other ~= win
-			and util.get_win_option(other, "diff")
-			and not vim.w[other].lazyvcs_compare
-			and not state.for_window(other)
-		then
-			return false
-		end
-	end
-	return true
-end
-
----Reset Compare pane options in `win`, a Compare pane when `pane` is true, or a
----window that copied them from a pane displaying `buf`. :diffoff restores the
----options saved before diff mode, such as an ftplugin fold method.
-function M.neutralize(win, buf, pane)
-	local labels = pane_labels[buf]
-	local labelled = labels and labels[util.get_win_option(win, "winbar")]
-	if not pane and not labelled and not (labels and copied_diff(win, buf)) then
-		return false
-	end
-	util.diff_off(win)
-	util.set_win_options(win, { scrollbind = false, cursorbind = false })
-	if pane or labelled then
-		util.set_win_option(win, "winbar", "")
-	end
-	if util.get_win_option(win, "foldmethod") == "diff" then
-		for _, name in ipairs({ "foldmethod", "foldcolumn", "foldenable" }) do
-			util.set_win_option(win, name, vim.api.nvim_get_option_value(name, { win = win, scope = "global" }))
-		end
-	end
-	return true
+---Reset a Compare pane before it releases a real buffer, so the option record
+---Neovim saves for that buffer holds no Compare state.
+function M.reset_pane(win)
+	reset(win, true)
 end
 
 function M.capture(record)

@@ -222,7 +222,7 @@ local function release_pane_buffer(win, next_buf)
 	if valid(win) then
 		local buf = vim.api.nvim_win_get_buf(win)
 		if buf ~= next_buf and not buffers.is_managed(buf) then
-			worktree.neutralize(win, buf, true)
+			worktree.reset_pane(win)
 		end
 	end
 end
