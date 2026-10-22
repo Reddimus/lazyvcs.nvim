@@ -314,8 +314,9 @@ the GitHub release.
   buffers or unavailable bases and release state on unload. Matching base
   mutations retry suspended records without retaining their contents. Hunk
   computation and gutter rendering have separate caches. Large sign comparisons
-  and native previews share a histogram diff worker. Signs fall back
-  synchronously if threaded `vim.diff` is unavailable; large previews report the
+  and native previews share a histogram diff worker, which prefers
+  `vim.text.diff` and falls back to `vim.diff` on Neovim 0.11. Signs fall back
+  synchronously if neither is available in the worker; large previews report the
   limitation. Preview cancellation releases command ownership while retaining
   physical-worker bookkeeping until completion. Results must match the state
   object, buffer text identity, and base generation. Index and SVN BASE mutation

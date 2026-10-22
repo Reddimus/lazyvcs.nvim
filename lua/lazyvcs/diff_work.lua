@@ -1,15 +1,23 @@
--- Isolated worker entry point: libuv executes it in a fresh Lua state.
+-- Isolated worker entry point: libuv executes it in a fresh Lua state, so it
+-- must not capture upvalues. Prefer the Neovim 0.12 name; 0.11 has only vim.diff.
 local M = {}
 local function worker(left, right, result_type)
-	if type(vim.diff) ~= "function" then
+	local diff = type(vim.text) == "table" and vim.text.diff or nil
+	if type(diff) ~= "function" then
+		---@diagnostic disable-next-line: deprecated
+		diff = vim.diff
+	end
+	if type(diff) ~= "function" then
 		return false, ""
 	end
-	local ok, raw = pcall(vim.diff, left, right, { algorithm = "histogram", result_type = result_type })
+	local ok, raw = pcall(diff, left, right, { algorithm = "histogram", result_type = result_type })
 	if not ok then
 		return true, "", tostring(raw)
 	end
 	return true, result_type == "indices" and vim.mpack.encode(raw) or raw
 end
+
+M._worker = worker
 
 function M.start(left, right, result_type, done)
 	local work
