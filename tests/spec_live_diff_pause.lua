@@ -174,5 +174,35 @@ return function(ctx)
 			end,
 		}
 	end
+	cases[#cases + 1] = {
+		"test_live_diff_paused_view_resume_keeps_other_view_diff",
+		function()
+			setup()
+			local f = h.make_git_transfer_fixture()
+			local win = open_live(f.file1).editable_win
+			vim.cmd("botright vnew")
+			local other = open_live(f.file2)
+			assert(vim.wo[other.editable_win].diff and vim.wo[other.base_win].diff)
+			-- Move the first view onto the buffer the second view owns.
+			api.nvim_set_current_win(win)
+			vim.cmd.edit(vim.fn.fnameescape(f.file2))
+			ctx.wait_for(function()
+				local s = state.for_window(win)
+				return s and s.paused
+			end, "shared buffer did not pause", 15000)
+			assert(vim.wo[other.editable_win].diff, "pausing changed the other view")
+			vim.cmd.edit(vim.fn.fnameescape(f.file1))
+			ctx.wait_for(function()
+				local s = state.for_window(win)
+				return s and not s.paused and s.phase == "active"
+			end, "paused view did not resume", 15000)
+			settle()
+			assert(state.get(other.editable_bufnr) == other and other.phase == "active")
+			assert(vim.wo[other.editable_win].diff, "resuming turned off diff in the other view")
+			assert(vim.wo[other.base_win].diff, "resuming turned off the other view's base diff")
+			actions.close(state.for_window(win))
+			actions.close(other)
+		end,
+	}
 	return cases
 end
