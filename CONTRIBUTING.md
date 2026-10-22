@@ -226,12 +226,15 @@ the GitHub release.
   panes add a `LazyVcsComparePane:LazyVcsComparePane` entry to 'winhighlight'.
   Neovim copies it with the pane's other window options on every path that
   copies them, including floats, minimal windows, other tabs, and closed
-  windows. On BufWinEnter, an ordinary window carrying the marker drops diff
-  mode, bindings, diff folds, a Compare winbar label, and the marker, keeping
-  its other 'winhighlight' entries. Panes remove the marker before releasing a
-  buffer. Do not infer copies from Neovim's option-record rules; they differ
-  between 0.11 and 0.12. A plugin that replaces 'winhighlight' wholesale before
-  BufWinEnter reaches Compare also removes the marker.
+  windows. On WinNew and BufWinEnter, an ordinary window carrying the marker
+  drops diff mode, bindings, diff folds, a Compare winbar label, and the marker,
+  keeping its other 'winhighlight' entries. WinNew covers `:split`,
+  `:tab split`, and `nvim_open_win()` on the pane's buffer, which copy options
+  without BufWinEnter; the new window is current during WinNew, even for
+  unfocused floats. Panes remove the marker before releasing a buffer. Do not
+  infer copies from Neovim's option-record rules; they differ between 0.11 and
+  0.12. A plugin that replaces 'winhighlight' wholesale before those events
+  reach Compare, or a window created with `:noautocmd`, hides the copy.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_buffers.lua` owns snapshot identity, reload guards, and bounded

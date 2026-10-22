@@ -295,5 +295,63 @@ return function(ctx)
 			assert(value == "Normal:NormalFloat", "marker cleanup changed user highlights: " .. vim.inspect(value))
 		end,
 	}
+	-- Same-buffer windows copy a pane's options without BufWinEnter.
+	local creators = {
+		split = function()
+			vim.cmd("split")
+			return api.nvim_get_current_win()
+		end,
+		tab_split = function()
+			vim.cmd("tab split")
+			return api.nvim_get_current_win()
+		end,
+		float = function()
+			return api.nvim_open_win(0, true, { relative = "editor", row = 1, col = 1, width = 20, height = 3 })
+		end,
+		unfocused_float = function()
+			return api.nvim_open_win(0, false, { relative = "editor", row = 1, col = 1, width = 20, height = 3 })
+		end,
+	}
+	for name, create in pairs(creators) do
+		cases[#cases + 1] = {
+			"test_core_compare_worktree_pane_" .. name .. "_drops_pane_options",
+			function()
+				local _, s = fixture()
+				navigate(s, "next", "b.txt")
+				navigate(s, "prev", "a.txt")
+				local buf = s.right
+				api.nvim_set_current_win(s.rightwin)
+				local win = create()
+				assert(api.nvim_win_get_buf(win) == buf)
+				local highlights = tostring(util.get_win_option(win, "winhighlight"))
+				assert(not highlights:find("LazyVcsComparePane", 1, true), "new window kept the pane marker")
+				assert_plain(win, name)
+				assert(vim.wo[s.rightwin].diff and vim.wo[s.rightwin].scrollbind, "the Compare pane lost its diff")
+				if api.nvim_win_is_valid(win) then
+					api.nvim_win_close(win, true)
+				end
+				compare.close(s)
+			end,
+		}
+	end
+	cases[#cases + 1] = {
+		"test_core_compare_worktree_pane_tab_split_keeps_later_user_diff",
+		function()
+			local _, s = fixture()
+			navigate(s, "next", "b.txt")
+			navigate(s, "prev", "a.txt")
+			api.nvim_set_current_win(s.rightwin)
+			vim.cmd("tab split")
+			local win = api.nvim_get_current_win()
+			-- The user replaces the copied state with a diff of their own, then reloads.
+			vim.cmd("diffoff")
+			vim.cmd("diffthis")
+			vim.cmd.edit()
+			assert(vim.wo[win].diff, "reloading turned off the user's diff")
+			vim.cmd("diffoff")
+			api.nvim_win_close(win, true)
+			compare.close(s)
+		end,
+	}
 	return cases
 end

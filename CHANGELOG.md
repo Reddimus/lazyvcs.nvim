@@ -14,9 +14,9 @@ and this project adheres to
 
 - Keep Compare's diff mode, scroll binding, diff folds, and `WORKTREE` label out
   of editor windows that show a real Compare buffer, including after `o`,
-  `<leader>ve`, picker selections, floats, and closing Compare. A window's own
-  diff stays on, including after `:edit`, and statusline plugins that replace
-  the winbar no longer hide the copied options.
+  `<leader>ve`, picker selections, splits, floats, and closing Compare. A
+  window's own diff stays on, including after `:edit`, and statusline plugins
+  that replace the winbar no longer hide the copied options.
 - Keep a Compare buffer and its undo history when one command edits and saves
   it, such as `:%s/old/new/ | write`, or a macro edits and undoes it.
 - Keep an untouched Compare buffer out of the buffer list when `:checktime` or

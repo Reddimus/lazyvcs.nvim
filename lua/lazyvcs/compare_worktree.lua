@@ -12,7 +12,8 @@ local installed = false
 -- (diff, bindings, folds, winbar), so a window that inherits pane options also
 -- inherits the marker, whatever path copied them. A window's own options,
 -- including a deliberate :diffthis, never carry it. A plugin that replaces
--- 'winhighlight' wholesale before BufWinEnter reaches Compare removes it.
+-- 'winhighlight' wholesale before WinNew or BufWinEnter reaches Compare, or a
+-- window created with :noautocmd, keeps the copy unnoticed.
 local marker = "LazyVcsComparePane:LazyVcsComparePane"
 
 local function highlight_entries(win)
@@ -237,14 +238,16 @@ local function setup()
 		end),
 	})
 	-- A window without its own option record for a buffer copies another
-	-- window's options for it. Remove Compare pane state that an ordinary window
-	-- copied; the marker travels with it.
-	vim.api.nvim_create_autocmd("BufWinEnter", {
+	-- window's options for it, and a new window copies its parent's: :split,
+	-- :tab split and nvim_open_win() on the pane's buffer fire WinNew, with the
+	-- new window current, but no BufWinEnter. Remove Compare pane state that an
+	-- ordinary window copied; the marker travels with it.
+	vim.api.nvim_create_autocmd({ "WinNew", "BufWinEnter" }, {
 		group = group,
-		callback = util.safe_callback(function(args)
+		callback = util.safe_callback(function()
 			local win = vim.api.nvim_get_current_win()
 			if not vim.w[win].lazyvcs_compare and marked(win) then
-				local labels = pane_labels[args.buf]
+				local labels = pane_labels[vim.api.nvim_win_get_buf(win)]
 				-- Keep a winbar that a statusline plugin set after the copy.
 				reset(win, labels and labels[util.get_win_option(win, "winbar")])
 				unmark(win)
