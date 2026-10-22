@@ -151,6 +151,38 @@ return function(ctx)
 		}
 	end
 	cases[#cases + 1] = {
+		"test_core_compare_worktree_reread_keeps_private_buffer_private",
+		function()
+			require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+			local f = h.make_git_fixture()
+			h.write_file(f.root .. "/a.txt", "first\n")
+			h.write_file(f.root .. "/b.txt", "second\n")
+			vim.cmd.edit(f.file)
+			local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			ready(s)
+			local buf = s.right
+			assert(s.shown_item.relpath == "a.txt" and not vim.bo[buf].buflisted)
+			local autoread = vim.o.autoread
+			vim.o.autoread = true
+			-- Another program rewrites the untouched file; :checktime rereads it in place.
+			h.write_file(f.root .. "/a.txt", "first\nexternal change\n")
+			vim.cmd.checktime(buf)
+			vim.o.autoread = autoread
+			assert(api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "external change", "checktime did not reread")
+			-- The main loop reports the reread as a text change.
+			api.nvim_exec_autocmds("TextChanged", { buffer = buf })
+			vim.wait(50)
+			api.nvim_exec_autocmds("TextChanged", { buffer = buf })
+			assert(not vim.bo[buf].buflisted, "rereading listed the private buffer")
+			compare.navigate_file("next", 1)
+			ctx.wait_for(function()
+				return s.shown_item.relpath == "b.txt" and s.worktree ~= nil
+			end, "next file", 15000)
+			assert(not api.nvim_buf_is_valid(buf), "rereading retained the private buffer")
+			compare.close(s)
+		end,
+	}
+	cases[#cases + 1] = {
 		"test_core_compare_worktree_snapshot_opt_out",
 		function()
 			local _, s, original = fixture("git", { compare = { editable = false } })

@@ -34,7 +34,10 @@ local function adopt(record)
 	end
 	-- A batched edit can save or undo before change autocmds observe 'modified'.
 	-- Any change since loading belongs to the user, including its undo history.
-	if vim.bo[record.buf].modified or (record.tick and vim.api.nvim_buf_get_changedtick(record.buf) ~= record.tick) then
+	if
+		vim.bo[record.buf].modified
+		or (record.tick and not record.rereading and vim.api.nvim_buf_get_changedtick(record.buf) ~= record.tick)
+	then
 		-- List the buffer once for that change; the user may unlist it later.
 		record.retained, record.tick = true, nil
 		vim.bo[record.buf].buflisted = true
@@ -120,9 +123,10 @@ local function settle(record)
 		if same then
 			record.deleted = nil
 			-- Rereading the file is not an edit; later changes are.
-			if reloaded and record.tick and not vim.bo[record.buf].modified then
+			if (reloaded or record.rereading) and record.tick and not vim.bo[record.buf].modified then
 				record.tick = vim.api.nvim_buf_get_changedtick(record.buf)
 			end
+			record.rereading = nil
 			adopt(record)
 			attach(record)
 		else
@@ -216,6 +220,17 @@ local function setup()
 		group = group,
 		callback = util.safe_callback(function(args)
 			pane_labels[args.buf] = nil
+		end),
+	})
+	-- :checktime and autoread reread a file in place without unloading it. The
+	-- change tick moves after BufReadPost, so settle() takes the new baseline.
+	vim.api.nvim_create_autocmd("BufReadPre", {
+		group = group,
+		callback = util.safe_callback(function(args)
+			local record = records[args.buf]
+			if record and not record.loading and not record.unloading and not record.releasing then
+				record.rereading = true
+			end
 		end),
 	})
 	vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout", "BufUnload", "BufFilePost", "BufReadPost" }, {
