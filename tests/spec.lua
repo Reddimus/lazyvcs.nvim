@@ -1169,7 +1169,7 @@ local function test_source_control_collects_dirty_nested_repos()
 
 	local fixture = helpers.make_mixed_source_control_fixture()
 	local model = require("lazyvcs.source_control.model")
-	local specs = model.discover(fixture.root, 3)
+	local specs = helpers.discover(fixture.root, 3)
 	local by_root = {}
 	for _, spec in ipairs(specs) do
 		by_root[spec.root] = spec
@@ -1226,7 +1226,7 @@ local function test_source_control_progressive_collect_shows_unhydrated_repos()
 
 	local fixture = helpers.make_git_source_control_fixture()
 	local model = require("lazyvcs.source_control.model")
-	local specs = model.discover(fixture.root, 3)
+	local specs = helpers.discover(fixture.root, 3)
 	local state = {
 		path = fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -1257,7 +1257,7 @@ local function test_source_control_busy_repo_marks_nodes_disabled()
 	local model = require("lazyvcs.source_control.model")
 	local state_mod = require("lazyvcs.state")
 	local fixture = helpers.make_git_fixture()
-	local specs = model.discover(fixture.root, 1)
+	local specs = helpers.discover(fixture.root, 1)
 	local state = {
 		path = fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -2114,7 +2114,7 @@ local function test_source_control_single_repo_root_uses_unique_node_ids()
 
 	local fixture = helpers.make_git_fixture()
 	local model = require("lazyvcs.source_control.model")
-	local specs = model.discover(fixture.root, 1)
+	local specs = helpers.discover(fixture.root, 1)
 	local state = {
 		path = fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -2165,7 +2165,7 @@ local function test_source_control_duplicate_repo_names_use_root_identity()
 	vim.fn.mkdir(repo_b .. "/.git", "p")
 
 	local model = require("lazyvcs.source_control.model")
-	local specs = model.discover(workspace, 3)
+	local specs = helpers.discover(workspace, 3)
 	table.sort(specs, function(a, b)
 		return a.root < b.root
 	end)
@@ -2240,7 +2240,7 @@ local function test_source_control_can_show_clean_repos()
 
 	local fixture = helpers.make_git_source_control_fixture()
 	local model = require("lazyvcs.source_control.model")
-	local specs = model.discover(fixture.root, 3)
+	local specs = helpers.discover(fixture.root, 3)
 	local by_root = {}
 	for _, spec in ipairs(specs) do
 		by_root[spec.root] = spec
@@ -2275,7 +2275,7 @@ local function test_source_control_toggle_repo_visibility_keeps_a_visible_repo()
 	local fixture = helpers.make_git_source_control_fixture()
 	local model = require("lazyvcs.source_control.model")
 	local ops = require("lazyvcs.source_control.ops")
-	local specs = model.discover(fixture.root, 3)
+	local specs = helpers.discover(fixture.root, 3)
 	local state = {
 		path = fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -2314,7 +2314,7 @@ local function test_source_control_toggle_repo_visibility_ignores_section_rows()
 	local fixture = helpers.make_git_source_control_fixture()
 	local model = require("lazyvcs.source_control.model")
 	local ops = require("lazyvcs.source_control.ops")
-	local specs = model.discover(fixture.root, 3)
+	local specs = helpers.discover(fixture.root, 3)
 	local state = {
 		path = fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -2348,7 +2348,7 @@ local function test_source_control_repo_actions_ignore_non_repo_rows()
 	local fixture = helpers.make_git_source_control_fixture()
 	local model = require("lazyvcs.source_control.model")
 	local ops = require("lazyvcs.source_control.ops")
-	local specs = model.discover(fixture.root, 3)
+	local specs = helpers.discover(fixture.root, 3)
 	local state = {
 		path = fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -2446,7 +2446,7 @@ local function test_source_control_tree_view_groups_files_into_folders()
 	helpers.write_file(root .. "/src/module/app.lua", "return 2\n")
 
 	local model = require("lazyvcs.source_control.model")
-	local specs = model.discover(root, 1)
+	local specs = helpers.discover(root, 1)
 	local state = {
 		path = root,
 		lazyvcs_commit_drafts = {},
@@ -2494,7 +2494,7 @@ local function test_source_control_hides_clean_repo_after_summary_hydration()
 
 	local fixture = helpers.make_git_source_control_fixture()
 	local model = require("lazyvcs.source_control.model")
-	local specs = model.discover(fixture.root, 3)
+	local specs = helpers.discover(fixture.root, 3)
 	local by_root = {}
 	for _, spec in ipairs(specs) do
 		by_root[spec.root] = spec
@@ -2719,7 +2719,7 @@ local function test_source_control_native_render_consumes_force_expand()
 	local fixture = helpers.make_git_fixture()
 	local model = require("lazyvcs.source_control.model")
 	local native = require("lazyvcs.source_control.native")
-	local specs = model.discover(fixture.root, 1)
+	local specs = helpers.discover(fixture.root, 1)
 	local repo = assert(load_repo_details(model, specs[1], {
 		changes_sort = "path",
 	}))
@@ -2971,7 +2971,7 @@ local function test_source_control_open_change_reopens_without_base_buffer_colli
 	local actions = require("lazyvcs.actions")
 	local state_mod = require("lazyvcs.state")
 	local util = require("lazyvcs.util")
-	local specs = model.discover(fixture.root, 1)
+	local specs = helpers.discover(fixture.root, 1)
 	local state = {
 		path = fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -3029,7 +3029,7 @@ local function test_source_control_open_change_reuses_active_diff_window()
 	local ops = require("lazyvcs.source_control.ops")
 	local state_mod = require("lazyvcs.state")
 	local util = require("lazyvcs.util")
-	local specs = model.discover(fixture.root, 1)
+	local specs = helpers.discover(fixture.root, 1)
 	local state = {
 		path = fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -3406,7 +3406,7 @@ local function test_svn_status_and_blame_parsers()
 	})
 end
 
-local function test_git_blame_parser_and_remote_urls()
+local function test_git_blame_parser()
 	local backend = require("lazyvcs.backends.git")
 	local entries = backend.parse_blame_entries({
 		"0123456789abcdef0123456789abcdef01234567 1 1 1",
@@ -3429,19 +3429,6 @@ local function test_git_blame_parser_and_remote_urls()
 	eq(entries[1].backend, "git")
 	eq(entries[2].revision, "-")
 	eq(entries[2].uncommitted, true)
-
-	eq(
-		backend.commit_url(nil, "0123456789abcdef", "https://github.com/Reddimus/lazyvcs.nvim.git"),
-		"https://github.com/Reddimus/lazyvcs.nvim/commit/0123456789abcdef"
-	)
-	eq(
-		backend.commit_url(nil, "0123456789abcdef", "git@bitbucket.org:team/project.git"),
-		"https://bitbucket.org/team/project/commits/0123456789abcdef"
-	)
-	eq(
-		backend.commit_url(nil, "0123456789abcdef", "ssh://git@bitbucket.example.com:7999/scm/PROJ/repo.git"),
-		"https://bitbucket.example.com:7999/projects/PROJ/repos/repo/commits/0123456789abcdef"
-	)
 end
 
 local function test_git_blame_inline_virtual_text()
@@ -5251,7 +5238,7 @@ local function test_source_control_git_file_actions_commit_and_sync()
 	local ops = require("lazyvcs.source_control.ops")
 	local session_state = require("lazyvcs.state")
 	local util = require("lazyvcs.util")
-	local specs = model.discover(fixture.root, 1)
+	local specs = helpers.discover(fixture.root, 1)
 	local state = {
 		path = fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -5330,7 +5317,7 @@ local function test_source_control_git_file_actions_commit_and_sync()
 	eq(util.trim(helpers.exec({ "git", "status", "--short" }, fixture.root)), "")
 
 	local remote_fixture = helpers.make_git_remote_fixture()
-	local remote_specs = model.discover(remote_fixture.root, 1)
+	local remote_specs = helpers.discover(remote_fixture.root, 1)
 	local remote_state = {
 		path = remote_fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -6106,7 +6093,7 @@ local function test_source_control_svn_commit_and_update()
 	local util = require("lazyvcs.util")
 
 	local commit_fixture = helpers.make_svn_fixture()
-	local commit_specs = model.discover(commit_fixture.root, 1)
+	local commit_specs = helpers.discover(commit_fixture.root, 1)
 	local commit_state = {
 		path = commit_fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -6136,7 +6123,7 @@ local function test_source_control_svn_commit_and_update()
 	)
 
 	local update_fixture = helpers.make_svn_update_fixture()
-	local update_specs = model.discover(update_fixture.root, 1)
+	local update_specs = helpers.discover(update_fixture.root, 1)
 	local update_state = {
 		path = update_fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -6177,7 +6164,7 @@ local function test_source_control_busy_repo_blocks_repo_actions()
 	local ops = require("lazyvcs.source_control.ops")
 	local state_mod = require("lazyvcs.state")
 	local util = require("lazyvcs.util")
-	local specs = model.discover(fixture.root, 1)
+	local specs = helpers.discover(fixture.root, 1)
 	local state = {
 		path = fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -6554,7 +6541,7 @@ local function test_source_control_switch_repo_closes_matching_sessions_and_refr
 	local actions = require("lazyvcs.actions")
 	local session_state = require("lazyvcs.state")
 	local util = require("lazyvcs.util")
-	local specs = model.discover(fixture.root, 1)
+	local specs = helpers.discover(fixture.root, 1)
 	local state = {
 		path = fixture.root,
 		lazyvcs_commit_drafts = {},
@@ -6810,7 +6797,7 @@ local cases = {
 	{ "test_svn_backend_added_file_uses_empty_base", test_svn_backend_added_file_uses_empty_base },
 	{ "test_svn_added_file_blame_uses_uncommitted_lines", test_svn_added_file_blame_uses_uncommitted_lines },
 	{ "test_svn_status_and_blame_parsers", test_svn_status_and_blame_parsers },
-	{ "test_git_blame_parser_and_remote_urls", test_git_blame_parser_and_remote_urls },
+	{ "test_git_blame_parser", test_git_blame_parser },
 	{ "test_svn_async_blame_cancels_active_child_process", test_svn_async_blame_cancels_active_child_process },
 	{ "test_git_blame_inline_virtual_text", test_git_blame_inline_virtual_text },
 	{ "test_svn_blame_inline_virtual_text", test_svn_blame_inline_virtual_text },

@@ -23,11 +23,8 @@ return function(ctx)
 		local model = require("lazyvcs.source_control.model")
 		local native = require("lazyvcs.source_control.native")
 
-		local original_discover = model.discover
-		---@diagnostic disable-next-line: duplicate-set-field
-		model.discover = function()
-			error("synchronous model.discover must never run on the sidebar open path", 0)
-		end
+		-- Discovery has no synchronous runtime entry point to block the open path.
+		assert(model.discover == nil, "model.discover must not be part of the runtime API")
 
 		local ok, err = pcall(function()
 			require("lazyvcs").source_control_open({ path = fixture.root })
@@ -59,7 +56,6 @@ return function(ctx)
 			)
 		end)
 
-		model.discover = original_discover
 		assert(ok, err)
 	end
 
@@ -129,7 +125,7 @@ return function(ctx)
 
 		-- Once discovery has finished, normalization runs as usual.
 		state.lazyvcs_discovering = false
-		state.lazyvcs_repo_specs = model.discover(fixture.root, 1)
+		state.lazyvcs_repo_specs = helpers.discover(fixture.root, 1)
 		model.collect(state, { root = fixture.root, scan_depth = 1 })
 		assert(state.lazyvcs_repo_visibility ~= nil, "visibility should be normalized once discovery completes")
 	end
