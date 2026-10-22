@@ -172,6 +172,51 @@ return function(ctx)
 		}
 	end
 
+	-- A picker preview in the pane never receives the WORKTREE label.
+	cases[#cases + 1] = {
+		"test_core_compare_worktree_picker_preview_keeps_labels_off",
+		function()
+			local f, s, origin = private_fixture()
+			h.write_file(f.root .. "/c.txt", "picked\n")
+			local picked = vim.fn.bufadd(f.root .. "/c.txt")
+			vim.fn.bufload(picked)
+			vim.bo[picked].buflisted = true
+			local buf = s.right
+			-- The picker previews c.txt in the unfocused pane.
+			api.nvim_set_current_win(s.sidewin)
+			api.nvim_win_set_buf(s.rightwin, picked)
+			-- Compare updates while the preview is open.
+			api.nvim_buf_set_lines(buf, 0, -1, false, { "first", "added" })
+			vim.wait(400)
+			assert(
+				not tostring(util.get_win_option(s.rightwin, "winbar")):find("WORKTREE", 1, true),
+				"the preview received Compare's label"
+			)
+			-- The picker confirms c.txt; Compare routes it to the editor.
+			api.nvim_set_current_win(s.rightwin)
+			ctx.wait_for(function()
+				return api.nvim_win_get_buf(s.rightwin) == buf and api.nvim_win_get_buf(origin) == picked
+			end, "picker selection was not routed", 15000)
+			assert(tostring(util.get_win_option(s.rightwin, "winbar")):find("WORKTREE", 1, true), "pane lost its label")
+			for _, win in ipairs({ origin }) do
+				assert(
+					not tostring(util.get_win_option(win, "winbar")):find("WORKTREE", 1, true),
+					"the editor shows Compare's label"
+				)
+			end
+			api.nvim_set_current_win(origin)
+			vim.cmd("vsplit")
+			vim.cmd.buffer(picked)
+			local split = api.nvim_get_current_win()
+			assert(
+				not tostring(util.get_win_option(split, "winbar")):find("WORKTREE", 1, true),
+				"a split of the editor shows Compare's label"
+			)
+			api.nvim_win_close(split, true)
+			compare.close(s)
+		end,
+	}
+
 	-- A session saved during Compare restores no live pane marker.
 	cases[#cases + 1] = {
 		"test_core_compare_worktree_restored_session_keeps_user_diff",

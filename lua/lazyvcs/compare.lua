@@ -200,9 +200,12 @@ local function message(s, text)
 		restore(s.sidewin, saved)
 	end
 end
--- Labels are already escaped for the winbar.
-local function set_label(win, label)
-	if not valid(win) then
+-- Labels are already escaped for the winbar. A pane can show another buffer,
+-- such as a picker preview; Neovim would save the label with that buffer's
+-- options, so write it only while the pane shows its own buffer. The routing
+-- restore applies the latest label when the pane gets its buffer back.
+local function set_label(win, label, expected)
+	if not valid(win) or vim.api.nvim_win_get_buf(win) ~= expected then
 		return
 	end
 	local value = "%<" .. (label or "")
@@ -214,8 +217,8 @@ local function set_label(win, label)
 end
 local function labels(s, left, right)
 	s.left_label, s.right_label = display(left):gsub("%%", "%%%%"), display(right):gsub("%%", "%%%%")
-	set_label(s.leftwin, s.left_label)
-	set_label(s.rightwin, s.right_label)
+	set_label(s.leftwin, s.left_label, s.left)
+	set_label(s.rightwin, s.right_label, s.right)
 end
 -- Neovim saves a pane's options for the buffer it hides. Leave no Compare state
 -- for an ordinary window to inherit when it later shows that real buffer.
@@ -320,6 +323,7 @@ local function set_panes(s, next_display)
 				sidebar_options(s)
 			else
 				preview_options(s, win)
+				set_label(win, win == s.leftwin and s.left_label or s.right_label, buf)
 			end
 			bind(s, buf)
 			if s.mode == "text" then
@@ -469,8 +473,8 @@ local function set_panes(s, next_display)
 			s.text_views, s.display = before.text_views, before.display
 			s.navigation, s.navigation_intent = before.navigation, before.intent
 			s.left_label, s.right_label = before.left_label, before.right_label
-			set_label(s.leftwin, before.left_label)
-			set_label(s.rightwin, before.right_label)
+			set_label(s.leftwin, before.left_label, s.left)
+			set_label(s.rightwin, before.right_label, s.right)
 			preview_options(s, s.leftwin)
 			preview_options(s, s.rightwin)
 			restore(s.leftwin, before.views[1])
