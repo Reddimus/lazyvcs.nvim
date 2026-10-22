@@ -44,6 +44,20 @@ return function(ctx)
 				and not tostring(values.winbar):find("WORKTREE", 1, true),
 			context .. " inherited Compare pane options: " .. vim.inspect(values)
 		)
+		-- Hidden diff folds would close on zi; a plain window has none.
+		local closed = api.nvim_win_call(win, function()
+			local enabled = vim.wo.foldenable
+			vim.cmd("normal! zi")
+			local found = {}
+			for line = 1, api.nvim_buf_line_count(0) do
+				if vim.fn.foldclosed(line) ~= -1 then
+					found[#found + 1] = line
+				end
+			end
+			vim.wo.foldenable = enabled
+			return found
+		end)
+		assert(#closed == 0, context .. " kept Compare's diff folds: " .. vim.inspect(closed))
 	end
 	local cases = {}
 	for _, from in ipairs({ "side", "right" }) do

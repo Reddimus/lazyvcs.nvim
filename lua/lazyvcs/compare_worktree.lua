@@ -16,10 +16,23 @@ local installed = false
 local marker = require("lazyvcs.compare_marker")
 
 -- :diffoff restores the options saved before diff mode, such as an ftplugin
--- fold method.
+-- fold method. Under 'foldmethod' manual it also leaves the diff folds behind
+-- as disabled manual folds, which Neovim then saves and copies with the window
+-- options. They are all Compare's: a window in diff mode cannot create manual
+-- folds, and a marked copy took its folds from a pane.
 local function reset(win, clear_winbar)
 	util.diff_off(win)
 	util.set_win_options(win, { scrollbind = false, cursorbind = false })
+	if util.get_win_option(win, "foldmethod") == "manual" then
+		vim.api.nvim_win_call(win, function()
+			vim.cmd("silent! normal! zE")
+		end)
+		util.set_win_option(
+			win,
+			"foldenable",
+			vim.api.nvim_get_option_value("foldenable", { win = win, scope = "global" })
+		)
+	end
 	if clear_winbar then
 		util.set_win_option(win, "winbar", "")
 	end

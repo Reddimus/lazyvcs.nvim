@@ -87,6 +87,91 @@ return function(ctx)
 		}
 	end
 
+	-- Compare's diff folds are not left as hidden manual folds.
+	local function fold_count(win)
+		return api.nvim_win_call(win, function()
+			local enabled = vim.wo.foldenable
+			vim.wo.foldenable = true
+			local count = 0
+			for line = 1, api.nvim_buf_line_count(0) do
+				if vim.fn.foldlevel(line) > 0 then
+					count = count + 1
+				end
+			end
+			vim.wo.foldenable = enabled
+			return count
+		end)
+	end
+	local function long_fixture()
+		setup()
+		local f = h.make_git_fixture()
+		local lines = {}
+		for index = 1, 40 do
+			lines[index] = "line " .. index
+		end
+		h.write_file(f.root .. "/long.txt", table.concat(lines, "\n") .. "\n")
+		h.exec({ "git", "add", "long.txt" }, f.root)
+		h.exec({ "git", "commit", "-m", "long" }, f.root)
+		lines[20] = "changed line"
+		h.write_file(f.root .. "/long.txt", table.concat(lines, "\n") .. "\n")
+		vim.cmd.edit(vim.fn.fnameescape(f.root .. "/long.txt"))
+		local buf = api.nvim_get_current_buf()
+		local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+		ready(s)
+		assert(s.shown_item.relpath == "long.txt" and s.right == buf, "Compare did not show long.txt")
+		assert(fold_count(s.rightwin) > 0, "the pane has no diff folds to leak")
+		return f, s, buf
+	end
+	local fold_paths = {
+		navigate = function(s, buf)
+			navigate(s, "next", "sample.txt")
+			vim.cmd("tabnew")
+			vim.cmd.buffer(buf)
+			return api.nvim_get_current_win()
+		end,
+		close = function(s, buf)
+			compare.close(s)
+			vim.cmd("tabnew")
+			vim.cmd.buffer(buf)
+			return api.nvim_get_current_win()
+		end,
+		split = function(s)
+			api.nvim_set_current_win(s.rightwin)
+			vim.cmd("split")
+			return api.nvim_get_current_win()
+		end,
+		tab_split = function(s)
+			api.nvim_set_current_win(s.rightwin)
+			vim.cmd("tab split")
+			return api.nvim_get_current_win()
+		end,
+		float = function(s)
+			api.nvim_set_current_win(s.rightwin)
+			return api.nvim_open_win(0, true, { relative = "editor", row = 1, col = 1, width = 30, height = 5 })
+		end,
+	}
+	for name, path in pairs(fold_paths) do
+		cases[#cases + 1] = {
+			"test_core_compare_worktree_diff_folds_stay_in_panes_" .. name,
+			function()
+				local _, s, buf = long_fixture()
+				local win = path(s, buf)
+				assert(api.nvim_win_get_buf(win) == buf)
+				assert(not vim.wo[win].diff, name .. " window is in diff mode")
+				assert(fold_count(win) == 0, name .. " window kept Compare's diff folds")
+				if api.nvim_win_is_valid(win) and #api.nvim_list_wins() > 1 then
+					api.nvim_win_close(win, true)
+				end
+				if not s.closed then
+					if api.nvim_win_get_buf(s.rightwin) == buf then
+						assert(fold_count(s.rightwin) > 0, "the pane lost its diff folds")
+					end
+					compare.close(s)
+				end
+			end,
+		}
+	end
+
 	-- A session saved during Compare restores no live pane marker.
 	cases[#cases + 1] = {
 		"test_core_compare_worktree_restored_session_keeps_user_diff",
