@@ -199,13 +199,31 @@ local function message(s, text)
 		restore(s.sidewin, saved)
 	end
 end
+-- Labels are already escaped for the winbar.
+local function set_label(win, label)
+	if not valid(win) then
+		return
+	end
+	local value = "%<" .. (label or "")
+	util.set_win_option(win, "winbar", value)
+	local buf = vim.api.nvim_win_get_buf(win)
+	if not buffers.is_managed(buf) then
+		worktree.mark_pane(buf, value)
+	end
+end
 local function labels(s, left, right)
 	s.left_label, s.right_label = display(left):gsub("%%", "%%%%"), display(right):gsub("%%", "%%%%")
-	if valid(s.leftwin) then
-		util.set_win_option(s.leftwin, "winbar", "%<" .. s.left_label)
-	end
-	if valid(s.rightwin) then
-		util.set_win_option(s.rightwin, "winbar", "%<" .. s.right_label)
+	set_label(s.leftwin, s.left_label)
+	set_label(s.rightwin, s.right_label)
+end
+-- Neovim saves a pane's options for the buffer it hides. Leave no Compare state
+-- for an ordinary window to inherit when it later shows that real buffer.
+local function release_pane_buffer(win, next_buf)
+	if valid(win) then
+		local buf = vim.api.nvim_win_get_buf(win)
+		if buf ~= next_buf and not buffers.is_managed(buf) then
+			worktree.neutralize(win, buf, true)
+		end
 	end
 end
 local function panes_usable(s, epoch)
@@ -344,6 +362,7 @@ local function set_panes(s, next_display)
 			end
 		end
 		for _, slot in ipairs({ { s.leftwin, left }, { s.rightwin, right } }) do
+			release_pane_buffer(slot[1], slot[2])
 			util.show_win_buffer(slot[1], slot[2])
 			check()
 			assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2], "Comparison installation was redirected")
@@ -448,10 +467,9 @@ local function set_panes(s, next_display)
 			s.preview_result, s.shown_item, s.preview_stamp = before.result, before.item, before.stamp
 			s.text_views, s.display = before.text_views, before.display
 			s.navigation, s.navigation_intent = before.navigation, before.intent
-			-- Labels are already escaped for the winbar.
 			s.left_label, s.right_label = before.left_label, before.right_label
-			util.set_win_option(s.leftwin, "winbar", "%<" .. (before.left_label or ""))
-			util.set_win_option(s.rightwin, "winbar", "%<" .. (before.right_label or ""))
+			set_label(s.leftwin, before.left_label)
+			set_label(s.rightwin, before.right_label)
 			preview_options(s, s.leftwin)
 			preview_options(s, s.rightwin)
 			restore(s.leftwin, before.views[1])
@@ -1180,6 +1198,7 @@ function M.close(s, return_focus)
 	local borrowed = {}
 	if vim.api.nvim_tabpage_is_valid(s.tab) then
 		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(s.tab)) do
+			release_pane_buffer(win)
 			local buf = vim.api.nvim_win_get_buf(win)
 			if not buffers.is_managed(buf) and vim.bo[buf].modified then
 				borrowed[buf] = borrowed[buf] or vim.bo[buf].bufhidden

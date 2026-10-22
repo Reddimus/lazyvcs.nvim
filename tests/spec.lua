@@ -7293,6 +7293,7 @@ vim.list_extend(cases, require("spec_window_controls")())
 vim.list_extend(cases, require("spec_diff_work")())
 vim.list_extend(cases, require("spec_compare_worktree")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_live_diff_pause")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_compare_worktree_windows")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,
