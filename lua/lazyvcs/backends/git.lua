@@ -374,9 +374,9 @@ local function load_payload_async(path, on_done, opts, base_only)
 		end
 
 		task:add(entry.classify_async(path, function(kind, kind_err)
-			local valid, eligibility_err = entry.editable(kind, kind_err)
+			local valid, eligibility_err, rejection = entry.editable(kind, kind_err)
 			if not valid then
-				return task:finish(nil, eligibility_err)
+				return task:finish(nil, eligibility_err, rejection)
 			end
 			task:add(
 				process.start(

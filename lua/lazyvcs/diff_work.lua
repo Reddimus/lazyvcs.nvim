@@ -1,0 +1,67 @@
+-- Isolated worker entry point: libuv executes it in a fresh Lua state.
+local M = {}
+local function worker(left, right, result_type)
+	if type(vim.diff) ~= "function" then
+		return false, ""
+	end
+	local ok, raw = pcall(vim.diff, left, right, { algorithm = "histogram", result_type = result_type })
+	if not ok then
+		return true, "", tostring(raw)
+	end
+	return true, result_type == "indices" and vim.mpack.encode(raw) or raw
+end
+
+function M.start(left, right, result_type, done)
+	local work
+	local ok, err = pcall(function()
+		work = assert(vim.uv.new_work(worker, vim.schedule_wrap(require("lazyvcs.util").safe_callback(done))))
+		assert(work:queue(left, right, result_type))
+	end)
+	return ok and work or nil, not ok and tostring(err) or nil
+end
+
+-- One physical worker and one replaceable pending request per owner. Running
+-- libxdiff cannot be interrupted; superseded results never reach the consumer.
+function M.latest()
+	local queue = {}
+	local launch
+	launch = function(request)
+		queue.running = true
+		local work, err = M.start(request.left, request.right, "indices", function(available, raw, failure)
+			queue.running = nil
+			local pending = queue.pending
+			queue.pending = nil
+			if queue.closed then
+				return
+			end
+			if pending then
+				return launch(pending)
+			end
+			if not available then
+				failure = "Threaded diff is unavailable"
+			end
+			request.done(not failure and vim.mpack.decode(raw) or nil, failure)
+		end)
+		if not work then
+			queue.running = nil
+			request.done(nil, err)
+		end
+	end
+	function queue:request(left, right, done)
+		if self.closed then
+			return
+		end
+		local request = { left = left, right = right, done = done }
+		if self.running then
+			self.pending = request
+		else
+			launch(request)
+		end
+	end
+	function queue:close()
+		self.closed, self.pending = true, nil
+	end
+	return queue
+end
+
+return M

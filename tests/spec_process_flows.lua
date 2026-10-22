@@ -140,8 +140,7 @@ return function(ctx)
 			"test_core_editor_restore_cancel_terminates_filter_tree",
 			function()
 				local p = require("process_helpers")
-				local windows = vim.fn.has("win32") == 1
-				for _, emulate in ipairs(windows and { false } or { true, false }) do
+				do
 					require("lazyvcs").setup({
 						use_gitsigns = false,
 						signs = { enabled = false },
@@ -172,49 +171,19 @@ return function(ctx)
 							.. dir
 							.. '"',
 					}, f.root)
-					local start, system, has = util.system_start, vim.system, vim.fn.has
-					local captured, handle, owner, tree_kills, restore_completed
-					tree_kills = 0
+					local start = util.system_start
+					local captured, handle, owner, restore_completed
 					local ok, err = xpcall(function()
-						---@diagnostic disable-next-line: duplicate-set-field
-						vim.system = function(args, opts, done)
-							if args[1] == "taskkill" then
-								tree_kills = tree_kills + 1
-								assert(
-									vim.tbl_contains(args, "/T") and vim.tbl_contains(args, "/F"),
-									"cancellation omitted tree termination"
-								)
-								if emulate then
-									for _, pid in ipairs(p.pids(dir)) do
-										if p.alive(pid) then
-											vim.uv.kill(pid, 9)
-										end
-									end
-									vim.schedule(function()
-										done({ code = 0 })
-									end)
-									return { kill = function() end }
-								end
-							end
-							return system(args, opts, done)
-						end
 						---@diagnostic disable-next-line: duplicate-set-field
 						util.system_start = function(args, opts, done)
 							if args[1] ~= "git" or args[2] ~= "restore" then
 								return start(args, opts, done)
 							end
 							captured = vim.deepcopy(opts)
-							if emulate then
-								---@diagnostic disable-next-line: duplicate-set-field
-								vim.fn.has = function(feature)
-									return feature == "win32" and 1 or has(feature)
-								end
-							end
 							local started, result = pcall(start, args, opts, function(...)
 								done(...)
 								restore_completed = true
 							end)
-							vim.fn.has = has
 							assert(started, result)
 							handle = result
 							return result
@@ -235,9 +204,7 @@ return function(ctx)
 						)
 						handle:shutdown()
 						assert(
-							p.alive(p.pid(dir .. "/filter.pid"))
-								and p.alive(p.pid(dir .. "/child.pid"))
-								and tree_kills == 0,
+							p.alive(p.pid(dir .. "/filter.pid")) and p.alive(p.pid(dir .. "/child.pid")),
 							"shutdown cancelled a preserved mutation"
 						)
 						owner:cancel()
@@ -248,12 +215,8 @@ return function(ctx)
 						ctx.wait_for(function()
 							return owner.active == false and restore_completed
 						end, "cancelled restore owner or git wrapper did not complete", 5000)
-						assert(
-							not (windows or emulate) or tree_kills > 0,
-							"Windows cancellation did not request taskkill /T"
-						)
 					end, debug.traceback)
-					vim.system, vim.fn.has, util.system_start = system, has, start
+					util.system_start = start
 					if owner then
 						owner:cancel()
 					end

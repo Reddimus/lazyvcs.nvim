@@ -277,7 +277,7 @@ local function read_async(method, path, on_done, opts, arguments)
 		local resolve_opts = vim.tbl_extend("force", opts, { force_resolve = retry or opts.force_resolve })
 		task:add(M.resolve_async(path, function(backend, root, err)
 			if not backend then
-				return task:finish(nil, err)
+				return task:finish(nil, err, { code = "repository_unavailable" })
 			end
 			local args = { path }
 			vim.list_extend(args, arguments or {})

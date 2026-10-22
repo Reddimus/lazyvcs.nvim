@@ -158,13 +158,6 @@ return function(ctx)
 							end
 							return open(file, ...)
 						end
-						vim.system = function(args, ...)
-							-- SVN commands gain --non-interactive before the subcommand.
-							if failure == "spawn_report" and vim.tbl_contains(args, "commit") then
-								error("injected spawn error")
-							end
-							return system(args, ...)
-						end
 						---@diagnostic disable-next-line: duplicate-set-field
 						util.system_start = function(args, options, cb)
 							if not vim.tbl_contains(args, "commit") then
@@ -175,7 +168,7 @@ return function(ctx)
 							if failure == "spawn_throw" then
 								error("injected spawn error")
 							elseif failure == "spawn_report" then
-								return start(args, options, cb)
+								return s.h.failed_system_spawn(start, args, options, cb)
 							end
 							exit, process_opts = cb, options
 							return {

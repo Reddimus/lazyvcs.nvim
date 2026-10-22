@@ -130,4 +130,36 @@ assert(vim.wait(15000,function() local s=require('lazyvcs.state').current();if s
 	eq(child.lua_get("{vim.wo[session.editable_win].cursorbind,vim.wo[session.base_win].cursorbind}"), { false, false })
 	bound()
 end
+T["cycling through unsupported files pauses and resumes the same panes"] = function()
+	-- An unversioned file outside any repository is portable, including Windows.
+	child.lua([[
+outside=require('helpers').tempdir() .. '/outside.txt'
+require('helpers').write_file(outside,'outside\n')
+vim.cmd.badd(vim.fn.fnameescape(outside))
+vim.keymap.set('n','<F8>',function() vim.cmd.buffer(vim.fn.fnameescape(outside)) end)
+vim.keymap.set('n','<F9>',function() vim.cmd.edit(vim.fn.fnameescape(fixture.file2)) end)
+]])
+	open()
+	local ids = child.lua_get("{session.editable_win,session.base_win,session.base_bufnr}")
+	child.type_keys("<F8>")
+	child.lua([[
+local settled=vim.wait(3000,function()
+ local s=require('lazyvcs.state').current()
+ if s and s.paused then session=s;return true end
+end,10)
+assert(settled,'pause state: '..vim.inspect({buf=vim.api.nvim_buf_get_name(0),view=require('lazyvcs.state').current(),messages=vim.fn.execute('messages')}))
+assert(not vim.wo[session.base_win].diff and not vim.wo[session.editable_win].diff)
+assert(not session.base_identity and not session.hunks)
+]])
+	eq(child.lua_get("{session.editable_win,session.base_win,session.base_bufnr}"), ids)
+	child.type_keys("<F9>")
+	child.lua([[
+assert(vim.wait(15000,function()
+ local s=require('lazyvcs.state').current()
+ if s and not s.paused and s.phase=='active' then session=s;return true end
+end,10))
+]])
+	eq(child.lua_get("{session.editable_win,session.base_win,session.base_bufnr}"), ids)
+	bound()
+end
 return T

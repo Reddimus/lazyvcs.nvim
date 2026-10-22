@@ -36,7 +36,9 @@ function M.editable(kind, err)
 	if kind == "regular" or kind == "missing" then
 		return true
 	end
-	return false, err or "Editable hunks require a regular file; symlink bases are unsupported"
+	return false,
+		err or "Editable hunks require a regular file; symlink bases are unsupported",
+		{ code = "unsupported_entry", kind = kind }
 end
 
 return M

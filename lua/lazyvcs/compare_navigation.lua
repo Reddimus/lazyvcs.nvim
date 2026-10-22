@@ -69,7 +69,7 @@ function M.restore(s, saved, stamp)
 	end
 end
 
-function M.load(s, result, item)
+function M.load(s, result, item, computed)
 	s.navigation = { base = {}, saved = {}, reviewed = false }
 	if
 		(result.loaded and not result.loaded.text)
@@ -80,7 +80,14 @@ function M.load(s, result, item)
 	then
 		return
 	end
-	local hunks = diff.compute_hunks(result.left, result.right)
+	local hunks = computed
+		or (
+			s.worktree
+				and result.left_document
+				and result.right_document
+				and diff.compute_text_hunks(result.left_document, result.right_document)
+			or diff.compute_hunks(result.left, result.right)
+		)
 	s.navigation.saved = hunks
 	for i, hunk in ipairs(hunks) do
 		s.navigation.base[i] = {

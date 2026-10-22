@@ -8,6 +8,23 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-21
+
+### Added
+
+- Edit real working files in Compare's right pane, with ordinary undo, save,
+  language support, and hunk navigation through unsaved changes. Set
+  `compare.editable = false` for read-only snapshots.
+- Pause live diffs on unsupported files and resume when buffer cycling reaches a
+  supported file, without repeated symlink notifications.
+
+### Fixed
+
+- Scope review controls to the focused window when real buffers are shared with
+  ordinary editors or another diff.
+- Preserve started Windows mutations after Neovim exits while retaining explicit
+  process-tree cancellation.
+
 ## [0.11.7] - 2026-10-20
 
 ### Fixed

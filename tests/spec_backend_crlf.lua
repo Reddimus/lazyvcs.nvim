@@ -58,7 +58,7 @@ return function(ctx)
 					return "first\r\nsecond\r\n", 1
 				end
 			end, function()
-				session = assert(compare.open({ path = f.root, base = "HEAD" }))
+				session = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
 				ctx.wait_for(function()
 					return table.concat(vim.api.nvim_buf_get_lines(session.left, 0, -1, false)):find("first", 1, true)
 				end, "CRLF error pane did not load", 15000)

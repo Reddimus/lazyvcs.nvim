@@ -401,7 +401,7 @@ return function(ctx)
 				local actions = require("lazyvcs.actions")
 				local task = actions.open({ silent = true })
 				ctx.wait_for(function()
-					return task.done
+					return task and task.done
 				end, "open encoding")
 				local s = assert(require("lazyvcs.state").get(buf))
 				assert(#s.hunks == 0)

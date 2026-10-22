@@ -62,7 +62,8 @@ def snapshot():
         "path=s.shown_item.relpath,listed=#vim.fn.getbufinfo({buflisted=1}),"
         "width=vim.api.nvim_win_get_width(s.sidewin),auto=s.auto_width==true,"
         "picker=package.loaded['snacks']~=nil,"
-        "readonly=not vim.bo[s.left].modifiable and not vim.bo[s.right].modifiable})},"
+        "readonly=not vim.bo[s.left].modifiable,editable=vim.bo[s.right].modifiable,"
+        "real=vim.bo[s.right].buftype=='',snapshot_mode=not s.editable})},"
         + json.dumps(str(path)) + ")"
     )
     deadline = time.monotonic() + 25
@@ -83,6 +84,9 @@ def expect_focus(kind, line=None):
     if line is not None:
         assert state["line"] == line, state
     assert state["readonly"], state
+    if state["path"] == "sample.txt":
+        assert state["editable"] == (not state["snapshot_mode"]), state
+        assert state["real"] == (not state["snapshot_mode"]), state
     return state
 
 
@@ -225,7 +229,9 @@ with (artifacts / "compare-terminal.log").open("w") as transcript:
                 pause(0.7)
                 assert_editor("third.txt", 30)
                 ex("lua vim.api.nvim_set_current_win(review_win)")
-                expect_focus("saved", 8)
+                # The selected path is already the real right-hand buffer.
+                # Native picker jumps update its position without replacing it.
+                expect_focus("saved", 30)
             ex("LazyVCS compare close")
             ex("lua require('helpers').cleanup()")
         ex("qa!")

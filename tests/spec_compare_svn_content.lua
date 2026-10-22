@@ -78,7 +78,7 @@ return function(ctx)
 					assert(items, failure)
 					assert(#items == 0, "clean directory property candidate remained listed")
 					assert(property_calls == 2, "directory reconciliation did not use shallow maps")
-					local s = assert(compare.open({ path = f.root, base = snapshot.url .. "@1" }))
+					local s = assert(compare.open({ editable = false, path = f.root, base = snapshot.url .. "@1" }))
 					ctx.wait_for(function()
 						return s.snapshot
 					end, "clean list", 15000)
@@ -165,7 +165,8 @@ return function(ctx)
 					h.exec({ "svn", "update" }, f.root)
 					write(f.file, oversized and string.rep("x", 1024 * 1024 + 1) or "new\0data\n")
 					h.exec({ "svn", "propset", "custom:review", "new", "sample.txt" }, f.root)
-					local s = assert(compare.open({ path = f.root, base = h.file_url(f.repo) .. "@2" }))
+					local s =
+						assert(compare.open({ editable = false, path = f.root, base = h.file_url(f.repo) .. "@2" }))
 					local common = require("lazyvcs.backends.comparison")
 					local command, read = common.command, common.read_file
 					local ok, err = xpcall(function()
@@ -256,7 +257,8 @@ return function(ctx)
 					end
 					h.exec({ "svn", "propset", "custom:review", "after", "node" }, f.root)
 					h.write_file(f.file, "changed\n")
-					local s = assert(compare.open({ path = f.root, base = h.file_url(f.repo) .. "@2" }))
+					local s =
+						assert(compare.open({ editable = false, path = f.root, base = h.file_url(f.repo) .. "@2" }))
 					local ok, err = xpcall(function()
 						ready(s)
 						local nodes = {}

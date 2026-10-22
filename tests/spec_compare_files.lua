@@ -33,7 +33,11 @@ return function(ctx)
 			h.write_file(f.root .. "/" .. path, table.concat(lines, "\n") .. "\n")
 		end
 		vim.cmd.edit(vim.fn.fnameescape(f.file))
-		local s = assert(compare.open({ path = f.root, base = vcs == "svn" and h.file_url(f.repo) .. "@2" or "HEAD" }))
+		local s = assert(compare.open({
+			editable = false,
+			path = f.root,
+			base = vcs == "svn" and h.file_url(f.repo) .. "@2" or "HEAD",
+		}))
 		ready(s)
 		assert(#s.items == 3, vim.inspect(s.items))
 		vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path["a.txt"], 0 })
@@ -185,9 +189,10 @@ return function(ctx)
 	cases[#cases + 1] = {
 		"test_comparison_file_navigation_zero_single_and_unavailable_entries",
 		function()
+			require("lazyvcs.commands").setup()
 			local f = h.make_git_fixture()
 			vim.cmd.edit(vim.fn.fnameescape(f.file))
-			local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			local s = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
 			ready(s)
 			keys("]b")
 			assert(vim.api.nvim_get_current_win() == s.rightwin)

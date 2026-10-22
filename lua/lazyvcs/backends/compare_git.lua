@@ -373,6 +373,8 @@ function M.preview(snapshot, item, callback, opts)
 		return task
 	end
 	local stat = vim.uv.fs_lstat(snapshot.root .. "/" .. item.relpath)
+	result.right_kind = stat and (stat.type == "file" and "regular" or stat.type == "link" and "symlink" or stat.type)
+		or "missing"
 	if stat and stat.type == "directory" then
 		command(
 			task,
@@ -419,6 +421,7 @@ function M.preview(snapshot, item, callback, opts)
 	end
 	local function left()
 		if item.status == "A" or item.original_status == "A" or item.untracked then
+			result.left_kind = "missing"
 			common.decode_side(result, "left", "", { encoding = "utf-8" })
 			right()
 		else
@@ -438,6 +441,27 @@ function M.preview(snapshot, item, callback, opts)
 				end
 			)
 		end
+	end
+	local read_left = left
+	left = function()
+		if not (opts and opts.editable) or item.status == "A" or item.original_status == "A" or item.untracked then
+			return read_left()
+		end
+		command(
+			task,
+			snapshot,
+			{ "ls-tree", "-z", snapshot.revision, "--", item.old_path or item.relpath },
+			function(raw, err)
+				if not raw then
+					return task:finish(nil, err)
+				end
+				local mode = raw:match("^(%d+) ")
+				result.left_kind = (mode == "100644" or mode == "100755") and "regular"
+					or mode == "120000" and "symlink"
+					or "other"
+				read_left()
+			end
+		)
 	end
 	local attributes = require("lazyvcs.backends.git_attributes")
 	local function read_attributes(path, revision, done)

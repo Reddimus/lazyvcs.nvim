@@ -18,6 +18,7 @@ local defaults = {
 	set_winbar = true,
 	session_keymaps = true,
 	compare = {
+		editable = true,
 		max_cached_files = 32,
 		keymaps = { files = "<leader>vf", edit = "<leader>ve", help = "<leader>v?" },
 	},
@@ -154,6 +155,7 @@ local function normalize(opts)
 	vim.validate("session_keymaps", opts.session_keymaps, "boolean")
 	vim.validate("keymaps", opts.keymaps, "table")
 	vim.validate("compare", opts.compare, "table")
+	vim.validate("compare.editable", opts.compare.editable, "boolean")
 	vim.validate("compare.keymaps", opts.compare.keymaps, "table")
 	finite_number("compare.max_cached_files", opts.compare.max_cached_files)
 	if

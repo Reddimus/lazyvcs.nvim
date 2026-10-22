@@ -1,5 +1,6 @@
 local M = {
 	sessions = {},
+	views = {},
 	buffer_index = {},
 	window_index = {},
 	pending_transfers = {},
@@ -24,12 +25,18 @@ local function cancel_transfer(pending)
 	end
 end
 
--- Check every key before mutating any index. Replacement may reuse its old keys.
+local view_sequence = 0
+
+function M.owns(session)
+	return session
+		and ((session.view_id and M.views[session.view_id] == session) or M.sessions[session.editable_bufnr] == session)
+end
+
+-- Views own windows. Only an active view claims its source buffer.
 local function registration_error(session, old)
-	for _, buf in ipairs({ session.editable_bufnr, session.base_bufnr }) do
-		local key = M.buffer_index[buf]
-		local owner = M.sessions[buf] or (key and M.sessions[key])
-		if (key and (not old or key ~= old.editable_bufnr)) or (owner and owner ~= old) then
+	for _, buf in ipairs(session.paused and { session.base_bufnr } or { session.editable_bufnr, session.base_bufnr }) do
+		local owner = M.get(buf)
+		if owner and owner ~= old then
 			return "Buffer already has a live diff owner"
 		end
 	end
@@ -46,30 +53,37 @@ function M.register(session)
 	if err then
 		return nil, err
 	end
-	M.window_index[session.editable_win] = session
-	M.window_index[session.base_win] = session
-	M.sessions[session.editable_bufnr] = session
-	M.buffer_index[session.editable_bufnr] = session.editable_bufnr
-	M.buffer_index[session.base_bufnr] = session.editable_bufnr
+	if not session.view_id then
+		view_sequence = view_sequence + 1
+		session.view_id = view_sequence
+	end
+	M.views[session.view_id] = session
+	M.window_index[session.editable_win], M.window_index[session.base_win] = session, session
+	M.buffer_index[session.base_bufnr] = session
+	if not session.paused then
+		M.sessions[session.editable_bufnr] = session
+		M.buffer_index[session.editable_bufnr] = session
+	end
 	return session
 end
 
 function M.unregister(session)
-	if not session then
+	if not M.owns(session) then
 		return
 	end
-
-	if M.sessions[session.editable_bufnr] ~= session then
-		return
+	if session.view_id and M.views[session.view_id] == session then
+		M.views[session.view_id] = nil
 	end
 	for _, win in ipairs({ session.editable_win, session.base_win }) do
 		if M.window_index[win] == session then
 			M.window_index[win] = nil
 		end
 	end
-	M.sessions[session.editable_bufnr] = nil
+	if M.sessions[session.editable_bufnr] == session then
+		M.sessions[session.editable_bufnr] = nil
+	end
 	for _, buf in ipairs({ session.editable_bufnr, session.base_bufnr }) do
-		if M.buffer_index[buf] == session.editable_bufnr then
+		if M.buffer_index[buf] == session or M.buffer_index[buf] == session.editable_bufnr then
 			M.buffer_index[buf] = nil
 		end
 	end
@@ -79,19 +93,33 @@ function M.get(bufnr)
 	if not bufnr then
 		return nil
 	end
-
-	local editable = M.buffer_index[bufnr] or bufnr
-	return M.sessions[editable]
+	local entry = M.buffer_index[bufnr]
+	return type(entry) == "table" and entry or M.sessions[entry or bufnr]
 end
 
 function M.current()
-	return M.get(vim.api.nvim_get_current_buf()) or M.for_window(vim.api.nvim_get_current_win())
+	local win = vim.api.nvim_get_current_win()
+	if vim.w[win].lazyvcs_compare then
+		return nil
+	end
+	local owned = M.for_window(win)
+	if owned then
+		return owned
+	end
+	local source = M.get(vim.api.nvim_get_current_buf())
+	if source and vim.wo[win].diff and source.tabpage == vim.api.nvim_get_current_tabpage() then
+		return source
+	end
 end
 
 function M.list()
-	local out = {}
-	for _, session in pairs(M.sessions) do
-		out[#out + 1] = session
+	local out, seen = {}, {}
+	for _, collection in ipairs({ M.sessions, M.views }) do
+		for _, session in pairs(collection) do
+			if not seen[session] then
+				out[#out + 1], seen[session] = session, true
+			end
+		end
 	end
 	return out
 end
@@ -101,10 +129,10 @@ function M.for_window(winid)
 end
 
 function M.replace(old, replacement)
-	assert(M.get(old.editable_bufnr) == old, "session lost ownership")
-	assert(not M.get(replacement.editable_bufnr), "target already owned")
+	assert(M.owns(old), "session lost ownership")
 	local err = registration_error(replacement, old)
 	assert(not err, err)
+	replacement.view_id = old.view_id
 	M.unregister(old)
 	assert(M.register(replacement))
 end

@@ -66,7 +66,7 @@ local function set_window_labels(session)
 		return
 	end
 
-	if util.win_is_valid(session.editable_win) then
+	if util.win_is_valid(session.editable_win) and not session.paused then
 		session.editable_prev_winbar = session.editable_prev_winbar
 			or util.get_win_option(session.editable_win, "winbar")
 		local right_label = session.right_label or session.base_label
@@ -480,6 +480,26 @@ function M.bind_pair(session, source_win)
 	return true
 end
 
+-- Presentation has no repository identity. Detach native diff before replacing
+-- the departed file's base so a new editor never displays an unrelated old base.
+function M.present(session, lines, filetype)
+	M.reset_tab_diff(session.editable_win)
+	M.reset_tab_diff(session.base_win)
+	highlighting.release(session.editable_win)
+	highlighting.release(session.base_win)
+	local buf = session.base_bufnr
+	if not util.buf_is_valid(buf) then
+		return
+	end
+	vim.bo[buf].modifiable, vim.bo[buf].readonly = true, false
+	local ok, err = pcall(vim.api.nvim_buf_set_lines, buf, 0, -1, false, lines)
+	vim.bo[buf].modifiable, vim.bo[buf].readonly, vim.bo[buf].modified = false, true, false
+	vim.bo[buf].filetype = filetype or ""
+	if not ok then
+		error(err)
+	end
+end
+
 function M.rebind(old, replacement)
 	for _, key in ipairs({
 		"editable_win",
@@ -512,7 +532,7 @@ function M.rebind(old, replacement)
 		vim.bo[buf].endofline = replacement.base_text.eol
 		vim.bo[buf].fixendofline = false
 	end
-	vim.bo[buf].filetype = vim.bo[replacement.editable_bufnr].filetype
+	vim.bo[buf].filetype = replacement.paused and "" or vim.bo[replacement.editable_bufnr].filetype
 	local old_name = vim.api.nvim_buf_get_name(buf)
 	local new_name = resolve_base_buffer_name(replacement)
 	vim.api.nvim_buf_set_name(buf, new_name)

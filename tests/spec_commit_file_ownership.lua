@@ -246,7 +246,7 @@ return function(ctx)
 					assert(file.record.platform == variant.platform, "platform simulation was bypassed")
 					assert((file.record.boot_id ~= nil) == (variant.name == "Linux_boot_id"))
 					-- A distinct consumer PID shows which process each rule probes.
-					local consumer, editor = vim.fn.getpid() + 100000, file.record.editor_pid
+					local consumer = vim.fn.getpid() + 100000
 					for _, mode in ipairs({ "attached", "old_pidless", "recent_pidless", "editor_gone_pidless" }) do
 						local record = vim.deepcopy(file.record)
 						local boot = os.time() - vim.uv.uptime()
@@ -270,16 +270,12 @@ return function(ctx)
 							return true -- The creating editor is still running.
 						end)
 						prune_scan()
-						local windows = variant.platform == "Windows_NT"
-						local released = mode == "attached"
-							or mode == "old_pidless"
-							or (mode == "editor_gone_pidless" and windows)
+						local released = mode == "attached" or mode == "old_pidless"
 						assert(
 							(vim.uv.fs_stat(file.path) == nil) == released,
 							variant.name .. "/" .. mode .. ": wrong previous-boot release"
 						)
-						local expected = mode == "attached" and { consumer }
-							or ((windows and mode ~= "old_pidless") and { editor } or {})
+						local expected = mode == "attached" and { consumer } or {}
 						assert(
 							vim.deep_equal(probed, expected),
 							variant.name .. "/" .. mode .. ": probed " .. vim.inspect(probed)
@@ -556,7 +552,7 @@ return function(ctx)
 									return nil, result, result
 								end)
 								prune_scan()
-								local released = platform == "Windows_NT" and mode ~= "legacy" and result == "ESRCH"
+								local released = false
 								assert(
 									(vim.uv.fs_stat(file.path) == nil) == released,
 									platform .. "/" .. result .. ": wrong fresh PID-less release"
@@ -572,15 +568,7 @@ return function(ctx)
 										)
 									end
 								end
-								assert(
-									probes
-										== (
-											(platform == "Windows_NT" and mode ~= "legacy")
-												and (released and 1 or 3)
-											or 0
-										),
-									"PID-less cleanup probed an unverifiable owner"
-								)
+								assert(probes == 0, "PID-less cleanup probed an unverifiable owner")
 								files.release(file)
 							end
 						end
@@ -760,7 +748,9 @@ return function(ctx)
 			"test_source_control_commit_pruning_preserves_message_after_editor_exit",
 			function()
 				if vim.fn.has("win32") == 1 then
-					error({ lazyvcs_skip = "Windows terminates running mutations at editor exit (#96)" })
+					error({
+						lazyvcs_skip = "POSIX process-group fixture; native Windows has separate commit-survival coverage",
+					})
 				end
 				active(true)
 			end,

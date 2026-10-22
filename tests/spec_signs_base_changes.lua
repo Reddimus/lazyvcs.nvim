@@ -255,15 +255,17 @@ return function(ctx)
 		s.guard(function()
 			local f, buf = s.fixture(false)
 			s.refresh(buf, true)
-			local system, source, attempted = vim.system, s.api.nvim_get_current_win(), false
-			vim.system = function(args, ...)
+			local util = require("lazyvcs.util")
+			local start, source, attempted = util.system_start, s.api.nvim_get_current_win(), false
+			---@diagnostic disable-next-line: duplicate-set-field
+			util.system_start = function(args, opts, done)
 				if args[1] == "git" and args[2] == "add" then
 					attempted = true
 					assert(not s.signs.current_state(buf).loaded)
 					vim.cmd("LazyVCS preview")
-					error("injected spawn failure")
+					return s.h.failed_system_spawn(start, args, opts, done)
 				end
-				return system(args, ...)
+				return start(args, opts, done)
 			end
 			local ok, err = pcall(function()
 				local state, node = sidebar(f)
@@ -276,7 +278,7 @@ return function(ctx)
 				s.api.nvim_win_close(0, true)
 				hunk_count(buf, 1, "spawn failure stranded sign base")
 			end)
-			vim.system = system
+			util.system_start = start
 			assert(ok, err)
 		end),
 	}

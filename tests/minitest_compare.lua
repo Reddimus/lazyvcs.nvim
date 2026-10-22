@@ -169,4 +169,39 @@ end
 	child.type_keys(":LazyVCS compare width<CR>")
 	eq(child.lua_get("require('lazyvcs.compare').current().auto_width"), false)
 end
+T["worktree editing, undo, save, and file cycling use native buffers"] = function()
+	navigation_fixture()
+	child.lua([[
+local h=require('helpers')
+h.write_file(fixture.root .. '/second.txt','second file\n')
+]])
+	child.type_keys("<Space>vc")
+	ready()
+	child.lua([[
+local s=require('lazyvcs.compare').current()
+vim.api.nvim_win_set_cursor(s.sidewin,{s.row_by_path['sample.txt'],0})
+]])
+	child.type_keys("<CR>", "0", "i", "native edit ", "<Esc>")
+	eq(child.lua_get("vim.bo.modified and vim.bo.buftype=='' and vim.bo.buflisted"), true)
+	child.type_keys("u")
+	eq(child.lua_get("vim.api.nvim_get_current_line()"), "changed eight")
+	child.type_keys("<C-r>", ":write<CR>")
+	child.lua([[
+assert(vim.wait(15000,function()
+ local s=require('lazyvcs.compare').current()
+ return not s.worktree_list_job and #s.navigation.saved>0
+end,10))
+assert(vim.fn.readfile(fixture.file)[8]=='native edit changed eight')
+assert(not vim.bo.modified)
+edited_buffer=vim.api.nvim_get_current_buf()
+]])
+	eq(position(), { false, true, 8 })
+	child.type_keys("]b")
+	ready()
+	child.type_keys("[b")
+	ready()
+	eq(child.lua_get("vim.api.nvim_get_current_buf()==edited_buffer"), true)
+	child.type_keys(":LazyVCS compare close<CR>")
+	eq(child.lua_get("vim.api.nvim_buf_is_valid(edited_buffer) and vim.bo[edited_buffer].buflisted"), true)
+end
 return T

@@ -2,8 +2,8 @@
 
 ## Requirements
 
-- Neovim 0.11+. CI tests 0.11.0 (the supported floor), 0.11.7, and 0.12.5 on
-  Linux; 0.11.7 and 0.12.5 on Windows; 0.12.5 on macOS.
+- Neovim 0.11+. CI tests 0.11.0 (the supported floor), 0.11.7, and 0.12.6 on
+  Linux; 0.11.7 and 0.12.6 on Windows; 0.12.6 on macOS.
 - `git`, and `svn` if you want the Subversion specs to run instead of skip
 - [StyLua](https://github.com/JohnnyMorganz/StyLua) 2.5.2 and
   [lua-language-server](https://github.com/LuaLS/lua-language-server) 3.18.2
@@ -244,13 +244,14 @@ the GitHub release.
   mtime more than one day before the current boot estimate. Foreign Linux
   namespaces cannot be probed. On macOS and Linux without a boot ID pair,
   PID-less records use the same one-day margin. Windows attached records require
-  consumer ESRCH, and PID-less records require creating-editor ESRCH, or the
-  one-day margin for either kind. Consumers cannot outlive Neovim on Windows
-  (#96). An estimate change alone never releases a message. The one-day margin
-  also covers missing or invalid ownership records, including token or platform
-  mismatches, and orphaned ownership, settlement, and temporary sidecars. A
-  forward clock step of more than a day can falsely release messages through
-  that margin. PID reuse delays cleanup; EPERM alone does not prove exit.
+  consumer ESRCH or the one-day margin. PID-less records use the one-day margin
+  on every platform. Preserved consumers can outlive their editor, so editor
+  exit alone never releases a message. An estimate change alone never releases a
+  message. The one-day margin also covers missing or invalid ownership records,
+  including token or platform mismatches, and orphaned ownership, settlement,
+  and temporary sidecars. A forward clock step of more than a day can falsely
+  release messages through that margin. PID reuse delays cleanup; EPERM alone
+  does not prove exit.
 - Sidebar AI drafts belong to one state and repository root. Request tickets and
   draft revisions reject superseded responses. Context commands use the
   scheduler; repository cancellation also stops provider requests after context

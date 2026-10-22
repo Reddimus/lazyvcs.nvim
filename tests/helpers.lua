@@ -60,7 +60,7 @@ function M.cleanup()
 	if actions and session_state and type(session_state.list) == "function" then
 		for _, session in ipairs(session_state.list()) do
 			if belongs_to_fixture(session.source_path or session.root) then
-				pcall(actions.close, session.editable_bufnr)
+				pcall(actions.close, session)
 			end
 		end
 	end
@@ -94,6 +94,19 @@ end
 function M.write_file(path, text)
 	local lines = vim.split((text or ""):gsub("\n$", ""), "\n", { plain = true })
 	vim.fn.writefile(lines, path)
+end
+
+-- Inject a physical spawn failure after the logical command has been selected.
+-- Windows may launch a helper, so tests must not match VCS argv at vim.system.
+function M.failed_system_spawn(start, args, opts, done)
+	local system = vim.system
+	vim.system = function()
+		error("injected spawn failure")
+	end
+	local ok, result = pcall(start, args, opts, done)
+	vim.system = system
+	assert(ok, result)
+	return result
 end
 
 function M.exec(args, cwd)

@@ -5,11 +5,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 UBUNTU_IMAGE="${UBUNTU_IMAGE:-ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90}"
-NVIM_VERSION="${NVIM_VERSION:-v0.12.5}"
-NVIM_SHA256="${NVIM_SHA256:-bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875}"
+NVIM_VERSION="${NVIM_VERSION:-v0.12.6}"
+NVIM_SHA256="${NVIM_SHA256:-474430d53e6264f6d6dd18db42d6dc9df3a1b56ca9e88a325bbf860e1a811d87}"
 ASTRONVIM_TEMPLATE_REF="${ASTRONVIM_TEMPLATE_REF:-49a7161b776f8bc6c23508819ea1ad4e7b359bee}"
-ASTRONVIM_VERSION="${ASTRONVIM_VERSION:-6.0.5}"
-ASTRONVIM_COMMIT="${ASTRONVIM_COMMIT-35966a16caefeb8f3a9dcb1a91f89ada8f3edc77}"
+ASTRONVIM_VERSION="${ASTRONVIM_VERSION:-6.1.1}"
+ASTRONVIM_COMMIT="${ASTRONVIM_COMMIT-fc95d5d331b897b1c6b46cbfa4e0251d8d9be6b7}"
 KEEP_E2E_HOME="${KEEP_E2E_HOME:-}"
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -424,11 +424,23 @@ local function main()
 
         require("astrocore.buffer").nav(1)
         dump("after nav scratch immediate")
-        wait_for("live diff did not close on unsupported SVN file", 15000, function()
-          return state.current() == nil and #state.list() == 0 and no_stale_diff_windows()
+        wait_for("live diff did not pause on unsupported SVN file", 15000, function()
+          local live = state.current()
+          return live and live.paused and not live.base_identity and not vim.wo[live.base_win].diff
         end, function()
           dump("after nav scratch settled")
-          finish(true, "buffer navigation smoke passed")
+          local paused = state.current()
+          require("astrocore.buffer").nav(1)
+          wait_for("live diff did not resume after unsupported SVN file", 15000, function()
+            local live = state.current()
+            return live and not live.paused and live.source_path == files.alpha
+              and live.base_win == paused.base_win and live.editable_win == paused.editable_win
+          end, function()
+            actions.close()
+            wait_for("resumed live diff left stale panes", 5000, no_stale_diff_windows, function()
+              finish(true, "buffer navigation smoke passed")
+            end)
+          end)
         end)
       end)
     end)

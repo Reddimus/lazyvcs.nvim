@@ -220,12 +220,9 @@ local function gone(record, current, mtime)
 	local old = not boot_pair and mtime < current.boot - 86400
 	local pid = record.pid
 	if pid == nil then
-		if current.platform ~= "Windows_NT" then
-			-- A Unix consumer may outlive its creating editor.
-			return old
-		end
-		-- Consumers cannot outlive Neovim on Windows (#96).
-		pid = record.editor_pid
+		-- A detached consumer can outlive its editor on every platform. Without
+		-- an attached PID, editor death cannot establish that this file is unused.
+		return old
 	end
 	if current.platform == "Linux" then
 		if

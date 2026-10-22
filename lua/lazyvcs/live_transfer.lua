@@ -23,7 +23,7 @@ function M.new(lifecycle)
 	local editor = require("lazyvcs.integrations.editor")
 	local api = {}
 	local function current(s)
-		return s and not s.closing and state.get(s.editable_bufnr) == s
+		return s and not s.closing and state.owns(s)
 	end
 	local function report(err)
 		util.notify(
@@ -95,12 +95,15 @@ function M.new(lifecycle)
 			return p
 		end
 		p.detached = true
+		p.base_lines, p.base_text, p.base_identity, p.hunks = s.base_lines, s.base_text, s.base_identity, s.hunks
 		layout.remember_departed(s)
 		s.phase = "leaving"
 		p.view = vim.api.nvim_win_call(s.editable_win, vim.fn.winsaveview)
 		require("lazyvcs.align").clear(s)
 		layout.release_derived_diff(s)
 		layout.reset_tab_diff(s.editable_win)
+		layout.present(s, { "Loading comparison..." })
+		s.base_identity, s.base_text, s.hunks = nil, nil, nil
 		p.aerial_state = aerial.disable_buffer(s.editable_bufnr, { detach = true })
 		aerial.suspend_win(s.editable_win)
 		return p
@@ -120,7 +123,11 @@ function M.new(lifecycle)
 			return
 		end
 		local p = state.peek_pending_transfer(s.editable_win)
-		if target == s.editable_bufnr then
+		if s.paused and target == s.editable_bufnr and util.buf_path(target) == s.source_path and not s.pause_retry then
+			return
+		end
+		s.pause_retry = nil
+		if target == s.editable_bufnr and not s.paused then
 			if not vim.api.nvim_buf_is_loaded(target) or s.editable_wiping then
 				return lifecycle.close(s, { reset_tab_diff = true })
 			end
@@ -130,9 +137,12 @@ function M.new(lifecycle)
 			end
 			if p then
 				local view, detached = p.view, p.detached
+				s.base_lines, s.base_text, s.base_identity, s.hunks =
+					p.base_lines, p.base_text, p.base_identity, p.hunks
 				state.clear_pending_transfer(s.editable_win)
 				s.phase = "active"
 				if detached then
+					layout.present(s, s.base_lines or {}, vim.bo[s.editable_bufnr].filetype)
 					if view then
 						vim.api.nvim_win_call(s.editable_win, function()
 							vim.fn.winrestview(view)
@@ -145,6 +155,9 @@ function M.new(lifecycle)
 				end
 			end
 			return
+		end
+		if not util.is_real_file_buffer(target) then
+			return lifecycle.close(s, { reset_tab_diff = true })
 		end
 		p = prepare(s)
 		if p.phase == "loading" and p.target_bufnr == target and p.target_path == util.buf_path(target) then
@@ -173,7 +186,7 @@ function M.new(lifecycle)
 				and not p.cancelled
 				and p.generation == request_generation
 		end
-		local handle = lifecycle.build(target, function(replacement, err)
+		local handle = lifecycle.build(target, function(replacement, err, rejection)
 			guarded(s, function()
 				if not valid() then
 					return
@@ -186,12 +199,14 @@ function M.new(lifecycle)
 					return api.reconcile(s)
 				end
 				if not replacement or state.get(target) then
-					local unsupported = not err
-						or tostring(err):match("No Git or SVN working copy")
-						or tostring(err):match("not tracked")
-						or tostring(err):match("only opens on normal file buffers")
-					lifecycle.close(s, { reset_tab_diff = true })
-					if not unsupported then
+					local conflict = state.get(target) ~= nil
+					local expected = conflict or (rejection and rejection.code ~= nil)
+					local reason = conflict and "This buffer already has another live diff owner." or err
+					lifecycle.pause(s, target, p.target_path, reason)
+					state.finish_pending_transfer(s.editable_win, p)
+					p.phase = "closed"
+					p.dispose()
+					if not expected and err then
 						report(err)
 					end
 					return
@@ -205,6 +220,7 @@ function M.new(lifecycle)
 					p.phase = "closed"
 					p.dispose()
 					replacement.phase = "active"
+					require("lazyvcs.window_controls").sync()
 					layout.rebalance(replacement)
 					assert(layout.bind_pair(replacement, replacement.editable_win), "could not bind replacement")
 					aerial.refetch_buffer(target)
@@ -224,6 +240,19 @@ function M.new(lifecycle)
 		else
 			kill(handle)
 		end
+	end
+	function api.retry(s)
+		if not current(s) then
+			return
+		end
+		local target = util.win_is_valid(s.editable_win) and vim.api.nvim_win_get_buf(s.editable_win)
+			or s.editable_bufnr
+		local path = util.buf_path(target)
+		if path then
+			require("lazyvcs.backends").invalidate(path)
+		end
+		s.pause_retry = true
+		api.reconcile_now(s)
 	end
 	function api.reconcile_now(s)
 		guarded(s, function()
@@ -253,7 +282,7 @@ function M.new(lifecycle)
 		guarded(s, function()
 			if
 				current(s)
-				and (s.phase == "active" or s.phase == "loading")
+				and (s.phase == "active" or s.phase == "loading" or s.phase == "paused")
 				and vim.api.nvim_get_current_win() == s.editable_win
 				and vim.api.nvim_win_get_buf(s.editable_win) == s.editable_bufnr
 			then

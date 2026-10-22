@@ -199,7 +199,7 @@ return function(ctx)
 			if live then
 				local task = require("lazyvcs.actions").open({ silent = true })
 				ctx.wait_for(function()
-					return task.done
+					return task and task.done
 				end, "ineligible live diff did not finish", 15000)
 				assert(not require("lazyvcs.state").get(buf), "symlink opened an editable diff")
 			else

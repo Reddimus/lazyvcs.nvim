@@ -357,7 +357,7 @@ return function(ctx)
 					committed(entries, format[1] .. " saved snapshot")
 					write(f.file, (format[2]:gsub("second", "saved edit")))
 					local compare = require("lazyvcs.compare")
-					local session = assert(compare.open({ path = f.root, base = "HEAD" }))
+					local session = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
 					t.cleanups[#t.cleanups + 1] = function()
 						compare.close(session)
 					end

@@ -39,7 +39,8 @@ The source-control sidebar is native Neovim UI. Neo-tree is not required.
 ==============================================================================
 REQUIREMENTS                                           *lazyvcs-requirements*
 
-- Neovim 0.11 or newer.
+- Neovim 0.11 or newer. Windows command-tree ownership requires LuaJIT FFI
+  (included in standard Neovim Windows builds).
 - `git` for Git repositories.
 - `svn` for SVN working copies.
 - A Nerd Font is recommended for sidebar icons.
@@ -178,7 +179,10 @@ actions. The selected row determines the repository; ambiguous selections use a
 picker. The sidebar mapping returns from Compare to source control. Reopening
 reuses the comparison tab, refreshes it, and preserves the selected path.
 
-The review tab owns its sidebar and read-only preview buffers. Narrow windows
+The review tab owns its sidebar and base snapshots. The right pane edits the
+real file and includes unsaved changes. Use :write to save; saving refreshes the
+file list without moving the cursor. Edited buffers survive closing Compare.
+Narrow windows
 stack the preview panes vertically. Single-key actions apply to the file list:
     Enter       Review the selected file; double-click does the same.
     P           Preview without leaving the file list.
@@ -203,18 +207,28 @@ File navigation uses keymaps.next_file/prev_file and accepts counts, such as
 3]b. From a pane it keeps that side when possible. Added files use the saved
 pane; deleted files use the base pane. First visits start at the first hunk.
 Revisiting restores both panes' cursor and scroll positions. Binary, oversized,
-empty, and property-only paths remain navigable. No editing buffers are added.
+empty, and property-only paths remain navigable. Files load on demand. Clean
+private buffers stay unlisted; editing adds them to the ordinary buffer list.
+Compare keeps borrowed buffers loaded while in use and restores their prior
+'bufhidden' setting on release. Reloading keeps the real buffer; deleting it
+shows a fresh saved snapshot until you select it again.
 Positions last for this session, survive refreshes for the same pinned base,
 and reset when the base revision or SVN URL changes. Removed paths are forgotten.
 Moving the list cursor and background refreshes preserve focus. Unavailable
 text previews stay in the list. Text panes preserve normal Vim motions,
-search, macros, marks, and jump history. Both snapshots are non-editable.
+search, macros, marks, and jump history. The base remains read-only. Deleted,
+symlink, sparse-index, property-only, binary, oversized, and unsupported text
+paths retain snapshot behavior. Compare does not offer hunk revert.
+Set compare.editable = false for an entirely read-only review. A single Lua open
+can override it: require("lazyvcs").compare({ editable = false }).
 Use :LazyVCS compare metadata to toggle metadata from a pane; width, refresh,
 base, edit, files, help, and close are also available as commands.
 
 File and grep pickers, including AstroNvim <leader>ff and <leader>fw, can open
 files from any Compare window. Selections open actual editable files in the
 original editor and preserve search positions, including while a preview loads.
+Selecting the already displayed real working file jumps within its editable
+pane, using the picker's normal behavior.
 Compare keeps its current file.
 A split is created when needed to preserve unsaved buffers or winfixbuf.
 Editing from a text pane maps the review position through saved and unsaved
@@ -292,8 +306,10 @@ Focus changes to the base pane, other splits, floats, or tabs preserve the
 session. Transfers also work with 'nohidden'. Programmatic buffer changes
 in the editable window also transfer it, including changes made from another
 window or tab, without moving focus.
-Transfers reuse the window pair for supported Git/SVN buffers. Unsupported
-buffers close the session cleanly. Hunk revert is unavailable until a pending
+Transfers reuse the window pair for supported Git/SVN buffers. Unsupported named
+files pause the view and show the reason in the base pane. Selecting a supported
+file resumes it; :LazyVCS diff refresh retries the paused file. Special or unnamed
+buffers close the view. Hunk revert is unavailable while paused or until a pending
 transfer finishes. Close and toggle also work while the new base is loading.
 Splits of the editable window share its diff while the session is active and
 leave diff mode when it closes or moves to another buffer, including a move
@@ -720,6 +736,9 @@ Compare-only file keymaps:
 
 Compare pane shortcuts:
 
+    compare.editable   Edit real working files in the right pane. Default true.
+                       false keeps both panes as saved-content snapshots.
+
     compare.keymaps.files  Focus the file list. Default "<leader>vf".
     compare.keymaps.edit   Edit at the review position. Default "<leader>ve".
     compare.keymaps.help   Show help. Default "<leader>v?".
@@ -867,16 +886,17 @@ occupied until cleanup completes. On POSIX, timeout and cancellation terminate
 owned command descendants in separate process groups. Descendants that create
 another session or leave the group are outside this cleanup.
 
-On Windows, taskkill /T /F handles command timeouts and shutdown termination.
-Cancellation uses it only for mutation or remote scopes, Git fetch, pull, push,
+On Windows, cancellation of owned commands terminates their helper and tree.
+Other commands use taskkill /T /F for timeouts and shutdown termination.
+Tree ownership applies to mutation or remote scopes, Git fetch, pull, push,
 clone, ls-remote, remote update, and commit, and SVN checkout/co, update/up,
 switch/sw, merge, commit/ci, import, and status with -u or --show-updates.
 Other cancellations terminate only the direct process, including SVN log,
 blame, and URL reads. Their transport helpers exit when the parent's pipes
 close, so reads need no tree walk. taskkill requires a live direct process and
 falls back to direct termination. Descendants whose parent has already exited
-may survive on Windows. Explicit editor Git restore and SVN revert cancellation
-uses mutation scope and terminates descendants with taskkill /T /F.
+may survive for commands without an owned job. Explicit editor Git restore and
+SVN revert cancellation use mutation scope and terminate owned descendants.
 
 Neovim exit discards queued work, including mutations that have not started.
 Running repository mutations (commit, update, merge, switch, stage, unstage,
@@ -884,8 +904,14 @@ revert, push, publish, and delete untracked) are untracked without a termination
 signal. Multi-step actions (Pull, Sync, Push, Publish) are preserved only once
 they reach their mutating step. This avoids interrupting writes that could leave
 an index.lock or a locked SVN working copy. Preserved commands lose their output
-pipes at exit. On Windows, Neovim's process runtime terminates its child
-processes when Neovim exits, so running mutations are not preserved there.
+pipes at exit. On Windows, commands requiring tree cancellation use a Neovim
+Lua helper with a hidden console and a restrictive Windows job. The helper uses
+LuaJIT's built-in FFI, inherits standard streams and waits for the command. Only
+preserved commands detach from the editor. Explicit cancellation and timeouts
+terminate the helper and its owned descendants, including native shell children.
+Normal command completion releases the job so intentional background work can
+finish independently. Background helpers must close inherited output handles to
+avoid delaying command completion. Other scopes retain taskkill fallback.
 A hook or helper that writes output afterwards can fail and abort the mutation.
 Git aborts cleanly in this case without leaving an index.lock.
 Commit message files survive exit in stdpath("cache")/lazyvcs/commit, with a
@@ -906,16 +932,10 @@ namespace. Matching boot IDs take precedence over boot-time estimates.
 
 Without a boot ID pair, attached records require consumer ESRCH where the
 namespace matches, or an mtime more than one day (86400 seconds) before the
-current boot estimate. Foreign Linux namespaces cannot be probed. On macOS and
-Linux without a boot ID pair, PID-less records use the same one-day margin;
-the editor's exit does not prove that its consumer has exited. Windows attached
-records require consumer ESRCH, and PID-less records require creating-editor
-ESRCH, or the one-day margin for either kind. Consumers cannot outlive Neovim on
-Windows (#96). An estimate change alone never releases a message.
-
-When the record or the machine has no boot ID, a PID-less message is kept
-until a boot that starts more than a day after the file was written. On Windows
-the creating editor's exit releases it earlier.
+current boot estimate. Foreign Linux namespaces cannot be probed. PID-less
+records use the one-day margin on every platform. A detached consumer can outlive
+its editor, so editor exit alone never releases its message. An estimate change
+alone never releases a message.
 
 The one-day margin also covers valid legacy PID-less records without an editor
 PID. A forward clock step of more than a day can falsely release a message

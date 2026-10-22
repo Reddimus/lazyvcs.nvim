@@ -14,6 +14,15 @@ local groups = {
 -- into unrelated coverage while remaining portable across Unix and Windows.
 if not vim.env.LAZYVCS_TEST_GROUP or vim.env.LAZYVCS_TEST_GROUP == "" then
 	local failures = {}
+	local function forward(output)
+		return function(err, data)
+			assert(not err, err)
+			if data then
+				output:write(data)
+				output:flush()
+			end
+		end
+	end
 	for _, group in ipairs(groups) do
 		print(string.format("\n===== lazyvcs test group: %s =====", group))
 		local result = vim.system({
@@ -30,16 +39,12 @@ if not vim.env.LAZYVCS_TEST_GROUP or vim.env.LAZYVCS_TEST_GROUP == "" then
 			run_file,
 		}, {
 			text = true,
+			stdout = forward(io.stdout),
+			stderr = forward(io.stderr),
 			env = {
 				LAZYVCS_TEST_GROUP = group,
 			},
 		}):wait()
-		if result.stdout and result.stdout ~= "" then
-			io.stdout:write(result.stdout)
-		end
-		if result.stderr and result.stderr ~= "" then
-			io.stderr:write(result.stderr)
-		end
 		if result.code ~= 0 then
 			failures[#failures + 1] = group
 		end

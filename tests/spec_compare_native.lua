@@ -25,7 +25,7 @@ return function(ctx)
 			h.write_file(f.root .. "/" .. path, table.concat(lines, "\n") .. "\n")
 		end
 		vim.cmd.edit(vim.fn.fnameescape(f.file))
-		local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+		local s = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
 		ready(s, "a.txt")
 		vim.api.nvim_set_current_win(s.sidewin)
 		keys("<CR>")
@@ -50,7 +50,7 @@ return function(ctx)
 			h.write_file(path, table.concat(lines, "\n") .. "\n")
 		end
 		vim.cmd.edit(vim.fn.fnameescape(f.file))
-		local session = assert(compare.open({ path = f.root, base = "HEAD" }))
+		local session = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
 		ready(session)
 		return f, session
 	end
@@ -140,7 +140,7 @@ return function(ctx)
 					check_pair(session, 1)
 					compare.refresh(session)
 					ready(session, "f1.txt")
-					assert(compare.open({ path = f.root, base = "HEAD" }) == session)
+					assert(compare.open({ editable = false, path = f.root, base = "HEAD" }) == session)
 					ready(session, "f1.txt")
 					for _, width in ipairs({ 65, 160 }) do
 						vim.o.columns = width
