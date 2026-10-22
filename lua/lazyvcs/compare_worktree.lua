@@ -269,6 +269,9 @@ local function setup()
 		callback = util.safe_callback(function(args)
 			local record = records[args.buf]
 			if record and not record.loading and not record.unloading and not record.releasing then
+				-- An edit earlier in the same batch has not reached Compare yet.
+				-- Keep it, and its undo history, before the reread moves the tick.
+				adopt(record)
 				record.rereading = true
 			end
 		end),

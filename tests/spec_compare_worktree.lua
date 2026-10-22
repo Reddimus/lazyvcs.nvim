@@ -218,6 +218,37 @@ return function(ctx)
 		end,
 	}
 	cases[#cases + 1] = {
+		"test_core_compare_worktree_edit_then_reread_keeps_undo",
+		function()
+			require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+			local f = h.make_git_fixture()
+			h.write_file(f.root .. "/a.txt", "first\n")
+			h.write_file(f.root .. "/b.txt", "second\n")
+			vim.cmd.edit(f.file)
+			local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			ready(s)
+			local buf = s.right
+			assert(s.shown_item.relpath == "a.txt" and not vim.bo[buf].buflisted)
+			local autoread = vim.o.autoread
+			vim.o.autoread = true
+			h.write_file(f.root .. "/a.txt", "first\nexternal change\n")
+			api.nvim_set_current_win(s.rightwin)
+			-- One mapping edits and undoes, then rereads before Compare observes the edit.
+			api.nvim_feedkeys(api.nvim_replace_termcodes("ccx<Esc>u:checktime<CR>", true, false, true), "xt", false)
+			vim.o.autoread = autoread
+			assert(api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "external change", "checktime did not reread")
+			assert(not vim.bo[buf].modified)
+			local undo = vim.fn.undotree(buf).seq_last
+			compare.navigate_file("next", 1)
+			ctx.wait_for(function()
+				return s.shown_item.relpath == "b.txt" and s.worktree ~= nil
+			end, "next file", 15000)
+			assert(api.nvim_buf_is_valid(buf), "the edit before rereading was discarded with its undo history")
+			assert(vim.fn.undotree(buf).seq_last == undo, "the buffer lost undo history")
+			compare.close(s)
+		end,
+	}
+	cases[#cases + 1] = {
 		"test_core_compare_worktree_snapshot_opt_out",
 		function()
 			local _, s, original = fixture("git", { compare = { editable = false } })
