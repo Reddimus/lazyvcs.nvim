@@ -191,5 +191,30 @@ return function(ctx)
 			end,
 		}
 	end
+	cases[#cases + 1] = {
+		"test_core_compare_worktree_keeps_single_window_user_diff_after_close",
+		function()
+			require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false }, blame = { persist = false } })
+			local f = h.make_git_fixture()
+			h.write_file(f.root .. "/a.txt", "first\n")
+			h.write_file(f.root .. "/b.txt", "second\n")
+			-- An existing buffer, so it survives Compare closing.
+			vim.cmd.edit(vim.fn.fnameescape(f.root .. "/a.txt"))
+			local origin, buf = api.nvim_get_current_win(), api.nvim_get_current_buf()
+			local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			ready(s)
+			assert(s.right == buf, "Compare did not show the existing buffer")
+			compare.close(s)
+			api.nvim_set_current_win(origin)
+			vim.cmd.buffer(buf)
+			-- A deliberate diff with no peer window in this tab.
+			vim.cmd("diffthis")
+			assert(vim.wo[origin].diff, "diffthis failed")
+			vim.cmd.edit(vim.fn.fnameescape(f.root .. "/b.txt"))
+			vim.cmd.buffer(buf)
+			assert(vim.wo[origin].diff, "returning to the buffer turned off the user's diff")
+			vim.cmd("diffoff")
+		end,
+	}
 	return cases
 end

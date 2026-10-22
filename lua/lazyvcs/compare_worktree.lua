@@ -294,11 +294,24 @@ function M.mark_pane(buf, winbar)
 end
 
 -- Plugins such as statuslines may replace a copied label on BufWinEnter before
--- Compare sees it. Diff mode is then the evidence: it is a copy unless a live
--- diff owns the window or another editor diff in its tab explains it.
-local function copied_diff(win)
+-- Compare sees it. Diff mode is then the evidence, but only while a Compare
+-- pane displays the buffer: Neovim copies options from a window showing it, and
+-- panes are reset before they release a buffer, so afterwards a diff in an
+-- editor window is the user's own (a single-window :diffthis included). It is
+-- a copy unless a live diff owns the window or another editor diff in its tab
+-- explains it.
+local function copied_diff(win, buf)
 	local state = require("lazyvcs.state")
 	if not util.get_win_option(win, "diff") or state.for_window(win) then
+		return false
+	end
+	local shown = false
+	for _, other in ipairs(vim.fn.win_findbuf(buf)) do
+		if other ~= win and vim.w[other].lazyvcs_compare then
+			shown = true
+		end
+	end
+	if not shown then
 		return false
 	end
 	for _, other in ipairs(vim.api.nvim_tabpage_list_wins(vim.api.nvim_win_get_tabpage(win))) do
@@ -320,7 +333,7 @@ end
 function M.neutralize(win, buf, pane)
 	local labels = pane_labels[buf]
 	local labelled = labels and labels[util.get_win_option(win, "winbar")]
-	if not pane and not labelled and not (labels and copied_diff(win)) then
+	if not pane and not labelled and not (labels and copied_diff(win, buf)) then
 		return false
 	end
 	util.diff_off(win)
