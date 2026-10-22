@@ -279,20 +279,23 @@ return function(ctx)
 		end,
 	}
 	cases[#cases + 1] = {
-		"test_core_compare_worktree_marker_reset_keeps_user_highlights",
+		"test_core_compare_worktree_marker_reset_keeps_user_options",
 		function()
 			local f = h.make_git_fixture()
 			vim.cmd.edit(vim.fn.fnameescape(f.file))
 			local win = api.nvim_get_current_win()
 			util.set_win_option(win, "winhighlight", "Normal:NormalFloat")
+			util.set_win_option(win, "foldnestmax", 3)
 			vim.cmd("diffthis")
 			-- As if these options were copied from a Compare pane.
 			require("lazyvcs.compare_worktree").mark_window(win)
-			assert(tostring(util.get_win_option(win, "winhighlight")):find("LazyVcsComparePane", 1, true))
+			assert(require("lazyvcs.compare_marker").marked(win))
 			vim.cmd.edit()
 			assert(not vim.wo[win].diff and not vim.wo[win].scrollbind, "copied pane options survived")
 			local value = util.get_win_option(win, "winhighlight")
 			assert(value == "Normal:NormalFloat", "marker cleanup changed user highlights: " .. vim.inspect(value))
+			local depth = util.get_win_option(win, "foldnestmax")
+			assert(depth == 3, "marker cleanup changed the fold depth: " .. vim.inspect(depth))
 		end,
 	}
 	-- Same-buffer windows copy a pane's options without BufWinEnter.
@@ -323,8 +326,7 @@ return function(ctx)
 				api.nvim_set_current_win(s.rightwin)
 				local win = create()
 				assert(api.nvim_win_get_buf(win) == buf)
-				local highlights = tostring(util.get_win_option(win, "winhighlight"))
-				assert(not highlights:find("LazyVcsComparePane", 1, true), "new window kept the pane marker")
+				assert(not require("lazyvcs.compare_marker").marked(win), "new window kept the pane marker")
 				assert_plain(win, name)
 				assert(vim.wo[s.rightwin].diff and vim.wo[s.rightwin].scrollbind, "the Compare pane lost its diff")
 				if api.nvim_win_is_valid(win) then
