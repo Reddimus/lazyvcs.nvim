@@ -149,5 +149,30 @@ return function(ctx)
 			end,
 		}
 	end
+	for _, timing in ipairs({ "immediate", "loading" }) do
+		cases[#cases + 1] = {
+			"test_live_diff_same_file_return_" .. timing .. "_restores_hunk_maps",
+			function()
+				setup()
+				local f = h.make_git_transfer_fixture()
+				local s = open_live(f.file1)
+				local buf, win = s.editable_bufnr, s.editable_win
+				local function mapped(lhs)
+					return vim.fn.maparg(lhs, "n", false, true).buffer == 1
+				end
+				assert(mapped("]v") and mapped("[v") and mapped("<leader>vr"), "active maps missing")
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+				interrupt(win, timing)
+				vim.cmd.edit(vim.fn.fnameescape(f.file1))
+				ctx.wait_for(function()
+					return s.phase == "active" and not state.peek_pending_transfer(win)
+				end, "same-file return did not settle", 3000)
+				settle()
+				assert(state.for_window(win) == s and api.nvim_get_current_buf() == buf)
+				assert(mapped("]v") and mapped("[v") and mapped("<leader>vr"), "returned view lost its hunk maps")
+				actions.close(s)
+			end,
+		}
+	end
 	return cases
 end
