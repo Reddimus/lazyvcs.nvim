@@ -84,6 +84,7 @@ local function bind(s, buf)
 	require("lazyvcs.window_controls").sync()
 end
 local function preview_options(s, win)
+	worktree.mark_window(win)
 	if s.mode == "text" then
 		highlighting.apply(win, require("lazyvcs.config").get().diff_highlighting)
 	else

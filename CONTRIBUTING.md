@@ -222,12 +222,16 @@ the GitHub release.
   through text loading. Property markers reflect SVN summary flags; replacement
   rows load properties independently of those markers. Metadata-only results
   never enter the text cache or hunk computation.
-- `compare_worktree.lua` borrows real buffers for the editable pane.
-  `window_records.lua` models Neovim's per-buffer window option records from
-  plugin load, so Compare resets pane options copied into an editor window and
-  leaves a window's own record, diff mode included, alone. Its spec compares the
-  model with the options Neovim copies; update both when Neovim changes
-  `get_winopts()`.
+- `compare_worktree.lua` borrows real buffers for the editable pane. Compare
+  panes add a `LazyVcsComparePane:LazyVcsComparePane` entry to 'winhighlight'.
+  Neovim copies it with the pane's other window options on every path that
+  copies them, including floats, minimal windows, other tabs, and closed
+  windows. On BufWinEnter, an ordinary window carrying the marker drops diff
+  mode, bindings, diff folds, a Compare winbar label, and the marker, keeping
+  its other 'winhighlight' entries. Panes remove the marker before releasing a
+  buffer. Do not infer copies from Neovim's option-record rules; they differ
+  between 0.11 and 0.12. A plugin that replaces 'winhighlight' wholesale before
+  BufWinEnter reaches Compare also removes the marker.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_buffers.lua` owns snapshot identity, reload guards, and bounded

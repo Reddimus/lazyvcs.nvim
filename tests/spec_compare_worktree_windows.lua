@@ -146,56 +146,64 @@ return function(ctx)
 		end,
 	}
 	-- Run in a fresh editor so the plugin's BufWinEnter handler precedes LazyVCS.
-	for _, variant in ipairs({ { "side" }, { "right" }, { "side", "peer" } }) do
-		local from, peer = variant[1], variant[2]
+	local function plugin_fixture(from, scenario)
+		local repo = vim.fs.normalize(
+			vim.fn.fnamemodify(assert(vim.api.nvim_get_runtime_file("lua/lazyvcs/compat.lua", false)[1]), ":p:h:h:h")
+		)
+		local output = vim.fs.normalize(vim.fn.tempname())
+		local result = vim.system({
+			vim.v.progpath,
+			"--headless",
+			"-u",
+			"NONE",
+			"-i",
+			"NONE",
+			"-l",
+			repo .. "/tests/fixtures/compare_winbar_plugin.lua",
+			repo,
+			output,
+			from,
+			scenario,
+		}, { text = true }):wait(60000)
+		assert(result.code == 0, "nested editor failed: " .. tostring(result.stderr))
+		local values = vim.json.decode(table.concat(vim.fn.readfile(output), "\n"))
+		vim.fn.delete(output)
+		assert(not values.error, values.error)
+		assert(values.pane.diff and values.pane.scrollbind, "the Compare pane lost its diff")
+		return values
+	end
+	local function assert_copied_clean(v, step)
+		assert(
+			not v.diff and not v.scrollbind and not v.cursorbind and v.foldmethod ~= "diff" and v.foldcolumn == "0",
+			step .. " inherited Compare pane options: " .. vim.inspect(v)
+		)
+		assert(v.winbar == "%f", step .. " lost the plugin winbar: " .. vim.inspect(v.winbar))
+	end
+	for _, variant in ipairs({ { "side", "edit" }, { "right", "edit" }, { "side", "peer" } }) do
+		local from, scenario = variant[1], variant[2]
 		cases[#cases + 1] = {
 			"test_core_compare_worktree_edit_from_"
 				.. from
-				.. (peer and "_beside_user_diff" or "")
+				.. (scenario == "peer" and "_beside_user_diff" or "")
 				.. "_survives_winbar_plugins",
 			function()
-				local repo = vim.fs.normalize(
-					vim.fn.fnamemodify(
-						assert(vim.api.nvim_get_runtime_file("lua/lazyvcs/compat.lua", false)[1]),
-						":p:h:h:h"
-					)
-				)
-				local output = vim.fs.normalize(vim.fn.tempname())
-				local result = vim.system({
-					vim.v.progpath,
-					"--headless",
-					"-u",
-					"NONE",
-					"-i",
-					"NONE",
-					"-l",
-					repo .. "/tests/fixtures/compare_winbar_plugin.lua",
-					repo,
-					output,
-					from,
-					peer or "",
-				}, { text = true }):wait(60000)
-				assert(result.code == 0, "nested editor failed: " .. tostring(result.stderr))
-				local values = vim.json.decode(table.concat(vim.fn.readfile(output), "\n"))
-				vim.fn.delete(output)
-				assert(not values.error, values.error)
+				local values = plugin_fixture(from, scenario)
 				assert(values.edit.origin, "edit did not use the editor")
-				assert(values.pane.diff and values.pane.scrollbind, "edit changed the Compare pane")
 				for _, step in ipairs({ "edit", "closed", "split" }) do
-					local v = values[step]
-					assert(
-						not v.diff
-							and not v.scrollbind
-							and not v.cursorbind
-							and v.foldmethod ~= "diff"
-							and v.foldcolumn == "0",
-						step .. " inherited Compare pane options: " .. vim.inspect(v)
-					)
-					assert(v.winbar == "%f", step .. " lost the plugin winbar: " .. vim.inspect(v.winbar))
+					assert_copied_clean(values[step], step)
 				end
-				if peer then
+				if scenario == "peer" then
 					assert(vim.deep_equal(values.peers, { true, true }), "edit changed the user's diff pair")
 				end
+			end,
+		}
+	end
+	-- Floats copy the pane's options too, minimal floats included on Neovim 0.11.
+	for _, scenario in ipairs({ "float", "minimal" }) do
+		cases[#cases + 1] = {
+			"test_core_compare_worktree_" .. scenario .. "_float_copy_survives_winbar_plugins",
+			function()
+				assert_copied_clean(plugin_fixture("right", scenario).target, "new window")
 			end,
 		}
 	end
@@ -245,6 +253,46 @@ return function(ctx)
 			compare.close(s)
 			assert(vim.wo[origin].diff, "closing Compare turned off the user's diff")
 			vim.cmd("diffoff")
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_core_compare_worktree_reloading_keeps_user_diff",
+		function()
+			require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false }, blame = { persist = false } })
+			local f = h.make_git_fixture()
+			h.write_file(f.root .. "/z.txt", "later\n")
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local origin, buf = api.nvim_get_current_win(), api.nvim_get_current_buf()
+			local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			ready(s)
+			assert(s.right == buf, "Compare did not show the editor's buffer")
+			-- The pane leaves the buffer and returns; the editor never switches.
+			navigate(s, "next", "z.txt")
+			navigate(s, "prev", "sample.txt")
+			api.nvim_set_current_win(origin)
+			vim.cmd("diffthis")
+			vim.cmd.edit()
+			assert(vim.wo[origin].diff, "reloading the buffer turned off the user's diff")
+			assert(vim.wo[origin].scrollbind, "reloading the buffer cleared the user's diff binding")
+			compare.close(s)
+			vim.cmd("diffoff")
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_core_compare_worktree_marker_reset_keeps_user_highlights",
+		function()
+			local f = h.make_git_fixture()
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local win = api.nvim_get_current_win()
+			util.set_win_option(win, "winhighlight", "Normal:NormalFloat")
+			vim.cmd("diffthis")
+			-- As if these options were copied from a Compare pane.
+			require("lazyvcs.compare_worktree").mark_window(win)
+			assert(tostring(util.get_win_option(win, "winhighlight")):find("LazyVcsComparePane", 1, true))
+			vim.cmd.edit()
+			assert(not vim.wo[win].diff and not vim.wo[win].scrollbind, "copied pane options survived")
+			local value = util.get_win_option(win, "winhighlight")
+			assert(value == "Normal:NormalFloat", "marker cleanup changed user highlights: " .. vim.inspect(value))
 		end,
 	}
 	return cases

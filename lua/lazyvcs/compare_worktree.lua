@@ -2,12 +2,37 @@
 -- be discarded only until the user modifies, lists, or displays it elsewhere.
 local text = require("lazyvcs.compare_text")
 local util = require("lazyvcs.util")
-local window_records = require("lazyvcs.window_records")
 local M = {}
 local records = {}
 local attachments = {}
 local pane_labels = {}
 local installed = false
+-- Compare panes carry this 'winhighlight' entry, a group mapped to itself with
+-- no visible effect. Neovim copies it with the pane's other window options
+-- (diff, bindings, folds, winbar), so a window that inherits pane options also
+-- inherits the marker, whatever path copied them. A window's own options,
+-- including a deliberate :diffthis, never carry it. A plugin that replaces
+-- 'winhighlight' wholesale before BufWinEnter reaches Compare removes it.
+local marker = "LazyVcsComparePane:LazyVcsComparePane"
+
+local function highlight_entries(win)
+	local entries = {}
+	for entry in tostring(util.get_win_option(win, "winhighlight")):gmatch("[^,]+") do
+		entries[#entries + 1] = entry
+	end
+	return entries
+end
+
+local function marked(win)
+	return vim.tbl_contains(highlight_entries(win), marker)
+end
+
+local function unmark(win)
+	local kept = vim.tbl_filter(function(entry)
+		return entry ~= marker
+	end, highlight_entries(win))
+	util.set_win_option(win, "winhighlight", table.concat(kept, ","))
+end
 
 -- :diffoff restores the options saved before diff mode, such as an ftplugin
 -- fold method.
@@ -198,24 +223,20 @@ local function setup()
 		end),
 	})
 	-- A window without its own option record for a buffer copies another
-	-- window's options for it. Remove Compare pane state copied into ordinary
-	-- windows; a window's own record, diff mode included, stays as it is.
-	window_records.setup()
-	window_records.add_marker(function(win, buf)
-		local labels = pane_labels[buf]
-		return labels ~= nil and labels[util.get_win_option(win, "winbar")] == true
-	end)
-	window_records.on_enter(function(win, buf, source)
-		local labels = pane_labels[buf]
-		if not labels or vim.w[win].lazyvcs_compare or source == "own" then
-			return
-		end
-		-- A statusline plugin may already have replaced a copied label.
-		local labelled = labels[util.get_win_option(win, "winbar")]
-		if source == "pane" or labelled then
-			reset(win, labelled)
-		end
-	end)
+	-- window's options for it. Remove Compare pane state that an ordinary window
+	-- copied; the marker travels with it.
+	vim.api.nvim_create_autocmd("BufWinEnter", {
+		group = group,
+		callback = util.safe_callback(function(args)
+			local win = vim.api.nvim_get_current_win()
+			if not vim.w[win].lazyvcs_compare and marked(win) then
+				local labels = pane_labels[args.buf]
+				-- Keep a winbar that a statusline plugin set after the copy.
+				reset(win, labels and labels[util.get_win_option(win, "winbar")])
+				unmark(win)
+			end
+		end),
+	})
 	vim.api.nvim_create_autocmd("BufWipeout", {
 		group = group,
 		callback = util.safe_callback(function(args)
@@ -332,10 +353,21 @@ function M.mark_pane(buf, winbar)
 	pane_labels[buf] = labels
 end
 
+---Mark a Compare pane's window options before Compare applies pane state.
+function M.mark_window(win)
+	setup()
+	if not marked(win) then
+		local entries = highlight_entries(win)
+		entries[#entries + 1] = marker
+		util.set_win_option(win, "winhighlight", table.concat(entries, ","))
+	end
+end
+
 ---Reset a Compare pane before it releases a real buffer, so the option record
 ---Neovim saves for that buffer holds no Compare state.
 function M.reset_pane(win)
 	reset(win, true)
+	unmark(win)
 end
 
 function M.capture(record)
