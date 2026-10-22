@@ -26,7 +26,60 @@ return function()
 			init = index
 		end
 	end
+	-- List the key paths where two option tables differ.
+	local function drift(a, b, prefix, out)
+		out = out or {}
+		if type(a) ~= "table" or type(b) ~= "table" or vim.islist(a) or vim.islist(b) then
+			if not vim.deep_equal(a, b) then
+				out[#out + 1] = string.format("%s: doc %s, config %s", prefix, vim.inspect(a), vim.inspect(b))
+			end
+			return out
+		end
+		local keys = vim.tbl_keys(vim.tbl_extend("force", {}, a, b))
+		table.sort(keys)
+		for _, key in ipairs(keys) do
+			drift(a[key], b[key], prefix == "" and key or prefix .. "." .. key, out)
+		end
+		return out
+	end
 	return {
+		{
+			"test_core_documented_defaults_match_config",
+			function()
+				local doc = read("doc/lazyvcs.txt")
+				local tag = assert(doc:find("*lazyvcs-defaults*", 1, true), "doc has no *lazyvcs-defaults* block")
+				local _, open = assert(doc:find("\n>lua\n", tag, true))
+				local close = assert(doc:find("\n<\n", open, true))
+				local block = doc:sub(open + 1, close)
+				local chunk, count = block:gsub('require%("lazyvcs"%)%.setup%(', "return (", 1)
+				assert(count == 1, 'defaults block must be a require("lazyvcs").setup({ ... }) call')
+				local documented = assert(load(chunk, "=lazyvcs-defaults"))()
+				-- A fresh module instance holds the untouched defaults.
+				local defaults = assert(loadfile(root .. "/lua/lazyvcs/config.lua"))().get()
+				local differences = drift(documented, defaults, "")
+				assert(#differences == 0, "doc defaults drifted:\n" .. table.concat(differences, "\n"))
+			end,
+		},
+		{
+			"test_core_readme_and_help_install_specs_match",
+			function()
+				local readme, doc = read("README.md"), read("doc/lazyvcs.txt")
+				local _, intro = readme:find("With lazy.nvim:\n\n```lua\n", 1, true)
+				assert(intro, "README install spec not found")
+				local readme_spec = readme:sub(intro + 1, assert(readme:find("\n```", intro, true)))
+				local _, start = doc:find("Minimal lazy.nvim or AstroNvim spec", 1, true)
+				assert(start, "help install spec not found")
+				local _, open = assert(doc:find("\n>lua\n", start, true))
+				local doc_spec = doc:sub(open + 1, assert(doc:find("\n<\n", open, true)))
+				local function evaluate(text, name)
+					return assert(load("return " .. text, "=" .. name))()
+				end
+				assert(
+					vim.deep_equal(evaluate(readme_spec, "README"), evaluate(doc_spec, "lazyvcs.txt")),
+					"README.md and doc/lazyvcs.txt install specs differ"
+				)
+			end,
+		},
 		{
 			"test_core_buffer_mappings_use_compat_helper",
 			function()
