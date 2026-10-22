@@ -2,6 +2,7 @@ local loader = require("lazyvcs.backends.blame_selection")
 local util = require("lazyvcs.util")
 local config = require("lazyvcs.config")
 local context = require("lazyvcs.blame_context")
+local compat = require("lazyvcs.compat")
 local M = {}
 local requests = {}
 local ns = vim.api.nvim_create_namespace("lazyvcs_blame_selection")
@@ -170,7 +171,7 @@ function M.open(first, last)
 		"Blame " .. display(path):gsub("%%", "%%%%") .. " | " .. first .. "-" .. last
 	)
 	for _, key in ipairs({ "q", "<Esc>" }) do
-		vim.keymap.set("n", key, function()
+		compat.keymap_set("n", key, function()
 			close(request)
 		end, { buffer = request.buf, silent = true, desc = "Close selection blame" })
 	end

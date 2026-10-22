@@ -110,7 +110,7 @@ function M.show_text(title, lines)
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
 	vim.bo[buf].modifiable, vim.bo[buf].readonly = false, true
 	M.set_win_option(win, "winbar", title:gsub("%%", "%%%%"))
-	vim.keymap.set("n", "q", "<Cmd>close<CR>", { buffer = buf, silent = true })
+	require("lazyvcs.compat").keymap_set("n", "q", "<Cmd>close<CR>", { buffer = buf, silent = true })
 	return buf
 end
 
