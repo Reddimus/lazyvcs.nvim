@@ -107,6 +107,16 @@ local function changed(record)
 	end
 end
 
+-- Take the change baseline once an in-place reread has finished.
+local function reread(record)
+	if record and record.rereading then
+		record.rereading = nil
+		if record.tick and not vim.api.nvim_get_option_value("modified", { buf = record.buf }) then
+			record.tick = vim.api.nvim_buf_get_changedtick(record.buf)
+		end
+	end
+end
+
 local function attach(record)
 	local buf = record.buf
 	if attachments[buf] then
@@ -124,6 +134,9 @@ local function attach(record)
 					changed(current)
 				end
 			end))
+		end,
+		on_reload = function(_, changed_buf)
+			reread(records[changed_buf])
 		end,
 		on_detach = function(_, changed_buf)
 			attachments[changed_buf] = nil
@@ -147,11 +160,12 @@ local function settle(record)
 		record.unloading = nil
 		if same then
 			record.deleted = nil
-			-- Rereading the file is not an edit; later changes are.
-			if (reloaded or record.rereading) and record.tick and not vim.bo[record.buf].modified then
-				record.tick = vim.api.nvim_buf_get_changedtick(record.buf)
+			-- Rereading the file is not an edit; later changes are. Without a
+			-- synchronous reload tick, count the reread as an edit.
+			if reloaded and record.tick and record.reload_tick and not vim.bo[record.buf].modified then
+				record.tick = record.reload_tick
 			end
-			record.rereading = nil
+			record.rereading, record.reload_tick = nil, nil
 			adopt(record)
 			attach(record)
 		else
@@ -244,13 +258,32 @@ local function setup()
 		end),
 	})
 	-- :checktime and autoread reread a file in place without unloading it. The
-	-- change tick moves after BufReadPost, so settle() takes the new baseline.
+	-- change tick moves after BufReadPost but before on_reload and
+	-- FileChangedShellPost, which run before any later command. Take the new
+	-- baseline there, so an edit that follows in the same macro still counts.
 	vim.api.nvim_create_autocmd("BufReadPre", {
 		group = group,
 		callback = util.safe_callback(function(args)
 			local record = records[args.buf]
 			if record and not record.loading and not record.unloading and not record.releasing then
 				record.rereading = true
+			end
+		end),
+	})
+	vim.api.nvim_create_autocmd("FileChangedShellPost", {
+		group = group,
+		callback = util.safe_callback(function(args)
+			reread(records[args.buf])
+		end),
+	})
+	-- :edit unloads and reads the file again; BufEnter follows with the final
+	-- change tick before any later command.
+	vim.api.nvim_create_autocmd("BufEnter", {
+		group = group,
+		callback = util.safe_callback(function(args)
+			local record = records[args.buf]
+			if record and record.unloading and vim.api.nvim_buf_is_loaded(args.buf) then
+				record.reload_tick = vim.api.nvim_buf_get_changedtick(args.buf)
 			end
 		end),
 	})
