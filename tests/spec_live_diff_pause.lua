@@ -92,5 +92,62 @@ return function(ctx)
 			actions.close()
 		end,
 	}
+	local function open_live(path)
+		vim.cmd.edit(vim.fn.fnameescape(path))
+		local buf = api.nvim_get_current_buf()
+		actions.open()
+		ctx.wait_for(function()
+			local s = state.get(buf)
+			return s and s.phase == "active"
+		end, "live diff did not open", 15000)
+		return assert(state.get(buf))
+	end
+	local function setup()
+		require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false }, blame = { persist = false } })
+	end
+	local function settle()
+		vim.wait(300, function()
+			return false
+		end)
+	end
+	-- Return immediately, or while the replacement base is still loading.
+	local function interrupt(win, timing)
+		if timing == "loading" then
+			assert(vim.wait(1000, function()
+				local p = state.peek_pending_transfer(win)
+				return p and p.phase == "loading"
+			end, 1))
+		end
+	end
+	for _, timing in ipairs({ "immediate", "loading" }) do
+		cases[#cases + 1] = {
+			"test_live_diff_paused_return_" .. timing .. "_restores_pause",
+			function()
+				setup()
+				local f = h.make_git_transfer_fixture()
+				local outside = h.tempdir() .. "/outside.txt"
+				h.write_file(outside, "outside\n")
+				local win = open_live(f.file1).editable_win
+				vim.cmd.edit(vim.fn.fnameescape(outside))
+				ctx.wait_for(function()
+					local s = state.for_window(win)
+					return s and s.paused
+				end, "outside file did not pause", 15000)
+				local paused = state.for_window(win)
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+				interrupt(win, timing)
+				vim.cmd.edit(vim.fn.fnameescape(outside))
+				ctx.wait_for(function()
+					return paused.phase == "paused" and not state.peek_pending_transfer(win)
+				end, "paused view stayed in phase " .. tostring(paused.phase), 3000)
+				settle()
+				assert(state.for_window(win) == paused and paused.paused and paused.phase == "paused")
+				local lines = api.nvim_buf_get_lines(paused.base_bufnr, 0, -1, false)
+				assert(lines[1] == "Diff paused", vim.inspect(lines))
+				assert(not state.peek_pending_transfer(win), "pending transfer was not cleared")
+				actions.close(paused)
+			end,
+		}
+	end
 	return cases
 end

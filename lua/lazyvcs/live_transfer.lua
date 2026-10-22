@@ -124,6 +124,21 @@ function M.new(lifecycle)
 		end
 		local p = state.peek_pending_transfer(s.editable_win)
 		if s.paused and target == s.editable_bufnr and util.buf_path(target) == s.source_path and not s.pause_retry then
+			-- Returning before the next file loads cancels that transfer.
+			if p then
+				local view, detached = p.view, p.detached
+				state.clear_pending_transfer(s.editable_win)
+				s.phase = "paused"
+				if detached then
+					layout.present(s, s.base_lines, "")
+					if view then
+						vim.api.nvim_win_call(s.editable_win, function()
+							vim.fn.winrestview(view)
+						end)
+					end
+				end
+				require("lazyvcs.window_controls").sync()
+			end
 			return
 		end
 		s.pause_retry = nil
