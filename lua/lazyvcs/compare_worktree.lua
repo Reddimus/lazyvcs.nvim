@@ -16,8 +16,11 @@ local function adopt(record)
 	if not valid(record) or record.loading then
 		return
 	end
-	if vim.bo[record.buf].modified then
-		record.retained = true
+	-- A batched edit can save or undo before change autocmds observe 'modified'.
+	-- Any change since loading belongs to the user, including its undo history.
+	if vim.bo[record.buf].modified or (record.tick and vim.api.nvim_buf_get_changedtick(record.buf) ~= record.tick) then
+		-- List the buffer once for that change; the user may unlist it later.
+		record.retained, record.tick = true, nil
 		vim.bo[record.buf].buflisted = true
 	end
 	if vim.bo[record.buf].buflisted then
@@ -100,6 +103,10 @@ local function settle(record)
 		record.unloading = nil
 		if same then
 			record.deleted = nil
+			-- Rereading the file is not an edit; later changes are.
+			if reloaded and record.tick and not vim.bo[record.buf].modified then
+				record.tick = vim.api.nvim_buf_get_changedtick(record.buf)
+			end
 			adopt(record)
 			attach(record)
 		else
@@ -158,6 +165,9 @@ local function setup()
 		callback = util.safe_callback(function(args)
 			local record = records[args.buf]
 			if record then
+				-- Saving is editing, even when the same command made the change.
+				record.retained = true
+				vim.bo[record.buf].buflisted = true
 				adopt(record)
 				for owner, callback in pairs(record.owners) do
 					if not owner.closed and owner.worktree == record then
@@ -250,6 +260,9 @@ function M.acquire(s, item, result, callback)
 	if not ok then
 		M.release(s, record)
 		return nil, tostring(err)
+	end
+	if not record.retained and not record.tick then
+		record.tick = vim.api.nvim_buf_get_changedtick(buf)
 	end
 	local current = text.capture(buf, 1024 * 1024)
 	local loaded_stat = vim.uv.fs_lstat(path)

@@ -111,6 +111,45 @@ return function(ctx)
 			end,
 		}
 	end
+	-- Batched commands finish before change autocmds run, so the buffer can
+	-- already look clean when Compare releases it.
+	for name, keys in pairs({ write = ":%s/first/subst/ | write<CR>", undo = "ccreplaced<Esc>u" }) do
+		cases[#cases + 1] = {
+			"test_core_compare_worktree_batched_" .. name .. "_keeps_private_buffer",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = h.make_git_fixture()
+				h.write_file(f.root .. "/a.txt", "first\n")
+				h.write_file(f.root .. "/b.txt", "second\n")
+				vim.cmd.edit(f.file)
+				local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+				ready(s)
+				local buf = s.right
+				assert(s.shown_item.relpath == "a.txt" and not vim.bo[buf].buflisted)
+				api.nvim_set_current_win(s.rightwin)
+				api.nvim_feedkeys(api.nvim_replace_termcodes(keys, true, false, true), "xt", false)
+				assert(not vim.bo[buf].modified)
+				local undo = vim.fn.undotree(buf).seq_last
+				assert(undo > 0)
+				vim.wait(50)
+				assert(vim.bo[buf].buflisted, "edited private buffer stayed unlisted")
+				-- Listing follows the edit once; an explicit unlist stays.
+				vim.bo[buf].buflisted = false
+				vim.wait(50)
+				assert(not vim.bo[buf].buflisted, "Compare listed the buffer again")
+				compare.navigate_file("next", 1)
+				ctx.wait_for(function()
+					return s.shown_item.relpath == "b.txt" and s.worktree ~= nil
+				end, "next file", 15000)
+				assert(api.nvim_buf_is_valid(buf), "edited private buffer was deleted")
+				assert(vim.fn.undotree(buf).seq_last == undo, "edited private buffer lost undo history")
+				local disk = vim.fn.readfile(f.root .. "/a.txt")[1]
+				assert(disk == (name == "write" and "subst" or "first"), disk)
+				compare.close(s)
+				assert(api.nvim_buf_is_valid(buf), "closing Compare deleted the edited buffer")
+			end,
+		}
+	end
 	cases[#cases + 1] = {
 		"test_core_compare_worktree_snapshot_opt_out",
 		function()
