@@ -215,13 +215,16 @@ private buffers stay unlisted; editing adds them to the ordinary buffer list.
 Compare keeps borrowed buffers loaded while in use and restores their prior
 'bufhidden' setting on release. Neovim copies a pane's window options into a
 window split or opened from it, and into a window that opens the same buffer
-without its own options for it. Compare marks its panes by adding 100 to
-'foldnestmax', which has no effect because folds nest at most 20 levels. A
-window with the mark is a copy, and Compare removes diff mode, bindings, diff
-folds, its winbar label, and the mark. Marks restored by a session saved during
-Compare are removed when the session loads. A plugin that sets 'foldnestmax'
-before Compare sees the new window can hide the copy. Reloading keeps the real
-buffer; deleting it shows a fresh saved snapshot until you select it again.
+without its own options for it. Compare marks its panes by appending four
+control characters (ASCII FS, GS, RS, US) to 'foldignore', which only indent
+folding reads and which no text line starts with. A window with the mark is a
+copy, and Compare removes diff mode, bindings, diff folds, its winbar label,
+and the mark. Setting 'foldignore' in a pane keeps the new value and the mark.
+Marks restored by a session or view outside a live pane are removed. A plugin
+that sets 'foldignore' before Compare sees the new window can hide the copy.
+Closing Compare leaves other windows in its tab, and their folds, untouched.
+Reloading keeps the real buffer; deleting it shows a fresh saved snapshot until
+you select it again.
 Positions last for this session, survive refreshes for the same pinned base,
 and reset when the base revision or SVN URL changes. Removed paths are forgotten.
 Moving the list cursor and background refreshes preserve focus. Unavailable

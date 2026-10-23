@@ -223,26 +223,33 @@ the GitHub release.
   rows load properties independently of those markers. Metadata-only results
   never enter the text cache or hunk computation.
 - `compare_worktree.lua` borrows real buffers for the editable pane.
-  `compare_marker.lua` marks pane windows by adding 100 to 'foldnestmax'. Fold
-  nesting stops at 20, so the mark has no effect, and removing it restores the
-  window's value. Neovim copies it with the pane's other window options on every
-  path that copies them, including floats, minimal windows, other tabs, and
-  closed windows. Do not carry the mark in 'winhighlight': any value moves the
-  window to an anonymous highlight namespace and drops a global
-  `nvim_set_hl_ns()` theme, and clearing it does not restore the namespace. On
-  WinNew and BufWinEnter, an ordinary window carrying the mark drops diff mode,
-  bindings, Compare's diff folds, a Compare winbar label, and the mark. WinNew
-  covers `:split`, `:tab split`, and `nvim_open_win()` on the pane's buffer,
-  which copy options without BufWinEnter; the new window is current during
-  WinNew, even for unfocused floats. Under `foldmethod=manual`, `:diffoff`
-  leaves the diff folds as disabled manual folds, so the reset deletes them.
-  Panes reset before releasing a buffer, and write their winbar label only while
-  they show their own buffer, never on a picker preview. A session restores
-  marks after those events, so SessionLoadPost and plugin load remove marks from
-  windows no live Compare owns. Do not infer copies from Neovim's option-record
-  rules; they differ between 0.11 and 0.12. A plugin that sets 'foldnestmax'
-  before those events reach Compare, or a window created with `:noautocmd`,
-  hides the copy.
+  `compare_marker.lua` marks pane windows by appending four ASCII separator
+  characters (FS, GS, RS, US) to 'foldignore'. Neovim copies it with the pane's
+  other window options on every path that copies them, including floats, minimal
+  windows, other tabs, closed windows, sessions, and views. Only indent folding
+  in the same window reads 'foldignore', and no text line starts with those
+  characters, so the mark changes nothing in any window or fold method; removing
+  it restores the exact value. Other carriers failed: Tree-sitter folding reads
+  'foldnestmax' through a cache shared by every window on the buffer, any
+  'winhighlight' value moves the window to an anonymous highlight namespace and
+  drops a global `nvim_set_hl_ns()` theme, and a numeric threshold cannot tell a
+  user value from a mark. An OptionSet handler marks a live pane again after
+  `:setlocal`, `:set`, or a modeline replaces the value, keeping the requested
+  value, and removes marks set by a session, a view, or the user in any other
+  window. On WinNew and BufWinEnter, an ordinary window carrying the mark drops
+  diff mode, bindings, Compare's diff folds, a Compare winbar label, and the
+  mark. WinNew covers `:split`, `:tab split`, and `nvim_open_win()` on the
+  pane's buffer, which copy options without BufWinEnter; the new window is
+  current during WinNew, even for unfocused floats. Under `foldmethod=manual`,
+  `:diffoff` leaves the diff folds as disabled manual folds, so the reset
+  deletes them. Panes reset before releasing a buffer, and write their winbar
+  label only while they show their own buffer, never on a picker preview.
+  Closing Compare resets only the panes and marked copies; other windows in its
+  tab keep their options and folds. SessionLoadPost and plugin load remove marks
+  from windows no live Compare pane owns. Do not infer copies from Neovim's
+  option-record rules; they differ between 0.11 and 0.12. A plugin that sets
+  'foldignore' before those events reach Compare, or a window created with
+  `:noautocmd`, hides the copy.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_buffers.lua` owns snapshot identity, reload guards, and bounded

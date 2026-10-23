@@ -17,7 +17,9 @@ and this project adheres to
   `<leader>ve`, picker selections and previews, splits, floats, and closing
   Compare. A window's own diff stays on, including after `:edit` and after
   restoring a session saved during Compare, and statusline plugins that replace
-  the winbar no longer hide the copied options.
+  the winbar no longer hide the copied options. Folds in other windows on the
+  same buffer, including Tree-sitter folds, and windows Compare does not own
+  keep their state.
 - Keep a Compare buffer and its undo history when one command edits and saves
   it, such as `:%s/old/new/ | write`, or a macro edits and undoes it. Writing a
   copy with `:write {file}`, `:bdelete`, and a reread from another tab leave an
@@ -33,8 +35,8 @@ and this project adheres to
 - Keep diff mode in another live diff when a paused view sharing its buffer
   resumes on a supported file.
 - Restore `]v`, `[v`, and hunk revert when a live diff returns to its file
-  before a pending transfer finishes, and keep them in a live diff whose buffer
-  a paused view also shows in the same tab.
+  before a pending transfer finishes, and keep them in a live diff and its
+  splits when a paused view shows the same buffer in that tab.
 
 ### Changed
 
