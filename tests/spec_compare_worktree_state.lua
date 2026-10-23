@@ -338,6 +338,78 @@ return function(ctx)
 			assert(ok, err)
 		end,
 	}
+	-- A picker previewing in the sidebar window gets none of the sidebar's labels.
+	cases[#cases + 1] = {
+		"test_core_compare_sidebar_preview_keeps_sidebar_labels_off",
+		function()
+			local f, s = private_fixture()
+			h.write_file(f.root .. "/c.txt", "picked\n")
+			local picked = vim.fn.bufadd(f.root .. "/c.txt")
+			vim.fn.bufload(picked)
+			vim.bo[picked].buflisted = true
+			-- The picker's input keeps focus while it previews in the sidebar window.
+			local input = api.nvim_open_win(
+				api.nvim_create_buf(false, true),
+				true,
+				{ relative = "editor", row = 1, col = 1, width = 20, height = 1 }
+			)
+			api.nvim_win_set_buf(s.sidewin, picked)
+			local function clean(win, context)
+				local winbar = tostring(util.get_win_option(win, "winbar"))
+				local statusline = tostring(util.get_win_option(win, "statusline"))
+				assert(
+					not winbar:find("LazyVcsComparePath", 1, true) and not statusline:find("? help", 1, true),
+					context .. " shows the sidebar's labels: " .. vim.inspect({ winbar, statusline })
+				)
+			end
+			-- A refresh finishes while the preview is open.
+			compare.refresh(s)
+			ctx.wait_for(function()
+				return not s.job
+			end, "the refresh did not finish", 15000)
+			clean(s.sidewin, "the preview")
+			-- The picker closes and puts the sidebar back itself.
+			api.nvim_win_set_buf(s.sidewin, s.sidebar)
+			api.nvim_win_close(input, true)
+			vim.wait(100)
+			assert(
+				tostring(util.get_win_option(s.sidewin, "statusline")):find("? help", 1, true),
+				"the sidebar lost its hints"
+			)
+			vim.cmd("tabnew")
+			vim.cmd.buffer(picked)
+			clean(api.nvim_get_current_win(), "a new window on the previewed file")
+			vim.cmd("tabclose")
+			compare.close(s)
+		end,
+	}
+
+	-- A picker that cancels an unfocused preview gets the latest label back.
+	cases[#cases + 1] = {
+		"test_core_compare_unfocused_preview_cancel_restores_latest_label",
+		function()
+			local f, s = private_fixture()
+			h.write_file(f.root .. "/c.txt", "picked\n")
+			local picked = vim.fn.bufadd(f.root .. "/c.txt")
+			vim.fn.bufload(picked)
+			local buf = s.right
+			api.nvim_set_current_win(s.sidewin)
+			api.nvim_win_set_buf(s.rightwin, picked)
+			-- The working buffer changes while the preview is open.
+			api.nvim_buf_set_lines(buf, 0, -1, false, { "first", "added" })
+			ctx.wait_for(function()
+				return tostring(s.right_label):find("unsaved", 1, true) ~= nil
+			end, "Compare did not see the change", 3000)
+			-- The picker cancels and restores the pane's buffer itself.
+			api.nvim_win_set_buf(s.rightwin, buf)
+			vim.wait(100)
+			local winbar = tostring(util.get_win_option(s.rightwin, "winbar"))
+			assert(winbar:find("WORKTREE (unsaved)", 1, true), "the pane shows a stale label: " .. winbar)
+			vim.bo[buf].modified = false
+			compare.close(s)
+		end,
+	}
+
 	-- A session saved during Compare with the default 'sessionoptions' restores
 	-- the pane's window as an ordinary one.
 	cases[#cases + 1] = {

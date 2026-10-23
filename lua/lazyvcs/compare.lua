@@ -51,8 +51,13 @@ local function cancel(s, field)
 		job:kill()
 	end
 end
+-- A picker may preview another buffer in the sidebar window; its cursor and
+-- view are not the file list's.
+local function sidebar_shown(s)
+	return valid(s.sidewin) and vim.api.nvim_win_get_buf(s.sidewin) == s.sidebar
+end
 local function selected(s)
-	return valid(s.sidewin) and s.rows and s.rows[vim.api.nvim_win_get_cursor(s.sidewin)[1]] or nil
+	return sidebar_shown(s) and s.rows and s.rows[vim.api.nvim_win_get_cursor(s.sidewin)[1]] or nil
 end
 local function capture(win)
 	if valid(win) then
@@ -191,10 +196,10 @@ local function message(s, text)
 	if not alive(s) then
 		return
 	end
-	local item, saved = selected(s), capture(s.sidewin)
+	local item, saved = selected(s), sidebar_shown(s) and capture(s.sidewin)
 	s.message = text
 	view.render(s)
-	if item and s.row_by_path[item.relpath] then
+	if item and s.row_by_path[item.relpath] and sidebar_shown(s) then
 		if saved then
 			saved.lnum = s.row_by_path[item.relpath]
 		end
@@ -337,6 +342,7 @@ local function set_panes(s, next_display)
 			assert(vim.api.nvim_win_get_buf(win) == buf, "Comparison restoration was redirected")
 			if win == s.sidewin then
 				sidebar_options(s)
+				view.labels(s)
 			else
 				preview_options(s, win)
 				set_label(win, win == s.leftwin and s.left_label or s.right_label, buf)
@@ -734,7 +740,7 @@ local function refresh_worktree_list(s, record)
 			added, deleted = added + (item.added or 0), deleted + (item.deleted or 0)
 		end
 		message(s, #items == 0 and "No saved changes" or string.format("%d paths +%d -%d", #items, added, deleted))
-		if chosen and s.row_by_path[chosen.relpath] then
+		if chosen and s.row_by_path[chosen.relpath] and sidebar_shown(s) then
 			vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[chosen.relpath], 0 })
 		end
 		view.marker(s)
@@ -1026,10 +1032,12 @@ function M.refresh(s, context_checked)
 				local index = saved and saved.cursor and s.rows_cache.by_path[saved.cursor]
 				index = index or math.min(#items, saved and saved.index or 1)
 				local item = items[index]
-				vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
-				if saved and saved.side then
-					saved.side.lnum = s.row_by_path[item.relpath]
-					restore(s.sidewin, saved.side)
+				if sidebar_shown(s) then
+					vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
+					if saved and saved.side then
+						saved.side.lnum = s.row_by_path[item.relpath]
+						restore(s.sidewin, saved.side)
+					end
 				end
 				local shown = saved and saved.shown and s.rows_cache.by_path[saved.shown]
 				preview(s, shown and items[shown] or item, "text", saved and saved.views, nil, saved and saved.reviewed)
@@ -1109,7 +1117,9 @@ function M.navigate_file(direction, count)
 	if s.mode == "text" and buffers.resource(vim.api.nvim_get_current_buf()) then
 		vim.cmd("normal! m'")
 	end
-	vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
+	if sidebar_shown(s) then
+		vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
+	end
 	local intent = navigation.intent(s, item, "file")
 	if item == s.shown_item and s.preview_result then
 		if s.preview_result.loaded and not s.preview_result.loaded.text then
@@ -1570,7 +1580,9 @@ local function construct_session(s)
 			return
 		end
 		local item = s.items[index]
-		vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
+		if sidebar_shown(s) then
+			vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
+		end
 		local intent = navigation.intent(s, item, "native")
 		intent.position, intent.side = position, resource.side
 		preview(s, item, "text", nil, intent)
@@ -1655,6 +1667,13 @@ local function construct_session(s)
 				resize(s)
 			end
 			return status
+		end,
+		-- A slot got its own buffer back from a picker without a routing restore.
+		-- Its window record holds the labels from before the picker opened.
+		relabel = function()
+			set_label(s.leftwin, s.left_label, s.left)
+			set_label(s.rightwin, s.right_label, s.right)
+			view.labels(s)
 		end,
 		resume = function()
 			local deferred = s.deferred_display

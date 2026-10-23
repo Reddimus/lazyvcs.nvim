@@ -77,12 +77,31 @@ function M.marker(s)
 	end
 end
 
+-- A picker can preview another buffer in the sidebar window. Neovim would save
+-- the sidebar's winbar and statusline with that buffer's options, so write them
+-- only while the window shows the sidebar.
+local function sidebar_shown(s)
+	return vim.api.nvim_win_is_valid(s.sidewin) and vim.api.nvim_win_get_buf(s.sidewin) == s.sidebar
+end
+
 function M.hints(s)
-	if vim.api.nvim_win_is_valid(s.sidewin) then
+	if sidebar_shown(s) then
 		util.set_win_option(
 			s.sidewin,
 			"statusline",
 			" e " .. (s.auto_width and "restore" or "widen") .. "  ? help  q close"
+		)
+	end
+end
+
+---Write the sidebar's winbar and statusline.
+function M.labels(s)
+	M.hints(s)
+	if sidebar_shown(s) then
+		util.set_win_option(
+			s.sidewin,
+			"winbar",
+			"%#LazyVcsComparePath#%<" .. M.display(s.root or s.path):gsub("%%", "%%%%")
 		)
 	end
 end
@@ -149,12 +168,7 @@ function M.render(s)
 		end
 	end
 	M.marker(s)
-	M.hints(s)
-	util.set_win_option(
-		s.sidewin,
-		"winbar",
-		"%#LazyVcsComparePath#%<" .. M.display(s.root or s.path):gsub("%%", "%%%%")
-	)
+	M.labels(s)
 end
 
 ---@param constraints? { min_width: integer, min_height: integer, height: integer }
