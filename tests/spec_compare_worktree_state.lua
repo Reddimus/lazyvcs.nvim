@@ -198,6 +198,28 @@ return function(ctx)
 		}
 	end
 
+	-- A reread from another tab uses an autocmd window, not a user window.
+	cases[#cases + 1] = {
+		"test_core_compare_worktree_background_reread_keeps_private_buffer_private",
+		function()
+			local f, s = private_fixture()
+			local buf = s.right
+			local autoread = vim.o.autoread
+			vim.o.autoread = true
+			vim.cmd("tabprevious")
+			assert(api.nvim_get_current_tabpage() ~= s.tab)
+			h.write_file(f.root .. "/a.txt", "first\nexternal change\n")
+			vim.cmd("checktime")
+			vim.o.autoread = autoread
+			assert(api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "external change", "checktime did not reread")
+			vim.wait(50)
+			api.nvim_set_current_tabpage(s.tab)
+			navigate(s, "next", "b.txt")
+			assert(not api.nvim_buf_is_valid(buf), "a background reread kept the private buffer")
+			compare.close(s)
+		end,
+	}
+
 	-- A picker preview in the pane never receives the WORKTREE label.
 	cases[#cases + 1] = {
 		"test_core_compare_worktree_picker_preview_keeps_labels_off",

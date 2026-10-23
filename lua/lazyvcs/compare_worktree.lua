@@ -71,7 +71,9 @@ local function adopt(record)
 		record.retained = true
 	end
 	for _, win in ipairs(vim.fn.win_findbuf(record.buf)) do
-		local owned = false
+		-- Neovim borrows an autocmd window to reread a buffer shown in no window
+		-- of the current tab; that is not the user displaying it.
+		local owned = vim.fn.win_gettype(win) == "autocmd"
 		for owner in pairs(record.owners) do
 			owned = owned or (not owner.closed and win == owner.rightwin)
 		end
