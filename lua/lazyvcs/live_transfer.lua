@@ -124,8 +124,9 @@ function M.new(lifecycle)
 		end
 		local p = state.peek_pending_transfer(s.editable_win)
 		if s.paused and target == s.editable_bufnr and util.buf_path(target) == s.source_path and not s.pause_retry then
-			-- Returning before the next file loads cancels that transfer.
-			if p then
+			-- Returning before the next file loads cancels that transfer. A transfer
+			-- that targets the paused file itself is a retry; let it finish.
+			if p and p.target_bufnr ~= target then
 				local view, detached = p.view, p.detached
 				state.clear_pending_transfer(s.editable_win)
 				s.phase = "paused"

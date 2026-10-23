@@ -204,5 +204,70 @@ return function(ctx)
 			actions.close(other)
 		end,
 	}
+	local function lines(count, prefix)
+		local out = {}
+		for index = 1, count do
+			out[index] = prefix .. " " .. index
+		end
+		return table.concat(out, "\n") .. "\n"
+	end
+	local function wait_paused(win)
+		ctx.wait_for(function()
+			local s = state.for_window(win)
+			return s and s.paused
+		end, "the view did not pause", 15000)
+		return state.for_window(win)
+	end
+	-- A retry of the paused file survives window events while its base loads.
+	for _, retry in ipairs({ "refresh", "write", "edit" }) do
+		cases[#cases + 1] = {
+			"test_live_diff_paused_retry_" .. retry .. "_survives_window_events",
+			function()
+				setup()
+				local f = h.make_git_transfer_fixture()
+				local root = h.tempdir()
+				local outside = root .. "/outside.txt"
+				h.write_file(outside, "outside\n")
+				local win = open_live(f.file1).editable_win
+				vim.cmd.edit(vim.fn.fnameescape(outside))
+				wait_paused(win)
+				-- The paused file becomes supported.
+				h.exec({ "git", "init", "-q" }, root)
+				h.exec({ "git", "config", "user.email", "test@example.com" }, root)
+				h.exec({ "git", "config", "user.name", "Test" }, root)
+				h.exec({ "git", "add", "outside.txt" }, root)
+				h.exec({ "git", "commit", "-q", "-m", "outside" }, root)
+				h.write_file(outside, "outside changed\n")
+				api.nvim_set_current_win(win)
+				local float
+				if retry == "refresh" then
+					vim.cmd("LazyVCS diff refresh")
+				elseif retry == "write" then
+					vim.cmd("silent write!")
+				else
+					vim.cmd("edit!")
+				end
+				if retry ~= "edit" then
+					-- A notification float enters a buffer while the base loads.
+					float = api.nvim_open_win(api.nvim_create_buf(false, true), false, {
+						relative = "editor",
+						row = 1,
+						col = 1,
+						width = 10,
+						height = 1,
+					})
+				end
+				ctx.wait_for(function()
+					local s = state.for_window(win)
+					return s and not s.paused and s.phase == "active"
+				end, "the " .. retry .. " retry did not resume the view", 15000)
+				assert(vim.wo[win].diff, "the resumed view is not in diff mode")
+				if float and api.nvim_win_is_valid(float) then
+					api.nvim_win_close(float, true)
+				end
+				actions.close(state.for_window(win))
+			end,
+		}
+	end
 	return cases
 end
