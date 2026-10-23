@@ -345,5 +345,70 @@ return function(ctx)
 			compare.close(s)
 		end,
 	}
+	-- The edit actions reuse a window that already shows the file; its diff is
+	-- the user's or a live diff's, not something the edit brought in.
+	cases[#cases + 1] = {
+		"test_core_compare_edit_keeps_user_diff_in_editor",
+		function()
+			local f = fixture()
+			local peer_file = h.tempdir() .. "/peer.txt"
+			h.write_file(peer_file, lines(20, 5))
+			vim.cmd.edit(vim.fn.fnameescape(f.a))
+			local editor, buf = api.nvim_get_current_win(), api.nvim_get_current_buf()
+			vim.cmd("diffthis")
+			vim.cmd("vsplit " .. vim.fn.fnameescape(peer_file))
+			local peer = api.nvim_get_current_win()
+			vim.cmd("diffthis")
+			api.nvim_set_current_win(editor)
+			local s = open(f)
+			assert(s.right == buf, "Compare did not show the editor's buffer")
+			for _, from in ipairs({ s.rightwin, s.sidewin }) do
+				api.nvim_set_current_tabpage(s.tab)
+				api.nvim_set_current_win(from)
+				s.actions.edit()
+				assert(api.nvim_get_current_win() == editor, "edit did not use the editor")
+				for _, win in ipairs({ editor, peer }) do
+					assert(
+						vim.wo[win].diff and vim.wo[win].scrollbind and vim.wo[win].cursorbind,
+						"the edit action turned off the user's diff"
+					)
+				end
+			end
+			compare.close(s)
+			vim.cmd("diffoff!")
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_core_compare_edit_keeps_live_diff_in_editor",
+		function()
+			require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false }, blame = { persist = false } })
+			local actions, state = require("lazyvcs.actions"), require("lazyvcs.state")
+			local f = h.make_git_fixture()
+			vim.cmd("tabnew")
+			vim.cmd("silent! tabonly!")
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local buf = api.nvim_get_current_buf()
+			actions.open()
+			ctx.wait_for(function()
+				local live = state.get(buf)
+				return live and live.phase == "active"
+			end, "live diff did not open", 15000)
+			local live = assert(state.get(buf))
+			local editor = live.editable_win
+			api.nvim_set_current_win(editor)
+			local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			ctx.wait_for(function()
+				return s.preview_result and not s.preview_job and not s.job
+			end, "Compare did not load", 15000)
+			assert(s.right == buf, "Compare did not show the live diff's buffer")
+			api.nvim_set_current_win(s.rightwin)
+			s.actions.edit()
+			assert(api.nvim_get_current_win() == editor, "edit did not use the live diff's window")
+			assert(vim.wo[editor].diff and vim.wo[live.base_win].diff, "the edit action turned off the live diff")
+			assert(state.for_window(editor) == live and live.phase == "active", "the live diff ended")
+			compare.close(s)
+			actions.close(live)
+		end,
+	}
 	return cases
 end

@@ -1278,12 +1278,19 @@ local function edit_buffer(s, buf, position)
 		vim.cmd("rightbelow split")
 		s.origin_edit_win = vim.api.nvim_get_current_win()
 		util.editor_window(s.origin_edit_win)
-		util.show_win_buffer(s.origin_edit_win, buf)
 	end
-	vim.api.nvim_win_set_buf(0, buf)
 	-- Neovim gives a window without its own option record for the buffer the
-	-- live pane's options: diff mode, bindings, and the Compare label.
-	worktree.reset_editor(vim.api.nvim_get_current_win())
+	-- live pane's options: diff mode, bindings, and the Compare label. Undo only
+	-- what the switch brought in; a window that already showed the buffer, or a
+	-- live diff's window, keeps its own diff.
+	local editor = vim.api.nvim_get_current_win()
+	local before = vim.api.nvim_win_get_buf(editor) ~= buf
+		and not require("lazyvcs.state").for_window(editor)
+		and util.capture_win_options(editor, { "diff", "scrollbind", "cursorbind" })
+	vim.api.nvim_win_set_buf(editor, buf)
+	if before then
+		worktree.reset_editor(editor, before)
+	end
 	if position then
 		local line = math.min(position[1], vim.api.nvim_buf_line_count(buf))
 		local text = vim.api.nvim_buf_get_lines(buf, line - 1, line, false)[1] or ""

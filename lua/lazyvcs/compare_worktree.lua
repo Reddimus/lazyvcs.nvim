@@ -364,10 +364,16 @@ end
 
 ---Turn off pane state that an editor window received with a real buffer from
 ---a Compare edit action: Neovim copies a live pane's options into a window
----that has none of its own for the buffer.
-function M.reset_editor(win)
-	if util.get_win_option(win, "diff") then
-		util.unbind_window(win)
+---that has none of its own for the buffer. `before` holds the window's diff
+---and bindings before the switch; options that were already on stay on.
+function M.reset_editor(win, before)
+	if util.get_win_option(win, "diff") and not before.diff then
+		util.diff_off(win)
+	end
+	for _, name in ipairs({ "scrollbind", "cursorbind" }) do
+		if util.get_win_option(win, name) and not before[name] then
+			util.set_win_option(win, name, false)
+		end
 	end
 	if M.is_label(vim.api.nvim_win_get_buf(win), util.get_win_option(win, "winbar")) then
 		util.set_win_option(win, "winbar", "")

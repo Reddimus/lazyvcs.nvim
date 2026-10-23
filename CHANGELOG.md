@@ -15,8 +15,9 @@ and this project adheres to
 - Keep Compare's diff mode, scroll binding, and `WORKTREE` label out of the
   editor window that `o`, `<leader>ve`, and picker selections open, and out of
   windows that open a file after Compare moved on from it or closed. Compare now
-  resets a pane before it releases a file or closes, and resets the editor
-  window its edit actions open.
+  resets a pane before it releases a file or closes, and undoes what an edit
+  action brings into the editor window it opens. A window that already shows the
+  file, such as a user diff or a live diff, keeps its diff.
 - Close Compare without resetting windows it does not own: other windows in its
   tab and a picker preview in a pane keep their options and folds, also when
   Compare recovers from the deletion of the file it showed. A session sourced
