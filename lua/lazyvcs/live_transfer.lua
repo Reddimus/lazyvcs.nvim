@@ -89,9 +89,26 @@ function M.new(lifecycle)
 		state.set_pending_transfer(s.editable_win, p)
 		return p
 	end
+	-- The view to give back when the window returns to the file it left. Neovim
+	-- puts the cursor back where the window left the file; a command that chose
+	-- another position on return, such as :cnext or :edit +N, wins.
+	local function restore_view(s, view)
+		if view then
+			vim.api.nvim_win_call(s.editable_win, function()
+				local cursor = vim.api.nvim_win_get_cursor(0)
+				if cursor[1] == view.lnum and cursor[2] == view.col then
+					vim.fn.winrestview(view)
+				end
+			end)
+		end
+	end
 	local function prepare(s)
 		local p = record(s)
 		if p.detached then
+			-- A retry saved the view when it started; the window leaves the file now.
+			if vim.api.nvim_win_get_buf(s.editable_win) == s.editable_bufnr then
+				p.view = vim.api.nvim_win_call(s.editable_win, vim.fn.winsaveview)
+			end
 			return p
 		end
 		p.detached = true
@@ -137,11 +154,7 @@ function M.new(lifecycle)
 				s.phase = "paused"
 				if detached then
 					layout.present(s, s.base_lines, "")
-					if view then
-						vim.api.nvim_win_call(s.editable_win, function()
-							vim.fn.winrestview(view)
-						end)
-					end
+					restore_view(s, view)
 				end
 				require("lazyvcs.window_controls").sync()
 			end
@@ -164,11 +177,7 @@ function M.new(lifecycle)
 				s.phase = "active"
 				if detached then
 					layout.present(s, s.base_lines or {}, vim.bo[s.editable_bufnr].filetype)
-					if view then
-						vim.api.nvim_win_call(s.editable_win, function()
-							vim.fn.winrestview(view)
-						end)
-					end
+					restore_view(s, view)
 					layout.rebalance(s)
 					layout.refresh(s)
 					assert(layout.bind_pair(s, s.editable_win), "could not restore diff pair")

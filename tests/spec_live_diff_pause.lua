@@ -377,5 +377,97 @@ return function(ctx)
 			end,
 		}
 	end
+	-- A command that chooses a position on return, such as :edit +N or :cnext,
+	-- keeps it; Neovim's own restored position gets the saved view.
+	for _, timing in ipairs({ "immediate", "loading" }) do
+		cases[#cases + 1] = {
+			"test_live_diff_paused_return_" .. timing .. "_keeps_chosen_cursor",
+			function()
+				setup()
+				local f = h.make_git_transfer_fixture()
+				h.write_file(f.file2, lines(60, "beta"))
+				local outside = h.tempdir() .. "/outside.txt"
+				h.write_file(outside, lines(60, "outside"))
+				local win = open_live(f.file1).editable_win
+				vim.cmd.edit(vim.fn.fnameescape(outside))
+				local paused = wait_paused(win)
+				vim.fn.winrestview({ lnum = 10, col = 0, topline = 5 })
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+				interrupt(win, timing)
+				vim.cmd("edit +40 " .. vim.fn.fnameescape(outside))
+				ctx.wait_for(function()
+					return paused.phase == "paused" and not state.peek_pending_transfer(win)
+				end, "the paused view did not settle", 3000)
+				settle()
+				local cursor = api.nvim_win_get_cursor(win)
+				assert(cursor[1] == 40, "returning undid the user's jump: " .. vim.inspect(cursor))
+				actions.close(paused)
+			end,
+		}
+	end
+	-- Leaving during a retry and returning before the next file loads keeps the
+	-- position the window left the file at, not where the retry started.
+	cases[#cases + 1] = {
+		"test_live_diff_paused_return_during_retry_keeps_left_cursor",
+		function()
+			setup()
+			local f = h.make_git_transfer_fixture()
+			h.write_file(f.file2, lines(60, "beta"))
+			local root = h.tempdir()
+			local outside = root .. "/outside.txt"
+			h.write_file(outside, lines(60, "outside"))
+			local win = open_live(f.file1).editable_win
+			vim.cmd.edit(vim.fn.fnameescape(outside))
+			local paused = wait_paused(win)
+			local backends = require("lazyvcs.backends")
+			local load = backends.load_async
+			local ok, err = xpcall(function()
+				-- A slow VCS: every base load completes late.
+				---@diagnostic disable-next-line: duplicate-set-field
+				backends.load_async = function(path, callback, opts)
+					return load(path, function(...)
+						local values = { n = select("#", ...), ... }
+						vim.defer_fn(function()
+							callback(unpack(values, 1, values.n))
+						end, 800)
+					end, opts)
+				end
+				-- The paused file becomes supported, and the user retries it on line 5.
+				h.exec({ "git", "init" }, root)
+				h.exec({ "git", "config", "user.email", "test@example.com" }, root)
+				h.exec({ "git", "config", "user.name", "Test" }, root)
+				h.exec({ "git", "add", "outside.txt" }, root)
+				h.exec({ "git", "commit", "-m", "outside" }, root)
+				api.nvim_win_set_cursor(win, { 5, 0 })
+				actions.refresh_current()
+				assert(
+					vim.wait(1000, function()
+						local p = state.peek_pending_transfer(win)
+						return p and p.phase == "loading" and p.target_bufnr == api.nvim_win_get_buf(win)
+					end, 1),
+					"the retry did not start loading"
+				)
+				api.nvim_win_set_cursor(win, { 40, 0 })
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+				local next_buf = api.nvim_get_current_buf()
+				assert(
+					vim.wait(1000, function()
+						local p = state.peek_pending_transfer(win)
+						return p and p.phase == "loading" and p.target_bufnr == next_buf
+					end, 1),
+					"the next file did not start loading"
+				)
+				vim.cmd.edit(vim.fn.fnameescape(outside))
+				vim.wait(1500, function()
+					return false
+				end)
+				local cursor = api.nvim_win_get_cursor(win)
+				assert(cursor[1] == 40, "returning moved the cursor to the retry's start: " .. vim.inspect(cursor))
+			end, debug.traceback)
+			backends.load_async = load
+			actions.close(state.for_window(win) or paused)
+			assert(ok, err)
+		end,
+	}
 	return cases
 end
