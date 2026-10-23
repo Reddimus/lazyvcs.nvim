@@ -6,146 +6,7 @@ local M = {}
 local records = {}
 local attachments = {}
 local pane_labels = {}
--- Buffer -> the window state a pane got for it from Neovim, before Compare
--- changed it: the user's folds and fold options for that buffer.
-local states = {}
-local fold_ns = vim.api.nvim_create_namespace("lazyvcs_compare_user_folds")
 local installed = false
--- compare_marker.lua tells windows that copied pane state from windows whose
--- options are their own.
-local marker = require("lazyvcs.compare_marker")
-
--- Without a saved state, remove what Compare sets. :diffoff restores the
--- options saved before diff mode, such as an ftplugin fold method. Under
--- 'foldmethod' manual it also leaves the diff folds behind as disabled manual
--- folds, which Neovim then saves and copies with the window options.
-local function reset(win, clear_winbar)
-	util.diff_off(win)
-	util.set_win_options(win, { scrollbind = false, cursorbind = false })
-	if util.get_win_option(win, "foldmethod") == "manual" then
-		vim.api.nvim_win_call(win, function()
-			vim.cmd("silent! normal! zE")
-		end)
-		util.set_win_option(
-			win,
-			"foldenable",
-			vim.api.nvim_get_option_value("foldenable", { win = win, scope = "global" })
-		)
-	end
-	if clear_winbar then
-		util.set_win_option(win, "winbar", "")
-	end
-	if util.get_win_option(win, "foldmethod") == "diff" then
-		for _, name in ipairs({ "foldmethod", "foldcolumn", "foldenable" }) do
-			util.set_win_option(win, name, vim.api.nvim_get_option_value(name, { win = win, scope = "global" }))
-		end
-	end
-end
-
-local function quiet_global(name, value)
-	vim.api.nvim_cmd(
-		{ cmd = "let", args = { "&" .. name .. " = " .. vim.fn.string(value) }, mods = { noautocmd = true } },
-		{}
-	)
-end
-
--- :diffthis replaces a window's manual folds and closes the folds the user
--- opened; :diffoff restores the fold options saved at :diffthis but not those
--- folds. Neovim's own :mkview with 'viewoptions' "folds" writes them as
--- commands. Keep the fold commands, with their line numbers tracked by extmarks
--- so edits made in Compare move them. The other fold options are the user's,
--- including changes made in the pane, and stay as they are.
-local function capture(win)
-	local buf = vim.api.nvim_win_get_buf(win)
-	local file = vim.fn.tempname()
-	local viewoptions = vim.o.viewoptions
-	quiet_global("viewoptions", "folds")
-	local ok = pcall(vim.api.nvim_win_call, win, function()
-		vim.cmd("silent noautocmd mkview! " .. vim.fn.fnameescape(file))
-	end)
-	quiet_global("viewoptions", viewoptions)
-	local lines = ok and vim.fn.filereadable(file) == 1 and vim.fn.readfile(file) or {}
-	vim.fn.delete(file)
-	local count = vim.api.nvim_buf_line_count(buf)
-	local function mark(line)
-		line = tonumber(line)
-		if line and line >= 1 and line <= count then
-			return vim.api.nvim_buf_set_extmark(buf, fold_ns, line - 1, 0, {})
-		end
-	end
-	local steps, inside = {}, false
-	for _, line in ipairs(lines) do
-		if line:match("^let &g:so = s:so_save") then
-			break
-		end
-		inside = inside or line:match("^setlocal ") ~= nil
-		local command = line:gsub("^sil! ", "")
-		if inside and not command:match("^setlocal ") then
-			local first, last = command:match("^(%d+),(%d+)fold$")
-			if first then
-				steps[#steps + 1] = { fold = { mark(first), mark(last) } }
-			elseif command:match("^%d+$") then
-				steps[#steps + 1] = { line = mark(command) }
-			elseif command == "let &fdl = &fdl" then
-				-- Recompute folds without copying the level to the window's global value.
-				steps[#steps + 1] = { command = "let &l:fdl = &l:fdl" }
-			else
-				steps[#steps + 1] = { command = command }
-			end
-		end
-	end
-	local options = util.capture_win_options(win, { "foldmethod", "foldenable", "winfixbuf", "winbar" })
-	return { buf = buf, steps = steps, options = options }
-end
-
-local function drop_state(buf)
-	if states[buf] then
-		states[buf] = nil
-		if vim.api.nvim_buf_is_valid(buf) then
-			vim.api.nvim_buf_clear_namespace(buf, fold_ns, 0, -1)
-		end
-	end
-end
-
--- Give the window the folds a pane got for its buffer, and undo what Compare
--- set. `winbar` restores the winbar too; a statusline plugin may already have
--- replaced a copied label.
-local function restore(win, state, winbar)
-	util.diff_off(win)
-	local buf = state.buf
-	local manual = state.options.foldmethod == "manual" and util.get_win_option(win, "foldmethod") == "manual"
-	local function row(id)
-		local position = id and vim.api.nvim_buf_get_extmark_by_id(buf, fold_ns, id, {})
-		return position and position[1] and position[1] + 1
-	end
-	vim.api.nvim_win_call(win, function()
-		local view = vim.fn.winsaveview()
-		for _, step in ipairs(state.steps) do
-			if step.command then
-				-- Without manual folds, only reopen the folds the user had open.
-				if manual or not step.command:match("zE$") then
-					pcall(vim.api.nvim_command, "noautocmd silent! " .. step.command)
-				end
-			elseif step.fold then
-				local first, last = row(step.fold[1]), row(step.fold[2])
-				if manual and first and last and first <= last then
-					pcall(vim.api.nvim_command, string.format("noautocmd silent! %d,%dfold", first, last))
-				end
-			elseif row(step.line) then
-				pcall(vim.api.nvim_win_set_cursor, win, { row(step.line), 0 })
-			end
-		end
-		vim.fn.winrestview(view)
-	end)
-	-- :diffoff turns 'foldenable' off under manual folding.
-	if manual then
-		util.set_win_option(win, "foldenable", state.options.foldenable)
-	end
-	util.set_win_option(win, "winfixbuf", state.options.winfixbuf)
-	if winbar then
-		util.set_win_option(win, "winbar", state.options.winbar)
-	end
-end
 
 local function valid(record)
 	return record and vim.api.nvim_buf_is_valid(record.buf)
@@ -278,7 +139,6 @@ local function settle(record)
 			record.deleted = true
 			record.retained = record.retained or loaded
 			records[record.buf] = nil
-			drop_state(record.buf)
 		end
 		for owner, callback in pairs(record.owners) do
 			if not owner.closed and owner.worktree == record then
@@ -353,7 +213,6 @@ local function setup()
 		group = group,
 		callback = util.safe_callback(function(args)
 			pane_labels[args.buf] = nil
-			states[args.buf] = nil
 		end),
 	})
 	-- :checktime and autoread reread a file in place without unloading it. The
@@ -488,58 +347,31 @@ function M.mark_pane(buf, winbar)
 	pane_labels[buf] = labels
 end
 
----Keep the state a pane got for the borrowed buffer it now shows, before
----Compare changes it. Call right after the pane switches to the buffer.
-function M.enter_pane(win)
-	local buf = vim.api.nvim_win_get_buf(win)
-	if records[buf] and not states[buf] and not marker.active(win) then
-		marker.unmark(win)
-		states[buf] = capture(win)
-	end
-	-- Compare switches pane buffers without BufWinEnter, which takes the
-	-- buffer's change baseline once it is displayed.
-	if records[buf] then
-		changed(records[buf])
-	end
-end
-
----Mark a Compare pane's window options before Compare applies pane state.
-function M.mark_window(win)
-	setup()
-	marker.mark(win)
-end
-
----Before a Compare pane stops showing a real buffer, give it back the state it
----had for that buffer, so the option record Neovim saves holds no Compare
----state. A pane that shows another buffer, such as a picker preview, keeps
----that buffer's state.
-function M.reset_pane(win)
-	if marker.active(win) then
-		local buf = vim.api.nvim_win_get_buf(win)
-		if states[buf] then
-			restore(win, states[buf], true)
-		elseif records[buf] then
-			reset(win, true)
-		end
-	end
-	marker.unmark(win)
-	marker.deactivate(win)
-end
-
----Remove Compare pane state from a window that copied it, restoring the state
----a pane got for the buffer when Compare still has it.
-function M.clean_copy(win)
-	local buf = vim.api.nvim_win_get_buf(win)
+---Whether a winbar value is a label Compare showed with the buffer.
+function M.is_label(buf, winbar)
 	local labels = pane_labels[buf]
-	-- Keep a winbar that a statusline plugin set after the copy.
-	local label = labels and labels[util.get_win_option(win, "winbar")] or false
-	if states[buf] then
-		restore(win, states[buf], label)
-	else
-		reset(win, label)
+	return labels ~= nil and labels[winbar] == true
+end
+
+---Turn off what Compare set in a pane before the pane releases a real buffer
+---or Compare closes, so the option record Neovim saves for the buffer carries
+---no diff mode, scroll binding, or Compare label. :diffoff restores the
+---options saved at :diffthis; folds stay as Neovim leaves them.
+function M.reset_pane(win)
+	util.unbind_window(win)
+	util.set_win_option(win, "winbar", "")
+end
+
+---Turn off pane state that an editor window received with a real buffer from
+---a Compare edit action: Neovim copies a live pane's options into a window
+---that has none of its own for the buffer.
+function M.reset_editor(win)
+	if util.get_win_option(win, "diff") then
+		util.unbind_window(win)
 	end
-	marker.unmark(win)
-	return true
+	if M.is_label(vim.api.nvim_win_get_buf(win), util.get_win_option(win, "winbar")) then
+		util.set_win_option(win, "winbar", "")
+	end
 end
 
 function M.capture(record)
@@ -560,7 +392,6 @@ function M.release(s, record)
 	end
 	if records[record.buf] == record then
 		records[record.buf] = nil
-		drop_state(record.buf)
 	end
 	if valid(record) and vim.bo[record.buf].bufhidden == "hide" then
 		vim.bo[record.buf].bufhidden = record.hidden

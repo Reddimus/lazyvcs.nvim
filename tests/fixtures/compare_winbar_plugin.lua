@@ -1,9 +1,7 @@
 -- A statusline plugin registered before LazyVCS replaces each editor window's
--- winbar on BufWinEnter, so a copied Compare label never reaches LazyVCS.
--- scenario: "edit" (the edit action), "peer" (edit beside a user diff pair),
--- "float" (an unfocused float opened from the pane, then another tab opens the
--- buffer), or "minimal" (a focused minimal float that leaves the buffer and
--- returns, then a new window in the same tab opens it).
+-- winbar on BufWinEnter, so the copied Compare label is gone before LazyVCS
+-- sees the window. scenario: "edit" (the edit action) or "peer" (the edit
+-- action beside a user diff pair).
 local root, output, from, scenario = arg[1], arg[2], arg[3], arg[4]
 local peer = scenario == "peer"
 vim.opt.runtimepath:prepend(root)
@@ -62,34 +60,6 @@ local ok, err = xpcall(function()
 	end
 	assert(s.shown_item.relpath == "a.txt" and s.worktree, "a.txt is not an editable working buffer")
 	local buf = s.right
-	if scenario == "float" or scenario == "minimal" then
-		api.nvim_set_current_win(s.rightwin)
-		local float = { relative = "editor", row = 1, col = 1, width = 20, height = 3 }
-		if scenario == "float" then
-			api.nvim_open_win(api.nvim_create_buf(false, true), false, float)
-		else
-			float.style = "minimal"
-			api.nvim_open_win(buf, true, float)
-			-- Leaving and returning gives the float a record that a later window
-			-- can copy; Neovim 0.11 copies from minimal windows, 0.12 does not.
-			vim.cmd.buffer(api.nvim_create_buf(false, true))
-			vim.cmd.buffer(buf)
-		end
-		if scenario == "float" then
-			vim.cmd("tabnew")
-		else
-			-- A new ordinary window in the same tab, which does not skip the
-			-- float's record for diff mode.
-			api.nvim_set_current_win(s.sidewin)
-			vim.cmd("split")
-		end
-		vim.cmd.buffer(buf)
-		results.target = capture(api.nvim_get_current_win())
-		results.pane = capture(s.rightwin)
-		compare.close(s)
-		h.cleanup()
-		return
-	end
 	api.nvim_set_current_win(from == "right" and s.rightwin or s.sidewin)
 	s.actions.edit()
 	local editor = api.nvim_get_current_win()

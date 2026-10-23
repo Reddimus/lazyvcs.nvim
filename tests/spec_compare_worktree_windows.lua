@@ -1,5 +1,7 @@
 -- Neovim copies a buffer's last window options into a window that has none
--- saved for it. Editable Compare panes must not leak diff state into editors.
+-- saved for it. Compare's own paths, the edit actions and its pane releases,
+-- must not leave diff state for editor windows. Folds stay native: :diffoff
+-- leaves Compare's diff folds as manual folds, as it does for any diff window.
 return function(ctx)
 	local h, api = ctx.helpers, vim.api
 	local compare, util = require("lazyvcs.compare"), require("lazyvcs.util")
@@ -44,20 +46,6 @@ return function(ctx)
 				and not tostring(values.winbar):find("WORKTREE", 1, true),
 			context .. " inherited Compare pane options: " .. vim.inspect(values)
 		)
-		-- Hidden diff folds would close on zi; a plain window has none.
-		local closed = api.nvim_win_call(win, function()
-			local enabled = vim.wo.foldenable
-			vim.cmd("normal! zi")
-			local found = {}
-			for line = 1, api.nvim_buf_line_count(0) do
-				if vim.fn.foldclosed(line) ~= -1 then
-					found[#found + 1] = line
-				end
-			end
-			vim.wo.foldenable = enabled
-			return found
-		end)
-		assert(#closed == 0, context .. " kept Compare's diff folds: " .. vim.inspect(closed))
 	end
 	local cases = {}
 	for _, from in ipairs({ "side", "right" }) do
@@ -212,15 +200,6 @@ return function(ctx)
 			end,
 		}
 	end
-	-- Floats copy the pane's options too, minimal floats included on Neovim 0.11.
-	for _, scenario in ipairs({ "float", "minimal" }) do
-		cases[#cases + 1] = {
-			"test_core_compare_worktree_" .. scenario .. "_float_copy_survives_winbar_plugins",
-			function()
-				assert_copied_clean(plugin_fixture("right", scenario).target, "new window")
-			end,
-		}
-	end
 	cases[#cases + 1] = {
 		"test_core_compare_worktree_keeps_single_window_user_diff_after_close",
 		function()
@@ -293,79 +272,16 @@ return function(ctx)
 		end,
 	}
 	cases[#cases + 1] = {
-		"test_core_compare_worktree_marker_reset_keeps_user_options",
-		function()
-			local _, s = fixture()
-			navigate(s, "next", "b.txt")
-			navigate(s, "prev", "a.txt")
-			local pane = s.rightwin
-			api.nvim_set_current_win(pane)
-			-- The user's own values in the pane, set while it is marked.
-			util.set_win_option(pane, "winhighlight", "Normal:NormalFloat")
-			util.set_win_option(pane, "foldnestmax", 3)
-			util.set_win_option(pane, "foldignore", "#;")
-			assert(require("lazyvcs.compare_marker").marked(pane), "the pane lost its mark")
-			vim.cmd("split")
-			local copy = api.nvim_get_current_win()
-			assert(not vim.wo[copy].diff and not vim.wo[copy].scrollbind, "copied pane options survived")
-			local value = util.get_win_option(copy, "winhighlight")
-			assert(value == "Normal:NormalFloat", "marker cleanup changed user highlights: " .. vim.inspect(value))
-			local depth = util.get_win_option(copy, "foldnestmax")
-			assert(depth == 3, "marker cleanup changed the fold depth: " .. vim.inspect(depth))
-			local ignored = util.get_win_option(copy, "foldignore")
-			assert(ignored == "#;", "marker cleanup changed foldignore: " .. vim.inspect(ignored))
-			api.nvim_win_close(copy, true)
-			compare.close(s)
-		end,
-	}
-	-- Same-buffer windows copy a pane's options without BufWinEnter.
-	local creators = {
-		split = function()
-			vim.cmd("split")
-			return api.nvim_get_current_win()
-		end,
-		tab_split = function()
-			vim.cmd("tab split")
-			return api.nvim_get_current_win()
-		end,
-		float = function()
-			return api.nvim_open_win(0, true, { relative = "editor", row = 1, col = 1, width = 20, height = 3 })
-		end,
-		unfocused_float = function()
-			return api.nvim_open_win(0, false, { relative = "editor", row = 1, col = 1, width = 20, height = 3 })
-		end,
-	}
-	for name, create in pairs(creators) do
-		cases[#cases + 1] = {
-			"test_core_compare_worktree_pane_" .. name .. "_drops_pane_options",
-			function()
-				local _, s = fixture()
-				navigate(s, "next", "b.txt")
-				navigate(s, "prev", "a.txt")
-				local buf = s.right
-				api.nvim_set_current_win(s.rightwin)
-				local win = create()
-				assert(api.nvim_win_get_buf(win) == buf)
-				assert(not require("lazyvcs.compare_marker").marked(win), "new window kept the pane marker")
-				assert_plain(win, name)
-				assert(vim.wo[s.rightwin].diff and vim.wo[s.rightwin].scrollbind, "the Compare pane lost its diff")
-				if api.nvim_win_is_valid(win) then
-					api.nvim_win_close(win, true)
-				end
-				compare.close(s)
-			end,
-		}
-	end
-	cases[#cases + 1] = {
 		"test_core_compare_worktree_pane_tab_split_keeps_later_user_diff",
 		function()
 			local _, s = fixture()
 			navigate(s, "next", "b.txt")
 			navigate(s, "prev", "a.txt")
 			api.nvim_set_current_win(s.rightwin)
+			-- A split of a live pane is in diff mode, as a split of any diff window is.
 			vim.cmd("tab split")
 			local win = api.nvim_get_current_win()
-			-- The user replaces the copied state with a diff of their own, then reloads.
+			-- The user replaces that state with a diff of their own, then reloads.
 			vim.cmd("diffoff")
 			vim.cmd("diffthis")
 			vim.cmd.edit()
@@ -375,5 +291,55 @@ return function(ctx)
 			compare.close(s)
 		end,
 	}
+	-- User autocommands registered before LazyVCS run before its own handlers:
+	-- the :loadview auto-view pair, or one that sets 'foldignore' on entering.
+	local function user_fixture(scenario, step)
+		local repo = vim.fs.normalize(
+			vim.fn.fnamemodify(assert(vim.api.nvim_get_runtime_file("lua/lazyvcs/compat.lua", false)[1]), ":p:h:h:h")
+		)
+		local output = vim.fs.normalize(vim.fn.tempname())
+		local result = vim.system({
+			vim.v.progpath,
+			"--headless",
+			"-u",
+			"NONE",
+			"-i",
+			"NONE",
+			"-l",
+			repo .. "/tests/fixtures/compare_user_autocmds.lua",
+			repo,
+			output,
+			scenario,
+			step,
+		}, { text = true }):wait(60000)
+		assert(result.code == 0, "nested editor failed: " .. tostring(result.stderr))
+		local values = vim.json.decode(table.concat(vim.fn.readfile(output), "\n"))
+		vim.fn.delete(output)
+		assert(not values.error, values.error)
+		return values
+	end
+	for _, scenario in ipairs({ "loadview", "bufenter" }) do
+		for _, step in ipairs({ "edit", "reopen" }) do
+			cases[#cases + 1] = {
+				"test_core_compare_worktree_" .. step .. "_after_user_" .. scenario .. "_keeps_editor_options",
+				function()
+					local values = user_fixture(scenario, step)
+					if step == "edit" then
+						assert(values.origin, "edit did not use the editor")
+					end
+					local v = values.window
+					assert(
+						not v.diff
+							and not v.scrollbind
+							and not v.cursorbind
+							and v.foldmethod ~= "diff"
+							and v.foldcolumn == "0"
+							and not tostring(v.winbar):find("WORKTREE", 1, true),
+						step .. " with a user " .. scenario .. " autocommand inherited pane options: " .. vim.inspect(v)
+					)
+				end,
+			}
+		end
+	end
 	return cases
 end

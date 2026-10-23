@@ -64,10 +64,8 @@ return function(ctx)
 				assert(s.router.busy(), "unfocused borrowed buffer did not defer")
 				deliver()
 				assert(s.deferred_display, "preview was not deferred")
-				-- Compare switches pane buffers without BufWinEnter, for view
-				-- autocommands; BufEnter would not run inside another callback either.
 				local entered = {}
-				api.nvim_create_autocmd("BufEnter", {
+				api.nvim_create_autocmd("BufWinEnter", {
 					group = s.augroup,
 					callback = function(event)
 						if api.nvim_get_current_win() == s.rightwin and event.buf ~= owned then
@@ -82,7 +80,7 @@ return function(ctx)
 				ctx.wait_for(function()
 					return not s.deferred_display and s.preview_result and s.mode == "text"
 				end, "owned buffer did not resume")
-				assert(entered[s.right], "resumed install suppressed the pane's BufEnter autocmd")
+				assert(entered[s.right], "resumed install suppressed the pane's BufWinEnter autocmd")
 				assert(vim.deep_equal(api.nvim_buf_get_lines(s.right, 0, -1, false), vim.fn.readfile(f.file1)))
 				api.nvim_win_set_cursor(s.sidewin, { s.row_by_path["beta.txt"], 0 })
 				s.actions.preview()

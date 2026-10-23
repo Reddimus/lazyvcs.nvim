@@ -2,8 +2,7 @@
 -- scenario: "loadview" (the :help :loadview auto-view autocommands, with the
 -- default 'viewoptions') or "bufenter" (an autocommand that sets 'foldignore'
 -- in every window it enters). step: "edit" (the edit action from the right
--- pane), "split" (:split in the right pane), "tabnew" (a new tab shows the
--- pane's buffer), or "float" (an unfocused float on the pane's buffer).
+-- pane) or "reopen" (a new tab opens the buffer after Compare moved on).
 local root, output, scenario, step = arg[1], arg[2], arg[3], arg[4]
 vim.opt.runtimepath:prepend(root)
 package.path =
@@ -26,6 +25,10 @@ local ok, err = xpcall(function()
 	local f = h.make_git_fixture()
 	h.write_file(f.root .. "/a.txt", "first\n")
 	h.write_file(f.root .. "/b.txt", "second\n")
+	-- A listed buffer outlives Compare moving on; no window has shown it yet.
+	local listed = vim.fn.bufadd(f.root .. "/a.txt")
+	vim.fn.bufload(listed)
+	vim.bo[listed].buflisted = true
 	vim.cmd.edit(vim.fn.fnameescape(f.file))
 	local origin = api.nvim_get_current_win()
 	local s = assert(compare.open({ path = f.root, base = "HEAD" }))
@@ -48,22 +51,18 @@ local ok, err = xpcall(function()
 	local win
 	-- Enter the pane from the sidebar, which runs the user's BufEnter there.
 	api.nvim_set_current_win(s.sidewin)
+	api.nvim_set_current_win(s.rightwin)
 	if step == "edit" then
-		api.nvim_set_current_win(s.rightwin)
 		s.actions.edit()
 		win = api.nvim_get_current_win()
 		results.origin = win == origin
-	elseif step == "split" then
-		api.nvim_set_current_win(s.rightwin)
-		vim.cmd("split")
-		win = api.nvim_get_current_win()
-	elseif step == "tabnew" then
-		vim.cmd("tabnew")
-		vim.cmd.buffer(s.right)
-		win = api.nvim_get_current_win()
 	else
-		api.nvim_set_current_win(origin)
-		win = api.nvim_open_win(s.right, false, { relative = "editor", row = 1, col = 1, width = 30, height = 3 })
+		compare.navigate_file("next", 1)
+		vim.wait(50)
+		ready("Compare did not move on")
+		vim.cmd("tabnew")
+		vim.cmd.buffer(listed)
+		win = api.nvim_get_current_win()
 	end
 	results.window =
 		util.capture_win_options(win, { "diff", "scrollbind", "cursorbind", "foldmethod", "foldcolumn", "winbar" })

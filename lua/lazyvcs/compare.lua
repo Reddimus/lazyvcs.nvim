@@ -10,7 +10,6 @@ local config = require("lazyvcs.config")
 local buffers = require("lazyvcs.compare_buffers")
 local catalog = require("lazyvcs.compare_actions")
 local worktree = require("lazyvcs.compare_worktree")
-local marker = require("lazyvcs.compare_marker")
 local worktree_event
 local M = {}
 local sessions = {}
@@ -90,7 +89,6 @@ local function bind(s, buf)
 	require("lazyvcs.window_controls").sync()
 end
 local function preview_options(s, win)
-	worktree.mark_window(win)
 	if s.mode == "text" then
 		highlighting.apply(win, require("lazyvcs.config").get().diff_highlighting)
 	else
@@ -236,21 +234,6 @@ local function release_pane_buffer(win, next_buf)
 		end
 	end
 end
--- Switch a pane's buffer without BufWinEnter and BufWinLeave. View autocommands
--- (:help :loadview) would otherwise load the user's saved view into the pane
--- and save the pane's view of a real buffer over the user's.
-local function show_pane(win, buf)
-	local ignore = vim.o.eventignore
-	vim.o.eventignore = (ignore == "" and "" or ignore .. ",") .. "BufWinEnter,BufWinLeave"
-	local ok, err = pcall(util.show_win_buffer, win, buf)
-	vim.o.eventignore = ignore
-	if not ok then
-		error(err, 0)
-	end
-	if not buffers.is_managed(buf) then
-		worktree.enter_pane(win)
-	end
-end
 local function panes_usable(s, epoch)
 	if not alive(s) or sessions[s.tab] ~= s or s.panes_invalid or epoch ~= (s.pane_epoch or 0) then
 		return false
@@ -337,7 +320,7 @@ local function set_panes(s, next_display)
 		if next_display.routing_win then
 			local win = next_display.routing_win
 			local buf = win == s.sidewin and s.sidebar or win == s.leftwin and s.left or s.right
-			show_pane(win, buf)
+			util.show_win_buffer(win, buf)
 			check()
 			assert(vim.api.nvim_win_get_buf(win) == buf, "Comparison restoration was redirected")
 			if win == s.sidewin then
@@ -390,7 +373,7 @@ local function set_panes(s, next_display)
 		end
 		for _, slot in ipairs({ { s.leftwin, left }, { s.rightwin, right } }) do
 			release_pane_buffer(slot[1], slot[2])
-			show_pane(slot[1], slot[2])
+			util.show_win_buffer(slot[1], slot[2])
 			check()
 			assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2], "Comparison installation was redirected")
 		end
@@ -473,7 +456,7 @@ local function set_panes(s, next_display)
 			check()
 			for _, slot in ipairs({ { s.leftwin, before.left }, { s.rightwin, before.right } }) do
 				release_pane_buffer(slot[1], slot[2])
-				show_pane(slot[1], slot[2])
+				util.show_win_buffer(slot[1], slot[2])
 				check()
 				assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2], "Comparison rollback was redirected")
 			end
@@ -1234,24 +1217,18 @@ function M.close(s, return_focus)
 	if replaced then
 		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(s.tab)) do
 			vim.w[win].lazyvcs_compare = nil
-			marker.release(win)
 		end
 	end
 	if vim.api.nvim_tabpage_is_valid(s.tab) and not replaced then
 		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(s.tab)) do
-			-- Reset only Compare state: the panes and windows that copied them.
-			-- Other windows in this tab, and a picker preview in a pane, keep their
-			-- own options and folds.
-			if win == s.leftwin or win == s.rightwin then
-				local shown = vim.api.nvim_win_get_buf(win)
+			-- Reset only the panes, and only while they show their own buffer.
+			-- Other windows in this tab, and a picker preview in a pane, keep
+			-- their own options.
+			if
+				(win == s.leftwin and vim.api.nvim_win_get_buf(win) == s.left)
+				or (win == s.rightwin and vim.api.nvim_win_get_buf(win) == s.right)
+			then
 				release_pane_buffer(win)
-				-- Leave a borrowed buffer before the tab closes, so view autocommands
-				-- do not save the pane's view of it.
-				if shown == (win == s.leftwin and s.left or s.right) and not buffers.is_managed(shown) then
-					show_pane(win, win == s.leftwin and s.message_left or s.message_right)
-				end
-			elseif marker.copied(win) then
-				worktree.clean_copy(win)
 			end
 			local buf = vim.api.nvim_win_get_buf(win)
 			if not buffers.is_managed(buf) and vim.bo[buf].modified then
@@ -1299,6 +1276,9 @@ local function edit_buffer(s, buf, position)
 		util.show_win_buffer(s.origin_edit_win, buf)
 	end
 	vim.api.nvim_win_set_buf(0, buf)
+	-- Neovim gives a window without its own option record for the buffer the
+	-- live pane's options: diff mode, bindings, and the Compare label.
+	worktree.reset_editor(vim.api.nvim_get_current_win())
 	if position then
 		local line = math.min(position[1], vim.api.nvim_buf_line_count(buf))
 		local text = vim.api.nvim_buf_get_lines(buf, line - 1, line, false)[1] or ""
@@ -1756,6 +1736,10 @@ local function construct_session(s)
 		callback = function(event)
 			local win = tonumber(event.match)
 			if win == s.sidewin or win == s.leftwin or win == s.rightwin then
+				-- Neovim saves the closing pane's options for its buffer next.
+				if win == s.rightwin and valid(s.rightwin) and vim.api.nvim_win_get_buf(s.rightwin) == s.right then
+					release_pane_buffer(s.rightwin)
+				end
 				local record = win == s.rightwin and s.worktree or nil
 				invalidate_panes(s)
 				schedule(function()

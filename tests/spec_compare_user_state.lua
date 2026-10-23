@@ -1,5 +1,5 @@
--- A Compare pane that shows a real buffer must give back the folds, fold
--- options, and saved view the user had for it, and touch nothing else.
+-- Compare touches only its own panes: windows it does not own, a picker preview
+-- in a pane, and folds in other windows on a pane's buffer keep their state.
 return function(ctx)
 	local h, api = ctx.helpers, vim.api
 	local compare, util = require("lazyvcs.compare"), require("lazyvcs.util")
@@ -7,12 +7,6 @@ return function(ctx)
 		ctx.wait_for(function()
 			return s.preview_result and not s.preview_job and not s.job
 		end, "Compare did not load", 15000)
-	end
-	local function navigate(s, direction, relpath)
-		compare.navigate_file(direction, 1)
-		ctx.wait_for(function()
-			return s.shown_item and s.shown_item.relpath == relpath and not s.preview_job and s.preview_result
-		end, "Compare did not show " .. relpath, 15000)
 	end
 	local function lines(count, changed)
 		local out = {}
@@ -77,141 +71,108 @@ return function(ctx)
 		vim.cmd("11,13fold")
 		vim.cmd("normal! gg")
 	end
+	local function levels(win)
+		return api.nvim_win_call(win, function()
+			vim.cmd("normal! zx")
+			local out = {}
+			for line = 1, api.nvim_buf_line_count(0) do
+				out[#out + 1] = vim.fn.foldlevel(line)
+			end
+			return table.concat(out, "")
+		end)
+	end
+	local code = {
+		"local function a()",
+		"  if x then",
+		"    if y then",
+		"      return 1",
+		"    end",
+		"  end",
+		"end",
+		"local t = {",
+		"  b = function()",
+		"    return 2",
+		"  end,",
+		"}",
+	}
 	local cases = {}
 
-	-- With the :help :loadview auto-view autocommands, reviewing a file in
-	-- Compare neither loads its view into a pane nor saves the pane's view.
-	cases[#cases + 1] = {
-		"test_core_compare_keeps_user_views_and_folds",
-		function()
-			local f = fixture()
-			local viewdir = h.tempdir() .. "/views"
-			local saved_viewdir, saved_viewoptions = vim.o.viewdir, vim.o.viewoptions
-			vim.o.viewdir = viewdir
-			vim.o.viewoptions = "folds,cursor,curdir"
-			local group = api.nvim_create_augroup("lazyvcs_test_user_views", { clear = true })
-			api.nvim_create_autocmd("BufWinLeave", { group = group, pattern = "*.txt", command = "silent! mkview" })
-			api.nvim_create_autocmd("BufWinEnter", { group = group, pattern = "*.txt", command = "silent! loadview" })
-			local ok, err = xpcall(function()
-				vim.cmd.edit(vim.fn.fnameescape(f.a))
-				local win = api.nvim_get_current_win()
-				make_folds()
-				local expected = folds(win)
-				vim.cmd.edit(vim.fn.fnameescape(f.file))
-				local view = vim.fn.glob(viewdir .. "/*a.txt*")
-				assert(view ~= "", "the auto-view autocommands saved no view")
-				local saved = vim.fn.readfile(view)
-				local s = open(f)
-				assert(not folds(s.rightwin):find("starts=3:1", 1, true), "the pane loaded the user's view")
-				navigate(s, "next", "b.txt")
-				assert(table.concat(vim.fn.readfile(view), "\n") == table.concat(saved, "\n"), "Compare saved a view")
-				compare.close(s)
-				api.nvim_set_current_win(win)
-				vim.cmd.edit(vim.fn.fnameescape(f.a))
-				assert(folds(win) == expected, "the user's view lost its folds: " .. folds(win) .. " ~= " .. expected)
-			end, debug.traceback)
-			api.nvim_del_augroup_by_id(group)
-			vim.o.viewdir, vim.o.viewoptions = saved_viewdir, saved_viewoptions
-			assert(ok, err)
-		end,
-	}
-
-	-- A window without a record of its own gets the user's folds back, whether
-	-- the newest record is a closed window's or Compare's pane's.
-	for _, closing in ipairs({ "navigate", "close", "quit", "tabclose" }) do
+	-- Showing a buffer in a pane changes no fold in a window that shares it.
+	for name, method in pairs({
+		treesitter = { "expr", "v:lua.vim.treesitter.foldexpr()" },
+		indent = { "indent" },
+		expr = { "expr", "indent(v:lnum)/shiftwidth()" },
+	}) do
 		cases[#cases + 1] = {
-			"test_core_compare_keeps_closed_window_folds_after_" .. closing,
+			"test_core_compare_keeps_shared_buffer_folds_" .. name,
 			function()
-				local f = fixture()
-				vim.cmd.edit(vim.fn.fnameescape(f.file))
-				vim.cmd("split " .. vim.fn.fnameescape(f.a))
-				make_folds()
-				vim.wo.foldenable = false
-				local expected = folds(api.nvim_get_current_win())
-				vim.cmd("close")
-				local s = open(f)
-				if closing == "navigate" then
-					navigate(s, "next", "b.txt")
+				require("lazyvcs").setup({
+					use_gitsigns = false,
+					signs = { enabled = false },
+					blame = { persist = false },
+				})
+				local f = h.make_git_fixture()
+				h.write_file(f.root .. "/code.lua", table.concat(code, "\n") .. "\n")
+				h.exec({ "git", "add", "code.lua" }, f.root)
+				h.exec({ "git", "commit", "-m", "code" }, f.root)
+				code[4] = "      return 10"
+				h.write_file(f.root .. "/code.lua", table.concat(code, "\n") .. "\n")
+				code[4] = "      return 1"
+				vim.cmd.edit(vim.fn.fnameescape(f.root .. "/code.lua"))
+				local editor, buf = api.nvim_get_current_win(), api.nvim_get_current_buf()
+				vim.bo[buf].shiftwidth = 2
+				vim.wo[editor].foldmethod = method[1]
+				if method[2] then
+					vim.wo[editor].foldexpr = method[2]
 				end
-				if closing == "quit" then
-					-- The user quits the pane; Compare closes the rest.
-					api.nvim_set_current_win(s.rightwin)
-					vim.cmd("quit")
-					ctx.wait_for(function()
-						return s.closed
-					end, "Compare did not close", 3000)
-				elseif closing == "tabclose" then
-					vim.cmd("tabclose " .. api.nvim_tabpage_get_number(s.tab))
+				vim.wo[editor].foldnestmax = 1
+				if name == "treesitter" then
+					vim.treesitter.start(buf, "lua")
 				end
+				local before = levels(editor)
+				assert(before:find("1", 1, true), "the editor has no folds to compare")
+				local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+				ready(s)
+				assert(s.right == buf, "Compare did not show the editor's buffer")
+				vim.wait(50)
+				assert(levels(editor) == before, name .. " folds changed in the editor: " .. levels(editor))
 				compare.close(s)
-				vim.cmd("tabnew")
-				vim.cmd.buffer(vim.fn.bufnr(f.a))
-				local win = api.nvim_get_current_win()
-				assert(
-					folds(win) == expected,
-					"a new window lost the user's folds: " .. folds(win) .. " ~= " .. expected
-				)
-				assert(not vim.wo[win].diff and not vim.wo[win].scrollbind, "a new window inherited diff mode")
-				vim.cmd("tabclose")
+				assert(levels(editor) == before, name .. " folds changed after Compare closed")
+				if name == "treesitter" then
+					vim.treesitter.stop(buf)
+				end
 			end,
 		}
 	end
 
-	-- Indent folds keep their level and the folds the user opened and closed.
+	-- Closing Compare touches only its panes.
 	cases[#cases + 1] = {
-		"test_core_compare_keeps_indent_fold_state",
+		"test_core_compare_close_keeps_folds_in_unrelated_windows",
 		function()
-			local f = fixture()
-			local text = {}
+			require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false }, blame = { persist = false } })
+			local f = h.make_git_fixture()
+			local lines = {}
 			for index = 1, 20 do
-				text[index] = string.rep("  ", index % 4) .. "line " .. index
+				lines[index] = "other " .. index
 			end
-			h.write_file(f.a, table.concat(text, "\n") .. "\n")
-			h.exec({ "git", "add", "a.txt" }, f.root)
-			h.exec({ "git", "commit", "-m", "indent" }, f.root)
-			text[16] = text[16] .. " changed"
-			h.write_file(f.a, table.concat(text, "\n") .. "\n")
+			local other = h.tempdir() .. "/other.txt"
+			h.write_file(other, table.concat(lines, "\n") .. "\n")
 			vim.cmd.edit(vim.fn.fnameescape(f.file))
-			vim.cmd("split " .. vim.fn.fnameescape(f.a))
-			vim.bo.shiftwidth = 2
-			vim.wo.foldmethod = "indent"
-			vim.wo.foldlevel = 1
-			vim.cmd("normal! 3Gzc")
-			vim.cmd("normal! 6Gzo")
-			local expected = folds(api.nvim_get_current_win())
-			vim.cmd("close")
-			local s = open(f)
-			navigate(s, "next", "b.txt")
-			compare.close(s)
-			vim.cmd("tabnew")
-			vim.cmd.buffer(vim.fn.bufnr(f.a))
+			local origin = api.nvim_get_current_win()
+			local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			ready(s)
+			-- An ordinary window in Compare's tab with folds of its own.
+			api.nvim_set_current_win(s.sidewin)
+			vim.cmd("split " .. vim.fn.fnameescape(other))
 			local win = api.nvim_get_current_win()
-			assert(
-				folds(win) == expected,
-				"a new window lost the user's fold state: " .. folds(win) .. " ~= " .. expected
-			)
-			vim.cmd("tabclose")
-		end,
-	}
-
-	-- A split of the pane is the user's window on the buffer, with their state.
-	cases[#cases + 1] = {
-		"test_core_compare_pane_split_gets_user_folds",
-		function()
-			local f = fixture()
-			vim.cmd.edit(vim.fn.fnameescape(f.a))
-			make_folds()
-			vim.cmd("setlocal nofoldenable")
-			local expected = folds(api.nvim_get_current_win())
-			vim.cmd.edit(vim.fn.fnameescape(f.file))
-			local s = open(f)
-			api.nvim_set_current_win(s.rightwin)
-			vim.cmd("split")
-			local split = api.nvim_get_current_win()
-			assert(not vim.wo[split].diff and not vim.wo[split].scrollbind, "the split kept diff mode")
-			assert(folds(split) == expected, "the split lost the user's folds: " .. folds(split) .. " ~= " .. expected)
-			api.nvim_win_close(split, true)
+			vim.wo[win].foldmethod = "manual"
+			vim.cmd("3,6fold")
+			vim.cmd("10,12fold")
+			assert(vim.fn.foldclosed(3) == 3, "the user's fold was not created")
 			compare.close(s)
+			api.nvim_set_current_win(origin)
+			vim.cmd.buffer(vim.fn.bufnr(other))
+			assert(vim.fn.foldlevel(4) == 1 and vim.fn.foldlevel(11) == 1, "closing Compare deleted the user's folds")
 		end,
 	}
 
@@ -277,6 +238,89 @@ return function(ctx)
 			assert(util.get_win_option(win, "winbar") == "MINE", "closing Compare cleared the user's winbar")
 			vim.cmd("tabclose")
 			vim.cmd("diffoff!")
+		end,
+	}
+	-- Compare never takes a user's window for one of its own: fold limits of
+	-- any size, a diff the user started, and windows split from theirs stay.
+	for _, depth in ipairs({ 100, 1000 }) do
+		cases[#cases + 1] = {
+			"test_core_compare_leaves_user_fold_depth_" .. depth,
+			function()
+				local f = fixture()
+				local text = {}
+				for index = 1, 8 do
+					text[index] = string.rep("  ", index % 4) .. "line " .. index
+				end
+				local other = h.tempdir() .. "/other.txt"
+				h.write_file(other, table.concat(text, "\n") .. "\n")
+				vim.cmd.edit(vim.fn.fnameescape(other))
+				local win = api.nvim_get_current_win()
+				vim.bo.shiftwidth = 2
+				util.set_win_options(win, { foldmethod = "indent", foldnestmax = depth })
+				local before = levels(win)
+				require("lazyvcs").setup({
+					use_gitsigns = false,
+					signs = { enabled = false },
+					blame = { persist = false },
+				})
+				local s = open(f)
+				compare.close(s)
+				api.nvim_set_current_win(win)
+				vim.cmd("split")
+				local split = api.nvim_get_current_win()
+				for _, w in ipairs({ win, split }) do
+					assert(util.get_win_option(w, "foldnestmax") == depth, "Compare changed the user's fold depth")
+					assert(levels(w) == before, "Compare changed the user's folds: " .. levels(w))
+				end
+				api.nvim_win_close(split, true)
+			end,
+		}
+	end
+	cases[#cases + 1] = {
+		"test_core_compare_leaves_user_diff_that_enters_compare_buffer",
+		function()
+			local f = fixture()
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local win = api.nvim_get_current_win()
+			local s = open(f)
+			-- The pane leaves a.txt and returns, so it has a record for it.
+			compare.navigate_file("next", 1)
+			ctx.wait_for(function()
+				return s.shown_item.relpath == "b.txt" and not s.preview_job
+			end, "Compare did not show b.txt", 15000)
+			compare.navigate_file("prev", 1)
+			ctx.wait_for(function()
+				return s.shown_item.relpath == "a.txt" and not s.preview_job
+			end, "Compare did not show a.txt", 15000)
+			-- The user diffs another file, then opens the file Compare shows there.
+			api.nvim_set_current_win(win)
+			vim.cmd("diffthis")
+			vim.cmd.edit(vim.fn.fnameescape(f.a))
+			assert(vim.wo[win].diff, "Compare turned off the user's diff")
+			compare.close(s)
+			assert(vim.wo[win].diff, "closing Compare turned off the user's diff")
+			vim.cmd("diffoff!")
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_core_compare_leaves_user_diff_in_explicit_split_target",
+		function()
+			local f = fixture()
+			vim.cmd.edit(vim.fn.fnameescape(f.a))
+			local win, buf = api.nvim_get_current_win(), api.nvim_get_current_buf()
+			vim.cmd("diffthis")
+			local s = open(f)
+			assert(s.right == buf, "Compare did not show the user's buffer")
+			-- From the focused pane, a plugin splits the user's window.
+			api.nvim_set_current_win(s.rightwin)
+			local split = api.nvim_open_win(buf, false, { win = win, split = "right" })
+			assert(vim.wo[split].diff, "Compare turned off the diff the split took from the user's window")
+			api.nvim_win_close(split, true)
+			compare.close(s)
+			assert(vim.wo[win].diff, "closing Compare turned off the user's diff")
+			api.nvim_win_call(win, function()
+				vim.cmd("diffoff")
+			end)
 		end,
 	}
 	return cases

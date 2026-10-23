@@ -35,12 +35,6 @@ return function(ctx)
 			return s.shown_item and s.shown_item.relpath == relpath and not s.preview_job and s.preview_result
 		end, "Compare did not show " .. relpath, 15000)
 	end
-	-- The pane marker, in any carrier Compare has used.
-	local function marked(win)
-		return tostring(util.get_win_option(win, "foldignore")):sub(-4) == "\28\29\30\31"
-			or tostring(util.get_win_option(win, "winhighlight")):find("LazyVcsComparePane", 1, true) ~= nil
-			or tonumber(util.get_win_option(win, "foldnestmax")) >= 100
-	end
 	local cases = {}
 
 	-- A global nvim_set_hl_ns() theme keeps working in panes and copies.
@@ -71,11 +65,10 @@ return function(ctx)
 						assert(effective(win, "DiffText") == 0xaf0000, mode .. " pane lost the theme's DiffText")
 						assert(effective(win, "Normal") == 0x102030, mode .. " pane lost the theme's Normal")
 					end
-					-- A window copied from a pane ends with the namespace an editor window has.
+					-- A split of a pane ends with the namespace an editor window has.
 					api.nvim_set_current_win(s.rightwin)
 					vim.cmd("split")
 					local copy = api.nvim_get_current_win()
-					assert(not marked(copy), "the copy kept the pane marker")
 					assert(api.nvim_get_hl_ns({ winid = copy }) == before, "the copy changed highlight namespace")
 					assert(effective(copy, "Normal") == 0x102030, "the copy lost the theme")
 					api.nvim_win_close(copy, true)
@@ -110,91 +103,6 @@ return function(ctx)
 				ready(again)
 				assert(again.right ~= buf, "Compare reused the removed buffer as a user buffer")
 				compare.close(again)
-			end,
-		}
-	end
-
-	-- Compare's diff folds are not left as hidden manual folds.
-	local function fold_count(win)
-		return api.nvim_win_call(win, function()
-			local enabled = vim.wo.foldenable
-			vim.wo.foldenable = true
-			local count = 0
-			for line = 1, api.nvim_buf_line_count(0) do
-				if vim.fn.foldlevel(line) > 0 then
-					count = count + 1
-				end
-			end
-			vim.wo.foldenable = enabled
-			return count
-		end)
-	end
-	local function long_fixture()
-		setup()
-		local f = h.make_git_fixture()
-		local lines = {}
-		for index = 1, 40 do
-			lines[index] = "line " .. index
-		end
-		h.write_file(f.root .. "/long.txt", table.concat(lines, "\n") .. "\n")
-		h.exec({ "git", "add", "long.txt" }, f.root)
-		h.exec({ "git", "commit", "-m", "long" }, f.root)
-		lines[20] = "changed line"
-		h.write_file(f.root .. "/long.txt", table.concat(lines, "\n") .. "\n")
-		vim.cmd.edit(vim.fn.fnameescape(f.root .. "/long.txt"))
-		local buf = api.nvim_get_current_buf()
-		local s = assert(compare.open({ path = f.root, base = "HEAD" }))
-		ready(s)
-		assert(s.shown_item.relpath == "long.txt" and s.right == buf, "Compare did not show long.txt")
-		assert(fold_count(s.rightwin) > 0, "the pane has no diff folds to leak")
-		return f, s, buf
-	end
-	local fold_paths = {
-		navigate = function(s, buf)
-			navigate(s, "next", "sample.txt")
-			vim.cmd("tabnew")
-			vim.cmd.buffer(buf)
-			return api.nvim_get_current_win()
-		end,
-		close = function(s, buf)
-			compare.close(s)
-			vim.cmd("tabnew")
-			vim.cmd.buffer(buf)
-			return api.nvim_get_current_win()
-		end,
-		split = function(s)
-			api.nvim_set_current_win(s.rightwin)
-			vim.cmd("split")
-			return api.nvim_get_current_win()
-		end,
-		tab_split = function(s)
-			api.nvim_set_current_win(s.rightwin)
-			vim.cmd("tab split")
-			return api.nvim_get_current_win()
-		end,
-		float = function(s)
-			api.nvim_set_current_win(s.rightwin)
-			return api.nvim_open_win(0, true, { relative = "editor", row = 1, col = 1, width = 30, height = 5 })
-		end,
-	}
-	for name, path in pairs(fold_paths) do
-		cases[#cases + 1] = {
-			"test_core_compare_worktree_diff_folds_stay_in_panes_" .. name,
-			function()
-				local _, s, buf = long_fixture()
-				local win = path(s, buf)
-				assert(api.nvim_win_get_buf(win) == buf)
-				assert(not vim.wo[win].diff, name .. " window is in diff mode")
-				assert(fold_count(win) == 0, name .. " window kept Compare's diff folds")
-				if api.nvim_win_is_valid(win) and #api.nvim_list_wins() > 1 then
-					api.nvim_win_close(win, true)
-				end
-				if not s.closed then
-					if api.nvim_win_get_buf(s.rightwin) == buf then
-						assert(fold_count(s.rightwin) > 0, "the pane lost its diff folds")
-					end
-					compare.close(s)
-				end
 			end,
 		}
 	end
@@ -292,7 +200,7 @@ return function(ctx)
 		end,
 	}
 
-	-- A session saved during Compare restores no live pane marker.
+	-- A session saved during Compare leaves a user's later diff alone.
 	cases[#cases + 1] = {
 		"test_core_compare_worktree_restored_session_keeps_user_diff",
 		function()
@@ -301,7 +209,6 @@ return function(ctx)
 			navigate(s, "prev", "a.txt")
 			local path = api.nvim_buf_get_name(s.right)
 			api.nvim_set_current_win(s.rightwin)
-			assert(marked(s.rightwin), "the pane has no marker")
 			local sessionoptions = vim.o.sessionoptions
 			local session = vim.fs.normalize(vim.fn.tempname()) .. ".vim"
 			local ok, err = xpcall(function()
@@ -324,7 +231,6 @@ return function(ctx)
 				end
 				assert(restored, "the session did not restore the pane window")
 				assert(not vim.w[restored].lazyvcs_compare)
-				assert(not marked(restored), "the restored window kept a pane marker")
 				-- The user replaces the restored state with a diff of their own, then reloads.
 				api.nvim_set_current_win(restored)
 				vim.cmd("diffoff")
@@ -436,49 +342,6 @@ return function(ctx)
 		end,
 	}
 
-	-- A session saved during Compare with the default 'sessionoptions' restores
-	-- the pane's window as an ordinary one.
-	cases[#cases + 1] = {
-		"test_core_compare_restored_session_resets_pane_folds",
-		function()
-			local _, s = private_fixture()
-			local path = api.nvim_buf_get_name(s.right)
-			api.nvim_set_current_win(s.rightwin)
-			local sessionoptions = vim.o.sessionoptions
-			local session = vim.fs.normalize(vim.fn.tempname()) .. ".vim"
-			local ok, err = xpcall(function()
-				vim.o.sessionoptions = "blank,buffers,curdir,folds,help,tabpages,winsize,terminal"
-				vim.cmd("mksession! " .. vim.fn.fnameescape(session))
-				compare.close(s)
-				vim.cmd("tabnew")
-				vim.cmd("silent! tabonly!")
-				vim.cmd("source " .. vim.fn.fnameescape(session))
-				local restored
-				for _, win in ipairs(api.nvim_list_wins()) do
-					if
-						util.canonical_path(api.nvim_buf_get_name(api.nvim_win_get_buf(win)))
-						== util.canonical_path(path)
-					then
-						restored = win
-					end
-				end
-				assert(restored, "the session did not restore the pane window")
-				assert(not marked(restored), "the restored window kept a pane marker")
-				local values = util.capture_win_options(restored, { "foldmethod", "foldcolumn", "diff" })
-				assert(
-					values.foldmethod ~= "diff" and values.foldcolumn == "0",
-					"kept pane folds: " .. vim.inspect(values)
-				)
-				api.nvim_set_current_win(restored)
-				assert(pcall(vim.api.nvim_command, "1fold"), "the restored window cannot create folds")
-			end, debug.traceback)
-			vim.o.sessionoptions = sessionoptions
-			vim.fn.delete(session)
-			vim.cmd("silent! tabonly!")
-			assert(ok, err)
-		end,
-	}
-
 	-- Sourcing a session from the Compare tab keeps the layout it restores there.
 	for _, from in ipairs({ "side", "right" }) do
 		cases[#cases + 1] = {
@@ -521,5 +384,44 @@ return function(ctx)
 			end,
 		}
 	end
+	-- A session of the Compare tab sourced from its right pane leaves a window
+	-- whose later diff belongs to the user.
+	cases[#cases + 1] = {
+		"test_core_compare_session_sourced_in_pane_keeps_later_user_diff",
+		function()
+			local _, s = private_fixture()
+			local path = api.nvim_buf_get_name(s.right)
+			local sessionoptions = vim.o.sessionoptions
+			local session = vim.fs.normalize(vim.fn.tempname()) .. ".vim"
+			local ok, err = xpcall(function()
+				vim.o.sessionoptions = "options,winsize"
+				api.nvim_set_current_win(s.rightwin)
+				vim.cmd("mksession! " .. vim.fn.fnameescape(session))
+				vim.cmd("source " .. vim.fn.fnameescape(session))
+				vim.wait(200)
+				local restored
+				for _, win in ipairs(api.nvim_list_wins()) do
+					if
+						util.canonical_path(api.nvim_buf_get_name(api.nvim_win_get_buf(win)))
+						== util.canonical_path(path)
+					then
+						restored = win
+					end
+				end
+				assert(restored, "the session did not restore the pane's file")
+				api.nvim_set_current_win(restored)
+				vim.cmd("diffoff")
+				vim.cmd("diffthis")
+				vim.cmd.edit()
+				assert(vim.wo[restored].diff, "reloading turned off the user's diff")
+				vim.cmd("diffoff!")
+			end, debug.traceback)
+			vim.o.sessionoptions = sessionoptions
+			vim.fn.delete(session)
+			pcall(compare.close, s)
+			vim.cmd("silent! tabonly!")
+			assert(ok, err)
+		end,
+	}
 	return cases
 end
