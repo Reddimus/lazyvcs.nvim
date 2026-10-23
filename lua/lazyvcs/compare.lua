@@ -1305,10 +1305,18 @@ local function edit_buffer(s, buf, position)
 	local before, copied
 	if vim.api.nvim_win_get_buf(editor) ~= buf and not require("lazyvcs.state").for_window(editor) then
 		before = util.capture_win_options(editor, { "diff", "scrollbind", "cursorbind" })
-		copied = worktree.copies_pane(editor, buf, { s.leftwin, s.rightwin })
+		-- Any Compare session's live pane can be the source.
+		local panes = {}
+		for _, session in pairs(sessions) do
+			if alive(session) then
+				vim.list_extend(panes, { session.leftwin, session.rightwin })
+			end
+		end
+		copied = worktree.copies_pane(editor, buf, panes)
 	end
 	vim.api.nvim_win_set_buf(editor, buf)
-	if before then
+	-- An autocommand may have shown another buffer; its options are its own.
+	if before and valid(editor) and vim.api.nvim_win_get_buf(editor) == buf then
 		worktree.reset_editor(editor, before, copied)
 	end
 	if position then

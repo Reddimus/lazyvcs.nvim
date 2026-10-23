@@ -609,5 +609,77 @@ return function(ctx)
 			assert(ok, err)
 		end,
 	}
+	-- The edit resets only the buffer it opened, not one an autocommand showed.
+	cases[#cases + 1] = {
+		"test_core_compare_edit_keeps_diff_of_redirected_buffer",
+		function()
+			local f = fixture()
+			local other = h.tempdir() .. "/other.txt"
+			h.write_file(other, lines(20, 3))
+			vim.cmd.edit(vim.fn.fnameescape(other))
+			local editor, redirected = api.nvim_get_current_win(), api.nvim_get_current_buf()
+			vim.cmd("diffthis")
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local group = api.nvim_create_augroup("lazyvcs_test_redirect", { clear = true })
+			local ok, err = xpcall(function()
+				local s = copying_editor(f, function()
+					api.nvim_create_autocmd("BufEnter", {
+						group = group,
+						callback = function(args)
+							if args.buf == vim.fn.bufnr(f.a) and api.nvim_get_current_win() == editor then
+								api.nvim_del_augroup_by_id(group)
+								vim.cmd.buffer(redirected)
+							end
+						end,
+					})
+				end)
+				assert(api.nvim_win_get_buf(editor) == redirected, "the autocommand did not redirect the edit")
+				assert(vim.wo[editor].diff and vim.wo[editor].scrollbind, "the edit turned off the other buffer's diff")
+				compare.close(s)
+			end, debug.traceback)
+			pcall(api.nvim_del_augroup_by_id, group)
+			vim.cmd("diffoff!")
+			assert(ok, err)
+		end,
+	}
+	-- Another Compare session's live pane is a source too.
+	cases[#cases + 1] = {
+		"test_core_compare_edit_resets_copy_from_another_session",
+		function()
+			local f = fixture()
+			-- The first session, from the first tab, moves on to b.txt.
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local editor = api.nvim_get_current_win()
+			local first = open(f)
+			local function show(s, relpath, direction)
+				api.nvim_set_current_tabpage(s.tab)
+				compare.navigate_file(direction, 1)
+				ctx.wait_for(function()
+					return s.shown_item.relpath == relpath and not s.preview_job
+				end, "Compare did not show " .. relpath, 15000)
+			end
+			show(first, "b.txt", "next")
+			-- The second session, from another tab, shows a.txt again.
+			vim.cmd("tabnew")
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local second = open(f)
+			assert(second ~= first, "Compare reused the first session")
+			show(second, "b.txt", "next")
+			show(second, "a.txt", "prev")
+			-- From the first session's list, edit a.txt.
+			api.nvim_set_current_tabpage(first.tab)
+			api.nvim_set_current_win(first.sidewin)
+			api.nvim_win_set_cursor(first.sidewin, { first.row_by_path["a.txt"], 0 })
+			first.actions.edit()
+			assert(api.nvim_get_current_win() == editor and api.nvim_win_get_buf(editor) == vim.fn.bufnr(f.a))
+			local values = util.capture_win_options(editor, { "diff", "scrollbind", "cursorbind" })
+			assert(
+				not values.diff and not values.scrollbind and not values.cursorbind,
+				"the editor kept the other session's pane state: " .. vim.inspect(values)
+			)
+			compare.close(second)
+			compare.close(first)
+		end,
+	}
 	return cases
 end
