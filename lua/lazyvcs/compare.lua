@@ -247,14 +247,19 @@ local function owns_shown(s, win)
 	return valid(win) and s.pane_state ~= nil and s.pane_state[win] == vim.api.nvim_win_get_buf(win)
 end
 -- Switch a pane to one of Compare's slot buffers. A buffer Compare did not set
--- up there, such as a picker preview, keeps its winbar and bindings; its diff
+-- up there, such as a picker preview, keeps its own winbar and bindings; a
+-- recognized Compare label identifies inherited pane state to reset. Its diff
 -- ends in the pane, as Neovim otherwise keeps a hidden buffer in the tab's diff.
 -- Only the pane's own record of that buffer changes.
 local function show_slot(s, win, buf)
-	if vim.api.nvim_win_get_buf(win) ~= buf and not owns_shown(s, win) and util.get_win_option(win, "diff") then
-		local keep = util.capture_win_options(win, { "scrollbind", "cursorbind", "winbar" })
-		util.diff_off(win)
-		util.set_win_options(win, keep)
+	if vim.api.nvim_win_get_buf(win) ~= buf and not owns_shown(s, win) then
+		if worktree.is_label(vim.api.nvim_win_get_buf(win), util.get_win_option(win, "winbar")) then
+			worktree.reset_pane(win)
+		elseif util.get_win_option(win, "diff") then
+			local keep = util.capture_win_options(win, { "scrollbind", "cursorbind", "winbar" })
+			util.diff_off(win)
+			util.set_win_options(win, keep)
+		end
 	end
 	util.show_win_buffer(win, buf)
 end
@@ -1316,8 +1321,11 @@ local function edit_buffer(s, buf, position)
 	end
 	vim.api.nvim_win_set_buf(editor, buf)
 	-- An autocommand may have shown another buffer; its options are its own.
-	if before and valid(editor) and vim.api.nvim_win_get_buf(editor) == buf then
-		worktree.reset_editor(editor, before, copied)
+	if valid(editor) and vim.api.nvim_win_get_buf(editor) == buf then
+		if before then
+			worktree.reset_editor(editor, before, copied)
+		end
+		worktree.reset_label(editor)
 	end
 	if position then
 		local line = math.min(position[1], vim.api.nvim_buf_line_count(buf))
@@ -1776,9 +1784,11 @@ local function construct_session(s)
 		callback = function(event)
 			local win = tonumber(event.match)
 			if win == s.sidewin or win == s.leftwin or win == s.rightwin then
-				-- Neovim saves the closing pane's options for its buffer next.
-				if win == s.rightwin then
-					release_pane_buffer(s, s.rightwin)
+				-- End owned pane state while the surviving panes still show their
+				-- buffers. A session's :only closes siblings before hiding the last
+				-- pane's file, when the router can no longer restore the layout.
+				for _, pane in ipairs({ s.leftwin, s.rightwin }) do
+					release_pane_buffer(s, pane)
 				end
 				local record = win == s.rightwin and s.worktree or nil
 				invalidate_panes(s)

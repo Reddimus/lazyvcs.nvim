@@ -681,5 +681,105 @@ return function(ctx)
 			compare.close(first)
 		end,
 	}
+	cases[#cases + 1] = {
+		"test_core_compare_picker_does_not_save_copied_bindings",
+		function()
+			local f = fixture()
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local editor = api.nvim_get_current_win()
+			util.set_win_options(editor, { scrollbind = false, cursorbind = false })
+			local s = open(f)
+			for _, direction in ipairs({ "next", "prev" }) do
+				compare.navigate_file(direction, 1)
+				local expected = direction == "next" and "b.txt" or "a.txt"
+				ctx.wait_for(function()
+					return s.shown_item.relpath == expected and not s.preview_job
+				end, "Compare did not revisit " .. expected, 15000)
+			end
+			api.nvim_set_current_win(s.sidewin)
+			api.nvim_win_set_buf(s.sidewin, s.right)
+			ctx.wait_for(function()
+				return api.nvim_win_get_buf(s.sidewin) == s.sidebar and not s.router.busy()
+			end, "picker did not restore the sidebar", 15000)
+			s.actions.edit()
+			local values = util.capture_win_options(editor, { "diff", "scrollbind", "cursorbind" })
+			assert(
+				not values.diff and not values.scrollbind and not values.cursorbind,
+				"picker saved the pane's bindings: " .. vim.inspect(values)
+			)
+			compare.close(s)
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_core_compare_edit_different_file_leaves_no_label_in_live_editor",
+		function()
+			local f = fixture()
+			local actions, state = require("lazyvcs.actions"), require("lazyvcs.state")
+			vim.cmd.edit(vim.fn.fnameescape(f.a))
+			local original = api.nvim_get_current_buf()
+			actions.open()
+			ctx.wait_for(function()
+				local live = state.get(original)
+				return live and live.phase == "active"
+			end, "live diff did not open", 15000)
+			local editor = state.get(original).editable_win
+			api.nvim_set_current_win(editor)
+			local s = open(f)
+			for _, step in ipairs({ { "next", "b.txt" }, { "next", "sample.txt" }, { "prev", "b.txt" } }) do
+				compare.navigate_file(step[1], 1)
+				ctx.wait_for(function()
+					return s.shown_item.relpath == step[2] and not s.preview_job
+				end, "Compare did not show " .. step[2], 15000)
+			end
+			local target = s.right
+			api.nvim_set_current_win(s.rightwin)
+			s.actions.edit()
+			ctx.wait_for(function()
+				local live = state.get(target)
+				return live and live.phase == "active" and live.editable_win == editor
+			end, "live diff did not transfer", 15000)
+			assert(vim.wo[editor].diff, "the transferred diff ended")
+			actions.close(state.get(target))
+			assert(
+				not tostring(util.get_win_option(editor, "winbar")):find("WORKTREE", 1, true),
+				"closing the live diff restored a Compare label"
+			)
+			compare.close(s)
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_core_compare_session_releases_surviving_panes_hidden_file",
+		function()
+			local f = fixture()
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			vim.cmd("vsplit " .. vim.fn.fnameescape(f.b))
+			local session = h.tempdir() .. "/session.vim"
+			local options = vim.o.sessionoptions
+			local ok, err = xpcall(function()
+				vim.o.sessionoptions = "blank,curdir,folds,help,winsize"
+				vim.cmd("mksession! " .. vim.fn.fnameescape(session))
+				local s = open(f)
+				local target = s.right
+				vim.bo[target].buflisted = true
+				api.nvim_set_current_win(s.rightwin)
+				vim.cmd("source " .. vim.fn.fnameescape(session))
+				ctx.wait_for(function()
+					return s.closed
+				end, "Compare did not end", 15000)
+				vim.cmd("split")
+				api.nvim_set_current_buf(target)
+				local values = util.capture_win_options(0, { "diff", "scrollbind", "cursorbind", "winbar" })
+				assert(
+					not values.diff
+						and not values.scrollbind
+						and not values.cursorbind
+						and not tostring(values.winbar):find("WORKTREE", 1, true),
+					"session kept hidden pane state: " .. vim.inspect(values)
+				)
+			end, debug.traceback)
+			vim.o.sessionoptions = options
+			assert(ok, err)
+		end,
+	}
 	return cases
 end

@@ -353,6 +353,13 @@ function M.is_label(buf, winbar)
 	return labels ~= nil and labels[winbar] == true
 end
 
+---Clear a copied Compare label without changing a live diff's options.
+function M.reset_label(win)
+	if M.is_label(vim.api.nvim_win_get_buf(win), util.get_win_option(win, "winbar")) then
+		util.set_win_option(win, "winbar", "")
+	end
+end
+
 ---Turn off what Compare set in a pane before the pane releases a real buffer
 ---or Compare closes, so the option record Neovim saves for the buffer carries
 ---no diff mode, scroll binding, or Compare label. :diffoff restores the
@@ -452,9 +459,7 @@ function M.reset_editor(win, before, copied)
 		-- :diffoff restores the pane's bindings; the window keeps its own.
 		util.set_win_options(win, { scrollbind = before.scrollbind, cursorbind = before.cursorbind })
 	end
-	if M.is_label(vim.api.nvim_win_get_buf(win), util.get_win_option(win, "winbar")) then
-		util.set_win_option(win, "winbar", "")
-	end
+	M.reset_label(win)
 end
 
 function M.capture(record)

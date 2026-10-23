@@ -8,7 +8,7 @@ and this project adheres to
 
 ## [Unreleased]
 
-## [0.12.1] - 2026-10-22
+## [0.12.1] - 2026-10-23
 
 ### Fixed
 
@@ -18,12 +18,15 @@ and this project adheres to
   resets a pane before it releases a file or closes, and removes the diff mode
   and label an edit action's window copies from the live pane, keeping that
   window's own bindings. A window with its own diff for the file, such as a user
-  diff or a live diff, keeps it.
+  diff or a live diff, keeps it. Picker restoration does not save copied pane
+  bindings as user options, and transferring a live diff clears a copied Compare
+  label before the live diff saves it.
 - Close Compare without resetting windows it does not own: other windows in its
   tab and a picker preview in a pane keep their options and folds, also when
   Compare recovers from the deletion of the file it showed. A preview's own diff
   ends in the pane. A session sourced from the Compare tab keeps the layout it
-  restores there.
+  restores there. Its departing panes release their state even when the session
+  closes sibling panes first.
 - Keep a Compare buffer when part of it is written over its file, as with
   `:1,1write!` or `:write >> %`.
 - Keep Compare's pane labels and the file list's winbar, hints, and cursor out
