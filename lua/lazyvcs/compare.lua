@@ -1228,7 +1228,16 @@ function M.close(s, return_focus)
 		vim.api.nvim_win_close(s.helpwin, true)
 	end
 	local borrowed = {}
-	if vim.api.nvim_tabpage_is_valid(s.tab) then
+	-- A session loaded from the Compare tab replaces Compare's windows with its
+	-- own. That tab belongs to the session now: leave its windows and keep it.
+	local replaced = s.session_replaced and vim.api.nvim_tabpage_is_valid(s.tab)
+	if replaced then
+		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(s.tab)) do
+			vim.w[win].lazyvcs_compare = nil
+			marker.release(win)
+		end
+	end
+	if vim.api.nvim_tabpage_is_valid(s.tab) and not replaced then
 		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(s.tab)) do
 			-- Reset only Compare state: the panes and windows that copied them.
 			-- Other windows in this tab, and a picker preview in a pane, keep their
@@ -1251,7 +1260,7 @@ function M.close(s, return_focus)
 			end
 		end
 	end
-	if vim.api.nvim_tabpage_is_valid(s.tab) then
+	if vim.api.nvim_tabpage_is_valid(s.tab) and not replaced then
 		vim.api.nvim_set_current_tabpage(s.tab)
 		if #vim.api.nvim_list_tabpages() == 1 then
 			origin_window(s, true)
@@ -1273,7 +1282,7 @@ function M.close(s, return_focus)
 	if vim.api.nvim_buf_is_valid(s.sidebar) then
 		vim.api.nvim_buf_delete(s.sidebar, { force = true })
 	end
-	if return_focus ~= false and valid(s.origin_win) then
+	if return_focus ~= false and not replaced and valid(s.origin_win) then
 		vim.api.nvim_set_current_win(s.origin_win)
 	end
 end
@@ -1724,6 +1733,22 @@ local function construct_session(s)
 		group = s.augroup,
 		callback = function(args)
 			resize(s, args.event == "WinResized")
+		end,
+	})
+	-- A session sourced from this tab closes all but one of Compare's windows
+	-- (:only) and edits its own files in the one that is left.
+	autocmd("SessionLoadPost", {
+		group = s.augroup,
+		callback = function()
+			local left = 0
+			for _, win in ipairs({ s.sidewin, s.leftwin, s.rightwin }) do
+				if valid(win) then
+					left = left + 1
+				end
+			end
+			if vim.api.nvim_tabpage_is_valid(s.tab) and left <= 1 then
+				s.session_replaced = true
+			end
 		end,
 	})
 	autocmd("WinClosed", {

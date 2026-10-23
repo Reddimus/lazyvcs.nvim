@@ -453,5 +453,47 @@ return function(ctx)
 		end,
 	}
 
+	-- Sourcing a session from the Compare tab keeps the layout it restores there.
+	for _, from in ipairs({ "side", "right" }) do
+		cases[#cases + 1] = {
+			"test_core_compare_session_sourced_from_" .. from .. "_keeps_restored_tab",
+			function()
+				setup()
+				local f = h.make_git_fixture()
+				h.write_file(f.root .. "/a.txt", "first\n")
+				local other = h.tempdir() .. "/other.txt"
+				h.write_file(other, "other\n")
+				vim.cmd("tabnew")
+				vim.cmd("silent! tabonly!")
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				vim.cmd("vsplit " .. vim.fn.fnameescape(other))
+				local sessionoptions = vim.o.sessionoptions
+				local session = vim.fs.normalize(vim.fn.tempname()) .. ".vim"
+				local ok, err = xpcall(function()
+					vim.o.sessionoptions = "blank,buffers,curdir,folds,help,tabpages,winsize,terminal"
+					vim.cmd("mksession! " .. vim.fn.fnameescape(session))
+					local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+					ready(s)
+					api.nvim_set_current_win(from == "side" and s.sidewin or s.rightwin)
+					vim.cmd("source " .. vim.fn.fnameescape(session))
+					vim.wait(200)
+					local names = {}
+					for _, win in ipairs(api.nvim_tabpage_list_wins(0)) do
+						names[#names + 1] = vim.fs.basename(api.nvim_buf_get_name(api.nvim_win_get_buf(win)))
+						assert(not vim.w[win].lazyvcs_compare, "a restored window is still a Compare window")
+					end
+					table.sort(names)
+					assert(
+						#api.nvim_list_tabpages() == 1 and table.concat(names, ",") == "other.txt,sample.txt",
+						"Compare closed the restored layout: " .. vim.inspect(names)
+					)
+					assert(s.closed, "Compare did not end")
+				end, debug.traceback)
+				vim.o.sessionoptions = sessionoptions
+				vim.fn.delete(session)
+				assert(ok, err)
+			end,
+		}
+	end
 	return cases
 end
