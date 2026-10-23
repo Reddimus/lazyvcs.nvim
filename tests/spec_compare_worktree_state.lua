@@ -87,6 +87,32 @@ return function(ctx)
 		}
 	end
 
+	-- Removing an untouched private buffer does not bring it back.
+	for _, command in ipairs({ "bdelete", "bunload" }) do
+		cases[#cases + 1] = {
+			"test_core_compare_worktree_" .. command .. "_keeps_private_buffer_unlisted",
+			function()
+				local _, s = private_fixture()
+				local buf = s.right
+				api.nvim_set_current_win(s.rightwin)
+				vim.cmd(command)
+				ctx.wait_for(function()
+					return not s.worktree and not s.preview_job and s.preview_result
+				end, "Compare did not recover", 15000)
+				assert(
+					not api.nvim_buf_is_valid(buf) or not vim.bo[buf].buflisted,
+					command .. " listed the removed private buffer again"
+				)
+				compare.close(s)
+				assert(not api.nvim_buf_is_valid(buf) or not vim.bo[buf].buflisted, "the buffer was listed on close")
+				local again = assert(compare.open({ path = s.root, base = "HEAD" }))
+				ready(again)
+				assert(again.right ~= buf, "Compare reused the removed buffer as a user buffer")
+				compare.close(again)
+			end,
+		}
+	end
+
 	-- Compare's diff folds are not left as hidden manual folds.
 	local function fold_count(win)
 		return api.nvim_win_call(win, function()

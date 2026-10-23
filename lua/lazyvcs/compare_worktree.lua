@@ -53,9 +53,15 @@ local function adopt(record)
 	end
 	-- A batched edit can save or undo before change autocmds observe 'modified'.
 	-- Any change since loading belongs to the user, including its undo history.
+	-- Unloading also moves the change tick, and leaves no text or history.
 	if
 		vim.bo[record.buf].modified
-		or (record.tick and not record.rereading and vim.api.nvim_buf_get_changedtick(record.buf) ~= record.tick)
+		or (
+			record.tick
+			and not record.rereading
+			and vim.api.nvim_buf_is_loaded(record.buf)
+			and vim.api.nvim_buf_get_changedtick(record.buf) ~= record.tick
+		)
 	then
 		-- List the buffer once for that change; the user may unlist it later.
 		record.retained, record.tick = true, nil
