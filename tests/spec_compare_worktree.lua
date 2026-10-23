@@ -505,6 +505,9 @@ return function(ctx)
 			vim.bo[alternate].bufhidden = "wipe"
 			api.nvim_set_current_win(s.rightwin)
 			api.nvim_win_set_buf(s.rightwin, alternate)
+			-- The alternate's own window options, which Compare never set.
+			local util = require("lazyvcs.util")
+			util.set_win_options(s.rightwin, { winbar = "MINE", scrollbind = true, cursorbind = true })
 			api.nvim_buf_delete(original, { force = true })
 			ctx.wait_for(function()
 				return not s.closed
@@ -519,6 +522,15 @@ return function(ctx)
 				"recovery deleted an external alternate"
 			)
 			compare.close(s)
+			-- Neovim saved the alternate's options when the pane left it.
+			vim.cmd("tabnew")
+			vim.cmd.buffer(alternate)
+			local values = util.capture_win_options(0, { "winbar", "scrollbind", "cursorbind" })
+			assert(
+				values.winbar == "MINE" and values.scrollbind and values.cursorbind,
+				"recovery reset the alternate's options: " .. vim.inspect(values)
+			)
+			vim.cmd("tabclose")
 		end,
 	}
 	return cases

@@ -89,6 +89,9 @@ local function bind(s, buf)
 	require("lazyvcs.window_controls").sync()
 end
 local function preview_options(s, win)
+	-- The buffer this pane holds Compare state for; only that one is reset.
+	s.pane_state = s.pane_state or {}
+	s.pane_state[win] = vim.api.nvim_win_get_buf(win)
 	if s.mode == "text" then
 		highlighting.apply(win, require("lazyvcs.config").get().diff_highlighting)
 	else
@@ -225,12 +228,17 @@ local function labels(s, left, right)
 	set_label(s.rightwin, s.right_label, s.right)
 end
 -- Neovim saves a pane's options for the buffer it hides. Leave no Compare state
--- for an ordinary window to inherit when it later shows that real buffer.
-local function release_pane_buffer(win, next_buf)
+-- for an ordinary window to inherit when it later shows that real buffer. A
+-- pane showing a buffer Compare did not set up, such as a picker preview,
+-- keeps that buffer's options.
+local function release_pane_buffer(s, win, next_buf)
 	if valid(win) then
 		local buf = vim.api.nvim_win_get_buf(win)
-		if buf ~= next_buf and not buffers.is_managed(buf) then
-			worktree.reset_pane(win)
+		if buf ~= next_buf and s.pane_state and s.pane_state[win] == buf then
+			s.pane_state[win] = nil
+			if not buffers.is_managed(buf) then
+				worktree.reset_pane(win)
+			end
 		end
 	end
 end
@@ -372,7 +380,7 @@ local function set_panes(s, next_display)
 			end
 		end
 		for _, slot in ipairs({ { s.leftwin, left }, { s.rightwin, right } }) do
-			release_pane_buffer(slot[1], slot[2])
+			release_pane_buffer(s, slot[1], slot[2])
 			util.show_win_buffer(slot[1], slot[2])
 			check()
 			assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2], "Comparison installation was redirected")
@@ -455,7 +463,7 @@ local function set_panes(s, next_display)
 		local rolled_back = pcall(function()
 			check()
 			for _, slot in ipairs({ { s.leftwin, before.left }, { s.rightwin, before.right } }) do
-				release_pane_buffer(slot[1], slot[2])
+				release_pane_buffer(s, slot[1], slot[2])
 				util.show_win_buffer(slot[1], slot[2])
 				check()
 				assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2], "Comparison rollback was redirected")
@@ -1221,14 +1229,11 @@ function M.close(s, return_focus)
 	end
 	if vim.api.nvim_tabpage_is_valid(s.tab) and not replaced then
 		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(s.tab)) do
-			-- Reset only the panes, and only while they show their own buffer.
+			-- Reset only the panes, and only a buffer they hold Compare state for.
 			-- Other windows in this tab, and a picker preview in a pane, keep
 			-- their own options.
-			if
-				(win == s.leftwin and vim.api.nvim_win_get_buf(win) == s.left)
-				or (win == s.rightwin and vim.api.nvim_win_get_buf(win) == s.right)
-			then
-				release_pane_buffer(win)
+			if win == s.leftwin or win == s.rightwin then
+				release_pane_buffer(s, win)
 			end
 			local buf = vim.api.nvim_win_get_buf(win)
 			if not buffers.is_managed(buf) and vim.bo[buf].modified then
@@ -1737,8 +1742,8 @@ local function construct_session(s)
 			local win = tonumber(event.match)
 			if win == s.sidewin or win == s.leftwin or win == s.rightwin then
 				-- Neovim saves the closing pane's options for its buffer next.
-				if win == s.rightwin and valid(s.rightwin) and vim.api.nvim_win_get_buf(s.rightwin) == s.right then
-					release_pane_buffer(s.rightwin)
+				if win == s.rightwin then
+					release_pane_buffer(s, s.rightwin)
 				end
 				local record = win == s.rightwin and s.worktree or nil
 				invalidate_panes(s)

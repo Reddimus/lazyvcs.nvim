@@ -18,8 +18,9 @@ and this project adheres to
   resets a pane before it releases a file or closes, and resets the editor
   window its edit actions open.
 - Close Compare without resetting windows it does not own: other windows in its
-  tab and a picker preview in a pane keep their options and folds. A session
-  sourced from the Compare tab keeps the layout it restores there.
+  tab and a picker preview in a pane keep their options and folds, also when
+  Compare recovers from the deletion of the file it showed. A session sourced
+  from the Compare tab keeps the layout it restores there.
 - Keep a Compare buffer when part of it is written over its file, as with
   `:1,1write!` or `:write >> %`.
 - Keep Compare's pane labels and the file list's winbar, hints, and cursor out

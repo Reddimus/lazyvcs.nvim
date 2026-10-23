@@ -230,12 +230,12 @@ the GitHub release.
   before it releases a real buffer, before Compare closes, and when the user
   closes it, so the saved record is clean; the edit actions reset the editor
   window they open, which can copy the live pane. Folds stay native, with no
-  `zE` and no fold restore. Closing Compare resets a pane only while it shows
-  its own buffer, so a picker preview keeps its state, and leaves other windows
-  in its tab alone. Do not try to recognize copies in windows Compare does not
-  open: three designs (window records, then marks in 'winhighlight',
-  'foldnestmax', and 'foldignore') each failed review. That work is planned
-  separately; see the README's known limits.
+  `zE` and no fold restore. A pane is reset only for the buffer Compare set it
+  up for, so a picker preview, also during deletion recovery, keeps its state,
+  and closing Compare leaves other windows in its tab alone. Do not try to
+  recognize copies in windows Compare does not open: three designs (window
+  records, then marks in 'winhighlight', 'foldnestmax', and 'foldignore') each
+  failed review. That work is planned separately; see the README's known limits.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_buffers.lua` owns snapshot identity, reload guards, and bounded
