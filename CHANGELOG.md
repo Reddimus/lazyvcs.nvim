@@ -15,13 +15,15 @@ and this project adheres to
 - Keep Compare's diff mode, scroll binding, and `WORKTREE` label out of the
   editor window that `o`, `<leader>ve`, and picker selections open, and out of
   windows that open a file after Compare moved on from it or closed. Compare now
-  resets a pane before it releases a file or closes, and undoes what an edit
-  action brings into the editor window it opens. A window that already shows the
-  file, such as a user diff or a live diff, keeps its diff.
+  resets a pane before it releases a file or closes, and removes the diff mode
+  and label an edit action's window copies from the live pane, keeping that
+  window's own bindings. A window with its own diff for the file, such as a user
+  diff or a live diff, keeps it.
 - Close Compare without resetting windows it does not own: other windows in its
-  tab and a picker preview in a pane keep their options and folds, also when
-  Compare recovers from the deletion of the file it showed. A session sourced
-  from the Compare tab keeps the layout it restores there.
+  tab and a picker preview in a pane keep their options and folds, including a
+  preview's own diff when Compare recovers from the deletion of the file it
+  showed. A session sourced from the Compare tab keeps the layout it restores
+  there.
 - Keep a Compare buffer when part of it is written over its file, as with
   `:1,1write!` or `:write >> %`.
 - Keep Compare's pane labels and the file list's winbar, hints, and cursor out

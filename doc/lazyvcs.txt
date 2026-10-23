@@ -216,10 +216,11 @@ Compare keeps borrowed buffers loaded while in use and restores their prior
 'bufhidden' setting on release. Before a pane releases a real file, and before
 Compare closes, Compare turns off the pane's diff mode, scroll binding, and
 label, so windows that open the file later start without them. o, <leader>ve,
-and picker selections undo what they bring into the editor window they open;
-a window that already shows the file, such as a user or live diff, keeps its
-diff. Closing Compare leaves other windows in its tab, and a picker preview in
-a pane, untouched. A session sourced from the Compare tab keeps the layout it restores.
+and picker selections remove the diff mode and label that the editor window
+they open copies from the pane, keeping the window's own bindings; a window
+with its own diff for the file, such as a user or live diff, keeps it. Closing
+Compare leaves other windows in its tab, and a picker preview in a pane, with
+its own diff, untouched. A session sourced from the Compare tab keeps the layout it restores.
 
 Known limits: windows Compare does not open follow Neovim's rules for any diff
 window. A split of a pane, or another window in the Compare tab that shows a
