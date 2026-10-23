@@ -295,21 +295,27 @@ return function(ctx)
 	cases[#cases + 1] = {
 		"test_core_compare_worktree_marker_reset_keeps_user_options",
 		function()
-			local f = h.make_git_fixture()
-			vim.cmd.edit(vim.fn.fnameescape(f.file))
-			local win = api.nvim_get_current_win()
-			util.set_win_option(win, "winhighlight", "Normal:NormalFloat")
-			util.set_win_option(win, "foldnestmax", 3)
-			vim.cmd("diffthis")
-			-- As if these options were copied from a Compare pane.
-			require("lazyvcs.compare_worktree").mark_window(win)
-			assert(require("lazyvcs.compare_marker").marked(win))
-			vim.cmd.edit()
-			assert(not vim.wo[win].diff and not vim.wo[win].scrollbind, "copied pane options survived")
-			local value = util.get_win_option(win, "winhighlight")
+			local _, s = fixture()
+			navigate(s, "next", "b.txt")
+			navigate(s, "prev", "a.txt")
+			local pane = s.rightwin
+			api.nvim_set_current_win(pane)
+			-- The user's own values in the pane, set while it is marked.
+			util.set_win_option(pane, "winhighlight", "Normal:NormalFloat")
+			util.set_win_option(pane, "foldnestmax", 3)
+			util.set_win_option(pane, "foldignore", "#;")
+			assert(require("lazyvcs.compare_marker").marked(pane), "the pane lost its mark")
+			vim.cmd("split")
+			local copy = api.nvim_get_current_win()
+			assert(not vim.wo[copy].diff and not vim.wo[copy].scrollbind, "copied pane options survived")
+			local value = util.get_win_option(copy, "winhighlight")
 			assert(value == "Normal:NormalFloat", "marker cleanup changed user highlights: " .. vim.inspect(value))
-			local depth = util.get_win_option(win, "foldnestmax")
+			local depth = util.get_win_option(copy, "foldnestmax")
 			assert(depth == 3, "marker cleanup changed the fold depth: " .. vim.inspect(depth))
+			local ignored = util.get_win_option(copy, "foldignore")
+			assert(ignored == "#;", "marker cleanup changed foldignore: " .. vim.inspect(ignored))
+			api.nvim_win_close(copy, true)
+			compare.close(s)
 		end,
 	}
 	-- Same-buffer windows copy a pane's options without BufWinEnter.

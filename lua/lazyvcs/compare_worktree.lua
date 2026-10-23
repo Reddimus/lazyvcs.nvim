@@ -10,7 +10,7 @@ local installed = false
 -- Compare panes mark their window options (see compare_marker.lua), so a
 -- window that inherits pane options also inherits the mark, whatever path
 -- copied them. A window's own options, including a deliberate :diffthis, never
--- carry it. A plugin that replaces 'foldnestmax' before WinNew or BufWinEnter
+-- carry it. A plugin that replaces 'foldignore' before WinNew or BufWinEnter
 -- reaches Compare, or a window created with :noautocmd, keeps the copy
 -- unnoticed.
 local marker = require("lazyvcs.compare_marker")
@@ -250,13 +250,7 @@ local function setup()
 	vim.api.nvim_create_autocmd({ "WinNew", "BufWinEnter" }, {
 		group = group,
 		callback = util.safe_callback(function()
-			local win = vim.api.nvim_get_current_win()
-			if not vim.w[win].lazyvcs_compare and marker.marked(win) then
-				local labels = pane_labels[vim.api.nvim_win_get_buf(win)]
-				-- Keep a winbar that a statusline plugin set after the copy.
-				reset(win, labels and labels[util.get_win_option(win, "winbar")])
-				marker.unmark(win)
-			end
+			M.clean_copy(vim.api.nvim_get_current_win())
 		end),
 	})
 	vim.api.nvim_create_autocmd("BufWipeout", {
@@ -408,6 +402,19 @@ end
 function M.reset_pane(win)
 	reset(win, true)
 	marker.unmark(win)
+end
+
+---Remove Compare pane state from a window that copied it. Windows without the
+---mark, and live panes, are left alone.
+function M.clean_copy(win)
+	if marker.is_pane(win) or not marker.marked(win) then
+		return false
+	end
+	local labels = pane_labels[vim.api.nvim_win_get_buf(win)]
+	-- Keep a winbar that a statusline plugin set after the copy.
+	reset(win, labels and labels[util.get_win_option(win, "winbar")])
+	marker.unmark(win)
+	return true
 end
 
 function M.capture(record)

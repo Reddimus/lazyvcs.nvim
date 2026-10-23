@@ -35,9 +35,10 @@ return function(ctx)
 			return s.shown_item and s.shown_item.relpath == relpath and not s.preview_job and s.preview_result
 		end, "Compare did not show " .. relpath, 15000)
 	end
-	-- The pane marker, in either carrier Compare has used.
+	-- The pane marker, in any carrier Compare has used.
 	local function marked(win)
-		return tostring(util.get_win_option(win, "winhighlight")):find("LazyVcsComparePane", 1, true) ~= nil
+		return tostring(util.get_win_option(win, "foldignore")):sub(-4) == "\28\29\30\31"
+			or tostring(util.get_win_option(win, "winhighlight")):find("LazyVcsComparePane", 1, true) ~= nil
 			or tonumber(util.get_win_option(win, "foldnestmax")) >= 100
 	end
 	local cases = {}

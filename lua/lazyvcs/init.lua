@@ -20,7 +20,7 @@ function M.setup(opts)
 	require("lazyvcs.signs").setup()
 	require("lazyvcs.blame").setup()
 	require("lazyvcs.integrations.resession").setup()
-	require("lazyvcs.compare_marker").setup()
+	require("lazyvcs.compare_marker").load()
 	return resolved
 end
 
