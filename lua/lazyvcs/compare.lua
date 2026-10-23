@@ -1203,7 +1203,13 @@ function M.close(s, return_focus)
 	local borrowed = {}
 	if vim.api.nvim_tabpage_is_valid(s.tab) then
 		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(s.tab)) do
-			release_pane_buffer(win)
+			-- Reset only Compare state: the panes and windows that copied them.
+			-- Other windows in this tab keep their own options and folds.
+			if win == s.leftwin or win == s.rightwin then
+				release_pane_buffer(win)
+			else
+				worktree.clean_copy(win)
+			end
 			local buf = vim.api.nvim_win_get_buf(win)
 			if not buffers.is_managed(buf) and vim.bo[buf].modified then
 				borrowed[buf] = borrowed[buf] or vim.bo[buf].bufhidden

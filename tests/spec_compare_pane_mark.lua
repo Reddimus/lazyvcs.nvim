@@ -161,5 +161,35 @@ return function(ctx)
 		}
 	end
 
+	-- Closing Compare touches only panes and copies of them.
+	cases[#cases + 1] = {
+		"test_core_compare_close_keeps_folds_in_unrelated_windows",
+		function()
+			setup()
+			local f = h.make_git_fixture()
+			local lines = {}
+			for index = 1, 20 do
+				lines[index] = "other " .. index
+			end
+			local other = h.tempdir() .. "/other.txt"
+			h.write_file(other, table.concat(lines, "\n") .. "\n")
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local origin = api.nvim_get_current_win()
+			local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			ready(s)
+			-- An ordinary window in Compare's tab with folds of its own.
+			api.nvim_set_current_win(s.sidewin)
+			vim.cmd("split " .. vim.fn.fnameescape(other))
+			local win = api.nvim_get_current_win()
+			vim.wo[win].foldmethod = "manual"
+			vim.cmd("3,6fold")
+			vim.cmd("10,12fold")
+			assert(vim.fn.foldclosed(3) == 3, "the user's fold was not created")
+			compare.close(s)
+			api.nvim_set_current_win(origin)
+			vim.cmd.buffer(vim.fn.bufnr(other))
+			assert(vim.fn.foldlevel(4) == 1 and vim.fn.foldlevel(11) == 1, "closing Compare deleted the user's folds")
+		end,
+	}
 	return cases
 end
