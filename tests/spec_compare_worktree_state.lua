@@ -338,6 +338,32 @@ return function(ctx)
 			assert(ok, err)
 		end,
 	}
+	-- Writing part of the buffer, or appending it, over its own file is editing it.
+	for _, variant in ipairs({ "range", "append" }) do
+		cases[#cases + 1] = {
+			"test_core_compare_worktree_" .. variant .. "_write_to_own_file_retains_buffer",
+			function()
+				setup()
+				local f = h.make_git_fixture()
+				h.write_file(f.root .. "/a.txt", "keep 1\nkeep 2\nkeep 3\n")
+				h.write_file(f.root .. "/b.txt", "second\n")
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+				ready(s)
+				local buf = s.right
+				assert(s.shown_item.relpath == "a.txt" and s.worktree, "a.txt is not an editable working buffer")
+				assert(not vim.bo[buf].buflisted, "a.txt is not private")
+				api.nvim_set_current_win(s.rightwin)
+				vim.cmd(variant == "range" and "1,1write!" or "write >> %")
+				vim.wait(50)
+				assert(vim.bo[buf].buflisted, "writing to its own file left the buffer private")
+				navigate(s, "next", "b.txt")
+				assert(api.nvim_buf_is_valid(buf), "Compare discarded the buffer the user wrote")
+				compare.close(s)
+			end,
+		}
+	end
+
 	-- A picker previewing in the sidebar window gets none of the sidebar's labels.
 	cases[#cases + 1] = {
 		"test_core_compare_sidebar_preview_keeps_sidebar_labels_off",

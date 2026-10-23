@@ -326,14 +326,16 @@ local function setup()
 			end
 		end),
 	})
-	vim.api.nvim_create_autocmd("BufWritePost", {
+	-- A range write (:1,1write!) and an append (:write >> %) fire FileWritePost
+	-- and FileAppendPost instead of BufWritePost.
+	vim.api.nvim_create_autocmd({ "BufWritePost", "FileWritePost", "FileAppendPost" }, {
 		group = group,
 		callback = util.safe_callback(function(args)
 			local record = records[args.buf]
 			if record then
-				-- Saving the file is editing it, even when the same command made the
-				-- change. Writing a copy elsewhere is not; adopt() still catches an
-				-- edit made by the same command.
+				-- Writing the file is editing it, even when the same command made the
+				-- change or wrote only part of the buffer. Writing a copy elsewhere is
+				-- not; adopt() still catches an edit made by the same command.
 				if util.canonical_path(vim.fn.fnamemodify(args.file, ":p")) == util.canonical_path(record.path) then
 					record.retained = true
 					vim.bo[record.buf].buflisted = true
