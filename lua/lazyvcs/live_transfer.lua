@@ -98,7 +98,12 @@ function M.new(lifecycle)
 		p.base_lines, p.base_text, p.base_identity, p.hunks = s.base_lines, s.base_text, s.base_identity, s.hunks
 		layout.remember_departed(s)
 		s.phase = "leaving"
-		p.view = vim.api.nvim_win_call(s.editable_win, vim.fn.winsaveview)
+		-- BufWinLeave does not fire while another window shows the departing
+		-- buffer, so this can run after the window has moved to the next file.
+		-- Neovim restores the departing file's own view if the user returns.
+		if vim.api.nvim_win_get_buf(s.editable_win) == s.editable_bufnr then
+			p.view = vim.api.nvim_win_call(s.editable_win, vim.fn.winsaveview)
+		end
 		require("lazyvcs.align").clear(s)
 		layout.release_derived_diff(s)
 		layout.reset_tab_diff(s.editable_win)

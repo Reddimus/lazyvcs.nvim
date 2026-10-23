@@ -269,5 +269,40 @@ return function(ctx)
 			end,
 		}
 	end
+	-- A paused view returning to its file keeps that file's cursor and view.
+	cases[#cases + 1] = {
+		"test_live_diff_paused_return_keeps_cursor_with_second_window",
+		function()
+			setup()
+			local f = h.make_git_transfer_fixture()
+			h.write_file(f.file2, lines(60, "beta"))
+			local outside = h.tempdir() .. "/outside.txt"
+			h.write_file(outside, lines(60, "outside"))
+			local win = open_live(f.file1).editable_win
+			-- The paused file is also open in another window, so leaving it keeps it visible.
+			vim.cmd("botright split " .. vim.fn.fnameescape(outside))
+			local other = api.nvim_get_current_win()
+			api.nvim_set_current_win(win)
+			vim.cmd.edit(vim.fn.fnameescape(outside))
+			local paused = wait_paused(win)
+			vim.fn.winrestview({ lnum = 10, col = 0, topline = 5 })
+			vim.cmd("edit +40 " .. vim.fn.fnameescape(f.file2))
+			interrupt(win, "loading")
+			vim.cmd.edit(vim.fn.fnameescape(outside))
+			local returned = vim.fn.winsaveview()
+			assert(returned.lnum == 10, "Neovim did not restore the paused file's cursor")
+			ctx.wait_for(function()
+				return paused.phase == "paused" and not state.peek_pending_transfer(win)
+			end, "the paused view did not settle", 3000)
+			settle()
+			local view = api.nvim_win_call(win, vim.fn.winsaveview)
+			assert(
+				view.lnum == 10 and view.topline == returned.topline,
+				"returning moved the cursor: " .. vim.inspect(view)
+			)
+			api.nvim_win_close(other, true)
+			actions.close(paused)
+		end,
+	}
 	return cases
 end
