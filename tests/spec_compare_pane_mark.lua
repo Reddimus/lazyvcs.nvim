@@ -83,6 +83,13 @@ return function(ctx)
 				assert(s.right == buf, "Compare did not show the editor's buffer")
 				vim.wait(50)
 				assert(levels(editor) == before, name .. " folds changed in the editor: " .. levels(editor))
+				-- Writes to the carrier in the pane, which mark it again, change nothing either.
+				api.nvim_win_call(s.rightwin, function()
+					vim.cmd("setlocal foldignore=x")
+					vim.cmd("setlocal foldignore+=!")
+				end)
+				vim.wait(50)
+				assert(levels(editor) == before, name .. " folds changed after a pane write: " .. levels(editor))
 				compare.close(s)
 				assert(levels(editor) == before, name .. " folds changed after Compare closed")
 				if name == "treesitter" then

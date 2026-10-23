@@ -10,6 +10,7 @@ local config = require("lazyvcs.config")
 local buffers = require("lazyvcs.compare_buffers")
 local catalog = require("lazyvcs.compare_actions")
 local worktree = require("lazyvcs.compare_worktree")
+local marker = require("lazyvcs.compare_marker")
 local worktree_event
 local M = {}
 local sessions = {}
@@ -230,6 +231,21 @@ local function release_pane_buffer(win, next_buf)
 		end
 	end
 end
+-- Switch a pane's buffer without BufWinEnter and BufWinLeave. View autocommands
+-- (:help :loadview) would otherwise load the user's saved view into the pane
+-- and save the pane's view of a real buffer over the user's.
+local function show_pane(win, buf)
+	local ignore = vim.o.eventignore
+	vim.o.eventignore = (ignore == "" and "" or ignore .. ",") .. "BufWinEnter,BufWinLeave"
+	local ok, err = pcall(util.show_win_buffer, win, buf)
+	vim.o.eventignore = ignore
+	if not ok then
+		error(err, 0)
+	end
+	if not buffers.is_managed(buf) then
+		worktree.enter_pane(win)
+	end
+end
 local function panes_usable(s, epoch)
 	if not alive(s) or sessions[s.tab] ~= s or s.panes_invalid or epoch ~= (s.pane_epoch or 0) then
 		return false
@@ -316,7 +332,7 @@ local function set_panes(s, next_display)
 		if next_display.routing_win then
 			local win = next_display.routing_win
 			local buf = win == s.sidewin and s.sidebar or win == s.leftwin and s.left or s.right
-			util.show_win_buffer(win, buf)
+			show_pane(win, buf)
 			check()
 			assert(vim.api.nvim_win_get_buf(win) == buf, "Comparison restoration was redirected")
 			if win == s.sidewin then
@@ -368,7 +384,7 @@ local function set_panes(s, next_display)
 		end
 		for _, slot in ipairs({ { s.leftwin, left }, { s.rightwin, right } }) do
 			release_pane_buffer(slot[1], slot[2])
-			util.show_win_buffer(slot[1], slot[2])
+			show_pane(slot[1], slot[2])
 			check()
 			assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2], "Comparison installation was redirected")
 		end
@@ -450,7 +466,8 @@ local function set_panes(s, next_display)
 		local rolled_back = pcall(function()
 			check()
 			for _, slot in ipairs({ { s.leftwin, before.left }, { s.rightwin, before.right } }) do
-				util.show_win_buffer(slot[1], slot[2])
+				release_pane_buffer(slot[1], slot[2])
+				show_pane(slot[1], slot[2])
 				check()
 				assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2], "Comparison rollback was redirected")
 			end
@@ -1204,10 +1221,17 @@ function M.close(s, return_focus)
 	if vim.api.nvim_tabpage_is_valid(s.tab) then
 		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(s.tab)) do
 			-- Reset only Compare state: the panes and windows that copied them.
-			-- Other windows in this tab keep their own options and folds.
+			-- Other windows in this tab, and a picker preview in a pane, keep their
+			-- own options and folds.
 			if win == s.leftwin or win == s.rightwin then
+				local shown = vim.api.nvim_win_get_buf(win)
 				release_pane_buffer(win)
-			else
+				-- Leave a borrowed buffer before the tab closes, so view autocommands
+				-- do not save the pane's view of it.
+				if shown == (win == s.leftwin and s.left or s.right) and not buffers.is_managed(shown) then
+					show_pane(win, win == s.leftwin and s.message_left or s.message_right)
+				end
+			elseif marker.copied(win) then
 				worktree.clean_copy(win)
 			end
 			local buf = vim.api.nvim_win_get_buf(win)

@@ -338,5 +338,48 @@ return function(ctx)
 			assert(ok, err)
 		end,
 	}
+	-- A session saved during Compare with the default 'sessionoptions' restores
+	-- the pane's window as an ordinary one.
+	cases[#cases + 1] = {
+		"test_core_compare_restored_session_resets_pane_folds",
+		function()
+			local _, s = private_fixture()
+			local path = api.nvim_buf_get_name(s.right)
+			api.nvim_set_current_win(s.rightwin)
+			local sessionoptions = vim.o.sessionoptions
+			local session = vim.fs.normalize(vim.fn.tempname()) .. ".vim"
+			local ok, err = xpcall(function()
+				vim.o.sessionoptions = "blank,buffers,curdir,folds,help,tabpages,winsize,terminal"
+				vim.cmd("mksession! " .. vim.fn.fnameescape(session))
+				compare.close(s)
+				vim.cmd("tabnew")
+				vim.cmd("silent! tabonly!")
+				vim.cmd("source " .. vim.fn.fnameescape(session))
+				local restored
+				for _, win in ipairs(api.nvim_list_wins()) do
+					if
+						util.canonical_path(api.nvim_buf_get_name(api.nvim_win_get_buf(win)))
+						== util.canonical_path(path)
+					then
+						restored = win
+					end
+				end
+				assert(restored, "the session did not restore the pane window")
+				assert(not marked(restored), "the restored window kept a pane marker")
+				local values = util.capture_win_options(restored, { "foldmethod", "foldcolumn", "diff" })
+				assert(
+					values.foldmethod ~= "diff" and values.foldcolumn == "0",
+					"kept pane folds: " .. vim.inspect(values)
+				)
+				api.nvim_set_current_win(restored)
+				assert(pcall(vim.api.nvim_command, "1fold"), "the restored window cannot create folds")
+			end, debug.traceback)
+			vim.o.sessionoptions = sessionoptions
+			vim.fn.delete(session)
+			vim.cmd("silent! tabonly!")
+			assert(ok, err)
+		end,
+	}
+
 	return cases
 end
