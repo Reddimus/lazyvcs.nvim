@@ -602,11 +602,18 @@ set_session_maps = function(session)
 			if win == session.base_win and buf == session.base_bufnr then
 				return base
 			end
+			-- Other diff windows on the buffer, such as splits of the editable
+			-- window, belong to the view that owns the buffer. A paused view owns
+			-- none, so it claims only its own windows.
 			if
 				buf == session.editable_bufnr
 				and (
 					win == session.editable_win
-					or (vim.wo[win].diff and vim.api.nvim_win_get_tabpage(win) == session.tabpage)
+					or (
+						vim.wo[win].diff
+						and vim.api.nvim_win_get_tabpage(win) == session.tabpage
+						and state.get(buf) == session
+					)
 				)
 			then
 				return session.phase == "active" and source or close

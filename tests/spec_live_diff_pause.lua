@@ -331,5 +331,43 @@ return function(ctx)
 			actions.close(other)
 		end,
 	}
+	-- A split of an active view's editable window resolves to that view, even
+	-- when a paused view sharing the buffer registered first.
+	cases[#cases + 1] = {
+		"test_live_diff_split_beside_paused_view_keeps_hunk_maps",
+		function()
+			setup()
+			local f = h.make_git_transfer_fixture()
+			local win = open_live(f.file1).editable_win
+			vim.cmd("botright vnew")
+			local other = open_live(f.file2)
+			api.nvim_set_current_win(win)
+			vim.cmd.edit(vim.fn.fnameescape(f.file2))
+			local paused = wait_paused(win)
+			-- Reopen the active view, so its registration is newer than the paused view's.
+			-- Reopen without :edit, which would reread the buffer and retry the pause.
+			local editor, buf = other.editable_win, other.editable_bufnr
+			api.nvim_set_current_win(editor)
+			actions.close(other)
+			actions.open()
+			ctx.wait_for(function()
+				local s = state.get(buf)
+				return s and s.phase == "active"
+			end, "the view did not reopen", 15000)
+			other = assert(state.get(buf))
+			assert(state.for_window(win) == paused and paused.paused, "the paused view changed")
+			api.nvim_set_current_win(other.editable_win)
+			vim.cmd("split")
+			local split = api.nvim_get_current_win()
+			assert(vim.wo[split].diff and api.nvim_win_get_buf(split) == other.editable_bufnr)
+			local function mapped(lhs)
+				return vim.fn.maparg(lhs, "n", false, true).buffer == 1
+			end
+			assert(mapped("]v") and mapped("[v") and mapped("<leader>vr"), "the split lost the active view's hunk maps")
+			api.nvim_win_close(split, true)
+			actions.close(paused)
+			actions.close(other)
+		end,
+	}
 	return cases
 end
