@@ -17,9 +17,24 @@ and this project adheres to
   `<leader>ve`, picker selections and previews, splits, floats, and closing
   Compare. A window's own diff stays on, including after `:edit` and after
   restoring a session saved during Compare, and statusline plugins that replace
-  the winbar no longer hide the copied options. Folds in other windows on the
-  same buffer, including Tree-sitter folds, and windows Compare does not own
-  keep their state.
+  the winbar no longer hide the copied options. Filetype plugins and
+  autocommands that set 'foldignore', such as the GDScript ftplugin, and the
+  `:loadview` auto-view autocommands no longer hide them either. Folds in other
+  windows on the same buffer, including Tree-sitter folds, and windows Compare
+  does not own keep their state.
+- Give a file's folds back when Compare stops showing it: manual folds, folds
+  the user opened or closed, and a window-local 'foldenable' return to new
+  windows, to splits of the pane, and to views saved by auto-view autocommands,
+  which Compare no longer runs in its panes. Closing Compare keeps the folds of
+  a picker preview in a pane.
+- Restore a window saved in a session during Compare as an ordinary window,
+  without Compare's diff folds, and keep the layout of a session sourced from
+  the Compare tab instead of closing it.
+- Keep a Compare buffer when part of it is written over its file, as with
+  `:1,1write!` or `:write >> %`.
+- Keep the file list's winbar, hints, and cursor out of a file a picker previews
+  in the Compare sidebar, and show the latest pane label when a picker cancels a
+  preview in a pane.
 - Keep a Compare buffer and its undo history when one command edits and saves
   it, such as `:%s/old/new/ | write`, or a macro edits and undoes it. Writing a
   copy with `:write {file}`, `:bdelete`, and a reread from another tab leave an
@@ -29,7 +44,8 @@ and this project adheres to
   the reread.
 - Restore a paused live diff that returns to its file before the next file
   loads, instead of leaving "Loading comparison..." in the base pane, and keep
-  that file's cursor and scroll position. A retry with `:LazyVCS diff refresh`,
+  that file's cursor and scroll position, or the position a command such as
+  `:cnext` or `:edit +N` chose on return. A retry with `:LazyVCS diff refresh`,
   `:write`, or `:edit!` still resumes when another window event arrives while
   the base loads.
 - Keep diff mode in another live diff when a paused view sharing its buffer
@@ -37,6 +53,15 @@ and this project adheres to
 - Restore `]v`, `[v`, and hunk revert when a live diff returns to its file
   before a pending transfer finishes, and keep them in a live diff and its
   splits when a paused view shows the same buffer in that tab.
+
+### Removed
+
+- The synchronous `is_versioned()`, `changed_files()`, and `load()` helpers of
+  the internal `lazyvcs.backends` module, which no code called. The 0.4.0 entry
+  that listed them described the internal backend interface, not a supported
+  API: the documented Lua API is `require("lazyvcs")`. Code that called them can
+  use `is_versioned_async()` and `changed_files_async()`, which do not block the
+  editor.
 
 ### Changed
 

@@ -213,16 +213,21 @@ Revisiting restores both panes' cursor and scroll positions. Binary, oversized,
 empty, and property-only paths remain navigable. Files load on demand. Clean
 private buffers stay unlisted; editing adds them to the ordinary buffer list.
 Compare keeps borrowed buffers loaded while in use and restores their prior
-'bufhidden' setting on release. Neovim copies a pane's window options into a
+'bufhidden' setting on release. A pane gives a real buffer back with the folds
+and fold state it got for it, so other windows and the views saved by the
+auto-view autocommands in |:loadview| keep the user's folds. Compare does not
+load or save views in its panes. Neovim copies a pane's window options into a
 window split or opened from it, and into a window that opens the same buffer
-without its own options for it. Compare marks its panes by appending four
-control characters (ASCII FS, GS, RS, US) to 'foldignore', which only indent
-folding reads and which no text line starts with. A window with the mark is a
-copy, and Compare removes diff mode, bindings, diff folds, its winbar label,
-and the mark. Setting 'foldignore' in a pane keeps the new value and the mark.
-Marks restored by a session or view outside a live pane are removed. A plugin
-that sets 'foldignore' before Compare sees the new window can hide the copy.
-Closing Compare leaves other windows in its tab, and their folds, untouched.
+without options of its own for it. Compare recognizes such a copy by where it
+came from, and by a mark it appends to the pane's 'foldignore': four control
+characters (ASCII FS, GS, RS, US), which only indent folding reads and which
+no text line starts with. A copy loses diff mode, bindings, diff folds, Compare's
+winbar label, and the mark, and gets the user's folds for its buffer. Setting
+'foldignore' in a pane keeps the new value and one mark. A window restored by a
+session or view with a mark and a pane's diff folds becomes an ordinary
+window. Closing Compare leaves other windows in its tab, and a picker preview
+in a pane, untouched. A session sourced from the Compare tab keeps the layout
+it restores there. A window created with |:noautocmd| keeps a copy.
 Reloading keeps the real buffer; deleting it shows a fresh saved snapshot until
 you select it again.
 Positions last for this session, survive refreshes for the same pinned base,
