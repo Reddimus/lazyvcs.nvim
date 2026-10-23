@@ -2,7 +2,9 @@
 -- scenario: "loadview" (the :help :loadview auto-view autocommands, with the
 -- default 'viewoptions') or "bufenter" (an autocommand that sets 'foldignore'
 -- in every window it enters). step: "edit" (the edit action from the right
--- pane) or "reopen" (a new tab opens the buffer after Compare moved on).
+-- pane), "saved" (the edit action into a window whose own record for the
+-- buffer has a diff), or "reopen" (a new tab opens the buffer after Compare
+-- moved on).
 local root, output, scenario, step = arg[1], arg[2], arg[3], arg[4]
 vim.opt.runtimepath:prepend(root)
 package.path =
@@ -29,6 +31,11 @@ local ok, err = xpcall(function()
 	local listed = vim.fn.bufadd(f.root .. "/a.txt")
 	vim.fn.bufload(listed)
 	vim.bo[listed].buflisted = true
+	if step == "saved" then
+		-- The editor's own record for a.txt has a diff.
+		vim.cmd.buffer(listed)
+		vim.cmd("diffthis")
+	end
 	vim.cmd.edit(vim.fn.fnameescape(f.file))
 	local origin = api.nvim_get_current_win()
 	local s = assert(compare.open({ path = f.root, base = "HEAD" }))
@@ -52,7 +59,7 @@ local ok, err = xpcall(function()
 	-- Enter the pane from the sidebar, which runs the user's BufEnter there.
 	api.nvim_set_current_win(s.sidewin)
 	api.nvim_set_current_win(s.rightwin)
-	if step == "edit" then
+	if step == "edit" or step == "saved" then
 		s.actions.edit()
 		win = api.nvim_get_current_win()
 		results.origin = win == origin

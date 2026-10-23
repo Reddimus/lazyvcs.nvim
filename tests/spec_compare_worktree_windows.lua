@@ -319,15 +319,19 @@ return function(ctx)
 		return values
 	end
 	for _, scenario in ipairs({ "loadview", "bufenter" }) do
-		for _, step in ipairs({ "edit", "reopen" }) do
+		for _, step in ipairs({ "edit", "reopen", "saved" }) do
 			cases[#cases + 1] = {
 				"test_core_compare_worktree_" .. step .. "_after_user_" .. scenario .. "_keeps_editor_options",
 				function()
 					local values = user_fixture(scenario, step)
-					if step == "edit" then
+					if step ~= "reopen" then
 						assert(values.origin, "edit did not use the editor")
 					end
 					local v = values.window
+					if step == "saved" then
+						assert(v.diff and v.scrollbind, "the edit action turned off the user's saved diff")
+						return
+					end
 					assert(
 						not v.diff
 							and not v.scrollbind

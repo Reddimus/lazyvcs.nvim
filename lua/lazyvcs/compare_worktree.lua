@@ -362,18 +362,76 @@ function M.reset_pane(win)
 	util.set_win_option(win, "winbar", "")
 end
 
----Turn off pane state that an editor window received with a real buffer from
----a Compare edit action: Neovim copies a live pane's options into a window
----that has none of its own for the buffer. `before` holds the window's diff
----and bindings before the switch; options that were already on stay on.
-function M.reset_editor(win, before)
-	if util.get_win_option(win, "diff") and not before.diff then
-		util.diff_off(win)
-	end
-	for _, name in ipairs({ "scrollbind", "cursorbind" }) do
-		if util.get_win_option(win, name) and not before[name] then
-			util.set_win_option(win, name, false)
+local trials = 0
+
+---Whether switching `win` to `buf` copies the options of a live pane that shows
+---`buf`. Neovim copies a live window's options only into a window that has no
+---option record of its own for the buffer. Tag the panes with a one-off token
+---in 'foldignore', switch `win` with autocommands off and read the token, then
+---switch back and untag. Autocommands later in a real switch, such as a
+---:loadview, cannot hide the answer. Returns nil when the trial cannot run.
+function M.copies_pane(win, buf, panes)
+	local tagged = {}
+	for _, pane in ipairs(panes) do
+		if vim.api.nvim_win_is_valid(pane) and vim.api.nvim_win_get_buf(pane) == buf then
+			tagged[#tagged + 1] = { win = pane, value = util.get_win_option(pane, "foldignore") }
 		end
+	end
+	if #tagged == 0 then
+		-- A pane that released the buffer left a reset record behind.
+		return false
+	end
+	trials = trials + 1
+	local token = "\28lazyvcs" .. trials .. "\31"
+	for _, pane in ipairs(tagged) do
+		util.set_win_option_noautocmd(pane.win, "foldignore", pane.value .. token)
+	end
+	local old = vim.api.nvim_win_get_buf(win)
+	local hidden = vim.bo[old].bufhidden
+	local ok, copied = pcall(vim.api.nvim_win_call, win, function()
+		-- Keep the buffer the window leaves for the moment.
+		vim.cmd("noautocmd setlocal bufhidden=hide")
+		vim.cmd("noautocmd keepalt keepjumps buffer " .. buf)
+		local found = tostring(util.get_win_option(win, "foldignore")):find(token, 1, true) ~= nil
+		vim.cmd("noautocmd keepalt keepjumps buffer " .. old)
+		return found
+	end)
+	if vim.api.nvim_buf_is_valid(old) then
+		vim.api.nvim_buf_call(old, function()
+			vim.cmd("noautocmd setlocal bufhidden=" .. hidden)
+		end)
+	end
+	for _, pane in ipairs(tagged) do
+		if vim.api.nvim_win_is_valid(pane.win) then
+			util.set_win_option_noautocmd(pane.win, "foldignore", pane.value)
+		end
+	end
+	if not ok or vim.api.nvim_win_get_buf(win) ~= old then
+		return nil
+	end
+	return copied
+end
+
+---Turn off pane state that an editor window received with a real buffer from
+---a Compare edit action. `before` holds the window's diff and bindings before
+---the switch. `copied` says whether its options came from a live pane: then
+---diff mode goes and the bindings return to `before`. nil means unknown: turn
+---off only what the switch turned on. false leaves the window's own diff.
+function M.reset_editor(win, before, copied)
+	if copied == nil then
+		copied = util.get_win_option(win, "diff") and not before.diff
+	end
+	if copied then
+		-- The token rides along with the copy; a later autocommand may have
+		-- replaced it already.
+		local value = tostring(util.get_win_option(win, "foldignore"))
+		local stripped = value:gsub("\28lazyvcs%d+\31", "")
+		if stripped ~= value then
+			util.set_win_option_noautocmd(win, "foldignore", stripped)
+		end
+		util.diff_off(win)
+		-- :diffoff restores the pane's bindings; the window keeps its own.
+		util.set_win_options(win, { scrollbind = before.scrollbind, cursorbind = before.cursorbind })
 	end
 	if M.is_label(vim.api.nvim_win_get_buf(win), util.get_win_option(win, "winbar")) then
 		util.set_win_option(win, "winbar", "")

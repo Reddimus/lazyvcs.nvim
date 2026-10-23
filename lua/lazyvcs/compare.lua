@@ -1317,15 +1317,17 @@ local function edit_buffer(s, buf, position)
 	end
 	-- Neovim gives a window without its own option record for the buffer the
 	-- live pane's options: diff mode, bindings, and the Compare label. Undo only
-	-- what the switch brought in; a window that already showed the buffer, or a
-	-- live diff's window, keeps its own diff.
+	-- those. A window that already shows the buffer, a window whose own record
+	-- has a diff, and a live diff's window keep their diff.
 	local editor = vim.api.nvim_get_current_win()
-	local before = vim.api.nvim_win_get_buf(editor) ~= buf
-		and not require("lazyvcs.state").for_window(editor)
-		and util.capture_win_options(editor, { "diff", "scrollbind", "cursorbind" })
+	local before, copied
+	if vim.api.nvim_win_get_buf(editor) ~= buf and not require("lazyvcs.state").for_window(editor) then
+		before = util.capture_win_options(editor, { "diff", "scrollbind", "cursorbind" })
+		copied = worktree.copies_pane(editor, buf, { s.leftwin, s.rightwin })
+	end
 	vim.api.nvim_win_set_buf(editor, buf)
 	if before then
-		worktree.reset_editor(editor, before)
+		worktree.reset_editor(editor, before, copied)
 	end
 	if position then
 		local line = math.min(position[1], vim.api.nvim_buf_line_count(buf))

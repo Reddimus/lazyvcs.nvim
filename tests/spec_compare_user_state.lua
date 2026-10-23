@@ -410,5 +410,54 @@ return function(ctx)
 			actions.close(live)
 		end,
 	}
+	-- A window's own saved diff for the file comes back when the edit action
+	-- opens the file there; the window never copied the pane.
+	cases[#cases + 1] = {
+		"test_core_compare_edit_keeps_saved_user_diff",
+		function()
+			local f = fixture()
+			vim.cmd.edit(vim.fn.fnameescape(f.a))
+			local editor, buf = api.nvim_get_current_win(), api.nvim_get_current_buf()
+			vim.cmd("diffthis")
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local s = open(f)
+			assert(s.right == buf, "Compare did not show the user's buffer")
+			api.nvim_set_current_win(s.rightwin)
+			s.actions.edit()
+			assert(api.nvim_get_current_win() == editor and api.nvim_win_get_buf(editor) == buf)
+			assert(vim.wo[editor].diff and vim.wo[editor].scrollbind, "the edit action turned off the user's diff")
+			compare.close(s)
+			vim.cmd("diffoff!")
+		end,
+	}
+	-- A copied pane's diff goes, and the window's own bindings stay.
+	cases[#cases + 1] = {
+		"test_core_compare_edit_keeps_editor_bindings",
+		function()
+			local f = fixture()
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local editor = api.nvim_get_current_win()
+			util.set_win_options(editor, { scrollbind = true, cursorbind = true })
+			local s = open(f)
+			-- Revisiting a file gives its pane a saved record, so the editor copies the live pane.
+			compare.navigate_file("next", 1)
+			ctx.wait_for(function()
+				return s.shown_item.relpath == "b.txt" and not s.preview_job
+			end, "Compare did not show b.txt", 15000)
+			compare.navigate_file("prev", 1)
+			ctx.wait_for(function()
+				return s.shown_item.relpath == "a.txt" and not s.preview_job
+			end, "Compare did not show a.txt", 15000)
+			api.nvim_set_current_win(s.rightwin)
+			s.actions.edit()
+			assert(api.nvim_get_current_win() == editor)
+			local values = util.capture_win_options(editor, { "diff", "scrollbind", "cursorbind", "winbar" })
+			assert(not values.diff, "the editor kept the pane's diff: " .. vim.inspect(values))
+			assert(values.scrollbind and values.cursorbind, "the editor lost its own bindings: " .. vim.inspect(values))
+			assert(not tostring(values.winbar):find("WORKTREE", 1, true), "the editor kept the pane label")
+			compare.close(s)
+			util.set_win_options(editor, { scrollbind = false, cursorbind = false })
+		end,
+	}
 	return cases
 end
