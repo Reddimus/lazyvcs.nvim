@@ -323,5 +323,27 @@ return function(ctx)
 			end)
 		end,
 	}
+	-- Compare writes no option of its own into a pane's 'foldignore', locally or
+	-- globally, so splits after :set foldignore+= and -= keep the user's value.
+	cases[#cases + 1] = {
+		"test_core_compare_pane_foldignore_stays_the_users",
+		function()
+			local f = fixture()
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local s = open(f)
+			local before = vim.api.nvim_get_option_value("foldignore", { win = s.rightwin, scope = "global" })
+			api.nvim_set_current_win(s.rightwin)
+			vim.cmd("set foldignore+=!")
+			vim.cmd("set foldignore-=!")
+			vim.cmd("split")
+			local split = api.nvim_get_current_win()
+			for _, scope in ipairs({ "local", "global" }) do
+				local value = api.nvim_get_option_value("foldignore", { win = split, scope = scope })
+				assert(value == before, scope .. " foldignore is not the user's: " .. vim.inspect(value))
+			end
+			api.nvim_win_close(split, true)
+			compare.close(s)
+		end,
+	}
 	return cases
 end
