@@ -556,5 +556,58 @@ return function(ctx)
 			assert(ok, err)
 		end,
 	}
+	-- The trial switch returns to the left file without applying
+	-- 'foldlevelstart', so its fold level and open folds stay.
+	cases[#cases + 1] = {
+		"test_core_compare_edit_keeps_folds_of_left_file",
+		function()
+			local f = fixture()
+			local nested = h.tempdir() .. "/nested.txt"
+			local text = {}
+			for index = 1, 30 do
+				text[index] = string.rep("  ", index % 3) .. "line " .. index
+			end
+			h.write_file(nested, table.concat(text, "\n") .. "\n")
+			local foldlevelstart = vim.o.foldlevelstart
+			vim.o.foldlevelstart = 99
+			vim.cmd.edit(vim.fn.fnameescape(nested))
+			local editor, left = api.nvim_get_current_win(), api.nvim_get_current_buf()
+			vim.bo.shiftwidth = 2
+			vim.cmd("setlocal foldmethod=indent foldlevel=0")
+			vim.cmd("normal! 5Gzo")
+			local function folds()
+				local closed = {}
+				for line = 1, 30 do
+					if vim.fn.foldclosed(line) == line then
+						closed[#closed + 1] = line
+					end
+				end
+				return vim.wo.foldlevel .. ":" .. table.concat(closed, ",")
+			end
+			local expected, saved = folds(), nil
+			-- A view recorder, like the :mkview autocommands.
+			local group = api.nvim_create_augroup("lazyvcs_test_fold_recorder", { clear = true })
+			api.nvim_create_autocmd("BufWinLeave", {
+				group = group,
+				callback = function(args)
+					if args.buf == left then
+						saved = folds()
+					end
+				end,
+			})
+			local ok, err = xpcall(function()
+				local s = copying_editor(f, function() end)
+				assert(api.nvim_get_current_win() == editor)
+				assert(
+					saved == expected,
+					"the edit changed the left file's folds: " .. tostring(saved) .. " ~= " .. expected
+				)
+				compare.close(s)
+			end, debug.traceback)
+			api.nvim_del_augroup_by_id(group)
+			vim.o.foldlevelstart = foldlevelstart
+			assert(ok, err)
+		end,
+	}
 	return cases
 end

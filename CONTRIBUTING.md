@@ -231,24 +231,26 @@ the GitHub release.
   closes it, so the saved record is clean. An edit action's window can still
   copy the live pane, when the pane's record is stale after it released the file
   and showed it again. To tell that copy from the window's own record, the edit
-  action tags the panes showing the file with a one-off token in 'foldignore',
-  switches the window to the file with autocommands off, reads the token, and
-  switches back before the real switch; an autocommand in the real switch, such
-  as a `:loadview`, cannot hide the answer. Only a copied window loses diff
-  mode, and keeps the bindings it had before; if the trial cannot run, only what
-  the switch turned on is removed. A window that already showed the file, or a
-  live diff's window, is left alone. A pane that leaves a buffer Compare did not
-  set up, such as a picker preview, keeps that buffer's winbar and bindings; if
-  the preview brought its own diff, the pane turns it off first, since Neovim
-  keeps a hidden buffer in the tab's diff. That changes only the pane's own
-  record of the buffer; Compare never touches the tab's other windows. Folds
-  stay native, with no `zE` and no fold restore. A pane is reset only for the
-  buffer Compare set it up for, so a picker preview, also during deletion
-  recovery, keeps its state, and closing Compare leaves other windows in its tab
-  alone. Do not try to recognize copies in windows Compare does not open: three
-  designs (window records, then marks in 'winhighlight', 'foldnestmax', and
-  'foldignore') each failed review. That work is planned separately; see the
-  README's known limits.
+  action tags the panes of every Compare session that show the file with a
+  one-off token in 'foldignore', switches the window to the file with
+  autocommands and 'foldlevelstart' off, reads and removes the token, and
+  switches back, restoring the left file's view, before the real switch; an
+  autocommand in the real switch, such as a `:loadview`, cannot hide the answer.
+  Only a copied window that still shows the file after the real switch loses
+  diff mode, and keeps the bindings it had before; if the trial cannot run, only
+  what the switch turned on is removed. A window that already showed the file,
+  or a live diff's window, is left alone. A pane that leaves a buffer Compare
+  did not set up, such as a picker preview, keeps that buffer's winbar and
+  bindings; if the preview brought its own diff, the pane turns it off first,
+  since Neovim keeps a hidden buffer in the tab's diff. That changes only the
+  pane's own record of the buffer; Compare never touches the tab's other
+  windows. Folds stay native, with no `zE` and no fold restore. A pane is reset
+  only for the buffer Compare set it up for, so a picker preview, also during
+  deletion recovery, keeps its state, and closing Compare leaves other windows
+  in its tab alone. Do not try to recognize copies in windows Compare does not
+  open: three designs (window records, then marks in 'winhighlight',
+  'foldnestmax', and 'foldignore') each failed review. That work is planned
+  separately; see the README's known limits.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_buffers.lua` owns snapshot identity, reload guards, and bounded

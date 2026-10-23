@@ -368,8 +368,9 @@ local trials = 0
 ---`buf`. Neovim copies a live window's options only into a window that has no
 ---option record of its own for the buffer. Tag the panes with a one-off token
 ---in 'foldignore', switch `win` with autocommands off and read the token, then
----switch back and untag. Autocommands later in a real switch, such as a
----:loadview, cannot hide the answer. Returns nil when the trial cannot run.
+---switch back and untag; the window gets back the view and fold state of the
+---buffer it left. Autocommands later in a real switch, such as a :loadview,
+---cannot hide the answer. Returns nil when the trial cannot run.
 function M.copies_pane(win, buf, panes)
 	local tagged = {}
 	for _, pane in ipairs(panes) do
@@ -388,6 +389,9 @@ function M.copies_pane(win, buf, panes)
 	end
 	local old = vim.api.nvim_win_get_buf(win)
 	local hidden = vim.bo[old].bufhidden
+	-- Returning to a buffer applies 'foldlevelstart' even without autocommands.
+	local foldlevelstart = vim.o.foldlevelstart
+	vim.cmd("noautocmd set foldlevelstart=-1")
 	local ok, copied = pcall(vim.api.nvim_win_call, win, function()
 		-- Keep the buffer the window leaves, and its view, for the moment.
 		local view = vim.fn.winsaveview()
@@ -403,6 +407,7 @@ function M.copies_pane(win, buf, panes)
 		vim.fn.winrestview(view)
 		return found
 	end)
+	vim.cmd("noautocmd set foldlevelstart=" .. foldlevelstart)
 	if vim.api.nvim_buf_is_valid(old) then
 		vim.api.nvim_buf_call(old, function()
 			vim.cmd("noautocmd setlocal bufhidden=" .. hidden)
