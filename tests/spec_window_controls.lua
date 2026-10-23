@@ -86,5 +86,49 @@ return function()
 				end)
 			end,
 		},
+		{
+			-- Two resolvers can claim one window at the same priority; the window's
+			-- owner wins whichever registered first.
+			"test_core_window_controls_prefer_the_window_owner_on_ties",
+			function()
+				scenario(function(controls, _, first)
+					local x, y = {}, {}
+					local picks = {}
+					for _, case in ipairs({ { owner = x, order = { x, y } }, { owner = y, order = { y, x } } }) do
+						for _, order in ipairs({ case.order, { case.order[2], case.order[1] } }) do
+							for _, owner in ipairs(order) do
+								controls.register(
+									owner,
+									function(win)
+										return win == first
+												and {
+													{
+														key = "]v",
+														callback = function() end,
+														desc = tostring(owner == x),
+													},
+												}
+											or nil
+									end,
+									10,
+									function(win)
+										return win == first and owner == case.owner
+									end
+								)
+							end
+							api.nvim_set_current_win(first)
+							vim.cmd("doautocmd WinEnter")
+							picks[#picks + 1] = vim.fn.maparg("]v", "n", false, true).desc == tostring(case.owner == x)
+							controls.unregister(x)
+							controls.unregister(y)
+						end
+					end
+					assert(
+						not vim.tbl_contains(picks, false),
+						"a tie did not prefer the window owner: " .. vim.inspect(picks)
+					)
+				end)
+			end,
+		},
 	}
 end

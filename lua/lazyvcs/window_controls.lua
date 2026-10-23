@@ -5,6 +5,7 @@ local compat = require("lazyvcs.compat")
 local M = {}
 local owners, active = {}, nil
 local initialized, syncing = false, false
+local sequence = 0
 
 local function mapping(buf, key)
 	local expanded = key:gsub("<leader>", function()
@@ -70,12 +71,22 @@ function M.sync()
 	syncing = true
 	local ok, err = pcall(function()
 		local win, buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
-		local selected, definitions, priority
+		-- The highest priority wins. On a tie, the window's owner wins, then the
+		-- earliest registration, so the choice never depends on pairs() order.
+		local selected, definitions, best
 		for owner, record in pairs(owners) do
-			if not priority or record.priority > priority then
-				local maps = record.resolve(win, buf)
-				if maps then
-					selected, definitions, priority = owner, maps, record.priority
+			local maps = record.resolve(win, buf)
+			if maps then
+				local rank = { record.priority, record.owns and record.owns(win) and 1 or 0, -record.sequence }
+				local better = not best
+				for index = 1, #rank do
+					if better or rank[index] ~= best[index] then
+						better = better or rank[index] > best[index]
+						break
+					end
+				end
+				if better then
+					selected, definitions, best = owner, maps, rank
 				end
 			end
 		end
@@ -122,7 +133,9 @@ function M.unregister(owner)
 	end
 end
 
-function M.register(owner, resolve, priority)
+---Register `resolve(win, buf)` for `owner`. `owns(win)`, when given, marks the
+---windows `owner` owns; it decides ties between resolvers of equal priority.
+function M.register(owner, resolve, priority, owns)
 	if not initialized then
 		initialized = true
 		local group = vim.api.nvim_create_augroup("lazyvcs_window_controls", { clear = true })
@@ -139,7 +152,8 @@ function M.register(owner, resolve, priority)
 			callback = M.sync,
 		})
 	end
-	owners[owner] = { resolve = resolve, priority = priority or 0 }
+	sequence = sequence + 1
+	owners[owner] = { resolve = resolve, priority = priority or 0, owns = owns, sequence = sequence }
 	M.sync()
 end
 

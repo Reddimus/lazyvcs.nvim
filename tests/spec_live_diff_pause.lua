@@ -304,5 +304,32 @@ return function(ctx)
 			actions.close(paused)
 		end,
 	}
+	-- A paused view sharing a buffer never controls another view's window.
+	cases[#cases + 1] = {
+		"test_live_diff_paused_view_leaves_other_view_maps",
+		function()
+			setup()
+			local f = h.make_git_transfer_fixture()
+			local win = open_live(f.file1).editable_win
+			vim.cmd("botright vnew")
+			local other = open_live(f.file2)
+			api.nvim_set_current_win(win)
+			vim.cmd.edit(vim.fn.fnameescape(f.file2))
+			local paused = wait_paused(win)
+			local controls = require("lazyvcs.window_controls")
+			local function mapped(lhs)
+				return vim.fn.maparg(lhs, "n", false, true).buffer == 1
+			end
+			api.nvim_set_current_win(other.editable_win)
+			assert(mapped("]v") and mapped("[v") and mapped("<leader>vr"), "the active view lost its hunk maps")
+			-- Without the active view's controls, the paused view must not claim its window.
+			api.nvim_set_current_win(paused.editable_win)
+			controls.unregister(other)
+			api.nvim_set_current_win(other.editable_win)
+			assert(not mapped("q") and not mapped("]v"), "the paused view controls another view's window")
+			actions.close(paused)
+			actions.close(other)
+		end,
+	}
 	return cases
 end
