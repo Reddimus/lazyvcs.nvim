@@ -238,16 +238,17 @@ the GitHub release.
   mode, and keeps the bindings it had before; if the trial cannot run, only what
   the switch turned on is removed. A window that already showed the file, or a
   live diff's window, is left alone. A pane that leaves a buffer Compare did not
-  set up, such as a picker preview with its own diff, switches without
-  `:diffoff`, so that buffer keeps its own record; Neovim keeps a hidden buffer
-  in the tab's diff, so `:diffoff!` drops it and the tab's other diff windows go
-  back into diff mode. Folds stay native, with no `zE` and no fold restore. A
-  pane is reset only for the buffer Compare set it up for, so a picker preview,
-  also during deletion recovery, keeps its state, and closing Compare leaves
-  other windows in its tab alone. Do not try to recognize copies in windows
-  Compare does not open: three designs (window records, then marks in
-  'winhighlight', 'foldnestmax', and 'foldignore') each failed review. That work
-  is planned separately; see the README's known limits.
+  set up, such as a picker preview, keeps that buffer's winbar and bindings; if
+  the preview brought its own diff, the pane turns it off first, since Neovim
+  keeps a hidden buffer in the tab's diff. That changes only the pane's own
+  record of the buffer; Compare never touches the tab's other windows. Folds
+  stay native, with no `zE` and no fold restore. A pane is reset only for the
+  buffer Compare set it up for, so a picker preview, also during deletion
+  recovery, keeps its state, and closing Compare leaves other windows in its tab
+  alone. Do not try to recognize copies in windows Compare does not open: three
+  designs (window records, then marks in 'winhighlight', 'foldnestmax', and
+  'foldignore') each failed review. That work is planned separately; see the
+  README's known limits.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_buffers.lua` owns snapshot identity, reload guards, and bounded

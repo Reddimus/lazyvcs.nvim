@@ -247,34 +247,16 @@ local function owns_shown(s, win)
 	return valid(win) and s.pane_state ~= nil and s.pane_state[win] == vim.api.nvim_win_get_buf(win)
 end
 -- Switch a pane to one of Compare's slot buffers. A buffer Compare did not set
--- up there, such as a picker preview with a diff of its own, leaves without
--- :diffoff, so Neovim saves its own diff with it. Neovim keeps a hidden buffer
--- in the tab's diff; :diffoff! drops it, and the tab's other diff windows,
--- including the other pane, go back into diff mode.
+-- up there, such as a picker preview, keeps its winbar and bindings; its diff
+-- ends in the pane, as Neovim otherwise keeps a hidden buffer in the tab's diff.
+-- Only the pane's own record of that buffer changes.
 local function show_slot(s, win, buf)
-	if vim.api.nvim_win_get_buf(win) == buf then
-		return
+	if vim.api.nvim_win_get_buf(win) ~= buf and not owns_shown(s, win) and util.get_win_option(win, "diff") then
+		local keep = util.capture_win_options(win, { "scrollbind", "cursorbind", "winbar" })
+		util.diff_off(win)
+		util.set_win_options(win, keep)
 	end
-	if owns_shown(s, win) or not util.get_win_option(win, "diff") then
-		return util.show_win_buffer(win, buf)
-	end
-	vim.api.nvim_win_call(win, function()
-		vim.cmd("keepjumps buffer " .. buf)
-	end)
-	local others = {}
-	for _, other in ipairs(vim.api.nvim_tabpage_list_wins(vim.api.nvim_win_get_tabpage(win))) do
-		if other ~= win and util.get_win_option(other, "diff") then
-			others[#others + 1] = other
-		end
-	end
-	vim.api.nvim_win_call(win, function()
-		vim.cmd("silent diffoff!")
-	end)
-	for _, other in ipairs(others) do
-		vim.api.nvim_win_call(other, function()
-			vim.cmd("diffthis")
-		end)
-	end
+	util.show_win_buffer(win, buf)
 end
 local function panes_usable(s, epoch)
 	if not alive(s) or sessions[s.tab] ~= s or s.panes_invalid or epoch ~= (s.pane_epoch or 0) then

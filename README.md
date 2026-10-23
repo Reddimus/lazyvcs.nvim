@@ -129,6 +129,8 @@ use `false` to disable a key.
   that opens that file for the first time can start with the pane's diff mode
   and label. `o`, `<leader>ve`, and picker selections reset the window they
   open; other windows are not reset.
+- A picker preview that brings its own diff into a Compare pane leaves that diff
+  there when Compare takes the pane back.
 
 ## Blame selected lines
 

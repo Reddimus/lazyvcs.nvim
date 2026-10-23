@@ -530,18 +530,51 @@ return function(ctx)
 			end)
 			assert(ok or not tostring(err):find("E101", 1, true), "the alternate stayed in Compare's diff")
 			-- Neovim saved the alternate's options when the pane left it; a window
-			-- in the same tab without a record of its own takes them.
+			-- in the same tab without a record of its own takes them. Its diff ends
+			-- in the pane, and its winbar and bindings stay.
 			api.nvim_set_current_win(s.sidewin)
 			vim.cmd("split")
 			vim.cmd.buffer(alternate)
 			local values = util.capture_win_options(0, { "diff", "winbar", "scrollbind", "cursorbind" })
 			assert(
-				values.diff and values.winbar == "MINE" and values.scrollbind and values.cursorbind,
+				not values.diff and values.winbar == "MINE" and values.scrollbind and values.cursorbind,
 				"recovery reset the alternate's options: " .. vim.inspect(values)
 			)
-			vim.cmd("diffoff")
 			vim.cmd("close")
 			compare.close(s)
+		end,
+	}
+	-- Recovery from a preview with its own diff leaves a user's diff window in
+	-- Compare's tab as it is.
+	cases[#cases + 1] = {
+		"test_core_compare_worktree_recovery_keeps_user_diff_window_options",
+		function()
+			local f, s, original = fixture("git")
+			local util = require("lazyvcs.util")
+			local other = h.tempdir() .. "/other.txt"
+			h.write_file(other, "one\ntwo\n")
+			api.nvim_set_current_win(s.sidewin)
+			vim.cmd("split " .. vim.fn.fnameescape(other))
+			local user = api.nvim_get_current_win()
+			vim.cmd("diffthis")
+			local wanted = { diff = true, scrollbind = false, cursorbind = false, wrap = true, foldlevel = 9 }
+			util.set_win_options(user, { scrollbind = false, cursorbind = false, wrap = true, foldlevel = 9 })
+			local alternate = api.nvim_create_buf(true, false)
+			vim.bo[alternate].bufhidden = "wipe"
+			api.nvim_set_current_win(s.rightwin)
+			api.nvim_win_set_buf(s.rightwin, alternate)
+			vim.cmd("diffthis")
+			api.nvim_buf_delete(original, { force = true })
+			ctx.wait_for(function()
+				return not s.closed and s.preview_result and not s.preview_job and not s.worktree
+			end, "Compare did not recover", 15000)
+			local values = util.capture_win_options(user, { "diff", "scrollbind", "cursorbind", "wrap", "foldlevel" })
+			assert(vim.deep_equal(values, wanted), "recovery changed the user's diff window: " .. vim.inspect(values))
+			api.nvim_win_call(user, function()
+				vim.cmd("diffoff")
+			end)
+			compare.close(s)
+			assert(f.root)
 		end,
 	}
 	return cases

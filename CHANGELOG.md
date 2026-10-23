@@ -20,10 +20,10 @@ and this project adheres to
   window's own bindings. A window with its own diff for the file, such as a user
   diff or a live diff, keeps it.
 - Close Compare without resetting windows it does not own: other windows in its
-  tab and a picker preview in a pane keep their options and folds, including a
-  preview's own diff when Compare recovers from the deletion of the file it
-  showed. A session sourced from the Compare tab keeps the layout it restores
-  there.
+  tab and a picker preview in a pane keep their options and folds, also when
+  Compare recovers from the deletion of the file it showed. A preview's own diff
+  ends in the pane. A session sourced from the Compare tab keeps the layout it
+  restores there.
 - Keep a Compare buffer when part of it is written over its file, as with
   `:1,1write!` or `:write >> %`.
 - Keep Compare's pane labels and the file list's winbar, hints, and cursor out
