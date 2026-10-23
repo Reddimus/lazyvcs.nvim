@@ -213,12 +213,14 @@ Revisiting restores both panes' cursor and scroll positions. Binary, oversized,
 empty, and property-only paths remain navigable. Files load on demand. Clean
 private buffers stay unlisted; editing adds them to the ordinary buffer list.
 Compare keeps borrowed buffers loaded while in use and restores their prior
-'bufhidden' setting on release. Compare panes add a LazyVcsComparePane entry to
-'winhighlight'. Neovim copies a pane's window options into a window split or
-opened from it, and into a window that opens the same buffer without its own
-options for it. The entry identifies that copy, and Compare then removes diff
-mode, bindings, diff folds, its winbar label, and the entry. A plugin that
-replaces 'winhighlight' wholesale can hide the copy. Reloading keeps the real
+'bufhidden' setting on release. Neovim copies a pane's window options into a
+window split or opened from it, and into a window that opens the same buffer
+without its own options for it. Compare marks its panes by adding 100 to
+'foldnestmax', which has no effect because folds nest at most 20 levels. A
+window with the mark is a copy, and Compare removes diff mode, bindings, diff
+folds, its winbar label, and the mark. Marks restored by a session saved during
+Compare are removed when the session loads. A plugin that sets 'foldnestmax'
+before Compare sees the new window can hide the copy. Reloading keeps the real
 buffer; deleting it shows a fresh saved snapshot until you select it again.
 Positions last for this session, survive refreshes for the same pinned base,
 and reset when the base revision or SVN URL changes. Removed paths are forgotten.
