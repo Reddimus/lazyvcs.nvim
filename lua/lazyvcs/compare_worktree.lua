@@ -5,6 +5,7 @@ local util = require("lazyvcs.util")
 local M = {}
 local records = {}
 local attachments = {}
+local pane_labels = {}
 local installed = false
 
 local function valid(record)
@@ -15,15 +16,29 @@ local function adopt(record)
 	if not valid(record) or record.loading then
 		return
 	end
-	if vim.bo[record.buf].modified then
-		record.retained = true
+	-- A batched edit can save or undo before change autocmds observe 'modified'.
+	-- Any change since loading belongs to the user, including its undo history.
+	-- Unloading also moves the change tick, and leaves no text or history.
+	if
+		vim.bo[record.buf].modified
+		or (
+			record.tick
+			and not record.rereading
+			and vim.api.nvim_buf_is_loaded(record.buf)
+			and vim.api.nvim_buf_get_changedtick(record.buf) ~= record.tick
+		)
+	then
+		-- List the buffer once for that change; the user may unlist it later.
+		record.retained, record.tick = true, nil
 		vim.bo[record.buf].buflisted = true
 	end
 	if vim.bo[record.buf].buflisted then
 		record.retained = true
 	end
 	for _, win in ipairs(vim.fn.win_findbuf(record.buf)) do
-		local owned = false
+		-- Neovim borrows an autocmd window to reread a buffer shown in no window
+		-- of the current tab; that is not the user displaying it.
+		local owned = vim.fn.win_gettype(win) == "autocmd"
 		for owner in pairs(record.owners) do
 			owned = owned or (not owner.closed and win == owner.rightwin)
 		end
@@ -59,6 +74,16 @@ local function changed(record)
 	end
 end
 
+-- Take the change baseline once an in-place reread has finished.
+local function reread(record)
+	if record and record.rereading then
+		record.rereading = nil
+		if record.tick and not vim.api.nvim_get_option_value("modified", { buf = record.buf }) then
+			record.tick = vim.api.nvim_buf_get_changedtick(record.buf)
+		end
+	end
+end
+
 local function attach(record)
 	local buf = record.buf
 	if attachments[buf] then
@@ -76,6 +101,9 @@ local function attach(record)
 					changed(current)
 				end
 			end))
+		end,
+		on_reload = function(_, changed_buf)
+			reread(records[changed_buf])
 		end,
 		on_detach = function(_, changed_buf)
 			attachments[changed_buf] = nil
@@ -99,6 +127,12 @@ local function settle(record)
 		record.unloading = nil
 		if same then
 			record.deleted = nil
+			-- Rereading the file is not an edit; later changes are. Without a
+			-- synchronous reload tick, count the reread as an edit.
+			if reloaded and record.tick and record.reload_tick and not vim.bo[record.buf].modified then
+				record.tick = record.reload_tick
+			end
+			record.rereading, record.reload_tick = nil, nil
 			adopt(record)
 			attach(record)
 		else
@@ -152,17 +186,65 @@ local function setup()
 			end
 		end),
 	})
-	vim.api.nvim_create_autocmd("BufWritePost", {
+	-- A range write (:1,1write!) and an append (:write >> %) fire FileWritePost
+	-- and FileAppendPost instead of BufWritePost.
+	vim.api.nvim_create_autocmd({ "BufWritePost", "FileWritePost", "FileAppendPost" }, {
 		group = group,
 		callback = util.safe_callback(function(args)
 			local record = records[args.buf]
 			if record then
+				-- Writing the file is editing it, even when the same command made the
+				-- change or wrote only part of the buffer. Writing a copy elsewhere is
+				-- not; adopt() still catches an edit made by the same command.
+				if util.canonical_path(vim.fn.fnamemodify(args.file, ":p")) == util.canonical_path(record.path) then
+					record.retained = true
+					vim.bo[record.buf].buflisted = true
+				end
 				adopt(record)
 				for owner, callback in pairs(record.owners) do
 					if not owner.closed and owner.worktree == record then
 						callback("saved", record)
 					end
 				end
+			end
+		end),
+	})
+	vim.api.nvim_create_autocmd("BufWipeout", {
+		group = group,
+		callback = util.safe_callback(function(args)
+			pane_labels[args.buf] = nil
+		end),
+	})
+	-- :checktime and autoread reread a file in place without unloading it. The
+	-- change tick moves after BufReadPost but before on_reload and
+	-- FileChangedShellPost, which run before any later command. Take the new
+	-- baseline there, so an edit that follows in the same macro still counts.
+	vim.api.nvim_create_autocmd("BufReadPre", {
+		group = group,
+		callback = util.safe_callback(function(args)
+			local record = records[args.buf]
+			if record and not record.loading and not record.unloading and not record.releasing then
+				-- An edit earlier in the same batch has not reached Compare yet.
+				-- Keep it, and its undo history, before the reread moves the tick.
+				adopt(record)
+				record.rereading = true
+			end
+		end),
+	})
+	vim.api.nvim_create_autocmd("FileChangedShellPost", {
+		group = group,
+		callback = util.safe_callback(function(args)
+			reread(records[args.buf])
+		end),
+	})
+	-- :edit unloads and reads the file again; BufEnter follows with the final
+	-- change tick before any later command.
+	vim.api.nvim_create_autocmd("BufEnter", {
+		group = group,
+		callback = util.safe_callback(function(args)
+			local record = records[args.buf]
+			if record and record.unloading and vim.api.nvim_buf_is_loaded(args.buf) then
+				record.reload_tick = vim.api.nvim_buf_get_changedtick(args.buf)
 			end
 		end),
 	})
@@ -233,6 +315,9 @@ function M.acquire(s, item, result, callback)
 		M.release(s, record)
 		return nil, tostring(err)
 	end
+	if not record.retained and not record.tick then
+		record.tick = vim.api.nvim_buf_get_changedtick(buf)
+	end
 	local current = text.capture(buf, 1024 * 1024)
 	local loaded_stat = vim.uv.fs_lstat(path)
 	if
@@ -252,6 +337,129 @@ function M.acquire(s, item, result, callback)
 	adopt(record)
 	attach(record)
 	return record, current
+end
+
+---Record a winbar label that Compare showed with a borrowed buffer.
+function M.mark_pane(buf, winbar)
+	setup()
+	local labels = pane_labels[buf] or {}
+	labels[winbar] = true
+	pane_labels[buf] = labels
+end
+
+---Whether a winbar value is a label Compare showed with the buffer.
+function M.is_label(buf, winbar)
+	local labels = pane_labels[buf]
+	return labels ~= nil and labels[winbar] == true
+end
+
+---Clear a copied Compare label without changing a live diff's options.
+function M.reset_label(win)
+	if M.is_label(vim.api.nvim_win_get_buf(win), util.get_win_option(win, "winbar")) then
+		util.set_win_option(win, "winbar", "")
+	end
+end
+
+---Turn off what Compare set in a pane before the pane releases a real buffer
+---or Compare closes, so the option record Neovim saves for the buffer carries
+---no diff mode, scroll binding, or Compare label. :diffoff restores the
+---options saved at :diffthis; folds stay as Neovim leaves them.
+function M.reset_pane(win)
+	util.unbind_window(win)
+	util.set_win_option(win, "winbar", "")
+end
+
+local trials = 0
+
+---Whether switching `win` to `buf` copies the options of a live pane that shows
+---`buf`. Neovim copies a live window's options only into a window that has no
+---option record of its own for the buffer. Tag the panes with a one-off token
+---in 'foldignore', switch `win` with autocommands off and read the token, then
+---switch back and untag; the window gets back the view and fold state of the
+---buffer it left. Autocommands later in a real switch, such as a :loadview,
+---cannot hide the answer. Returns nil when the trial cannot run.
+function M.copies_pane(win, buf, panes)
+	local tagged = {}
+	for _, pane in ipairs(panes) do
+		if vim.api.nvim_win_is_valid(pane) and vim.api.nvim_win_get_buf(pane) == buf then
+			tagged[#tagged + 1] = { win = pane, value = util.get_win_option(pane, "foldignore") }
+		end
+	end
+	if #tagged == 0 then
+		-- A pane that released the buffer left a reset record behind.
+		return false
+	end
+	trials = trials + 1
+	local token = "\28lazyvcs" .. trials .. "\31"
+	for _, pane in ipairs(tagged) do
+		util.set_win_option_noautocmd(pane.win, "foldignore", pane.value .. token)
+	end
+	local old = vim.api.nvim_win_get_buf(win)
+	local hidden = vim.bo[old].bufhidden
+	-- Returning to a buffer applies 'foldlevelstart' even without autocommands.
+	local foldlevelstart = vim.o.foldlevelstart
+	vim.cmd("noautocmd set foldlevelstart=-1")
+	local ok, copied = pcall(vim.api.nvim_win_call, win, function()
+		-- Keep the buffer the window leaves, and its view, for the moment.
+		local view = vim.fn.winsaveview()
+		vim.cmd("noautocmd setlocal bufhidden=hide")
+		vim.cmd("noautocmd keepalt keepjumps buffer " .. buf)
+		local value = tostring(util.get_win_option(win, "foldignore"))
+		local found = value:find(token, 1, true) ~= nil
+		if found then
+			-- Leave no token in the record the switch back saves.
+			util.set_win_option_noautocmd(win, "foldignore", (value:gsub(vim.pesc(token), "")))
+		end
+		vim.cmd("noautocmd keepalt keepjumps buffer " .. old)
+		vim.fn.winrestview(view)
+		return found
+	end)
+	vim.cmd("noautocmd set foldlevelstart=" .. foldlevelstart)
+	if vim.api.nvim_buf_is_valid(old) then
+		vim.api.nvim_buf_call(old, function()
+			vim.cmd("noautocmd setlocal bufhidden=" .. hidden)
+		end)
+	end
+	for _, pane in ipairs(tagged) do
+		if vim.api.nvim_win_is_valid(pane.win) then
+			util.set_win_option_noautocmd(pane.win, "foldignore", pane.value)
+		end
+	end
+	if not ok or vim.api.nvim_win_get_buf(win) ~= old then
+		return nil
+	end
+	return copied
+end
+
+---Turn off pane state that an editor window received with a real buffer from
+---a Compare edit action. `before` holds the window's diff and bindings before
+---the switch. `copied` says whether its options came from a live pane: then
+---diff mode goes and the bindings return to `before`. nil means unknown: turn
+---off only what the switch turned on. false leaves the window's own diff.
+function M.reset_editor(win, before, copied)
+	if copied == nil then
+		copied = util.get_win_option(win, "diff") and not before.diff
+	end
+	-- No trial token stays behind, in the window's local or global value.
+	for _, scope in ipairs({ "local", "global" }) do
+		local value = tostring(vim.api.nvim_get_option_value("foldignore", { win = win, scope = scope }))
+		local stripped = value:gsub("\28lazyvcs%d+\31", "")
+		if stripped ~= value then
+			vim.api.nvim_win_call(win, function()
+				local target = scope == "local" and "&l:foldignore" or "&g:foldignore"
+				vim.api.nvim_cmd(
+					{ cmd = "let", args = { target .. " = " .. vim.fn.string(stripped) }, mods = { noautocmd = true } },
+					{}
+				)
+			end)
+		end
+	end
+	if copied then
+		util.diff_off(win)
+		-- :diffoff restores the pane's bindings; the window keeps its own.
+		util.set_win_options(win, { scrollbind = before.scrollbind, cursorbind = before.cursorbind })
+	end
+	M.reset_label(win)
 end
 
 function M.capture(record)

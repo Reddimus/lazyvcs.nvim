@@ -62,11 +62,6 @@ local function basename(path)
 	return vim.fs.basename(path)
 end
 
-local function is_dir(path)
-	local stat = uv.fs_stat(path)
-	return stat and stat.type == "directory" or false
-end
-
 local function file_exists(path)
 	return uv.fs_stat(path) ~= nil
 end
@@ -102,16 +97,6 @@ local function resolve_svn_entry_path(repo_root, entry_path)
 	end
 	local path = normalize(absolute and entry_path or join(repo_root, entry_path))
 	return path, util.relative_literal_path(repo_root, path) or entry_path
-end
-
-local function repo_kind(path)
-	-- Worktrees and submodules store `.git` as a pointer file, not a directory.
-	if file_exists(join(path, ".git")) then
-		return "git"
-	end
-	if is_dir(join(path, ".svn")) then
-		return "svn"
-	end
 end
 
 function M.repo_selector_id(root)
@@ -214,46 +199,6 @@ function M.make_placeholder(repo, previous)
 	return placeholder_status(repo, previous)
 end
 
-local function scan_repos(root, max_depth, depth, repos, seen)
-	root = normalize(root)
-	if seen[root] then
-		return
-	end
-	seen[root] = true
-
-	local kind = repo_kind(root)
-	if kind then
-		repos[#repos + 1] = {
-			root = canonical_root(root),
-			name = basename(root),
-			vcs = kind,
-			order = #repos + 1,
-		}
-		if depth >= max_depth then
-			return
-		end
-	end
-
-	if depth >= max_depth then
-		return
-	end
-
-	local fd = uv.fs_scandir(root)
-	if not fd then
-		return
-	end
-
-	while true do
-		local name, entry_type = uv.fs_scandir_next(fd)
-		if not name then
-			break
-		end
-		if entry_type == "directory" and name ~= ".git" and name ~= ".svn" then
-			scan_repos(join(root, name), max_depth, depth + 1, repos, seen)
-		end
-	end
-end
-
 local function annotate_repos(root, repos)
 	local name_counts = {}
 	for _, repo in ipairs(repos) do
@@ -291,14 +236,6 @@ local function merge_enclosing(root, repos, enclosing, kind)
 	end
 	annotate_repos(root, merged)
 	return merged
-end
-
-function M.discover(root, max_depth)
-	root = canonical_root(root)
-	local repos = {}
-	scan_repos(root, max_depth, 0, repos, {})
-	local enclosing = require("lazyvcs.backends").root(root)
-	return merge_enclosing(root, repos, enclosing, enclosing and repo_kind(enclosing))
 end
 
 ---Incremental, cancellable repository discovery. Directory entries are consumed

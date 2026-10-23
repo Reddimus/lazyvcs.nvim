@@ -8,7 +8,70 @@ and this project adheres to
 
 ## [Unreleased]
 
-## [0.12.0] - 2026-10-21
+## [0.12.1] - 2026-10-23
+
+### Fixed
+
+- Keep Compare's diff mode, scroll binding, and `WORKTREE` label out of the
+  editor window that `o`, `<leader>ve`, and picker selections open, and out of
+  windows that open a file after Compare moved on from it or closed. Compare now
+  resets a pane before it releases a file or closes, and removes the diff mode
+  and label an edit action's window copies from the live pane, keeping that
+  window's own bindings. A window with its own diff for the file, such as a user
+  diff or a live diff, keeps it. Picker restoration does not save copied pane
+  bindings as user options, and transferring a live diff clears a copied Compare
+  label before the live diff saves it.
+- Close Compare without resetting windows it does not own: other windows in its
+  tab and a picker preview in a pane keep their options and folds, also when
+  Compare recovers from the deletion of the file it showed. A preview's own diff
+  ends in the pane. A session sourced from the Compare tab keeps the layout it
+  restores there. Its departing panes release their state even when the session
+  closes sibling panes first.
+- Keep a Compare buffer when part of it is written over its file, as with
+  `:1,1write!` or `:write >> %`.
+- Keep Compare's pane labels and the file list's winbar, hints, and cursor out
+  of a file a picker previews in a pane or the sidebar, and show the latest pane
+  label when a picker cancels a preview in a pane.
+- Keep a Compare buffer and its undo history when one command edits and saves
+  it, such as `:%s/old/new/ | write`, or a macro edits and undoes it. Writing a
+  copy with `:write {file}`, `:bdelete`, and a reread from another tab leave an
+  untouched buffer private.
+- Keep an untouched Compare buffer out of the buffer list when `:checktime` or
+  `autoread` rereads it, while still keeping an edit made right before or after
+  the reread.
+- Restore a paused live diff that returns to its file before the next file
+  loads, instead of leaving "Loading comparison..." in the base pane, and keep
+  that file's cursor and scroll position, or the position a command such as
+  `:cnext` or `:edit +N` chose on return. A retry with `:LazyVCS diff refresh`,
+  `:write`, or `:edit!` still resumes when another window event arrives while
+  the base loads.
+- Keep diff mode in another live diff when a paused view sharing its buffer
+  resumes on a supported file.
+- Restore `]v`, `[v`, and hunk revert when a live diff returns to its file
+  before a pending transfer finishes, and keep them in a live diff and its
+  splits when a paused view shows the same buffer in that tab.
+
+### Removed
+
+- The synchronous `is_versioned()`, `changed_files()`, and `load()` helpers of
+  the internal `lazyvcs.backends` module, which no code called. The 0.4.0 entry
+  that listed them described the internal backend interface, not a supported
+  API: the documented Lua API is `require("lazyvcs")`. Code that called them can
+  use `is_versioned_async()` and `changed_files_async()`, which do not block the
+  editor.
+
+### Changed
+
+- Scope note: Compare resets pane state only on its own paths. Windows it does
+  not open, such as a split of a pane, follow Neovim's rules for diff windows;
+  the README lists these limits.
+- Use `vim.text.diff` in the threaded diff worker when available, keeping
+  `vim.diff` for Neovim 0.11.
+- Document the complete default configuration, commit-message provider names and
+  `"off"`, `:LazyVCS blame selection`, and the sidebar `?` key. The README and
+  help install specs now match.
+
+## [0.12.0] - 2026-10-22
 
 ### Added
 
@@ -807,6 +870,8 @@ First tagged release.
 [0.8.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.7.0...v0.7.1
 [0.8.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.8.0...v0.8.1
+[0.9.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.8.1...v0.9.0
+[0.10.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.9.0...v0.10.0
 [0.11.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.10.0...v0.11.0
 [0.11.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.0...v0.11.1
 [0.11.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.1...v0.11.2
@@ -814,3 +879,7 @@ First tagged release.
 [0.11.4]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.3...v0.11.4
 [0.11.5]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.4...v0.11.5
 [0.11.6]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.5...v0.11.6
+[0.11.7]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.6...v0.11.7
+[0.12.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.7...v0.12.0
+[0.12.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.0...v0.12.1
+[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.1...HEAD

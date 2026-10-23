@@ -252,24 +252,6 @@ function M.resolve_async(path, on_done, opts)
 	return task
 end
 
---- Full session payload for the live diff (base lines, tracked state, labels).
-function M.load(path)
-	local backend, _, err = M.resolve(path)
-	if not backend then
-		return nil, err
-	end
-	local result, load_err = backend.load(path)
-	if not result and repository_failure(load_err, path) then
-		M.invalidate(path)
-		local fresh, _, resolve_err = M.resolve(path)
-		if not fresh then
-			return nil, resolve_err
-		end
-		return fresh.load(path)
-	end
-	return result, load_err
-end
-
 local function read_async(method, path, on_done, opts, arguments)
 	opts = opts or {}
 	local task = Task.new(on_done)
@@ -486,24 +468,6 @@ function M.root(path)
 		return nil, err
 	end
 	return root
-end
-
-function M.is_versioned(path)
-	local backend = M.resolve(path)
-	if not backend then
-		return false
-	end
-	return backend.is_versioned(path)
-end
-
---- Changed files for the working copy containing `path`.
----@return table[]|nil items, string|nil err
-function M.changed_files(path)
-	local backend, root, err = M.resolve(path)
-	if not backend then
-		return nil, err
-	end
-	return backend.changed_files(root)
 end
 
 function M.revert_hunk(session, hunk)

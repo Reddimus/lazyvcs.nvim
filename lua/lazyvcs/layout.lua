@@ -220,15 +220,19 @@ function M.reset_tab_diff(winid)
 end
 
 ---Restore splits that inherited this session's diff options, leaving earlier diff windows alone.
+---A paused view applies no diff, and another view's windows belong to that view.
 function M.release_derived_diff(session)
-	if not session.tabpage or not vim.api.nvim_tabpage_is_valid(session.tabpage) then
+	if session.paused or not session.tabpage or not vim.api.nvim_tabpage_is_valid(session.tabpage) then
 		return
 	end
+	local state = require("lazyvcs.state")
 	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(session.tabpage)) do
 		local buf = vim.api.nvim_win_get_buf(win)
+		local owner = state.for_window(win)
 		if
 			win ~= session.editable_win
 			and win ~= session.base_win
+			and not (owner and owner ~= session)
 			and not (session.preexisting_diff_windows or {})[win]
 			and (buf == session.editable_bufnr or buf == session.base_bufnr)
 			and util.get_win_option(win, "diff")
@@ -239,7 +243,12 @@ function M.release_derived_diff(session)
 end
 
 function M.release_buffer_diff(session, bufnr)
-	if not util.win_is_valid(session.editable_win) or not vim.api.nvim_buf_is_loaded(bufnr) then
+	if session.paused or not util.win_is_valid(session.editable_win) or not vim.api.nvim_buf_is_loaded(bufnr) then
+		return
+	end
+	-- Another active view owns this buffer's diff.
+	local owner = require("lazyvcs.state").get(bufnr)
+	if owner and owner ~= session then
 		return
 	end
 	-- A pre-existing user diff window may still keep E in this tab's diff set.

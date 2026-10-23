@@ -115,6 +115,22 @@ function M.exec(args, cwd)
 	return result.stdout or ""
 end
 
+-- Repository discovery is asynchronous at runtime. Tests wait for the same path.
+function M.discover(root, max_depth)
+	local done, specs, err
+	require("lazyvcs.source_control.model").discover_async(root, max_depth, function(value, failure)
+		done, specs, err = true, value, failure
+	end)
+	assert(
+		vim.wait(15000, function()
+			return done
+		end, 10),
+		"repository discovery did not finish"
+	)
+	assert(specs, err)
+	return specs
+end
+
 -- Build file URLs with three slashes before Windows drive letters; otherwise SVN treats
 -- the drive as a URL authority.
 function M.file_url(path)

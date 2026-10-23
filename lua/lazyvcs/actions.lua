@@ -588,23 +588,42 @@ set_session_maps = function(session)
 	if not session.readonly_comparison and not session.paused then
 		source[#source + 1] = { key = maps.revert_hunk, callback = M.revert_hunk, desc = "lazyvcs revert current hunk" }
 	end
-	require("lazyvcs.window_controls").register(session, function(win, buf)
-		if session.closing or session.phase == "closed" or vim.w[win].lazyvcs_compare then
-			return
+	require("lazyvcs.window_controls").register(
+		session,
+		function(win, buf)
+			if session.closing or session.phase == "closed" or vim.w[win].lazyvcs_compare then
+				return
+			end
+			-- A paused view can share a buffer and tab with another view's window.
+			local owner = state.for_window(win)
+			if owner and owner ~= session then
+				return
+			end
+			if win == session.base_win and buf == session.base_bufnr then
+				return base
+			end
+			-- Other diff windows on the buffer, such as splits of the editable
+			-- window, belong to the view that owns the buffer. A paused view owns
+			-- none, so it claims only its own windows.
+			if
+				buf == session.editable_bufnr
+				and (
+					win == session.editable_win
+					or (
+						vim.wo[win].diff
+						and vim.api.nvim_win_get_tabpage(win) == session.tabpage
+						and state.get(buf) == session
+					)
+				)
+			then
+				return session.phase == "active" and source or close
+			end
+		end,
+		10,
+		function(win)
+			return state.for_window(win) == session
 		end
-		if win == session.base_win and buf == session.base_bufnr then
-			return base
-		end
-		if
-			buf == session.editable_bufnr
-			and (
-				win == session.editable_win
-				or (vim.wo[win].diff and vim.api.nvim_win_get_tabpage(win) == session.tabpage)
-			)
-		then
-			return session.phase == "active" and source or close
-		end
-	end, 10)
+	)
 	session.maps_installed = true
 end
 

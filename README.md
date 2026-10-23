@@ -23,12 +23,22 @@ With lazy.nvim:
   event = { "BufReadPost", "BufNewFile", "BufReadCmd lazyvcs://compare/*" },
   cmd = "LazyVCS",
   keys = {
+    { "<leader>vs", "<cmd>LazyVCS<cr>", desc = "Toggle VCS sidebar" },
+    { "<leader>vo", "<cmd>LazyVCS diff open<cr>", desc = "Open VCS diff" },
+    { "<leader>vq", "<cmd>LazyVCS diff close<cr>", desc = "Close VCS diff" },
+    { "<leader>vr", "<cmd>LazyVCS hunk revert<cr>", desc = "Revert VCS hunk" },
+    { "<leader>vb", "<cmd>LazyVCS blame toggle<cr>", desc = "Toggle VCS blame" },
     { "<leader>vc", "<cmd>LazyVCS compare<cr>", desc = "Compare against base" },
     { "<leader>vC", "<cmd>LazyVCS compare base<cr>", desc = "Choose comparison base" },
+    { "]v", "<cmd>LazyVCS hunk next<cr>", desc = "Next VCS hunk" },
+    { "[v", "<cmd>LazyVCS hunk prev<cr>", desc = "Previous VCS hunk" },
   },
   opts = {},
 }
 ```
+
+The `BufReadCmd` event loads LazyVCS when Neovim rereads a Compare snapshot
+buffer, such as after `:edit`.
 
 For AstroNvim, put `return { ... }` around this spec and save it as
 `lua/plugins/lazyvcs.lua`. Restart Neovim and run `:checkhealth lazyvcs`.
@@ -108,6 +118,20 @@ or disable pane shortcuts with
 `compare.keymaps = { files = "<leader>vf", edit = "<leader>ve", help = "<leader>v?" }`;
 use `false` to disable a key.
 
+## Known limits
+
+- Compare panes are diff windows. As with any diff window, a split of a pane, or
+  another window in Compare's tab that shows a pane's file, starts in diff mode;
+  `:diffoff` ends it. Diff mode replaces manual folds, so a reviewed file keeps
+  no manual folds in windows that take a pane's options, including views saved
+  by auto-view autocommands.
+- While Compare shows a file again after `]b` or `[b`, a window in another tab
+  that opens that file for the first time can start with the pane's diff mode
+  and label. `o`, `<leader>ve`, and picker selections reset the window they
+  open; other windows are not reset.
+- A picker preview that brings its own diff into a Compare pane leaves that diff
+  there when Compare takes the pane back.
+
 ## Blame selected lines
 
 Select lines, then run `:LazyVCS blame`. Vim supplies the selected range. This
@@ -133,7 +157,17 @@ opts = { blame = { persist = false } }
 
 Defaults avoid remote refreshes unless requested. Git signs are delegated to
 `gitsigns.nvim` when installed. Optional pickers and commit-message providers
-are detected automatically. See `:help lazyvcs-configuration` for all options.
+are detected automatically. See `:help lazyvcs-configuration` for all options
+and `:help lazyvcs-defaults` for the complete default configuration.
+
+Commit messages use CopilotChat.nvim by default. Set
+`ai.commit_message.provider` to `"claude"`, `"codex"`, `"gemini"`, or
+`"copilot_cli"` for a CLI, to `"auto"` to try `provider_order`, or to `"off"` to
+disable generation:
+
+```lua
+opts = { ai = { commit_message = { provider = "off" } } }
+```
 
 Diff panes use normal syntax colors, including code an LSP marks inactive. On
 Neovim versions with `link_global`, a custom namespace stays active if any link

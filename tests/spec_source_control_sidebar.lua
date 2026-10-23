@@ -422,7 +422,6 @@ return function(ctx)
 						"discovery must include enclosing and nested roots exactly once: " .. vim.inspect(roots)
 					)
 				end
-				check(model.discover(f.root .. "/src", 3))
 				local done
 				model.discover_async(f.root .. "/src", 3, function(repos)
 					done = repos
@@ -462,7 +461,6 @@ return function(ctx)
 						"SVN discovery omitted enclosing working copy"
 					)
 				end
-				check(model.discover(f.root .. "/src", 3))
 				local done
 				model.discover_async(f.root .. "/src", 3, function(repos)
 					done = repos

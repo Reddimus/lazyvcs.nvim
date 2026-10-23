@@ -89,16 +89,38 @@ function M.new(lifecycle)
 		state.set_pending_transfer(s.editable_win, p)
 		return p
 	end
+	-- The view to give back when the window returns to the file it left. Neovim
+	-- puts the cursor back where the window left the file; a command that chose
+	-- another position on return, such as :cnext or :edit +N, wins.
+	local function restore_view(s, view)
+		if view then
+			vim.api.nvim_win_call(s.editable_win, function()
+				local cursor = vim.api.nvim_win_get_cursor(0)
+				if cursor[1] == view.lnum and cursor[2] == view.col then
+					vim.fn.winrestview(view)
+				end
+			end)
+		end
+	end
 	local function prepare(s)
 		local p = record(s)
 		if p.detached then
+			-- A retry saved the view when it started; the window leaves the file now.
+			if vim.api.nvim_win_get_buf(s.editable_win) == s.editable_bufnr then
+				p.view = vim.api.nvim_win_call(s.editable_win, vim.fn.winsaveview)
+			end
 			return p
 		end
 		p.detached = true
 		p.base_lines, p.base_text, p.base_identity, p.hunks = s.base_lines, s.base_text, s.base_identity, s.hunks
 		layout.remember_departed(s)
 		s.phase = "leaving"
-		p.view = vim.api.nvim_win_call(s.editable_win, vim.fn.winsaveview)
+		-- BufWinLeave does not fire while another window shows the departing
+		-- buffer, so this can run after the window has moved to the next file.
+		-- Neovim restores the departing file's own view if the user returns.
+		if vim.api.nvim_win_get_buf(s.editable_win) == s.editable_bufnr then
+			p.view = vim.api.nvim_win_call(s.editable_win, vim.fn.winsaveview)
+		end
 		require("lazyvcs.align").clear(s)
 		layout.release_derived_diff(s)
 		layout.reset_tab_diff(s.editable_win)
@@ -124,6 +146,18 @@ function M.new(lifecycle)
 		end
 		local p = state.peek_pending_transfer(s.editable_win)
 		if s.paused and target == s.editable_bufnr and util.buf_path(target) == s.source_path and not s.pause_retry then
+			-- Returning before the next file loads cancels that transfer. A transfer
+			-- that targets the paused file itself is a retry; let it finish.
+			if p and p.target_bufnr ~= target then
+				local view, detached = p.view, p.detached
+				state.clear_pending_transfer(s.editable_win)
+				s.phase = "paused"
+				if detached then
+					layout.present(s, s.base_lines, "")
+					restore_view(s, view)
+				end
+				require("lazyvcs.window_controls").sync()
+			end
 			return
 		end
 		s.pause_retry = nil
@@ -143,16 +177,14 @@ function M.new(lifecycle)
 				s.phase = "active"
 				if detached then
 					layout.present(s, s.base_lines or {}, vim.bo[s.editable_bufnr].filetype)
-					if view then
-						vim.api.nvim_win_call(s.editable_win, function()
-							vim.fn.winrestview(view)
-						end)
-					end
+					restore_view(s, view)
 					layout.rebalance(s)
 					layout.refresh(s)
 					assert(layout.bind_pair(s, s.editable_win), "could not restore diff pair")
 					aerial.refetch_buffer(s.editable_bufnr)
 				end
+				-- Leaving installed close-only controls; restore the hunk maps.
+				require("lazyvcs.window_controls").sync()
 			end
 			return
 		end

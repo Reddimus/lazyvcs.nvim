@@ -111,6 +111,143 @@ return function(ctx)
 			end,
 		}
 	end
+	-- Batched commands finish before change autocmds run, so the buffer can
+	-- already look clean when Compare releases it.
+	for name, keys in pairs({ write = ":%s/first/subst/ | write<CR>", undo = "ccreplaced<Esc>u" }) do
+		cases[#cases + 1] = {
+			"test_core_compare_worktree_batched_" .. name .. "_keeps_private_buffer",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = h.make_git_fixture()
+				h.write_file(f.root .. "/a.txt", "first\n")
+				h.write_file(f.root .. "/b.txt", "second\n")
+				vim.cmd.edit(f.file)
+				local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+				ready(s)
+				local buf = s.right
+				assert(s.shown_item.relpath == "a.txt" and not vim.bo[buf].buflisted)
+				api.nvim_set_current_win(s.rightwin)
+				api.nvim_feedkeys(api.nvim_replace_termcodes(keys, true, false, true), "xt", false)
+				assert(not vim.bo[buf].modified)
+				local undo = vim.fn.undotree(buf).seq_last
+				assert(undo > 0)
+				vim.wait(50)
+				assert(vim.bo[buf].buflisted, "edited private buffer stayed unlisted")
+				-- Listing follows the edit once; an explicit unlist stays.
+				vim.bo[buf].buflisted = false
+				vim.wait(50)
+				assert(not vim.bo[buf].buflisted, "Compare listed the buffer again")
+				compare.navigate_file("next", 1)
+				ctx.wait_for(function()
+					return s.shown_item.relpath == "b.txt" and s.worktree ~= nil
+				end, "next file", 15000)
+				assert(api.nvim_buf_is_valid(buf), "edited private buffer was deleted")
+				assert(vim.fn.undotree(buf).seq_last == undo, "edited private buffer lost undo history")
+				local disk = vim.fn.readfile(f.root .. "/a.txt")[1]
+				assert(disk == (name == "write" and "subst" or "first"), disk)
+				compare.close(s)
+				assert(api.nvim_buf_is_valid(buf), "closing Compare deleted the edited buffer")
+			end,
+		}
+	end
+	cases[#cases + 1] = {
+		"test_core_compare_worktree_reread_keeps_private_buffer_private",
+		function()
+			require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+			local f = h.make_git_fixture()
+			h.write_file(f.root .. "/a.txt", "first\n")
+			h.write_file(f.root .. "/b.txt", "second\n")
+			vim.cmd.edit(f.file)
+			local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			ready(s)
+			local buf = s.right
+			assert(s.shown_item.relpath == "a.txt" and not vim.bo[buf].buflisted)
+			local autoread = vim.o.autoread
+			vim.o.autoread = true
+			-- Another program rewrites the untouched file; :checktime rereads it in place.
+			h.write_file(f.root .. "/a.txt", "first\nexternal change\n")
+			vim.cmd.checktime(buf)
+			vim.o.autoread = autoread
+			assert(api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "external change", "checktime did not reread")
+			-- The main loop reports the reread as a text change.
+			api.nvim_exec_autocmds("TextChanged", { buffer = buf })
+			vim.wait(50)
+			api.nvim_exec_autocmds("TextChanged", { buffer = buf })
+			assert(not vim.bo[buf].buflisted, "rereading listed the private buffer")
+			compare.navigate_file("next", 1)
+			ctx.wait_for(function()
+				return s.shown_item.relpath == "b.txt" and s.worktree ~= nil
+			end, "next file", 15000)
+			assert(not api.nvim_buf_is_valid(buf), "rereading retained the private buffer")
+			compare.close(s)
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_core_compare_worktree_reread_then_edit_keeps_undo",
+		function()
+			require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+			local f = h.make_git_fixture()
+			h.write_file(f.root .. "/a.txt", "first\n")
+			h.write_file(f.root .. "/b.txt", "second\n")
+			vim.cmd.edit(f.file)
+			local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			ready(s)
+			local buf = s.right
+			assert(s.shown_item.relpath == "a.txt" and not vim.bo[buf].buflisted)
+			local autoread = vim.o.autoread
+			vim.o.autoread = true
+			h.write_file(f.root .. "/a.txt", "first\nexternal change\n")
+			api.nvim_set_current_win(s.rightwin)
+			-- One macro rereads the file, then edits and undoes before Compare settles.
+			api.nvim_feedkeys(
+				api.nvim_replace_termcodes(":checktime<CR>ccreplaced<Esc>u", true, false, true),
+				"xt",
+				false
+			)
+			vim.o.autoread = autoread
+			assert(api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "external change", "checktime did not reread")
+			assert(not vim.bo[buf].modified)
+			local undo = vim.fn.undotree(buf).seq_last
+			compare.navigate_file("next", 1)
+			ctx.wait_for(function()
+				return s.shown_item.relpath == "b.txt" and s.worktree ~= nil
+			end, "next file", 15000)
+			assert(api.nvim_buf_is_valid(buf), "the edit after rereading was discarded with its undo history")
+			assert(vim.fn.undotree(buf).seq_last == undo, "the buffer lost undo history")
+			compare.close(s)
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_core_compare_worktree_edit_then_reread_keeps_undo",
+		function()
+			require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+			local f = h.make_git_fixture()
+			h.write_file(f.root .. "/a.txt", "first\n")
+			h.write_file(f.root .. "/b.txt", "second\n")
+			vim.cmd.edit(f.file)
+			local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			ready(s)
+			local buf = s.right
+			assert(s.shown_item.relpath == "a.txt" and not vim.bo[buf].buflisted)
+			local autoread = vim.o.autoread
+			vim.o.autoread = true
+			h.write_file(f.root .. "/a.txt", "first\nexternal change\n")
+			api.nvim_set_current_win(s.rightwin)
+			-- One mapping edits and undoes, then rereads before Compare observes the edit.
+			api.nvim_feedkeys(api.nvim_replace_termcodes("ccx<Esc>u:checktime<CR>", true, false, true), "xt", false)
+			vim.o.autoread = autoread
+			assert(api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "external change", "checktime did not reread")
+			assert(not vim.bo[buf].modified)
+			local undo = vim.fn.undotree(buf).seq_last
+			compare.navigate_file("next", 1)
+			ctx.wait_for(function()
+				return s.shown_item.relpath == "b.txt" and s.worktree ~= nil
+			end, "next file", 15000)
+			assert(api.nvim_buf_is_valid(buf), "the edit before rereading was discarded with its undo history")
+			assert(vim.fn.undotree(buf).seq_last == undo, "the buffer lost undo history")
+			compare.close(s)
+		end,
+	}
 	cases[#cases + 1] = {
 		"test_core_compare_worktree_snapshot_opt_out",
 		function()
@@ -368,6 +505,11 @@ return function(ctx)
 			vim.bo[alternate].bufhidden = "wipe"
 			api.nvim_set_current_win(s.rightwin)
 			api.nvim_win_set_buf(s.rightwin, alternate)
+			-- The alternate's own window options, which Compare never set,
+			-- including a diff of its own.
+			local util = require("lazyvcs.util")
+			util.set_win_options(s.rightwin, { winbar = "MINE", scrollbind = true, cursorbind = true })
+			vim.cmd("diffthis")
 			api.nvim_buf_delete(original, { force = true })
 			ctx.wait_for(function()
 				return not s.closed
@@ -381,7 +523,58 @@ return function(ctx)
 				api.nvim_buf_is_valid(alternate) and vim.bo[alternate].bufhidden == "wipe",
 				"recovery deleted an external alternate"
 			)
+			-- Compare's diff holds its two panes only; a third buffer makes
+			-- :diffget ambiguous (E101).
+			local ok, err = pcall(api.nvim_win_call, s.leftwin, function()
+				vim.cmd("diffget")
+			end)
+			assert(ok or not tostring(err):find("E101", 1, true), "the alternate stayed in Compare's diff")
+			-- Neovim saved the alternate's options when the pane left it; a window
+			-- in the same tab without a record of its own takes them. Its diff ends
+			-- in the pane, and its winbar and bindings stay.
+			api.nvim_set_current_win(s.sidewin)
+			vim.cmd("split")
+			vim.cmd.buffer(alternate)
+			local values = util.capture_win_options(0, { "diff", "winbar", "scrollbind", "cursorbind" })
+			assert(
+				not values.diff and values.winbar == "MINE" and values.scrollbind and values.cursorbind,
+				"recovery reset the alternate's options: " .. vim.inspect(values)
+			)
+			vim.cmd("close")
 			compare.close(s)
+		end,
+	}
+	-- Recovery from a preview with its own diff leaves a user's diff window in
+	-- Compare's tab as it is.
+	cases[#cases + 1] = {
+		"test_core_compare_worktree_recovery_keeps_user_diff_window_options",
+		function()
+			local f, s, original = fixture("git")
+			local util = require("lazyvcs.util")
+			local other = h.tempdir() .. "/other.txt"
+			h.write_file(other, "one\ntwo\n")
+			api.nvim_set_current_win(s.sidewin)
+			vim.cmd("split " .. vim.fn.fnameescape(other))
+			local user = api.nvim_get_current_win()
+			vim.cmd("diffthis")
+			local wanted = { diff = true, scrollbind = false, cursorbind = false, wrap = true, foldlevel = 9 }
+			util.set_win_options(user, { scrollbind = false, cursorbind = false, wrap = true, foldlevel = 9 })
+			local alternate = api.nvim_create_buf(true, false)
+			vim.bo[alternate].bufhidden = "wipe"
+			api.nvim_set_current_win(s.rightwin)
+			api.nvim_win_set_buf(s.rightwin, alternate)
+			vim.cmd("diffthis")
+			api.nvim_buf_delete(original, { force = true })
+			ctx.wait_for(function()
+				return not s.closed and s.preview_result and not s.preview_job and not s.worktree
+			end, "Compare did not recover", 15000)
+			local values = util.capture_win_options(user, { "diff", "scrollbind", "cursorbind", "wrap", "foldlevel" })
+			assert(vim.deep_equal(values, wanted), "recovery changed the user's diff window: " .. vim.inspect(values))
+			api.nvim_win_call(user, function()
+				vim.cmd("diffoff")
+			end)
+			compare.close(s)
+			assert(f.root)
 		end,
 	}
 	return cases

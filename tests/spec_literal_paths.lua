@@ -35,7 +35,7 @@ return function(ctx)
 		end
 		h.write_file(path, "SELECTED EDIT\n")
 		local model = require("lazyvcs.source_control.model")
-		local specs = model.discover(root, 0)
+		local specs = h.discover(root, 0)
 		assert(specs[1] and specs[1].root == root, "literal repository root changed")
 		local loaded, load_err, done
 		model.load_repo_details_async(specs[1], {}, function(args, opts, cb)

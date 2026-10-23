@@ -222,6 +222,35 @@ the GitHub release.
   through text loading. Property markers reflect SVN summary flags; replacement
   rows load properties independently of those markers. Metadata-only results
   never enter the text cache or hunk computation.
+- `compare_worktree.lua` borrows real buffers for the editable pane. Neovim
+  saves a window's options for each buffer it shows and copies them into a
+  window that has none of its own for that buffer, sometimes from the live
+  window that shows it. Compare keeps its pane state out of those copies only on
+  its own paths: a pane turns off diff mode, scroll binding, and its label
+  before it releases a real buffer, before Compare closes, and when the user
+  closes it, so the saved record is clean. An edit action's window can still
+  copy the live pane, when the pane's record is stale after it released the file
+  and showed it again. To tell that copy from the window's own record, the edit
+  action tags the panes of every Compare session that show the file with a
+  one-off token in 'foldignore', switches the window to the file with
+  autocommands and 'foldlevelstart' off, reads and removes the token, and
+  switches back, restoring the left file's view, before the real switch; an
+  autocommand in the real switch, such as a `:loadview`, cannot hide the answer.
+  Only a copied window that still shows the file after the real switch loses
+  diff mode, and keeps the bindings it had before; if the trial cannot run, only
+  what the switch turned on is removed. A window that already showed the file,
+  or a live diff's window, is left alone. A pane that leaves a buffer Compare
+  did not set up, such as a picker preview, keeps that buffer's winbar and
+  bindings; if the preview brought its own diff, the pane turns it off first,
+  since Neovim keeps a hidden buffer in the tab's diff. That changes only the
+  pane's own record of the buffer; Compare never touches the tab's other
+  windows. Folds stay native, with no `zE` and no fold restore. A pane is reset
+  only for the buffer Compare set it up for, so a picker preview, also during
+  deletion recovery, keeps its state, and closing Compare leaves other windows
+  in its tab alone. Do not try to recognize copies in windows Compare does not
+  open: three designs (window records, then marks in 'winhighlight',
+  'foldnestmax', and 'foldignore') each failed review. That work is planned
+  separately; see the README's known limits.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_buffers.lua` owns snapshot identity, reload guards, and bounded
@@ -314,8 +343,9 @@ the GitHub release.
   buffers or unavailable bases and release state on unload. Matching base
   mutations retry suspended records without retaining their contents. Hunk
   computation and gutter rendering have separate caches. Large sign comparisons
-  and native previews share a histogram diff worker. Signs fall back
-  synchronously if threaded `vim.diff` is unavailable; large previews report the
+  and native previews share a histogram diff worker, which prefers
+  `vim.text.diff` and falls back to `vim.diff` on Neovim 0.11. Signs fall back
+  synchronously if neither is available in the worker; large previews report the
   limitation. Preview cancellation releases command ownership while retaining
   physical-worker bookkeeping until completion. Results must match the state
   object, buffer text identity, and base generation. Index and SVN BASE mutation

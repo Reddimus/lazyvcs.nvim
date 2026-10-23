@@ -67,6 +67,7 @@ function M.setup(s, actions)
 					pending[win] = nil
 					vim.schedule(protected(function()
 						if valid() then
+							actions.relabel()
 							actions.resume()
 						end
 					end))

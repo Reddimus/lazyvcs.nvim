@@ -73,11 +73,14 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
                       Move between hunks or revert the hunk under the cursor.
                       Defaults to `next`.
 
-:LazyVCS blame {toggle, split, clear, log}
+:LazyVCS blame {toggle, split, clear, log, selection}
                       `toggle` switches global inline blame using `blame.mode`,
                       `split` shows full-file blame in a fixed-width split,
-                      `clear` disables inline blame, and `log` shows the
-                      Git/SVN log for the current line. Defaults to `toggle`.
+                      `clear` disables inline blame, `log` shows the Git/SVN
+                      log for the current line, and `selection` reports blame
+                      for a range or the cursor line. With a range, such as
+                      :'<,'>LazyVCS blame, blame reports the selection. See
+                      |lazyvcs-blame-selection|. Defaults to `toggle`.
 
 :LazyVCS signs refresh
                       Reload the VCS base and refresh gutter signs for the
@@ -210,8 +213,29 @@ Revisiting restores both panes' cursor and scroll positions. Binary, oversized,
 empty, and property-only paths remain navigable. Files load on demand. Clean
 private buffers stay unlisted; editing adds them to the ordinary buffer list.
 Compare keeps borrowed buffers loaded while in use and restores their prior
-'bufhidden' setting on release. Reloading keeps the real buffer; deleting it
-shows a fresh saved snapshot until you select it again.
+'bufhidden' setting on release. Before a pane releases a real file, and before
+Compare closes, Compare turns off the pane's diff mode, scroll binding, and
+label, so windows that open the file later start without them. o, <leader>ve,
+and picker selections remove the diff mode and label that the editor window
+they open copies from the pane, keeping the window's own bindings; a window
+with its own diff for the file, such as a user or live diff, keeps it. Closing
+Compare leaves other windows in its tab, and a picker preview in a pane,
+untouched. A session sourced from the Compare tab keeps the layout it
+restores.
+
+Known limits: windows Compare does not open follow Neovim's rules for any diff
+window. A split of a pane, or another window in the Compare tab that shows a
+pane's file, starts in diff mode with the pane's options; |:diffoff| ends it.
+|:diffthis| replaces manual folds, and :diffoff leaves the diff folds as manual
+folds, so a reviewed file keeps no manual folds in windows that take the pane's
+options, and auto-view autocommands (|:loadview|) save that state. A session
+saved during Compare restores pane windows with 'foldmethod' diff. While
+Compare shows a file again after ]b or [b, a window in another tab that opens
+it without options of its own for it can start in diff mode with the pane's
+label. A picker preview that brings its own diff into a pane leaves that diff
+there when Compare takes the pane back; its winbar and bindings stay.
+Reloading keeps the real buffer; deleting it shows a fresh saved snapshot until
+you select it again.
 Positions last for this session, survive refreshes for the same pinned base,
 and reset when the base revision or SVN URL changes. Removed paths are forgotten.
 Moving the list cursor and background refreshes preserve focus. Unavailable
@@ -279,12 +303,13 @@ Blame and signs skip buffers whose saved or in-memory size exceeds
 ==============================================================================
 MAPPINGS                                                     *lazyvcs-mappings*
 
-Suggested global mappings:
+Suggested global mappings, as in the |lazyvcs-configuration| install spec:
 
+    <leader>vs   toggle source-control sidebar
     <leader>vo   open live diff
     <leader>vq   close live diff
     <leader>vr   revert current hunk
-    <leader>vs   toggle source-control sidebar
+    <leader>vb   toggle inline blame
     <leader>vc   open or refresh comparison
     <leader>vC   choose comparison base
     ]v           next hunk
@@ -292,11 +317,15 @@ Suggested global mappings:
 
 Live diff buffer-local mappings:
 
-    q            close the live diff session
+    q            close the live diff session (keymaps.close)
     <leader>q    close from the left/base diff window
     <leader>vr   revert current hunk
     ]v           next hunk
     [v           previous hunk
+
+The left/base pane always maps <leader>q as a close alias, in addition to
+keymaps.close, because that pane is read-only. It is not configurable;
+session_keymaps = false removes it along with the other session mappings.
 
 Pending direct opens stay tied to their original window, buffer, and tab.
 Completion preserves focus; a changed destination cancels the open.
@@ -338,6 +367,7 @@ buffer-local and fixed; `config.keymaps` does not reach them.
     v            toggle list/tree changes
     S            cycle file sort
     X            cancel this repository's in-flight background jobs
+    ?            show sidebar help
 
 With snacks.nvim installed, b opens a VS Code-style Git branch picker with
 commands pinned first, current branch marked, and no numeric prefixes. Without
@@ -627,20 +657,22 @@ Files are limited to 1 MiB and command output is bounded. Changed or closed sour
 ==============================================================================
 CONFIGURATION                                           *lazyvcs-configuration*
 
-Minimal lazy.nvim or AstroNvim spec:
+Minimal lazy.nvim or AstroNvim spec, matching the README:
 
 >lua
   {
     "Reddimus/lazyvcs.nvim",
     main = "lazyvcs",
-    event = { "BufReadPost", "BufNewFile" },
-    cmd = { "LazyVCS" },
+    event = { "BufReadPost", "BufNewFile", "BufReadCmd lazyvcs://compare/*" },
+    cmd = "LazyVCS",
     keys = {
       { "<leader>vs", "<cmd>LazyVCS<cr>", desc = "Toggle VCS sidebar" },
       { "<leader>vo", "<cmd>LazyVCS diff open<cr>", desc = "Open VCS diff" },
       { "<leader>vq", "<cmd>LazyVCS diff close<cr>", desc = "Close VCS diff" },
       { "<leader>vr", "<cmd>LazyVCS hunk revert<cr>", desc = "Revert VCS hunk" },
       { "<leader>vb", "<cmd>LazyVCS blame toggle<cr>", desc = "Toggle VCS blame" },
+      { "<leader>vc", "<cmd>LazyVCS compare<cr>", desc = "Compare against base" },
+      { "<leader>vC", "<cmd>LazyVCS compare base<cr>", desc = "Choose comparison base" },
       { "]v", "<cmd>LazyVCS hunk next<cr>", desc = "Next VCS hunk" },
       { "[v", "<cmd>LazyVCS hunk prev<cr>", desc = "Previous VCS hunk" },
     },
@@ -651,8 +683,10 @@ Minimal lazy.nvim or AstroNvim spec:
 This install has no required plugin dependencies. LazyVCS detects installed
 integrations and AI CLIs at runtime.
 
-For AstroNvim, wrap the spec in `return { ... }` in `lua/plugins/lazyvcs.lua`. Keep `event`
-entry so SVN signs attach when files open, even before a LazyVCS command is run.
+For AstroNvim, wrap the spec in `return { ... }` in `lua/plugins/lazyvcs.lua`.
+Keep the `BufReadPost` and `BufNewFile` events so SVN signs attach when files
+open, even before a LazyVCS command is run. The `BufReadCmd` event loads
+LazyVCS when Neovim rereads a Compare snapshot buffer, such as after `:edit`.
 
 Optional integrations are detected at runtime:
 
@@ -685,7 +719,9 @@ Commit messages can be generated from the source-control sidebar with `gm` or
 from the commit popup with `gm` in normal mode and `<C-g>` in insert mode. The
 default provider is CopilotChat.nvim. Set ai.commit_message.provider to "auto"
 to try CopilotChat.nvim, Claude CLI, Codex CLI, Gemini CLI, then GitHub Copilot
-CLI. LazyVCS asks once per session before sending diffs to an AI provider.
+CLI. Set it to "off" to disable generation: the commit input omits its
+generate keys, and `gm` in the sidebar reports that generation is disabled.
+LazyVCS asks once per session before sending diffs to an AI provider.
 
 >lua
   opts = {
@@ -696,6 +732,110 @@ CLI. LazyVCS asks once per session before sending diffs to an AI provider.
       },
     },
   }
+<
+
+Defaults                                                    *lazyvcs-defaults*
+
+Calling setup() without options is equivalent to the call below. Pass only the
+keys you change: nested tables merge with these defaults, while
+ai.commit_message.provider_order replaces the whole list. A spec compares this
+block with lua/lazyvcs/config.lua.
+
+>lua
+    require("lazyvcs").setup({
+      debounce_ms = 120,
+      diff_highlighting = "syntax",
+      base_window = {
+        width = 0.5,
+        cursor_sync = true,
+        align_wrapped = "off",
+      },
+      use_gitsigns = true,
+      set_winbar = true,
+      session_keymaps = true,
+      compare = {
+        editable = true,
+        max_cached_files = 32,
+        keymaps = { files = "<leader>vf", edit = "<leader>ve", help = "<leader>v?" },
+      },
+      keymaps = {
+        close = "q",
+        next_hunk = "]v",
+        prev_hunk = "[v",
+        next_file = "]b",
+        prev_file = "[b",
+        revert_hunk = "<leader>vr",
+      },
+      signs = {
+        enabled = true,
+        debounce_ms = 120,
+        sign_priority = 6,
+        max_file_bytes = 1024 * 1024,
+        text = {
+          add = "┃",
+          change = "┃",
+          delete = "_",
+          topdelete = "‾",
+          changedelete = "~",
+        },
+      },
+      blame = {
+        mode = "inline",
+        persist = true,
+        delay_ms = 150,
+        loading_delay_ms = 750,
+        loading_text = "Blame loading...",
+        uncommitted_text = "Uncommitted line",
+        format = "{author}, {date} - {revision_label}",
+        max_width = 80,
+        split_min_width = 20,
+        split_max_width = 34,
+      },
+      source_control = {
+        enabled = true,
+        ui = "auto",
+        scan_depth = 3,
+        width = 38,
+        auto_expand_width = false,
+        auto_expand_max_width_ratio = 0.5,
+        show_clean = false,
+        confirm_mutations = true,
+        remote_refresh = "manual",
+        remote_refresh_interval_ms = 60000,
+        sync_button_behavior = "picker",
+        always_show_repositories = false,
+        selection_mode = "multiple",
+        repositories_sort = "discovery_time",
+        changes_view_mode = "list",
+        changes_sort = "path",
+        compact_folders = true,
+        show_action_button = true,
+        show_input_action_button = true,
+        remote_error_notifications = "summary",
+        background = {
+          git_workers = 4,
+          svn_workers = 1,
+          status_timeout_ms = 30000,
+          remote_timeout_ms = 30000,
+          switch_timeout_ms = 30000,
+          mutation_timeout_ms = 120000,
+          history_limit = 100,
+        },
+      },
+      ai = {
+        commit_message = {
+          provider = "copilotchat",
+          provider_order = { "copilotchat", "claude", "codex", "gemini", "copilot_cli" },
+          instructions = "",
+          timeout_ms = 30000,
+          max_context_chars = 12000,
+          context = "staged_first",
+          generate_key = "gm",
+          insert_generate_key = "<C-g>",
+          confirm_privacy = true,
+        },
+      },
+    })
 <
 
 Main options:
@@ -969,8 +1109,12 @@ immediately. GUI pinentry and agents are unaffected.
 
 AI commit-message options, under ai.commit_message:
 
-    provider           Provider name, or "auto" to try provider_order.
+    provider           "copilotchat" (default), "claude", "codex",
+                       "gemini", "copilot_cli", "auto" to try
+                       provider_order, or "off" to disable generation.
     provider_order     Providers tried in order when provider = "auto".
+                       A non-empty list of distinct provider names, except
+                       "auto" and "off".
     instructions       Extra instructions appended to the prompt.
     timeout_ms         Provider timeout.
     max_context_chars  Diff context is truncated to this length.
@@ -1034,25 +1178,9 @@ highlighted by default.
 ==============================================================================
 TESTING                                                       *lazyvcs-testing*
 
-Local checks:
-
->
-  nvim --headless -u NONE -l tests/native_smoke.lua
-  nvim --headless -u NONE -l tests/run.lua
-  tests/minitest.sh
-  stylua --check lua tests
-  lua-language-server --check=. --check_format=pretty --checklevel=Warning
-  npm ci
-  npm run format:md:check
-  bash -n tests/minitest.sh tests/e2e/ubuntu-native.sh tests/e2e/ubuntu-astronvim.sh
-<
-
-Container checks:
-
->
-  tests/e2e/ubuntu-native.sh
-  tests/e2e/ubuntu-astronvim.sh
-<
+CONTRIBUTING.md in the repository lists every local check that CI runs, with
+the pinned StyLua and lua-language-server versions, and the container E2E
+suites. Run them from the repository root before opening a pull request.
 
 `tests/minitest.sh` fetches `mini.nvim` into ignored `deps/` unless
 `MINI_TEST_PATH` points to an existing checkout. The native container test also

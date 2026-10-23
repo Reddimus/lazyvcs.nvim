@@ -42,7 +42,7 @@ return function(ctx)
 		local model = require("lazyvcs.source_control.model")
 		local ops = require("lazyvcs.source_control.ops")
 		local session_state = require("lazyvcs.state")
-		local specs = model.discover(fixture.root, 1)
+		local specs = helpers.discover(fixture.root, 1)
 		local state = {
 			path = fixture.root,
 			lazyvcs_commit_drafts = {},

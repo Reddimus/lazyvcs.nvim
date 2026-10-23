@@ -92,5 +92,382 @@ return function(ctx)
 			actions.close()
 		end,
 	}
+	local function open_live(path)
+		vim.cmd.edit(vim.fn.fnameescape(path))
+		local buf = api.nvim_get_current_buf()
+		actions.open()
+		ctx.wait_for(function()
+			local s = state.get(buf)
+			return s and s.phase == "active"
+		end, "live diff did not open", 15000)
+		return assert(state.get(buf))
+	end
+	local function setup()
+		require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false }, blame = { persist = false } })
+	end
+	local function settle()
+		vim.wait(300, function()
+			return false
+		end)
+	end
+	-- Return immediately, or while the replacement base is still loading.
+	local function interrupt(win, timing)
+		if timing == "loading" then
+			assert(vim.wait(1000, function()
+				local p = state.peek_pending_transfer(win)
+				return p and p.phase == "loading"
+			end, 1))
+		end
+	end
+	for _, timing in ipairs({ "immediate", "loading" }) do
+		cases[#cases + 1] = {
+			"test_live_diff_paused_return_" .. timing .. "_restores_pause",
+			function()
+				setup()
+				local f = h.make_git_transfer_fixture()
+				local outside = h.tempdir() .. "/outside.txt"
+				h.write_file(outside, "outside\n")
+				local win = open_live(f.file1).editable_win
+				vim.cmd.edit(vim.fn.fnameescape(outside))
+				ctx.wait_for(function()
+					local s = state.for_window(win)
+					return s and s.paused
+				end, "outside file did not pause", 15000)
+				local paused = state.for_window(win)
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+				interrupt(win, timing)
+				vim.cmd.edit(vim.fn.fnameescape(outside))
+				ctx.wait_for(function()
+					return paused.phase == "paused" and not state.peek_pending_transfer(win)
+				end, "paused view stayed in phase " .. tostring(paused.phase), 3000)
+				settle()
+				assert(state.for_window(win) == paused and paused.paused and paused.phase == "paused")
+				local lines = api.nvim_buf_get_lines(paused.base_bufnr, 0, -1, false)
+				assert(lines[1] == "Diff paused", vim.inspect(lines))
+				assert(not state.peek_pending_transfer(win), "pending transfer was not cleared")
+				actions.close(paused)
+			end,
+		}
+	end
+	for _, timing in ipairs({ "immediate", "loading" }) do
+		cases[#cases + 1] = {
+			"test_live_diff_same_file_return_" .. timing .. "_restores_hunk_maps",
+			function()
+				setup()
+				local f = h.make_git_transfer_fixture()
+				local s = open_live(f.file1)
+				local buf, win = s.editable_bufnr, s.editable_win
+				local function mapped(lhs)
+					return vim.fn.maparg(lhs, "n", false, true).buffer == 1
+				end
+				assert(mapped("]v") and mapped("[v") and mapped("<leader>vr"), "active maps missing")
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+				interrupt(win, timing)
+				vim.cmd.edit(vim.fn.fnameescape(f.file1))
+				ctx.wait_for(function()
+					return s.phase == "active" and not state.peek_pending_transfer(win)
+				end, "same-file return did not settle", 3000)
+				settle()
+				assert(state.for_window(win) == s and api.nvim_get_current_buf() == buf)
+				assert(mapped("]v") and mapped("[v") and mapped("<leader>vr"), "returned view lost its hunk maps")
+				actions.close(s)
+			end,
+		}
+	end
+	cases[#cases + 1] = {
+		"test_live_diff_paused_view_resume_keeps_other_view_diff",
+		function()
+			setup()
+			local f = h.make_git_transfer_fixture()
+			local win = open_live(f.file1).editable_win
+			vim.cmd("botright vnew")
+			local other = open_live(f.file2)
+			assert(vim.wo[other.editable_win].diff and vim.wo[other.base_win].diff)
+			-- Move the first view onto the buffer the second view owns.
+			api.nvim_set_current_win(win)
+			vim.cmd.edit(vim.fn.fnameescape(f.file2))
+			ctx.wait_for(function()
+				local s = state.for_window(win)
+				return s and s.paused
+			end, "shared buffer did not pause", 15000)
+			assert(vim.wo[other.editable_win].diff, "pausing changed the other view")
+			vim.cmd.edit(vim.fn.fnameescape(f.file1))
+			ctx.wait_for(function()
+				local s = state.for_window(win)
+				return s and not s.paused and s.phase == "active"
+			end, "paused view did not resume", 15000)
+			settle()
+			assert(state.get(other.editable_bufnr) == other and other.phase == "active")
+			assert(vim.wo[other.editable_win].diff, "resuming turned off diff in the other view")
+			assert(vim.wo[other.base_win].diff, "resuming turned off the other view's base diff")
+			actions.close(state.for_window(win))
+			actions.close(other)
+		end,
+	}
+	local function lines(count, prefix)
+		local out = {}
+		for index = 1, count do
+			out[index] = prefix .. " " .. index
+		end
+		return table.concat(out, "\n") .. "\n"
+	end
+	local function wait_paused(win)
+		ctx.wait_for(function()
+			local s = state.for_window(win)
+			return s and s.paused
+		end, "the view did not pause", 15000)
+		return state.for_window(win)
+	end
+	-- A retry of the paused file survives window events while its base loads.
+	for _, retry in ipairs({ "refresh", "write", "edit" }) do
+		cases[#cases + 1] = {
+			"test_live_diff_paused_retry_" .. retry .. "_survives_window_events",
+			function()
+				setup()
+				local f = h.make_git_transfer_fixture()
+				local root = h.tempdir()
+				local outside = root .. "/outside.txt"
+				h.write_file(outside, "outside\n")
+				local win = open_live(f.file1).editable_win
+				vim.cmd.edit(vim.fn.fnameescape(outside))
+				wait_paused(win)
+				-- The paused file becomes supported.
+				h.exec({ "git", "init", "-q" }, root)
+				h.exec({ "git", "config", "user.email", "test@example.com" }, root)
+				h.exec({ "git", "config", "user.name", "Test" }, root)
+				h.exec({ "git", "add", "outside.txt" }, root)
+				h.exec({ "git", "commit", "-q", "-m", "outside" }, root)
+				h.write_file(outside, "outside changed\n")
+				api.nvim_set_current_win(win)
+				local float
+				if retry == "refresh" then
+					vim.cmd("LazyVCS diff refresh")
+				elseif retry == "write" then
+					vim.cmd("silent write!")
+				else
+					vim.cmd("edit!")
+				end
+				if retry ~= "edit" then
+					-- A notification float enters a buffer while the base loads.
+					float = api.nvim_open_win(api.nvim_create_buf(false, true), false, {
+						relative = "editor",
+						row = 1,
+						col = 1,
+						width = 10,
+						height = 1,
+					})
+				end
+				ctx.wait_for(function()
+					local s = state.for_window(win)
+					return s and not s.paused and s.phase == "active"
+				end, "the " .. retry .. " retry did not resume the view", 15000)
+				assert(vim.wo[win].diff, "the resumed view is not in diff mode")
+				if float and api.nvim_win_is_valid(float) then
+					api.nvim_win_close(float, true)
+				end
+				actions.close(state.for_window(win))
+			end,
+		}
+	end
+	-- A paused view returning to its file keeps that file's cursor and view.
+	cases[#cases + 1] = {
+		"test_live_diff_paused_return_keeps_cursor_with_second_window",
+		function()
+			setup()
+			local f = h.make_git_transfer_fixture()
+			h.write_file(f.file2, lines(60, "beta"))
+			local outside = h.tempdir() .. "/outside.txt"
+			h.write_file(outside, lines(60, "outside"))
+			local win = open_live(f.file1).editable_win
+			-- The paused file is also open in another window, so leaving it keeps it visible.
+			vim.cmd("botright split " .. vim.fn.fnameescape(outside))
+			local other = api.nvim_get_current_win()
+			api.nvim_set_current_win(win)
+			vim.cmd.edit(vim.fn.fnameescape(outside))
+			local paused = wait_paused(win)
+			vim.fn.winrestview({ lnum = 10, col = 0, topline = 5 })
+			vim.cmd("edit +40 " .. vim.fn.fnameescape(f.file2))
+			interrupt(win, "loading")
+			vim.cmd.edit(vim.fn.fnameescape(outside))
+			local returned = vim.fn.winsaveview()
+			assert(returned.lnum == 10, "Neovim did not restore the paused file's cursor")
+			ctx.wait_for(function()
+				return paused.phase == "paused" and not state.peek_pending_transfer(win)
+			end, "the paused view did not settle", 3000)
+			settle()
+			local view = api.nvim_win_call(win, vim.fn.winsaveview)
+			assert(
+				view.lnum == 10 and view.topline == returned.topline,
+				"returning moved the cursor: " .. vim.inspect(view)
+			)
+			api.nvim_win_close(other, true)
+			actions.close(paused)
+		end,
+	}
+	-- A paused view sharing a buffer never controls another view's window.
+	cases[#cases + 1] = {
+		"test_live_diff_paused_view_leaves_other_view_maps",
+		function()
+			setup()
+			local f = h.make_git_transfer_fixture()
+			local win = open_live(f.file1).editable_win
+			vim.cmd("botright vnew")
+			local other = open_live(f.file2)
+			api.nvim_set_current_win(win)
+			vim.cmd.edit(vim.fn.fnameescape(f.file2))
+			local paused = wait_paused(win)
+			local controls = require("lazyvcs.window_controls")
+			local function mapped(lhs)
+				return vim.fn.maparg(lhs, "n", false, true).buffer == 1
+			end
+			api.nvim_set_current_win(other.editable_win)
+			assert(mapped("]v") and mapped("[v") and mapped("<leader>vr"), "the active view lost its hunk maps")
+			-- Without the active view's controls, the paused view must not claim its window.
+			api.nvim_set_current_win(paused.editable_win)
+			controls.unregister(other)
+			api.nvim_set_current_win(other.editable_win)
+			assert(not mapped("q") and not mapped("]v"), "the paused view controls another view's window")
+			actions.close(paused)
+			actions.close(other)
+		end,
+	}
+	-- A split of an active view's editable window resolves to that view, even
+	-- when a paused view sharing the buffer registered first.
+	-- Whichever view registered last, the active view owns its splits.
+	for _, newer in ipairs({ "active", "paused" }) do
+		cases[#cases + 1] = {
+			"test_live_diff_split_beside_paused_view_keeps_hunk_maps" .. (newer == "paused" and "_paused_newer" or ""),
+			function()
+				setup()
+				local f = h.make_git_transfer_fixture()
+				local win = open_live(f.file1).editable_win
+				vim.cmd("botright vnew")
+				local other = open_live(f.file2)
+				api.nvim_set_current_win(win)
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+				local paused = wait_paused(win)
+				if newer == "active" then
+					-- Reopen the active view, so its registration is newer than the paused view's.
+					-- Reopen without :edit, which would reread the buffer and retry the pause.
+					local editor, buf = other.editable_win, other.editable_bufnr
+					api.nvim_set_current_win(editor)
+					actions.close(other)
+					actions.open()
+					ctx.wait_for(function()
+						local s = state.get(buf)
+						return s and s.phase == "active"
+					end, "the view did not reopen", 15000)
+					other = assert(state.get(buf))
+				end
+				assert(state.for_window(win) == paused and paused.paused, "the paused view changed")
+				api.nvim_set_current_win(other.editable_win)
+				vim.cmd("split")
+				local split = api.nvim_get_current_win()
+				assert(vim.wo[split].diff and api.nvim_win_get_buf(split) == other.editable_bufnr)
+				local function mapped(lhs)
+					return vim.fn.maparg(lhs, "n", false, true).buffer == 1
+				end
+				assert(
+					mapped("]v") and mapped("[v") and mapped("<leader>vr"),
+					"the split lost the active view's hunk maps"
+				)
+				api.nvim_win_close(split, true)
+				actions.close(paused)
+				actions.close(other)
+			end,
+		}
+	end
+	-- A command that chooses a position on return, such as :edit +N or :cnext,
+	-- keeps it; Neovim's own restored position gets the saved view.
+	for _, timing in ipairs({ "immediate", "loading" }) do
+		cases[#cases + 1] = {
+			"test_live_diff_paused_return_" .. timing .. "_keeps_chosen_cursor",
+			function()
+				setup()
+				local f = h.make_git_transfer_fixture()
+				h.write_file(f.file2, lines(60, "beta"))
+				local outside = h.tempdir() .. "/outside.txt"
+				h.write_file(outside, lines(60, "outside"))
+				local win = open_live(f.file1).editable_win
+				vim.cmd.edit(vim.fn.fnameescape(outside))
+				local paused = wait_paused(win)
+				vim.fn.winrestview({ lnum = 10, col = 0, topline = 5 })
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+				interrupt(win, timing)
+				vim.cmd("edit +40 " .. vim.fn.fnameescape(outside))
+				ctx.wait_for(function()
+					return paused.phase == "paused" and not state.peek_pending_transfer(win)
+				end, "the paused view did not settle", 3000)
+				settle()
+				local cursor = api.nvim_win_get_cursor(win)
+				assert(cursor[1] == 40, "returning undid the user's jump: " .. vim.inspect(cursor))
+				actions.close(paused)
+			end,
+		}
+	end
+	-- Leaving during a retry and returning before the next file loads keeps the
+	-- position the window left the file at, not where the retry started.
+	cases[#cases + 1] = {
+		"test_live_diff_paused_return_during_retry_keeps_left_cursor",
+		function()
+			setup()
+			local f = h.make_git_transfer_fixture()
+			h.write_file(f.file2, lines(60, "beta"))
+			local root = h.tempdir()
+			local outside = root .. "/outside.txt"
+			h.write_file(outside, lines(60, "outside"))
+			local win = open_live(f.file1).editable_win
+			vim.cmd.edit(vim.fn.fnameescape(outside))
+			local paused = wait_paused(win)
+			local backends = require("lazyvcs.backends")
+			local load = backends.load_async
+			local ok, err = xpcall(function()
+				-- A slow VCS: every base load completes late.
+				---@diagnostic disable-next-line: duplicate-set-field
+				backends.load_async = function(path, callback, opts)
+					return load(path, function(...)
+						local values = { n = select("#", ...), ... }
+						vim.defer_fn(function()
+							callback(unpack(values, 1, values.n))
+						end, 800)
+					end, opts)
+				end
+				-- The paused file becomes supported, and the user retries it on line 5.
+				h.exec({ "git", "init" }, root)
+				h.exec({ "git", "config", "user.email", "test@example.com" }, root)
+				h.exec({ "git", "config", "user.name", "Test" }, root)
+				h.exec({ "git", "add", "outside.txt" }, root)
+				h.exec({ "git", "commit", "-m", "outside" }, root)
+				api.nvim_win_set_cursor(win, { 5, 0 })
+				actions.refresh_current()
+				assert(
+					vim.wait(1000, function()
+						local p = state.peek_pending_transfer(win)
+						return p and p.phase == "loading" and p.target_bufnr == api.nvim_win_get_buf(win)
+					end, 1),
+					"the retry did not start loading"
+				)
+				api.nvim_win_set_cursor(win, { 40, 0 })
+				vim.cmd.edit(vim.fn.fnameescape(f.file2))
+				local next_buf = api.nvim_get_current_buf()
+				assert(
+					vim.wait(1000, function()
+						local p = state.peek_pending_transfer(win)
+						return p and p.phase == "loading" and p.target_bufnr == next_buf
+					end, 1),
+					"the next file did not start loading"
+				)
+				vim.cmd.edit(vim.fn.fnameescape(outside))
+				vim.wait(1500, function()
+					return false
+				end)
+				local cursor = api.nvim_win_get_cursor(win)
+				assert(cursor[1] == 40, "returning moved the cursor to the retry's start: " .. vim.inspect(cursor))
+			end, debug.traceback)
+			backends.load_async = load
+			actions.close(state.for_window(win) or paused)
+			assert(ok, err)
+		end,
+	}
 	return cases
 end

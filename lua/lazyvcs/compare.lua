@@ -50,8 +50,13 @@ local function cancel(s, field)
 		job:kill()
 	end
 end
+-- A picker may preview another buffer in the sidebar window; its cursor and
+-- view are not the file list's.
+local function sidebar_shown(s)
+	return valid(s.sidewin) and vim.api.nvim_win_get_buf(s.sidewin) == s.sidebar
+end
 local function selected(s)
-	return valid(s.sidewin) and s.rows and s.rows[vim.api.nvim_win_get_cursor(s.sidewin)[1]] or nil
+	return sidebar_shown(s) and s.rows and s.rows[vim.api.nvim_win_get_cursor(s.sidewin)[1]] or nil
 end
 local function capture(win)
 	if valid(win) then
@@ -84,6 +89,9 @@ local function bind(s, buf)
 	require("lazyvcs.window_controls").sync()
 end
 local function preview_options(s, win)
+	-- The buffer this pane holds Compare state for; only that one is reset.
+	s.pane_state = s.pane_state or {}
+	s.pane_state[win] = vim.api.nvim_win_get_buf(win)
 	if s.mode == "text" then
 		highlighting.apply(win, require("lazyvcs.config").get().diff_highlighting)
 	else
@@ -189,24 +197,71 @@ local function message(s, text)
 	if not alive(s) then
 		return
 	end
-	local item, saved = selected(s), capture(s.sidewin)
+	local item, saved = selected(s), sidebar_shown(s) and capture(s.sidewin)
 	s.message = text
 	view.render(s)
-	if item and s.row_by_path[item.relpath] then
+	if item and s.row_by_path[item.relpath] and sidebar_shown(s) then
 		if saved then
 			saved.lnum = s.row_by_path[item.relpath]
 		end
 		restore(s.sidewin, saved)
 	end
 end
+-- Labels are already escaped for the winbar. A pane can show another buffer,
+-- such as a picker preview; Neovim would save the label with that buffer's
+-- options, so write it only while the pane shows its own buffer. The routing
+-- restore applies the latest label when the pane gets its buffer back.
+local function set_label(win, label, expected)
+	if not valid(win) or vim.api.nvim_win_get_buf(win) ~= expected then
+		return
+	end
+	local value = "%<" .. (label or "")
+	util.set_win_option(win, "winbar", value)
+	local buf = vim.api.nvim_win_get_buf(win)
+	if not buffers.is_managed(buf) then
+		worktree.mark_pane(buf, value)
+	end
+end
 local function labels(s, left, right)
 	s.left_label, s.right_label = display(left):gsub("%%", "%%%%"), display(right):gsub("%%", "%%%%")
-	if valid(s.leftwin) then
-		util.set_win_option(s.leftwin, "winbar", "%<" .. s.left_label)
+	set_label(s.leftwin, s.left_label, s.left)
+	set_label(s.rightwin, s.right_label, s.right)
+end
+-- Neovim saves a pane's options for the buffer it hides. Leave no Compare state
+-- for an ordinary window to inherit when it later shows that real buffer. A
+-- pane showing a buffer Compare did not set up, such as a picker preview,
+-- keeps that buffer's options.
+local function release_pane_buffer(s, win, next_buf)
+	if valid(win) then
+		local buf = vim.api.nvim_win_get_buf(win)
+		if buf ~= next_buf and s.pane_state and s.pane_state[win] == buf then
+			s.pane_state[win] = nil
+			if not buffers.is_managed(buf) then
+				worktree.reset_pane(win)
+			end
+		end
 	end
-	if valid(s.rightwin) then
-		util.set_win_option(s.rightwin, "winbar", "%<" .. s.right_label)
+end
+-- Whether the pane shows the buffer Compare set it up for.
+local function owns_shown(s, win)
+	return valid(win) and s.pane_state ~= nil and s.pane_state[win] == vim.api.nvim_win_get_buf(win)
+end
+-- Switch a pane to one of Compare's slot buffers. A buffer Compare did not set
+-- up there, such as a picker preview, keeps its own winbar and bindings; a
+-- recognized Compare label identifies inherited pane state to reset. Its diff
+-- ends in the pane, as Neovim otherwise keeps a hidden buffer in the tab's diff.
+-- Only the pane's own record of that buffer changes.
+local function show_slot(s, win, buf)
+	if vim.api.nvim_win_get_buf(win) ~= buf and not owns_shown(s, win) then
+		if worktree.is_label(vim.api.nvim_win_get_buf(win), util.get_win_option(win, "winbar")) then
+			worktree.reset_pane(win)
+		elseif util.get_win_option(win, "diff") then
+			local keep = util.capture_win_options(win, { "scrollbind", "cursorbind", "winbar" })
+			util.diff_off(win)
+			util.set_win_options(win, keep)
+		end
 	end
+	util.show_win_buffer(win, buf)
 end
 local function panes_usable(s, epoch)
 	if not alive(s) or sessions[s.tab] ~= s or s.panes_invalid or epoch ~= (s.pane_epoch or 0) then
@@ -294,13 +349,15 @@ local function set_panes(s, next_display)
 		if next_display.routing_win then
 			local win = next_display.routing_win
 			local buf = win == s.sidewin and s.sidebar or win == s.leftwin and s.left or s.right
-			util.show_win_buffer(win, buf)
+			show_slot(s, win, buf)
 			check()
 			assert(vim.api.nvim_win_get_buf(win) == buf, "Comparison restoration was redirected")
 			if win == s.sidewin then
 				sidebar_options(s)
+				view.labels(s)
 			else
 				preview_options(s, win)
+				set_label(win, win == s.leftwin and s.left_label or s.right_label, buf)
 			end
 			bind(s, buf)
 			if s.mode == "text" then
@@ -325,7 +382,9 @@ local function set_panes(s, next_display)
 		end
 		for _, win in ipairs({ s.leftwin, s.rightwin }) do
 			highlighting.release(win)
-			util.diff_off(win)
+			if owns_shown(s, win) then
+				util.diff_off(win)
+			end
 		end
 		local next_worktree
 		if
@@ -344,7 +403,8 @@ local function set_panes(s, next_display)
 			end
 		end
 		for _, slot in ipairs({ { s.leftwin, left }, { s.rightwin, right } }) do
-			util.show_win_buffer(slot[1], slot[2])
+			release_pane_buffer(s, slot[1], slot[2])
+			show_slot(s, slot[1], slot[2])
 			check()
 			assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2], "Comparison installation was redirected")
 		end
@@ -426,7 +486,8 @@ local function set_panes(s, next_display)
 		local rolled_back = pcall(function()
 			check()
 			for _, slot in ipairs({ { s.leftwin, before.left }, { s.rightwin, before.right } }) do
-				util.show_win_buffer(slot[1], slot[2])
+				release_pane_buffer(s, slot[1], slot[2])
+				show_slot(s, slot[1], slot[2])
 				check()
 				assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2], "Comparison rollback was redirected")
 			end
@@ -448,10 +509,9 @@ local function set_panes(s, next_display)
 			s.preview_result, s.shown_item, s.preview_stamp = before.result, before.item, before.stamp
 			s.text_views, s.display = before.text_views, before.display
 			s.navigation, s.navigation_intent = before.navigation, before.intent
-			-- Labels are already escaped for the winbar.
 			s.left_label, s.right_label = before.left_label, before.right_label
-			util.set_win_option(s.leftwin, "winbar", "%<" .. (before.left_label or ""))
-			util.set_win_option(s.rightwin, "winbar", "%<" .. (before.right_label or ""))
+			set_label(s.leftwin, before.left_label, s.left)
+			set_label(s.rightwin, before.right_label, s.right)
 			preview_options(s, s.leftwin)
 			preview_options(s, s.rightwin)
 			restore(s.leftwin, before.views[1])
@@ -694,7 +754,7 @@ local function refresh_worktree_list(s, record)
 			added, deleted = added + (item.added or 0), deleted + (item.deleted or 0)
 		end
 		message(s, #items == 0 and "No saved changes" or string.format("%d paths +%d -%d", #items, added, deleted))
-		if chosen and s.row_by_path[chosen.relpath] then
+		if chosen and s.row_by_path[chosen.relpath] and sidebar_shown(s) then
 			vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[chosen.relpath], 0 })
 		end
 		view.marker(s)
@@ -986,10 +1046,12 @@ function M.refresh(s, context_checked)
 				local index = saved and saved.cursor and s.rows_cache.by_path[saved.cursor]
 				index = index or math.min(#items, saved and saved.index or 1)
 				local item = items[index]
-				vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
-				if saved and saved.side then
-					saved.side.lnum = s.row_by_path[item.relpath]
-					restore(s.sidewin, saved.side)
+				if sidebar_shown(s) then
+					vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
+					if saved and saved.side then
+						saved.side.lnum = s.row_by_path[item.relpath]
+						restore(s.sidewin, saved.side)
+					end
 				end
 				local shown = saved and saved.shown and s.rows_cache.by_path[saved.shown]
 				preview(s, shown and items[shown] or item, "text", saved and saved.views, nil, saved and saved.reviewed)
@@ -1069,7 +1131,9 @@ function M.navigate_file(direction, count)
 	if s.mode == "text" and buffers.resource(vim.api.nvim_get_current_buf()) then
 		vim.cmd("normal! m'")
 	end
-	vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
+	if sidebar_shown(s) then
+		vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
+	end
 	local intent = navigation.intent(s, item, "file")
 	if item == s.shown_item and s.preview_result then
 		if s.preview_result.loaded and not s.preview_result.loaded.text then
@@ -1178,8 +1242,22 @@ function M.close(s, return_focus)
 		vim.api.nvim_win_close(s.helpwin, true)
 	end
 	local borrowed = {}
-	if vim.api.nvim_tabpage_is_valid(s.tab) then
+	-- A session loaded from the Compare tab replaces Compare's windows with its
+	-- own. That tab belongs to the session now: leave its windows and keep it.
+	local replaced = s.session_replaced and vim.api.nvim_tabpage_is_valid(s.tab)
+	if replaced then
 		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(s.tab)) do
+			vim.w[win].lazyvcs_compare = nil
+		end
+	end
+	if vim.api.nvim_tabpage_is_valid(s.tab) and not replaced then
+		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(s.tab)) do
+			-- Reset only the panes, and only a buffer they hold Compare state for.
+			-- Other windows in this tab, and a picker preview in a pane, keep
+			-- their own options.
+			if win == s.leftwin or win == s.rightwin then
+				release_pane_buffer(s, win)
+			end
 			local buf = vim.api.nvim_win_get_buf(win)
 			if not buffers.is_managed(buf) and vim.bo[buf].modified then
 				borrowed[buf] = borrowed[buf] or vim.bo[buf].bufhidden
@@ -1187,7 +1265,7 @@ function M.close(s, return_focus)
 			end
 		end
 	end
-	if vim.api.nvim_tabpage_is_valid(s.tab) then
+	if vim.api.nvim_tabpage_is_valid(s.tab) and not replaced then
 		vim.api.nvim_set_current_tabpage(s.tab)
 		if #vim.api.nvim_list_tabpages() == 1 then
 			origin_window(s, true)
@@ -1209,7 +1287,7 @@ function M.close(s, return_focus)
 	if vim.api.nvim_buf_is_valid(s.sidebar) then
 		vim.api.nvim_buf_delete(s.sidebar, { force = true })
 	end
-	if return_focus ~= false and valid(s.origin_win) then
+	if return_focus ~= false and not replaced and valid(s.origin_win) then
 		vim.api.nvim_set_current_win(s.origin_win)
 	end
 end
@@ -1223,9 +1301,32 @@ local function edit_buffer(s, buf, position)
 		vim.cmd("rightbelow split")
 		s.origin_edit_win = vim.api.nvim_get_current_win()
 		util.editor_window(s.origin_edit_win)
-		util.show_win_buffer(s.origin_edit_win, buf)
 	end
-	vim.api.nvim_win_set_buf(0, buf)
+	-- Neovim gives a window without its own option record for the buffer the
+	-- live pane's options: diff mode, bindings, and the Compare label. Undo only
+	-- those. A window that already shows the buffer, a window whose own record
+	-- has a diff, and a live diff's window keep their diff.
+	local editor = vim.api.nvim_get_current_win()
+	local before, copied
+	if vim.api.nvim_win_get_buf(editor) ~= buf and not require("lazyvcs.state").for_window(editor) then
+		before = util.capture_win_options(editor, { "diff", "scrollbind", "cursorbind" })
+		-- Any Compare session's live pane can be the source.
+		local panes = {}
+		for _, session in pairs(sessions) do
+			if alive(session) then
+				vim.list_extend(panes, { session.leftwin, session.rightwin })
+			end
+		end
+		copied = worktree.copies_pane(editor, buf, panes)
+	end
+	vim.api.nvim_win_set_buf(editor, buf)
+	-- An autocommand may have shown another buffer; its options are its own.
+	if valid(editor) and vim.api.nvim_win_get_buf(editor) == buf then
+		if before then
+			worktree.reset_editor(editor, before, copied)
+		end
+		worktree.reset_label(editor)
+	end
 	if position then
 		local line = math.min(position[1], vim.api.nvim_buf_line_count(buf))
 		local text = vim.api.nvim_buf_get_lines(buf, line - 1, line, false)[1] or ""
@@ -1516,7 +1617,9 @@ local function construct_session(s)
 			return
 		end
 		local item = s.items[index]
-		vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
+		if sidebar_shown(s) then
+			vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
+		end
 		local intent = navigation.intent(s, item, "native")
 		intent.position, intent.side = position, resource.side
 		preview(s, item, "text", nil, intent)
@@ -1602,6 +1705,13 @@ local function construct_session(s)
 			end
 			return status
 		end,
+		-- A slot got its own buffer back from a picker without a routing restore.
+		-- Its window record holds the labels from before the picker opened.
+		relabel = function()
+			set_label(s.leftwin, s.left_label, s.left)
+			set_label(s.rightwin, s.right_label, s.right)
+			view.labels(s)
+		end,
 		resume = function()
 			local deferred = s.deferred_display
 			s.deferred_display = nil
@@ -1653,11 +1763,33 @@ local function construct_session(s)
 			resize(s, args.event == "WinResized")
 		end,
 	})
+	-- A session sourced from this tab closes all but one of Compare's windows
+	-- (:only) and edits its own files in the one that is left.
+	autocmd("SessionLoadPost", {
+		group = s.augroup,
+		callback = function()
+			local left = 0
+			for _, win in ipairs({ s.sidewin, s.leftwin, s.rightwin }) do
+				if valid(win) then
+					left = left + 1
+				end
+			end
+			if vim.api.nvim_tabpage_is_valid(s.tab) and left <= 1 then
+				s.session_replaced = true
+			end
+		end,
+	})
 	autocmd("WinClosed", {
 		group = s.augroup,
 		callback = function(event)
 			local win = tonumber(event.match)
 			if win == s.sidewin or win == s.leftwin or win == s.rightwin then
+				-- End owned pane state while the surviving panes still show their
+				-- buffers. A session's :only closes siblings before hiding the last
+				-- pane's file, when the router can no longer restore the layout.
+				for _, pane in ipairs({ s.leftwin, s.rightwin }) do
+					release_pane_buffer(s, pane)
+				end
 				local record = win == s.rightwin and s.worktree or nil
 				invalidate_panes(s)
 				schedule(function()
