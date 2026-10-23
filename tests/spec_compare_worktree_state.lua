@@ -220,6 +220,32 @@ return function(ctx)
 		end,
 	}
 
+	-- Writing a copy elsewhere does not adopt the buffer; an edit still does.
+	for _, variant in ipairs({ "copy", "edited_copy" }) do
+		cases[#cases + 1] = {
+			"test_core_compare_worktree_write_" .. variant .. "_retention",
+			function()
+				local _, s = private_fixture()
+				local buf = s.right
+				api.nvim_set_current_win(s.rightwin)
+				local copy = vim.fs.normalize(vim.fn.tempname()) .. "-a-copy.txt"
+				if variant == "copy" then
+					vim.cmd("write " .. vim.fn.fnameescape(copy))
+				else
+					vim.cmd("%s/first/copied/ | write " .. vim.fn.fnameescape(copy))
+				end
+				assert(vim.fn.filereadable(copy) == 1, "the copy was not written")
+				vim.wait(50)
+				local edited = variant == "edited_copy"
+				assert(vim.bo[buf].buflisted == edited, "write to another file changed listing")
+				navigate(s, "next", "b.txt")
+				assert(api.nvim_buf_is_valid(buf) == edited, "write to another file changed retention")
+				compare.close(s)
+				vim.fn.delete(copy)
+			end,
+		}
+	end
+
 	-- A picker preview in the pane never receives the WORKTREE label.
 	cases[#cases + 1] = {
 		"test_core_compare_worktree_picker_preview_keeps_labels_off",

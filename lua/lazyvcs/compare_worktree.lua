@@ -226,9 +226,13 @@ local function setup()
 		callback = util.safe_callback(function(args)
 			local record = records[args.buf]
 			if record then
-				-- Saving is editing, even when the same command made the change.
-				record.retained = true
-				vim.bo[record.buf].buflisted = true
+				-- Saving the file is editing it, even when the same command made the
+				-- change. Writing a copy elsewhere is not; adopt() still catches an
+				-- edit made by the same command.
+				if util.canonical_path(vim.fn.fnamemodify(args.file, ":p")) == util.canonical_path(record.path) then
+					record.retained = true
+					vim.bo[record.buf].buflisted = true
+				end
 				adopt(record)
 				for owner, callback in pairs(record.owners) do
 					if not owner.closed and owner.worktree == record then
