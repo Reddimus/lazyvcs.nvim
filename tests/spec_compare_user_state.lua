@@ -459,5 +459,102 @@ return function(ctx)
 			util.set_win_options(editor, { scrollbind = false, cursorbind = false })
 		end,
 	}
+	-- The edit action's trial switch leaves nothing behind: no token in the
+	-- editor's 'foldignore', locally, globally, or in later buffers, and the
+	-- view of the file it leaves.
+	local function copying_editor(f, prepare)
+		local s = open(f)
+		prepare()
+		compare.navigate_file("next", 1)
+		ctx.wait_for(function()
+			return s.shown_item.relpath == "b.txt" and not s.preview_job
+		end, "Compare did not show b.txt", 15000)
+		compare.navigate_file("prev", 1)
+		ctx.wait_for(function()
+			return s.shown_item.relpath == "a.txt" and not s.preview_job
+		end, "Compare did not show a.txt", 15000)
+		api.nvim_set_current_win(s.rightwin)
+		s.actions.edit()
+		return s
+	end
+	cases[#cases + 1] = {
+		"test_core_compare_edit_leaves_no_trial_token",
+		function()
+			local f = fixture()
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local editor = api.nvim_get_current_win()
+			local group = api.nvim_create_augroup("lazyvcs_test_foldignore_append", { clear = true })
+			local ok, err = xpcall(function()
+				local s = copying_editor(f, function()
+					api.nvim_create_autocmd("BufEnter", { group = group, command = "set foldignore+=!" })
+				end)
+				assert(api.nvim_get_current_win() == editor)
+				-- A later, unrelated buffer in the editor folds by indent.
+				vim.cmd.enew()
+				api.nvim_buf_set_lines(0, 0, -1, false, { "x", "  a1", "    s2", "  a3", "x" })
+				vim.bo.shiftwidth = 2
+				-- Earlier specs may leave other fold limits in this window.
+				util.set_win_options(0, { foldmethod = "indent", foldnestmax = 20, foldminlines = 1 })
+				for _, scope in ipairs({ "local", "global" }) do
+					local value = api.nvim_get_option_value("foldignore", { win = editor, scope = scope })
+					assert(
+						not value:find("\28", 1, true),
+						scope .. " foldignore kept the token: " .. vim.inspect(value)
+					)
+				end
+				local levels = {}
+				for line = 1, 5 do
+					levels[line] = vim.fn.foldlevel(line)
+				end
+				assert(
+					table.concat(levels, "") == "01210",
+					"the token changed indent folds: " .. table.concat(levels, "")
+				)
+				compare.close(s)
+			end, debug.traceback)
+			api.nvim_del_augroup_by_id(group)
+			vim.cmd("set foldignore&")
+			assert(ok, err)
+		end,
+	}
+	cases[#cases + 1] = {
+		"test_core_compare_edit_keeps_view_of_left_file",
+		function()
+			local f = fixture()
+			local long = h.tempdir() .. "/long.txt"
+			local text = {}
+			for index = 1, 100 do
+				text[index] = "line " .. index
+			end
+			h.write_file(long, table.concat(text, "\n") .. "\n")
+			vim.cmd.edit(vim.fn.fnameescape(long))
+			local editor, left = api.nvim_get_current_win(), api.nvim_get_current_buf()
+			vim.wo.wrap = false
+			vim.fn.winrestview({ lnum = 40, col = 0, topline = 35 })
+			-- A view recorder, like the :mkview autocommands.
+			local saved
+			local group = api.nvim_create_augroup("lazyvcs_test_view_recorder", { clear = true })
+			api.nvim_create_autocmd("BufWinLeave", {
+				group = group,
+				callback = function(args)
+					if args.buf == left then
+						saved = vim.fn.winsaveview()
+					end
+				end,
+			})
+			local ok, err = xpcall(function()
+				local s = copying_editor(f, function() end)
+				assert(api.nvim_get_current_win() == editor)
+				assert(saved, "the recorder saw no view")
+				assert(
+					saved.lnum == 40 and saved.topline == 35,
+					"the edit moved the left file's view: " .. vim.inspect(saved)
+				)
+				compare.close(s)
+			end, debug.traceback)
+			api.nvim_del_augroup_by_id(group)
+			assert(ok, err)
+		end,
+	}
 	return cases
 end

@@ -389,11 +389,18 @@ function M.copies_pane(win, buf, panes)
 	local old = vim.api.nvim_win_get_buf(win)
 	local hidden = vim.bo[old].bufhidden
 	local ok, copied = pcall(vim.api.nvim_win_call, win, function()
-		-- Keep the buffer the window leaves for the moment.
+		-- Keep the buffer the window leaves, and its view, for the moment.
+		local view = vim.fn.winsaveview()
 		vim.cmd("noautocmd setlocal bufhidden=hide")
 		vim.cmd("noautocmd keepalt keepjumps buffer " .. buf)
-		local found = tostring(util.get_win_option(win, "foldignore")):find(token, 1, true) ~= nil
+		local value = tostring(util.get_win_option(win, "foldignore"))
+		local found = value:find(token, 1, true) ~= nil
+		if found then
+			-- Leave no token in the record the switch back saves.
+			util.set_win_option_noautocmd(win, "foldignore", (value:gsub(vim.pesc(token), "")))
+		end
 		vim.cmd("noautocmd keepalt keepjumps buffer " .. old)
+		vim.fn.winrestview(view)
 		return found
 	end)
 	if vim.api.nvim_buf_is_valid(old) then
@@ -421,14 +428,21 @@ function M.reset_editor(win, before, copied)
 	if copied == nil then
 		copied = util.get_win_option(win, "diff") and not before.diff
 	end
-	if copied then
-		-- The token rides along with the copy; a later autocommand may have
-		-- replaced it already.
-		local value = tostring(util.get_win_option(win, "foldignore"))
+	-- No trial token stays behind, in the window's local or global value.
+	for _, scope in ipairs({ "local", "global" }) do
+		local value = tostring(vim.api.nvim_get_option_value("foldignore", { win = win, scope = scope }))
 		local stripped = value:gsub("\28lazyvcs%d+\31", "")
 		if stripped ~= value then
-			util.set_win_option_noautocmd(win, "foldignore", stripped)
+			vim.api.nvim_win_call(win, function()
+				local target = scope == "local" and "&l:foldignore" or "&g:foldignore"
+				vim.api.nvim_cmd(
+					{ cmd = "let", args = { target .. " = " .. vim.fn.string(stripped) }, mods = { noautocmd = true } },
+					{}
+				)
+			end)
 		end
+	end
+	if copied then
 		util.diff_off(win)
 		-- :diffoff restores the pane's bindings; the window keeps its own.
 		util.set_win_options(win, { scrollbind = before.scrollbind, cursorbind = before.cursorbind })
