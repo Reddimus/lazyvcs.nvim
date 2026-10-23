@@ -242,6 +242,40 @@ local function release_pane_buffer(s, win, next_buf)
 		end
 	end
 end
+-- Whether the pane shows the buffer Compare set it up for.
+local function owns_shown(s, win)
+	return valid(win) and s.pane_state ~= nil and s.pane_state[win] == vim.api.nvim_win_get_buf(win)
+end
+-- Switch a pane to one of Compare's slot buffers. A buffer Compare did not set
+-- up there, such as a picker preview with a diff of its own, leaves without
+-- :diffoff, so Neovim saves its own diff with it. Neovim keeps a hidden buffer
+-- in the tab's diff; :diffoff! drops it, and the tab's other diff windows,
+-- including the other pane, go back into diff mode.
+local function show_slot(s, win, buf)
+	if vim.api.nvim_win_get_buf(win) == buf then
+		return
+	end
+	if owns_shown(s, win) or not util.get_win_option(win, "diff") then
+		return util.show_win_buffer(win, buf)
+	end
+	vim.api.nvim_win_call(win, function()
+		vim.cmd("keepjumps buffer " .. buf)
+	end)
+	local others = {}
+	for _, other in ipairs(vim.api.nvim_tabpage_list_wins(vim.api.nvim_win_get_tabpage(win))) do
+		if other ~= win and util.get_win_option(other, "diff") then
+			others[#others + 1] = other
+		end
+	end
+	vim.api.nvim_win_call(win, function()
+		vim.cmd("silent diffoff!")
+	end)
+	for _, other in ipairs(others) do
+		vim.api.nvim_win_call(other, function()
+			vim.cmd("diffthis")
+		end)
+	end
+end
 local function panes_usable(s, epoch)
 	if not alive(s) or sessions[s.tab] ~= s or s.panes_invalid or epoch ~= (s.pane_epoch or 0) then
 		return false
@@ -328,7 +362,7 @@ local function set_panes(s, next_display)
 		if next_display.routing_win then
 			local win = next_display.routing_win
 			local buf = win == s.sidewin and s.sidebar or win == s.leftwin and s.left or s.right
-			util.show_win_buffer(win, buf)
+			show_slot(s, win, buf)
 			check()
 			assert(vim.api.nvim_win_get_buf(win) == buf, "Comparison restoration was redirected")
 			if win == s.sidewin then
@@ -361,7 +395,9 @@ local function set_panes(s, next_display)
 		end
 		for _, win in ipairs({ s.leftwin, s.rightwin }) do
 			highlighting.release(win)
-			util.diff_off(win)
+			if owns_shown(s, win) then
+				util.diff_off(win)
+			end
 		end
 		local next_worktree
 		if
@@ -381,7 +417,7 @@ local function set_panes(s, next_display)
 		end
 		for _, slot in ipairs({ { s.leftwin, left }, { s.rightwin, right } }) do
 			release_pane_buffer(s, slot[1], slot[2])
-			util.show_win_buffer(slot[1], slot[2])
+			show_slot(s, slot[1], slot[2])
 			check()
 			assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2], "Comparison installation was redirected")
 		end
@@ -464,7 +500,7 @@ local function set_panes(s, next_display)
 			check()
 			for _, slot in ipairs({ { s.leftwin, before.left }, { s.rightwin, before.right } }) do
 				release_pane_buffer(s, slot[1], slot[2])
-				util.show_win_buffer(slot[1], slot[2])
+				show_slot(s, slot[1], slot[2])
 				check()
 				assert(vim.api.nvim_win_get_buf(slot[1]) == slot[2], "Comparison rollback was redirected")
 			end

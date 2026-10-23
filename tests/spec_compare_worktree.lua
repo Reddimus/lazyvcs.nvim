@@ -505,9 +505,11 @@ return function(ctx)
 			vim.bo[alternate].bufhidden = "wipe"
 			api.nvim_set_current_win(s.rightwin)
 			api.nvim_win_set_buf(s.rightwin, alternate)
-			-- The alternate's own window options, which Compare never set.
+			-- The alternate's own window options, which Compare never set,
+			-- including a diff of its own.
 			local util = require("lazyvcs.util")
 			util.set_win_options(s.rightwin, { winbar = "MINE", scrollbind = true, cursorbind = true })
+			vim.cmd("diffthis")
 			api.nvim_buf_delete(original, { force = true })
 			ctx.wait_for(function()
 				return not s.closed
@@ -521,16 +523,25 @@ return function(ctx)
 				api.nvim_buf_is_valid(alternate) and vim.bo[alternate].bufhidden == "wipe",
 				"recovery deleted an external alternate"
 			)
-			compare.close(s)
-			-- Neovim saved the alternate's options when the pane left it.
-			vim.cmd("tabnew")
+			-- Compare's diff holds its two panes only; a third buffer makes
+			-- :diffget ambiguous (E101).
+			local ok, err = pcall(api.nvim_win_call, s.leftwin, function()
+				vim.cmd("diffget")
+			end)
+			assert(ok or not tostring(err):find("E101", 1, true), "the alternate stayed in Compare's diff")
+			-- Neovim saved the alternate's options when the pane left it; a window
+			-- in the same tab without a record of its own takes them.
+			api.nvim_set_current_win(s.sidewin)
+			vim.cmd("split")
 			vim.cmd.buffer(alternate)
-			local values = util.capture_win_options(0, { "winbar", "scrollbind", "cursorbind" })
+			local values = util.capture_win_options(0, { "diff", "winbar", "scrollbind", "cursorbind" })
 			assert(
-				values.winbar == "MINE" and values.scrollbind and values.cursorbind,
+				values.diff and values.winbar == "MINE" and values.scrollbind and values.cursorbind,
 				"recovery reset the alternate's options: " .. vim.inspect(values)
 			)
-			vim.cmd("tabclose")
+			vim.cmd("diffoff")
+			vim.cmd("close")
+			compare.close(s)
 		end,
 	}
 	return cases
