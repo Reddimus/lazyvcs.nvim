@@ -118,6 +118,18 @@ or disable pane shortcuts with
 `compare.keymaps = { files = "<leader>vf", edit = "<leader>ve", help = "<leader>v?" }`;
 use `false` to disable a key.
 
+## Known limits
+
+- Compare panes are diff windows. As with any diff window, a split of a pane, or
+  another window in Compare's tab that shows a pane's file, starts in diff mode;
+  `:diffoff` ends it. Diff mode replaces manual folds, so a reviewed file keeps
+  no manual folds in windows that take a pane's options, including views saved
+  by auto-view autocommands.
+- While Compare shows a file again after `]b` or `[b`, a window in another tab
+  that opens that file for the first time can start with the pane's diff mode
+  and label. `o`, `<leader>ve`, and picker selections reset the window they
+  open; other windows are not reset.
+
 ## Blame selected lines
 
 Select lines, then run `:LazyVCS blame`. Vim supplies the selected range. This

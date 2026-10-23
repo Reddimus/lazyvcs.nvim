@@ -12,29 +12,19 @@ and this project adheres to
 
 ### Fixed
 
-- Keep Compare's diff mode, scroll binding, diff folds, and `WORKTREE` label out
-  of editor windows that show a real Compare buffer, including after `o`,
-  `<leader>ve`, picker selections and previews, splits, floats, and closing
-  Compare. A window's own diff stays on, including after `:edit` and after
-  restoring a session saved during Compare, and statusline plugins that replace
-  the winbar no longer hide the copied options. Filetype plugins and
-  autocommands that set 'foldignore', such as the GDScript ftplugin, and the
-  `:loadview` auto-view autocommands no longer hide them either. Folds in other
-  windows on the same buffer, including Tree-sitter folds, and windows Compare
-  does not own keep their state.
-- Give a file's folds back when Compare stops showing it: manual folds, folds
-  the user opened or closed, and a window-local 'foldenable' return to new
-  windows, to splits of the pane, and to views saved by auto-view autocommands,
-  which Compare no longer runs in its panes. Closing Compare keeps the folds of
-  a picker preview in a pane.
-- Restore a window saved in a session during Compare as an ordinary window,
-  without Compare's diff folds, and keep the layout of a session sourced from
-  the Compare tab instead of closing it.
+- Keep Compare's diff mode, scroll binding, and `WORKTREE` label out of the
+  editor window that `o`, `<leader>ve`, and picker selections open, and out of
+  windows that open a file after Compare moved on from it or closed. Compare now
+  resets a pane before it releases a file or closes, and resets the editor
+  window its edit actions open.
+- Close Compare without resetting windows it does not own: other windows in its
+  tab and a picker preview in a pane keep their options and folds. A session
+  sourced from the Compare tab keeps the layout it restores there.
 - Keep a Compare buffer when part of it is written over its file, as with
   `:1,1write!` or `:write >> %`.
-- Keep the file list's winbar, hints, and cursor out of a file a picker previews
-  in the Compare sidebar, and show the latest pane label when a picker cancels a
-  preview in a pane.
+- Keep Compare's pane labels and the file list's winbar, hints, and cursor out
+  of a file a picker previews in a pane or the sidebar, and show the latest pane
+  label when a picker cancels a preview in a pane.
 - Keep a Compare buffer and its undo history when one command edits and saves
   it, such as `:%s/old/new/ | write`, or a macro edits and undoes it. Writing a
   copy with `:write {file}`, `:bdelete`, and a reread from another tab leave an
@@ -65,6 +55,9 @@ and this project adheres to
 
 ### Changed
 
+- Scope note: Compare resets pane state only on its own paths. Windows it does
+  not open, such as a split of a pane, follow Neovim's rules for diff windows;
+  the README lists these limits.
 - Use `vim.text.diff` in the threaded diff worker when available, keeping
   `vim.diff` for Neovim 0.11.
 - Document the complete default configuration, commit-message provider names and

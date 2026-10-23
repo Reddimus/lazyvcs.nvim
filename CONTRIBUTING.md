@@ -222,52 +222,20 @@ the GitHub release.
   through text loading. Property markers reflect SVN summary flags; replacement
   rows load properties independently of those markers. Metadata-only results
   never enter the text cache or hunk computation.
-- `compare_worktree.lua` borrows real buffers for the editable pane. When a pane
-  shows a borrowed buffer, it keeps the folds the pane got from Neovim for it,
-  as Neovim's own `:mkview` with 'viewoptions' "folds" writes them, with line
-  numbers tracked by extmarks. `:diffthis` replaces manual folds and closes
-  opened folds, and `:diffoff` restores only the fold options, so the pane gives
-  these folds back before it releases the buffer or closes: Neovim then saves
-  the user's state, not Compare's, as the buffer's newest window record. The
-  other fold options stay as they are, including changes made in the pane.
-  Compare switches pane buffers with BufWinEnter and BufWinLeave in
-  'eventignore', so view autocommands neither load a view into a pane nor save
-  one from it. Closing Compare resets a pane only while it shows its own buffer;
-  a picker preview keeps its state. `compare_marker.lua` tells windows that
-  copied pane state from windows whose options are their own. Provenance comes
-  first, because ftplugins and autocommands replace options without OptionSet
-  (`ftplugin/gdscript.vim` clears 'foldignore'). A window created while a live
-  pane was current, and showing that pane's buffer at WinNew, is a copy;
-  WinEnter tracks the current window, and WinNew runs with the new window
-  current, before any buffer change and even for unfocused floats. A window that
-  copies options for a buffer it has not shown since LazyVCS loaded copies
-  another window or record; when it has 'diff' on and every other window in diff
-  mode on that buffer is a live pane, the 'diff' came from a pane. A window that
-  has shown the buffer uses its own record, so its diff is the user's. The
-  checks run on WinNew, BufEnter, and BufWinEnter: BufEnter runs after Neovim
-  copies the options and before BufWinEnter, where a user's `:loadview` replaces
-  fold options, and `nvim_open_win()` without focus copies at BufWinEnter alone.
-  Records, sessions, and views outlive the panes, so panes also mark
-  'foldignore' with one suffix of four ASCII separator characters (FS, GS, RS,
-  US). Neovim copies 'foldignore' on every path that copies window options and
-  saves it everywhere it saves them. Only indent folding in the same window
-  reads it, and no text line starts with those characters, so the mark changes
-  nothing in any window or fold method. Other carriers failed: Tree-sitter
-  folding reads 'foldnestmax' through a cache shared by every window on the
-  buffer, any 'winhighlight' value moves the window to an anonymous highlight
-  namespace and drops a global `nvim_set_hl_ns()` theme, and a numeric threshold
-  cannot tell a user value from a mark. Only one suffix at the end counts;
-  marking removes every occurrence first, and unmarking removes them all, so
-  `:setlocal foldignore+=x` and `-=x` cannot stack marks. Live panes are marked
-  again on OptionSet, BufLeave and WinLeave anywhere (before another window
-  copies them), and on the next turn after BufEnter, WinEnter, FileType, and
-  OptionSet. A mark counts on a buffer a pane has shown, or after a session or
-  view restores it: SessionLoadPost, which views also run, resets marked windows
-  with diff mode or diff folds and unmarks the rest. A copy gets the pane's
-  saved folds back, or loses diff mode, bindings, diff folds, and a Compare
-  winbar label when Compare no longer holds the buffer. A window created with
-  `:noautocmd`, or a copy whose 'diff' and mark another plugin replaced before
-  LazyVCS sees the window, stays unnoticed.
+- `compare_worktree.lua` borrows real buffers for the editable pane. Neovim
+  saves a window's options for each buffer it shows and copies them into a
+  window that has none of its own for that buffer, sometimes from the live
+  window that shows it. Compare keeps its pane state out of those copies only on
+  its own paths: a pane turns off diff mode, scroll binding, and its label
+  before it releases a real buffer, before Compare closes, and when the user
+  closes it, so the saved record is clean; the edit actions reset the editor
+  window they open, which can copy the live pane. Folds stay native, with no
+  `zE` and no fold restore. Closing Compare resets a pane only while it shows
+  its own buffer, so a picker preview keeps its state, and leaves other windows
+  in its tab alone. Do not try to recognize copies in windows Compare does not
+  open: three designs (window records, then marks in 'winhighlight',
+  'foldnestmax', and 'foldignore') each failed review. That work is planned
+  separately; see the README's known limits.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_buffers.lua` owns snapshot identity, reload guards, and bounded
