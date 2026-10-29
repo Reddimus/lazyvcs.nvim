@@ -81,7 +81,8 @@ choose **Show Last Error** to read the complete diagnostics.
 Confirmed absent sides shrink to a narrow rail that expands when you focus it.
 
 Compare uses subdued hatched filler and labels added, deleted, and empty files;
-customize these colors and filler with `diff_style` (see `:help lazyvcs-diff-style`).
+customize these colors and filler with `diff_style` (see
+`:help lazyvcs-diff-style`).
 
 Run `:LazyVCS compare` and choose a Git branch/commit or SVN `URL@revision`. The
 choice is remembered for the current worktree and branch.

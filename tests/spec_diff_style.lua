@@ -182,6 +182,7 @@ return function(ctx)
 			guard.release(win)
 			mapping(win, "DiffDelete", target)
 		end
+		---@diagnostic disable-next-line: param-type-mismatch
 		api.nvim_set_hl(0, "DiffDelete", delete)
 		api.nvim_set_hl(0, "LazyVcsDiffFiller", {})
 		api.nvim_exec_autocmds("ColorScheme", {})
@@ -454,6 +455,7 @@ return function(ctx)
 		local s = open_live(f.root .. "/empty.txt")
 		local text = require("lazyvcs.compare_text")
 		local original = text.capture
+		---@diagnostic disable-next-line: duplicate-set-field
 		text.capture = function()
 			error("labels captured the document")
 		end

@@ -22,6 +22,7 @@ local function defaults(refresh)
 			api.nvim_set_hl(0, name, {})
 		end
 		value.default = true
+		---@diagnostic disable-next-line: param-type-mismatch
 		api.nvim_set_hl(0, name, value)
 		if not next(current) or (derived[name] and vim.deep_equal(current, derived[name])) then
 			derived[name] = api.nvim_get_hl(0, { name = name })

@@ -341,6 +341,7 @@ return function(ctx)
 		end
 		local original = vim.notify_once
 		local warnings = {}
+		---@diagnostic disable-next-line: duplicate-set-field
 		vim.notify_once = function(message)
 			warnings[#warnings + 1] = message
 		end

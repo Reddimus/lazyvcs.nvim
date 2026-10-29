@@ -774,7 +774,8 @@ function M.rebalance(session)
 		end
 	end
 	local _, _, collapsed = require("lazyvcs.compare_view").pane_sizes(total_width, false, absent, vim.o.winminwidth)
-	local candidate = collapsed == "left" and session.base_win or collapsed == "right" and session.editable_win
+	---@type integer?
+	local candidate = collapsed == "left" and session.base_win or collapsed == "right" and session.editable_win or nil
 	-- A current rail is being visited by an internal call or awaits its guarded
 	-- focus handler. A newly focused pane must never be collapsed.
 	if not session.rail and candidate == vim.api.nvim_get_current_win() then
