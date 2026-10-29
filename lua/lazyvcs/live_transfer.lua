@@ -113,6 +113,7 @@ function M.new(lifecycle)
 		end
 		p.detached = true
 		p.base_lines, p.base_text, p.base_identity, p.hunks = s.base_lines, s.base_text, s.base_identity, s.hunks
+		p.presence, s.presence = s.presence, nil
 		layout.remember_departed(s)
 		s.phase = "leaving"
 		-- BufWinLeave does not fire while another window shows the departing
@@ -173,6 +174,7 @@ function M.new(lifecycle)
 				local view, detached = p.view, p.detached
 				s.base_lines, s.base_text, s.base_identity = p.base_lines, p.base_text, p.base_identity
 				s.hunks = s.base_invalid and {} or p.hunks
+				s.presence = p.presence
 				state.clear_pending_transfer(s.editable_win)
 				s.phase = "active"
 				if detached then

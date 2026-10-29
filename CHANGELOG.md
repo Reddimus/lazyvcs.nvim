@@ -8,6 +8,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Subdued hatched filler in Compare and live diff, directional removal colors,
+  and labels for added, deleted, empty, and intent-to-add files. Customize the
+  presentation with `diff_style` or keep the editor's native diff style.
+  Confirmed absent sides shrink to a narrow rail so the present file gets more
+  space. Focus the rail to expand it, or disable `compare.collapse_absent` or
+  `base_window.collapse_absent` to keep normal pane sizes.
+
 ## [0.12.2] - 2026-10-31
 
 ### Fixed

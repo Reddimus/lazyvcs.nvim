@@ -416,6 +416,7 @@ function M.preview(snapshot, item, callback, opts)
 	local path = snapshot.root .. "/" .. item.relpath
 	local url = require("lazyvcs.backends.svn_url").append_path(snapshot.url, item.relpath)
 	local result = {
+		presence = require("lazyvcs.diff_labels").snapshot(item),
 		left_label = snapshot.url .. " @ r" .. snapshot.revision,
 		right_label = "SAVED WORKTREE",
 		loaded = { text = not (opts and opts.mode == "metadata"), metadata = true },
@@ -505,7 +506,7 @@ function M.preview(snapshot, item, callback, opts)
 	if item.kind_before == "dir" then
 		result.left = { "Directory: " .. vim.fn.strtrans(item.relpath) }
 		right()
-	elseif item.status == "A" or item.untracked or item.base_absent then
+	elseif result.presence.left == "absent" then
 		result.left_kind = "missing"
 		common.decode_side(result, "left", "", { encoding = "utf-8" })
 		right()

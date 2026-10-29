@@ -7357,6 +7357,7 @@ vim.list_extend(cases, require("spec_blame_lifecycle")({ helpers = helpers, wait
 vim.list_extend(cases, require("spec_blame_history")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_metadata")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_highlighting_defaults")())
+vim.list_extend(cases, require("spec_diff_style")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))
 vim.list_extend(cases, require("spec_highlighting")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_bytes")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_reload")({ helpers = helpers, wait_for = wait_for }))
@@ -7451,6 +7452,8 @@ vim.list_extend(cases, require("spec_source_control_a3_followup")({ helpers = he
 vim.list_extend(cases, require("spec_source_control_staged_intent")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_source_control_a3_v3")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_absent_rail")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,

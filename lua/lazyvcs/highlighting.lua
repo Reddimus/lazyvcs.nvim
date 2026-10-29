@@ -6,6 +6,74 @@ local group
 local hidden = "LazyVcsSemanticHidden"
 local writing = false
 local max_overlay_bytes = 256 * 1024
+local filler_records, mapping_records = {}, {}
+local derived = {}
+
+local function defaults(refresh)
+	local definitions = {
+		LazyVcsDiffFiller = { link = "NonText" },
+		LazyVcsDiffRemoved = api.nvim_get_hl(0, { name = "DiffDelete", link = false }),
+	}
+	for name, value in pairs(definitions) do
+		local current = api.nvim_get_hl(0, { name = name, create = false })
+		-- :highlight clear may drop the default flag without changing the colors.
+		current.default = nil
+		if refresh and derived[name] and vim.deep_equal(current, derived[name]) then
+			api.nvim_set_hl(0, name, {})
+		end
+		value.default = true
+		api.nvim_set_hl(0, name, value)
+		if not next(current) or (derived[name] and vim.deep_equal(current, derived[name])) then
+			derived[name] = api.nvim_get_hl(0, { name = name })
+			derived[name].default = nil
+		else
+			derived[name] = nil
+		end
+	end
+end
+
+local function local_filler(win)
+	return api.nvim_get_option_value("fillchars", { win = win, scope = "local" })
+end
+
+-- Also used while projecting the pre-diff window into a saved session.
+function M.user_fillchars(win)
+	local value = local_filler(win)
+	local record = windows[win] and windows[win].filler or filler_records[api.nvim_win_get_buf(win)]
+	return record and value == record.written and record.raw or value
+end
+
+local function apply_filler(win, state, style)
+	if not state.role or not style.enabled or state.filler then
+		return
+	end
+	local raw = local_filler(win)
+	local effective = raw ~= "" and raw or api.nvim_get_option_value("fillchars", { scope = "global" })
+	local has_diff = ("," .. effective):find(",diff:", 1, true)
+	if style.filler == "auto" and has_diff then
+		return
+	end
+	local entries = {}
+	-- A comma can itself be a fill character (e.g. eob:,,vert:|).
+	-- Split only at the separator before an option name, not at glyph bytes.
+	for entry in (effective .. ","):gmatch("(.-),%f[%a%z]") do
+		if entry ~= "" and not entry:match("^diff:") then
+			entries[#entries + 1] = entry
+		end
+	end
+	local prefix = #entries > 0 and table.concat(entries, ",") .. "," or ""
+	local value = prefix .. "diff:" .. (style.filler == "auto" and "╱" or style.filler)
+	local ok, err = pcall(util.set_win_option, win, "fillchars", value)
+	if not ok then
+		if not tostring(err):find("E1512", 1, true) then
+			error(err)
+		end
+		value = prefix .. "diff:/"
+		util.set_win_option(win, "fillchars", value)
+	end
+	state.filler = { raw = raw, written = value }
+	filler_records[state.buf] = state.filler
+end
 
 local function explicit(win)
 	local ns = api.nvim_get_hl_ns({ winid = win })
@@ -30,12 +98,17 @@ local function explicit(win)
 end
 
 local function user_mappings(value, state)
+	if state and not state.overlay then
+		return value
+	end
 	if state and value == state.overlay then
 		return state.user
 	end
 	local entries = {}
 	for entry in value:gmatch("[^,]+") do
-		if entry:match(":([^:]+)$") ~= hidden then
+		local from, to = entry:match("^([^:]+):(.+)$")
+		local injected = state and (state.diff_mappings or {})[from] == to
+		if to ~= hidden and not injected then
 			entries[#entries + 1] = entry
 		end
 	end
@@ -53,11 +126,16 @@ end
 
 local function strip_window(win)
 	if not windows[win] then
+		local raw = local_filler(win)
+		local original = M.user_fillchars(win)
+		if raw ~= original then
+			util.set_win_option(win, "fillchars", original)
+		end
 		local value = util.get_win_option(win, "winhighlight")
 		---@cast value string
-		if value:find(hidden, 1, true) then
+		if value:find(hidden, 1, true) or value:find(":LazyVcsDiff", 1, true) then
 			local native = api.nvim_get_hl_ns({ winid = win }) > 0 and not explicit(win)
-			local user = user_mappings(value)
+			local user = user_mappings(value, mapping_records[api.nvim_win_get_buf(win)])
 			write_mapping(win, user)
 			if native and user == "" and vim.version.ge(vim.version(), { 0, 11, 7 }) then
 				api.nvim_win_set_hl_ns(win, -1)
@@ -81,7 +159,11 @@ local function overlay(win, state)
 	for _, name in ipairs(names) do
 		entries[#entries + 1] = name .. ":" .. hidden
 	end
+	for from, to in pairs(state.diff_mappings or {}) do
+		entries[#entries + 1] = from .. ":" .. to
+	end
 	state.overlay = table.concat(entries, ",")
+	mapping_records[state.buf] = { overlay = state.overlay, user = state.user, diff_mappings = state.diff_mappings }
 	if current ~= state.overlay then
 		write_mapping(win, state.overlay)
 	end
@@ -103,7 +185,7 @@ end
 function M.user_winhighlight(win)
 	local value = util.get_win_option(win, "winhighlight")
 	---@cast value string
-	return user_mappings(value, windows[win])
+	return user_mappings(value, windows[win] or mapping_records[api.nvim_win_get_buf(win)])
 end
 
 local function semantic(name)
@@ -251,6 +333,9 @@ function M.refresh(win)
 	if not state or not owned(win, state) then
 		return
 	end
+	defaults()
+	local style = state.style
+	apply_filler(win, state, style)
 	local global = api.nvim_get_hl(0, {})
 	local source = state.previous == -1 and api.nvim_get_hl_ns({}) or state.previous
 	local theme = source and source > 0 and api.nvim_get_hl(source, {}) or {}
@@ -289,35 +374,72 @@ function M.refresh(win)
 			define(slot, name, inherited(name))
 		end
 	end
-	-- Cleared definitions remain in nvim_get_hl's enumeration.
-	for name, value in pairs(global) do
-		if semantic(name) and next(value) ~= nil then
-			define(slot, name, {})
-			if not slot.native then
-				slot.suppressed[name] = true
+	state.diff_mappings = {}
+	if state.role and style.enabled then
+		local mappings = state.native and state.user or M.user_winhighlight(win)
+		local user = {}
+		for from, to in mappings:gmatch("([^,:]+):([^,]+)") do
+			user[from] = to
+		end
+		local inherited = resolver(theme, global)
+		local targets = { DiffDelete = "LazyVcsDiffFiller" }
+		if state.role == "old" and style.removed then
+			targets.DiffAdd = "LazyVcsDiffRemoved"
+		elseif user.DiffAdd then
+			-- Explicit namespaces take precedence over winhighlight. Reproduce
+			-- the user's addition mapping even on a pane with no color override.
+			targets.DiffAdd = "DiffAdd"
+		end
+		for from, to in pairs(targets) do
+			if state.native then
+				if not user[from] then
+					state.diff_mappings[from] = to
+				end
+			else
+				local value = inherited(user[from] or to)
+				if
+					not user[from]
+					and to == "LazyVcsDiffRemoved"
+					and derived[to]
+					and not (theme[to] and next(theme[to]))
+				then
+					value = inherited("DiffDelete")
+				end
+				define(slot, from, value)
 			end
 		end
 	end
-	for name, value in pairs(theme) do
-		if semantic(name) and next(value) ~= nil then
-			define(slot, name, {})
-			if not slot.native then
-				slot.suppressed[name] = true
+	if state.policy ~= "editor" then
+		-- Cleared definitions remain in nvim_get_hl's enumeration.
+		for name, value in pairs(global) do
+			if semantic(name) and next(value) ~= nil then
+				define(slot, name, {})
+				if not slot.native then
+					slot.suppressed[name] = true
+				end
 			end
 		end
-	end
-	local buf = api.nvim_win_get_buf(win)
-	local ft = vim.bo[buf].filetype
-	for _, client in ipairs(vim.lsp.get_clients({ bufnr = buf })) do
-		local provider = client.server_capabilities.semanticTokensProvider
-		local legend = type(provider) == "table" and provider.legend
-		if legend then
-			local modifiers = {}
-			for _, modifier in ipairs(legend.tokenModifiers or {}) do
-				modifiers[modifier] = true
+		for name, value in pairs(theme) do
+			if semantic(name) and next(value) ~= nil then
+				define(slot, name, {})
+				if not slot.native then
+					slot.suppressed[name] = true
+				end
 			end
-			for _, kind in ipairs(legend.tokenTypes or {}) do
-				suppress(slot, { type = kind, modifiers = modifiers }, ft)
+		end
+		local buf = api.nvim_win_get_buf(win)
+		local ft = vim.bo[buf].filetype
+		for _, client in ipairs(vim.lsp.get_clients({ bufnr = buf })) do
+			local provider = client.server_capabilities.semanticTokensProvider
+			local legend = type(provider) == "table" and provider.legend
+			if legend then
+				local modifiers = {}
+				for _, modifier in ipairs(legend.tokenModifiers or {}) do
+					modifiers[modifier] = true
+				end
+				for _, kind in ipairs(legend.tokenTypes or {}) do
+					suppress(slot, { type = kind, modifiers = modifiers }, ft)
+				end
 			end
 		end
 	end
@@ -339,6 +461,9 @@ function M.release(win)
 	if not state then
 		return
 	end
+	if api.nvim_win_is_valid(win) and state.filler and local_filler(win) == state.filler.written then
+		util.set_win_option(win, "fillchars", state.filler.raw)
+	end
 	windows[win] = nil
 	if state.native then
 		if api.nvim_win_is_valid(win) then
@@ -357,6 +482,16 @@ function M.release(win)
 		state.slot.busy = false
 	end
 	strip_unowned()
+	local retained = false
+	for other, owner in pairs(windows) do
+		if owner.buf == state.buf and api.nvim_win_is_valid(other) and api.nvim_win_get_buf(other) == state.buf then
+			retained = true
+			break
+		end
+	end
+	if not retained then
+		filler_records[state.buf], mapping_records[state.buf] = nil, nil
+	end
 	if not next(windows) and group then
 		api.nvim_del_augroup_by_id(group)
 		group = nil
@@ -372,14 +507,27 @@ local function protected(callback)
 	end
 end
 
--- Buffer-local window-option records can restore an overlay after its session
--- has closed. Keep this cheap cleanup alive independently of active owners.
+-- Clean splits that inherit presentation while their buffer still has an owner.
+-- The last release cleans visible copies before discarding its buffer records.
 local cleanup_group = api.nvim_create_augroup("LazyVCSDiffHighlightCleanup", { clear = true })
 api.nvim_create_autocmd({ "BufWinEnter", "WinEnter", "WinNew" }, {
 	group = cleanup_group,
 	callback = protected(function()
 		strip_window(api.nvim_get_current_win())
 	end),
+})
+
+api.nvim_create_autocmd("ColorScheme", {
+	group = cleanup_group,
+	callback = protected(function()
+		defaults(true)
+	end),
+})
+api.nvim_create_autocmd("BufWipeout", {
+	group = cleanup_group,
+	callback = function(event)
+		filler_records[event.buf], mapping_records[event.buf] = nil, nil
+	end,
 })
 
 local function listen()
@@ -469,7 +617,12 @@ local function listen()
 				return
 			end
 			for win, state in pairs(windows) do
-				if not state.preserved and owned(win, state) and api.nvim_win_get_buf(win) == event.buf then
+				if
+					state.policy ~= "editor"
+					and not state.preserved
+					and owned(win, state)
+					and api.nvim_win_get_buf(win) == event.buf
+				then
 					local added = suppress(state.native and state or state.slot, token, vim.bo[event.buf].filetype)
 					if state.native and added then
 						overlay(win, state)
@@ -501,8 +654,9 @@ local function listen()
 	})
 end
 
-function M.apply(win, policy)
-	if policy == "editor" then
+function M.apply(win, policy, role, style)
+	style = style or require("lazyvcs.config").get().diff_style
+	if policy == "editor" and not (role and style.enabled) then
 		M.release(win)
 		return
 	end
@@ -510,6 +664,7 @@ function M.apply(win, policy)
 		return
 	end
 	if windows[win] then
+		windows[win].policy, windows[win].role, windows[win].style = policy, role, style
 		M.refresh(win)
 		return
 	end
@@ -520,13 +675,23 @@ function M.apply(win, policy)
 			previous = api.nvim_get_hl_ns({ winid = win }),
 			user = util.get_win_option(win, "winhighlight"),
 			buf = api.nvim_win_get_buf(win),
+			policy = policy,
+			role = role,
+			style = style,
 		}
 		windows[win] = state
 		M.refresh(win)
 		listen()
 		return
 	end
-	windows[win] = { preserved = true, previous = api.nvim_get_hl_ns({ winid = win }), buf = api.nvim_win_get_buf(win) }
+	windows[win] = {
+		preserved = true,
+		previous = api.nvim_get_hl_ns({ winid = win }),
+		buf = api.nvim_win_get_buf(win),
+		policy = policy,
+		role = role,
+		style = style,
+	}
 	M.refresh(win)
 	listen()
 end

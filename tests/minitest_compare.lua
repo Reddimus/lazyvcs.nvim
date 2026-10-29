@@ -204,4 +204,54 @@ edited_buffer=vim.api.nvim_get_current_buf()
 	child.type_keys(":LazyVCS compare close<CR>")
 	eq(child.lua_get("vim.api.nvim_buf_is_valid(edited_buffer) and vim.bo[edited_buffer].buflisted"), true)
 end
+
+T["absent rails follow real file keys and expand with window focus"] = function()
+	child.lua([[
+local h=require('helpers')
+h.write_file(fixture.root .. '/z_deleted.txt','removed first\nremoved second\n')
+h.exec({'git','add','z_deleted.txt'},fixture.root)
+h.exec({'git','commit','-m','rail deletion base'},fixture.root)
+h.exec({'git','rm','z_deleted.txt'},fixture.root)
+h.write_file(fixture.root .. '/added.txt','addition one\naddition two\n')
+h.exec({'git','add','added.txt'},fixture.root)
+vim.ui.input=function(_,cb) cb('HEAD') end
+]])
+	child.type_keys("<Space>vc")
+	ready()
+	child.type_keys("<CR>")
+	local function sizes(path)
+		child.lua(
+			"assert(vim.wait(15000,function() local s=require('lazyvcs.compare').current(); return s.preview_result and s.shown_item.relpath=="
+				.. vim.inspect(path)
+				.. " end,10))"
+		)
+		-- Let scheduled layout and WinResized handlers finish before reading sizes.
+		child.lua("vim.wait(100,function() return false end,10)")
+		return child.lua_get([[(function()
+local s=require('lazyvcs.compare').current()
+return {vim.api.nvim_win_get_width(s.leftwin),vim.api.nvim_win_get_width(s.rightwin),s.rail~=nil}
+end)()]])
+	end
+	local added = sizes("added.txt")
+	eq(added[1], 3)
+	eq(added[3], true)
+	assert(added[2] > added[1])
+	child.type_keys("]b")
+	local modified = sizes("sample.txt")
+	assert(math.abs(modified[1] - modified[2]) <= 1)
+	eq(modified[3], false)
+	child.type_keys("]b")
+	local deleted = sizes("z_deleted.txt")
+	eq(deleted[2], 3)
+	eq(deleted[3], true)
+	eq(child.lua_get("vim.api.nvim_get_current_win()==require('lazyvcs.compare').current().leftwin"), true)
+	child.type_keys("[b")
+	sizes("sample.txt")
+	child.type_keys("[b")
+	eq(sizes("added.txt")[1], 3)
+	child.type_keys("<C-w>h")
+	local expanded = sizes("added.txt")
+	assert(math.abs(expanded[1] - expanded[2]) <= 1)
+	eq(expanded[3], false)
+end
 return T

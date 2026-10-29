@@ -192,12 +192,35 @@ end
 ---@param payload table
 ---@return table
 local function finalize_payload(payload)
+	payload.presence = payload.presence
+		or {
+			left = payload.base_identity.untracked and "absent" or "present",
+			right = "present",
+		}
 	payload.base_identity.content = vim.fn.sha256(vim.base64.encode(payload.base_bytes))
 	payload.base_identity.base_encoding = payload.base_encoding
 	return payload
 end
 
-local function finish_index_payload(task, root, relpath, payload, opts, oid)
+local function finish_index_payload(task, root, relpath, payload, opts, oid, presence_checked)
+	-- An empty blob alone cannot distinguish a real empty index file from -N.
+	-- Porcelain v2 represents intent-to-add with .A and a zero index object ID.
+	if not presence_checked and payload.base_bytes == "" then
+		task:add(process.bytes({ "git", "status", "--porcelain=v2", "--untracked-files=no", "--", relpath }, {
+			cwd = root,
+			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+		}, function(records)
+			payload.presence = { left = records and "present" or "unknown", right = "present" }
+			if records then
+				local index_mode, index_oid = records:match("^1 %.A %S+ %S+ (%S+) %S+ %S+ (%x+) ")
+				if index_mode == "000000" and index_oid and index_oid:match("^0+$") then
+					payload.presence.left, payload.presence.intent_to_add = "absent", true
+				end
+			end
+			finish_index_payload(task, root, relpath, payload, opts, oid, true)
+		end))
+		return
+	end
 	task:add(
 		process.bytes(
 			{ "git", "check-attr", "-z", "working-tree-encoding", "ident", "filter", "--", relpath },
@@ -662,9 +685,11 @@ function M.resolve_diff_target(target)
 		end
 	elseif section == "changes" then
 		comparison.kind = "git_unstaged"
+		comparison.presence = { left = "present", right = "unknown" }
 		comparison.left = git_side("INDEX", ":0:" .. relpath, false)
 		if change_kind == "deleted" or status:sub(2, 2) == "D" then
 			comparison.right = empty_side()
+			comparison.presence.right = "absent"
 		else
 			comparison.right = worktree_side(path)
 			comparison.editable_side = "right"
@@ -870,6 +895,7 @@ function M.load_diff_target_async(target, on_done, opts)
 					return task:finish(nil, err)
 				end
 				comparison.base_identity = payload.base_identity
+				comparison.presence = payload.presence
 				comparison.left.base_encoding = payload.base_encoding
 				comparison.left.bytes, comparison.left.lines = payload.base_bytes, nil
 				task:finish(comparison)

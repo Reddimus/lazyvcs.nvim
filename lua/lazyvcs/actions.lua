@@ -93,6 +93,7 @@ local function build_session_async(bufnr, on_done, winid)
 				root = result.root,
 				relpath = result.relpath,
 				tracked = result.tracked,
+				presence = result.presence,
 				base_label = result.base_label,
 				base_lines = document.lines,
 				base_text = document,
@@ -375,6 +376,15 @@ local function ensure_global_autocmds()
 	end
 
 	global_augroup = vim.api.nvim_create_augroup("lazyvcs_global", { clear = true })
+	vim.api.nvim_create_autocmd("WinEnter", {
+		group = global_augroup,
+		callback = safe_callback(function()
+			local session = state.for_window(vim.api.nvim_get_current_win())
+			if session then
+				layout.rail_focus(session)
+			end
+		end),
+	})
 	vim.api.nvim_create_autocmd("BufWinEnter", {
 		group = global_augroup,
 		callback = safe_callback(function(args)
@@ -451,6 +461,7 @@ refresh = function(bufnr, reuse)
 			or util.buf_path(session.editable_bufnr) ~= session.source_path
 		then
 			session.hunk_cache = nil
+			layout.clear_rail(session)
 			session.hunks, session.base_invalid = {}, true
 			if not session.refresh_job and (not session.reload_retry_at or vim.uv.now() >= session.reload_retry_at) then
 				reload_session(session)
@@ -480,6 +491,7 @@ refresh = function(bufnr, reuse)
 	if not session.readonly_comparison then
 		local current, err = compare_text.capture(session.editable_bufnr, TEXT_LIMIT)
 		if not current then
+			layout.clear_rail(session)
 			session.hunks = {}
 			if session.capture_error ~= err then
 				session.capture_error = err
@@ -1260,6 +1272,7 @@ local function open_target_impl(comparison, failure_context)
 		relpath = comparison.relpath,
 		tracked = comparison.kind ~= "git_untracked" and comparison.kind ~= "svn_untracked",
 		base_label = comparison.left.label,
+		presence = comparison.presence,
 		left_label = comparison.left.label,
 		right_label = comparison.right.label,
 		base_lines = comparison.left.lines or {},
@@ -1272,6 +1285,10 @@ local function open_target_impl(comparison, failure_context)
 		original_bufnr = owned and original_bufnr or nil,
 		comparison = comparison,
 	}
+	if session.readonly_comparison then
+		session.rail_text = require("lazyvcs.absent_rail").text_lines(session.base_lines)
+			and require("lazyvcs.absent_rail").text_lines(comparison.right.lines or {})
+	end
 	if not session.readonly_comparison then
 		local document, decode_err = diff.decode_base(editable_bufnr, {
 			base_bytes = comparison.left.bytes
@@ -1727,6 +1744,7 @@ reload_session = function(session)
 			live.base_lines = result.base_lines
 		end
 		live.base_identity = result.base_identity
+		live.presence = result.presence
 		if util.buf_is_valid(live.base_bufnr) then
 			vim.bo[live.base_bufnr].modifiable = true
 			vim.bo[live.base_bufnr].readonly = false
@@ -1778,5 +1796,9 @@ function M.rebalance_tab(tabpage)
 end
 
 M._test_scroll_event_source = scroll_event_source
+
+for _, name in ipairs({ "open", "open_target", "jump_to_hunk" }) do
+	M[name] = require("lazyvcs.absent_rail").guard(M[name])
+end
 
 return M

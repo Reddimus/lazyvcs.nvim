@@ -5,7 +5,7 @@ local namespaces = {}
 
 local function protected(callback)
 	return function(...)
-		local ok, err = pcall(callback, ...)
+		local ok, err = pcall(require("lazyvcs.absent_rail").internal, callback, ...)
 		if not ok then
 			util.notify("Could not restore comparison: " .. tostring(err):gsub("[\r\n]+", " "), vim.log.levels.ERROR)
 		end

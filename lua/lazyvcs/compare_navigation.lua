@@ -312,4 +312,7 @@ function M.jump(s, direction)
 	focus(s, index, win)
 end
 
+M.complete = require("lazyvcs.absent_rail").guard(M.complete)
+M.jump = require("lazyvcs.absent_rail").guard(M.jump)
+
 return M

@@ -325,6 +325,12 @@ local function is_empty(bufnr, lines)
 		end)
 end
 
+-- The single empty editor line can represent either zero bytes or a newline.
+-- wordcount also accounts for Neovim's empty-buffer state and EOF options.
+function M.is_empty(bufnr)
+	return vim.api.nvim_buf_line_count(bufnr) == 1 and is_empty(bufnr, vim.api.nvim_buf_get_lines(bufnr, 0, 1, false))
+end
+
 ---@param bufnr integer
 ---@param limit_bytes integer
 ---@return LazyVcsText? text, string? err

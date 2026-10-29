@@ -327,12 +327,13 @@ local function load_payload_async(path, on_done, opts, base_only)
 		return task
 	end
 
-	local function payload(root, relpath, tracked, base_label, base_bytes)
+	local function payload(root, relpath, tracked, base_label, base_bytes, presence)
 		local value = {
 			root = root,
 			relpath = relpath,
 			tracked = tracked,
 			base_label = base_label,
+			presence = presence,
 			base_bytes = base_bytes,
 			base_identity = { root = root, relpath = relpath, content = vim.fn.sha256(vim.base64.encode(base_bytes)) },
 		}
@@ -374,7 +375,9 @@ local function load_payload_async(path, on_done, opts, base_only)
 					return task:finish(nil, tracked_err)
 				end
 				if no_pristine(svn_xml.parse_info(info.stdout)) then
-					return task:finish(payload(root, relpath, true, "EMPTY", ""))
+					return task:finish(
+						payload(root, relpath, true, "EMPTY", "", { left = "absent", right = "present" })
+					)
 				end
 
 				task:add(
@@ -406,7 +409,16 @@ local function load_payload_async(path, on_done, opts, base_only)
 											end
 											return task:finish(nil, cat_err)
 										end
-										task:finish(payload(root, relpath, true, "BASE", lines))
+										task:finish(
+											payload(
+												root,
+												relpath,
+												true,
+												"BASE",
+												lines,
+												{ left = "present", right = "present" }
+											)
+										)
 									end
 								)
 							)
@@ -678,18 +690,22 @@ function M.resolve_diff_target(target)
 		end
 	elseif section == "untracked" or change_kind == "untracked" or local_item == "unversioned" then
 		comparison.kind = "svn_untracked"
+		comparison.presence = { left = "absent", right = "present" }
 		comparison.left = empty_side()
 		comparison.right = worktree_side(path)
 		comparison.editable_side = "right"
 	elseif section == "changes" or section == "local" then
 		comparison.kind = "svn_local"
+		comparison.presence = { left = "present", right = "unknown" }
 		if change_kind == "added" or local_item == "added" then
 			comparison.left = empty_side()
+			comparison.presence.left = "absent"
 		else
 			comparison.left = svn_side("BASE", "BASE", path, false)
 		end
 		if change_kind == "deleted" or local_item == "deleted" or local_item == "missing" then
 			comparison.right = empty_side()
+			comparison.presence.right = (change_kind == "deleted" or local_item == "deleted") and "absent" or "unknown"
 		else
 			comparison.right = worktree_side(path)
 			comparison.editable_side = "right"
@@ -777,6 +793,7 @@ function M.load_diff_target_async(target, on_done, opts)
 							return task:finish(nil, err)
 						end
 						comparison.base_identity = payload.base_identity
+						comparison.presence = payload.presence
 						task:finish(comparison)
 					end, { root = comparison.root }))
 				end
