@@ -8,7 +8,8 @@
 - [StyLua](https://github.com/JohnnyMorganz/StyLua) 2.5.2 and
   [lua-language-server](https://github.com/LuaLS/lua-language-server) 3.18.2
 - Node 22+ for the Markdown tooling (`npm ci`)
-- `actionlint` and `shellcheck` for the workflow and shell gates
+- `actionlint`, [zizmor](https://docs.zizmor.sh/) 1.31.1, and `shellcheck` for
+  the workflow and shell gates
 - Docker, only for the container E2E suites
 
 ## Running the checks
@@ -25,6 +26,7 @@ npm run audit                                 # includes development dependencie
 stylua --check lua tests                      # Lua formatting
 lua-language-server --check=. --check_format=pretty --checklevel=Warning
 actionlint                                    # workflow lint
+zizmor --offline --format plain .github       # workflow security audit
 shellcheck tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
 bash -n tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
 
@@ -37,7 +39,9 @@ nvim --headless -u NONE -c 'set rtp+=.' -c 'runtime plugin/lazyvcs.lua' \
   -c 'checkhealth lazyvcs' -c 'quitall'
 ```
 
-Export `VIMRUNTIME` for LuaLS. `.luarc.json` uses `$VIMRUNTIME/lua`.
+Export `VIMRUNTIME` for LuaLS. `.luarc.json` uses `$VIMRUNTIME/lua` and raises
+unused locals, unused functions, and unreachable code to warnings; prefix an
+intentionally unused name with `_`.
 
 On Windows, `tests/minitest.sh` is not usable directly; clone mini.nvim at the
 commit pinned in that script, set `MINI_TEST_PATH`, and run

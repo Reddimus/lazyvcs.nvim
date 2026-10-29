@@ -1,6 +1,5 @@
 local Task = require("lazyvcs.backends.task")
 local process = require("lazyvcs.backends.process")
-local util = require("lazyvcs.util")
 local format = require("lazyvcs.backends.blame_format")
 local comparison = require("lazyvcs.backends.comparison")
 local M = {}

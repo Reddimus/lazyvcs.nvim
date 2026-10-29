@@ -1,0 +1,5 @@
+rules:
+  # actionlint 1.7.12 rejects the `$/` self-repository syntax, so reusable
+  # workflow calls keep the `./` form until actionlint supports it.
+  self-repository:
+    disable: true
