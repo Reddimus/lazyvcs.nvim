@@ -124,6 +124,9 @@ and this project adheres to
 
 ### Added
 
+- `:LazyVCS patch [path]` opens a copyable Git or SVN patch, with untracked files
+  and a Lua callback API.
+
 - Edit real working files in Compare's right pane, with ordinary undo, save,
   language support, and hunk navigation through unsaved changes. Set
   `compare.editable = false` for read-only snapshots.

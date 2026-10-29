@@ -19,6 +19,7 @@ local defaults = {
 	use_gitsigns = true,
 	set_winbar = true,
 	session_keymaps = true,
+	patch = { include_untracked = true },
 	compare = {
 		editable = true,
 		collapse_absent = true,
@@ -166,6 +167,8 @@ local function normalize(opts)
 	vim.validate("set_winbar", opts.set_winbar, "boolean")
 	vim.validate("session_keymaps", opts.session_keymaps, "boolean")
 	vim.validate("keymaps", opts.keymaps, "table")
+	vim.validate("patch", opts.patch, "table")
+	vim.validate("patch.include_untracked", opts.patch.include_untracked, "boolean")
 	vim.validate("compare", opts.compare, "table")
 	vim.validate("compare.editable", opts.compare.editable, "boolean")
 	vim.validate("compare.collapse_absent", opts.compare.collapse_absent, "boolean")

@@ -56,6 +56,13 @@ end
 -- Each entry is either a leaf (`run`) or a group of verbs (`verbs` + `default`).
 ---@type table<string, table>
 local spec = {
+	patch = {
+		desc = "Read the working directory patch",
+		complete = "dir",
+		run = function(args, opts)
+			return sidebar().patch({ path = path_arg(args, true), smods = opts.smods })
+		end,
+	},
 	compare = {
 		desc = "Total saved comparison",
 		default = "open",
@@ -304,7 +311,7 @@ local function dispatch(opts)
 	local rest = vim.list_slice(args, 2)
 
 	if entry.run then
-		return entry.run(rest)
+		return entry.run(rest, opts)
 	end
 
 	local verb = rest[1]
@@ -430,6 +437,9 @@ local function complete(arg_lead, cmd_line, cursor_pos)
 	end
 
 	local entry = spec[typed[1]]
+	if entry and entry.complete == "dir" then
+		return require("lazyvcs.command_path").complete(arg_lead)
+	end
 	if not entry or not entry.verbs then
 		return {}
 	end

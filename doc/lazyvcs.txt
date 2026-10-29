@@ -89,6 +89,10 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
                       Review total saved changes. Defaults to `open`.
                       See |lazyvcs-comparison|.
 
+:LazyVCS patch [path] Read, copy, or save the Git or SVN patch for a directory.
+                      Defaults to the current window's working directory.
+                      See |lazyvcs-patch|.
+
 :LazyVCS hunk {next, prev, revert}
                       Move between hunks or revert the hunk under the cursor.
                       Defaults to `next`.
@@ -785,6 +789,78 @@ line model require bounded full-file validation. SVN loads file blame once.
 Files are limited to 1 MiB and command output is bounded. Changed or closed source buffers invalidate pending results.
 
 ==============================================================================
+PATCH                                                         *lazyvcs-patch*
+
+:LazyVCS patch [path] opens the real Git or SVN diff in a read-only diff buffer.
+The default path is the current window's working directory. Directory completion
+uses the same literal-path escaping as the sidebar command. A path inside a
+working copy limits the patch to that subtree, with repository-relative paths.
+A path above working copies uses source_control.scan_depth to discover them.
+Each nonempty repository section starts with "# Repository: <root>", in path
+order. Multi-repository output is for reading or splitting into separate patches
+before application.
+
+Git compares staged and unstaged changes against HEAD, or the empty tree for an
+unborn branch. SVN includes working-copy changes and scheduled additions.
+Nonignored untracked files are included by default. Set patch.include_untracked
+to false to omit them. Git retains its binary-file diagnostics without binary
+payloads. SVN unversioned text files use added-file sections, including missing
+final-newline markers. Unversioned binary files use SVN's binary diagnostic.
+Binary diagnostics do not contain the bytes needed to apply binary changes.
+
+The buffer opens in a horizontal split above an eligible editor window. From
+the sidebar, it uses the sidebar's editor window. If only plugin windows exist,
+such as in a Compare tab, it opens in a new tab. Command
+modifiers such as :tab LazyVCS patch, :vertical LazyVCS patch, :botright, and
+:topleft select another layout. A visible patch for the same path is reused.
+The winbar shows loading state, file counts, added and deleted line counts,
+and key hints. No changes produces "No changes under <path>".
+
+Patch buffer mappings:
+
+    q          Close the window and cancel pending work when the buffer hides.
+    R          Rerun and retain the current file and nearby hunk position.
+    Y          Copy the whole patch to the unnamed register. A register prefix,
+               such as "aY or "+Y, selects that register. The y operator keeps
+               its normal behavior, including yy and yiw.
+    <CR>, gf   Open the file in the previous editor window, or a new split.
+               Jump to the new-side line at the cursor. Deleted files open
+               their old path if it still exists.
+    ]v, [v     Next or previous @@ hunk. Counts work, such as 3]v.
+
+:w /path/to/changes.patch saves the patch bytes. The buffer has LF separators,
+no extra empty last line, and a final newline. VCS content bytes are retained.
+Commands run asynchronously with cancellation, timeouts, and bounded output.
+Total patch content is limited to 16 MiB. Once exceeded, collection stops and
+appends "# lazyvcs: output truncated at 16 MiB". A truncated patch may end
+inside a hunk and cannot be assumed applicable. Errors appear in the buffer
+and an error notification.
+
+Lua API:
+>lua
+    -- Open the patch buffer, including untracked files:
+    local request = require("lazyvcs").patch({ path = "/path/to/project" })
+    request:cancel()
+
+    -- Receive raw bytes without opening a window:
+    require("lazyvcs").patch({
+      path = "/path/to/project",
+      include_untracked = false,
+      on_done = function(text, err)
+        if err then
+          vim.notify(err, vim.log.levels.ERROR)
+          return
+        end
+        -- text is "" when there are no changes.
+        -- Pass text to another tool or save it as raw bytes.
+      end,
+    })
+<
+Lua paths are literal. include_untracked defaults to patch.include_untracked.
+Cancellation suppresses the callback. Closing the buffer cancels its request,
+and rerunning supersedes the previous request.
+
+==============================================================================
 CONFIGURATION                                           *lazyvcs-configuration*
 
 Minimal lazy.nvim or AstroNvim spec, matching the README:
@@ -891,6 +967,7 @@ block with lua/lazyvcs/config.lua.
       use_gitsigns = true,
       set_winbar = true,
       session_keymaps = true,
+      patch = { include_untracked = true },
       compare = {
         editable = true,
         collapse_absent = true,
@@ -1020,6 +1097,12 @@ Compare-only file keymaps:
 
     keymaps.next_file  Next comparison file. Default "]b".
     keymaps.prev_file  Previous comparison file. Default "[b".
+
+Patch options:
+
+    patch.include_untracked
+                       Include nonignored untracked files. Default true.
+                       See |lazyvcs-patch|.
 
 Compare pane shortcuts:
 
