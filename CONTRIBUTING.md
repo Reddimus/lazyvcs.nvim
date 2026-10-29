@@ -103,6 +103,14 @@ A green run on an svn-less machine therefore covers less than CI does.
   mixed separators. `command_path.lua` owns the command boundary: completion
   doubles literal dollars and expansion processes `$$` and `$NAME` once.
 
+## Pull request reviews
+
+Greptile reviews each pull request when it opens and after each push, following
+[the review policy](.github/review-policy.md) and
+[its settings](.greptile/config.json). Greptile and the Claude review workflow
+are advisory; required CI and CodeQL gate merges. Resolve every review thread
+before merging.
+
 ## Commands
 
 The plugin exposes exactly one user command, `:LazyVCS`, with subcommand
