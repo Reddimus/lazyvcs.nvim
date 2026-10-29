@@ -1,0 +1,13 @@
+{
+  "autoReview": ["open", "push", "rebase"],
+  "triggerOnDrafts": false,
+  "effort": "apex",
+  "strictness": 2,
+  "commentTypes": ["logic", "syntax"],
+  "ignorePatterns": "package-lock.json",
+  "statusCheck": true,
+  "shouldUpdateDescription": false,
+  "hideFooter": true,
+  "autoApprove": { "enabled": false },
+  "instructions": "Follow AGENTS.md and .github/review-policy.md. Reviews are read-only and advisory."
+}
