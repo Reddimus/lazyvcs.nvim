@@ -29,6 +29,19 @@ the right. Git compares against the index. SVN uses BASE with
 `svn cat -r BASE path`. Git untracked files and SVN added files use an empty
 base. See |lazyvcs-inline-signs| for Git attribute handling.
 
+Git subprocesses always strip GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY,
+GIT_ALTERNATE_OBJECT_DIRECTORIES, GIT_COMMON_DIR, GIT_NAMESPACE, GIT_PREFIX,
+GIT_SHALLOW_FILE, GIT_GRAFT_FILE, and GIT_IMPLICIT_WORK_TREE. They keep
+GIT_DIR and GIT_WORK_TREE only when both are set and not empty, the command
+has a working directory inside that canonical work tree (case-insensitive on
+Windows), and no directory from the working directory up to, but not
+including, the work tree root contains a .git file or directory. A bare
+dotfiles repository therefore works in its work tree, while a repository
+nested inside it uses its own .git. The .git check is cached per directory for
+up to five seconds, and repository redetection clears the cache.
+Authentication and ordinary Git configuration remain inherited, and Neovim's
+environment is unchanged.
+
 Explicit live-diff, signs, and sidebar refresh commands
 redetect repository ownership. BufEnter and BufWritePost also revalidate the
 buffer directory asynchronously, at most once per five seconds. Cursor movement
@@ -93,8 +106,14 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
 
 :LazyVCS preview      Preview the current buffer diff in a floating window.
 
-:LazyVCS revert       Revert all changes in the current file, after confirming.
+:LazyVCS revert       Discard saved working-tree changes in the current file,
+                      after confirming. Git restores the index version and
+                      preserves staged changes. SVN runs svn revert, restoring
+                      BASE for ordinary modified versioned files.
                       Refuse paths that cannot be placed in the repository.
+                      Git refuses directory replacements and requires an exact
+                      index file. External filesystem changes are not atomic
+                      with these checks.
 
 :LazyVCS profile {show|clear}
                       Show or clear recent source-control job timings.
@@ -372,7 +391,9 @@ buffer-local and fixed; `config.keymaps` does not reach them.
     H            toggle clean repos
     e            edit commit message, or toggle auto-fit width
     b            switch Git branch/tag or SVN target
-    s, .         open repo actions
+    s            invoke Sync according to sync_button_behavior
+    .            always open repo actions (Show Last Error opens full
+                 diagnostics)
     c            commit repo
     gm           generate commit message
     ga           stage Git file
@@ -384,8 +405,9 @@ buffer-local and fixed; `config.keymaps` does not reach them.
     ?            show sidebar help
 
 With snacks.nvim installed, b opens a VS Code-style Git branch picker with
-commands pinned first, current branch marked, and no numeric prefixes. Without
-Snacks, lazyvcs falls back to the built-in vim.ui.select.
+commands pinned first, current branch marked, and no numeric prefixes.
+Picker fallback order is Snacks, fzf-lua, then vim.ui.select, when the required
+picker APIs are available.
 
 ==============================================================================
 INLINE SIGNS                                           *lazyvcs-inline-signs*
@@ -731,7 +753,7 @@ Optional integrations are detected at runtime:
     gitsigns.nvim     Git signs, navigation, previews, and validated live resets
     snacks.nvim       Action picker, VS Code-style Git branch picker,
                       and SVN file pickers
-    fzf-lua           SVN file picker fallback
+    fzf-lua           SVN file, branch/tag, and action picker fallback
     CopilotChat.nvim  Commit-message generation with `gm`
     Claude CLI        Commit-message generation with `gm`
     Codex CLI         Commit-message generation with `gm`
@@ -1033,7 +1055,9 @@ Source-control options:
     changes_sort       `path`, `name`, or `status`.
     compact_folders    Collapse single-child folder chains in tree mode.
     sync_button_behavior
-                       `picker` or `direct` for the Sync button.
+                       Applies to the Sync button and `s` mapping. `picker`
+                       opens repo actions. `direct` requests Git synchronization
+                       or SVN update, subject to confirm_mutations.
     always_show_repositories
                        Keep the Repositories section visible with one repo.
     show_action_button Show the sidebar action button.

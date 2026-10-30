@@ -3,6 +3,61 @@ return function(ctx)
 	local tests = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h")
 	return {
 		{
+			"test_source_control_copilotchat_terminal_scope_rejects_leaves",
+			function()
+				local model = assert(loadfile(tests .. "/fixtures/ai_transport_helpers.lua"))()
+				model.with_transport(ctx, function(f)
+					local scope = assert(require("lazyvcs.source_control.copilotchat_transport").new_scope())
+					local options = { headers = { Authorization = "fixture" } }
+					local calls, failure = 0, nil
+					f.async.run(function()
+						scope:run(function()
+							f.chat.get("offline://fixture", options)
+							local response
+							response, failure = f.chat.post("offline://fixture", options)
+							assert(not response)
+							calls = calls + 1
+						end)
+					end)
+					local first = f.ready(1)
+					scope:cancel()
+					wait(function()
+						return calls > 0
+					end, "cancelled chain did not complete")
+					assert(#f.jobs == 1, "cancelled chain spawned another transport")
+					assert(failure == "cancelled" and calls == 1)
+					wait(function()
+						return process.reaped(first.pid)
+					end, "original transport not reaped")
+					local late
+					f.async.run(function()
+						scope:run(function()
+							local _, err = f.chat.get("offline://fixture", options)
+							late = err
+						end)
+					end)
+					assert(late == "cancelled" and #f.jobs == 1, "closed scope spawned a transport")
+					local queued = assert(require("lazyvcs.source_control.copilotchat_transport").new_scope())
+					local queued_error
+					local timer = assert(vim.uv.new_timer())
+					timer:start(0, 0, function()
+						f.async.run(function()
+							queued:run(function()
+								local _, err = f.chat.get("offline://fixture", options)
+								queued_error = err
+							end)
+						end)
+						queued:cancel()
+						timer:close()
+					end)
+					wait(function()
+						return queued_error ~= nil
+					end, "scheduled leaf did not reject cancellation")
+					assert(queued_error == "cancelled" and #f.jobs == 1, "scheduled leaf spawned after cancellation")
+				end)
+			end,
+		},
+		{
 			"test_source_control_copilotchat_chained_requests_from_fast_event",
 			function()
 				local model = assert(loadfile(tests .. "/fixtures/ai_transport_helpers.lua"))()
@@ -274,10 +329,7 @@ return function(ctx)
 					wait(function()
 						return late_error ~= nil
 					end, "late leaf error callback missing")
-					assert(jobs[late_index].job.is_shutdown and late_error == "cancelled")
-					wait(function()
-						return process.reaped(jobs[late_index].job.pid)
-					end, "late leaf child was not reaped")
+					assert(not jobs[late_index] and late_error == "cancelled", "late leaf spawned a child")
 					assert(callbacks == 0, "late request delivered a result")
 					local closed = assert(transport.new_scope())
 					closed:close()
@@ -289,9 +341,9 @@ return function(ctx)
 						end)
 					end)
 					wait(function()
-						return closed_error ~= nil and process.reaped(jobs[closed_index].job.pid)
-					end, "closed scope did not reap late child through its error callback")
-					assert(closed_error == "cancelled")
+						return closed_error ~= nil
+					end, "closed scope did not complete through its error callback")
+					assert(closed_error == "cancelled" and not jobs[closed_index], "closed scope spawned a child")
 					-- A child that ignores TERM must be killed after the bounded grace,
 					-- with its spawn callback still responsible for reaping and shutdown.
 					local stubborn_scope = assert(transport.new_scope())

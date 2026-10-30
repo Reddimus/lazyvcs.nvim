@@ -1,6 +1,158 @@
 return function(ctx)
 	local h, util = ctx.helpers, require("lazyvcs.util")
+	-- Read checkout files by absolute path; E2E runs from another directory.
+	local checkout =
+		vim.fn.fnamemodify(assert(vim.api.nvim_get_runtime_file("lua/lazyvcs/compat.lua", false)[1]), ":p:h:h:h")
+	local function checkout_lines(relpath)
+		return vim.fn.readfile(checkout .. "/" .. relpath)
+	end
 	local cases = {
+		{
+			"test_revert_checks_file_kind_after_index_read",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = h.make_git_fixture()
+				local backend = assert(require("lazyvcs.backends").resolve(f.file))
+				local start = util.system_start
+				local checked, mutated, done, result, failure
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.system_start = function(args, opts, cb)
+					if args[2] == "ls-files" then
+						return start(args, opts, function(...)
+							assert(vim.uv.fs_unlink(f.file))
+							vim.fn.mkdir(f.file, "p")
+							h.write_file(f.file .. "/precious.txt", "unselected work\n")
+							checked = true
+							cb(...)
+						end)
+					end
+					mutated = mutated or vim.tbl_contains(args, "restore")
+					return start(args, opts, cb)
+				end
+				local ok, err = xpcall(function()
+					backend.revert_file_async(f.file, function(value, why)
+						done, result, failure = true, value, why
+					end)
+					ctx.wait_for(function()
+						return done
+					end, "replacement during preflight did not settle", 15000)
+					assert(
+						checked and not result and failure and failure:find("obstruction") and not mutated,
+						"Discard did not check the current filesystem kind before restore"
+					)
+					assert(vim.fn.readfile(f.file .. "/precious.txt")[1] == "unselected work")
+				end, debug.traceback)
+				util.system_start = start
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_revert_allows_exact_index_file_and_missing_target",
+			function()
+				for _, async in ipairs({ false, true }) do
+					for _, missing in ipairs({ false, true }) do
+						local f = h.make_git_fixture()
+						h.write_file(f.file, "staged content\n")
+						h.exec({ "git", "add", "sample.txt" }, f.root)
+						if missing then
+							assert(vim.uv.fs_unlink(f.file))
+						else
+							h.write_file(f.file, "saved edit\n")
+						end
+						local backend = assert(require("lazyvcs.backends").resolve(f.file))
+						local result, failure
+						if async then
+							local done
+							backend.revert_file_async(f.file, function(value, why)
+								done, result, failure = true, value, why
+							end)
+							ctx.wait_for(function()
+								return done
+							end, "eligible discard did not settle", 15000)
+						else
+							result, failure = backend.revert_file(f.file)
+						end
+						assert(result, failure)
+						assert(vim.fn.readfile(f.file)[1] == "staged content")
+						assert(h.exec({ "git", "show", ":sample.txt" }, f.root) == "staged content\n")
+					end
+				end
+			end,
+		},
+		{
+			"test_revert_refuses_replacement_directory",
+			function()
+				for _, method in ipairs({ "public", "revert_file", "revert_file_async" }) do
+					require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+					local f = h.make_git_fixture()
+					vim.cmd.edit(vim.fn.fnameescape(f.file))
+					local function replace()
+						assert(vim.uv.fs_unlink(f.file))
+						vim.fn.mkdir(f.file, "p")
+						h.write_file(f.file .. "/child.txt", "staged child\n")
+						h.exec({ "git", "add", "-A", "--", "sample.txt" }, f.root)
+						h.write_file(f.file .. "/child.txt", "IMPORTANT SAVED CHILD EDIT\n")
+					end
+					if method == "public" then
+						local owner = assert(require("lazyvcs.buffer_ops").revert_buffer())
+						ctx.wait_for(function()
+							return vim.bo.buftype == "nofile"
+						end, "discard confirmation did not open", 15000)
+						replace()
+						vim.fn.maparg("1", "n", false, true).callback()
+						ctx.wait_for(function()
+							return not owner.active
+						end, "discard did not settle", 15000)
+					else
+						replace()
+						local backend = assert(require("lazyvcs.backends").resolve(f.file))
+						if method == "revert_file" then
+							backend.revert_file(f.file)
+						else
+							local done
+							backend.revert_file_async(f.file, function()
+								done = true
+							end)
+							ctx.wait_for(function()
+								return done
+							end, "backend discard did not settle", 15000)
+						end
+					end
+					assert(
+						vim.fn.readfile(f.file .. "/child.txt")[1] == "IMPORTANT SAVED CHILD EDIT",
+						method .. " overwrote an unselected child through a stale file path"
+					)
+				end
+			end,
+		},
+		{
+			"test_revert_help_explains_index_scope",
+			function()
+				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+				local f = h.make_git_fixture()
+				h.write_file(f.file, "STAGED content\n")
+				h.exec({ "git", "add", "sample.txt" }, f.root)
+				h.write_file(f.file, "WORKTREE content\n")
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				local owner = assert(require("lazyvcs.buffer_ops").revert_buffer())
+				ctx.wait_for(function()
+					return vim.bo.buftype == "nofile"
+				end, "revert confirmation", 15000)
+				vim.fn.maparg("1", "n", false, true).callback()
+				ctx.wait_for(function()
+					return not owner.active
+				end, "revert did not finish", 15000)
+				assert(vim.fn.readfile(f.file)[1] == "STAGED content")
+				assert(h.exec({ "git", "show", ":sample.txt" }, f.root) == "STAGED content\n")
+				local help = table.concat(checkout_lines("doc/lazyvcs.txt"), "\n")
+				local command = assert(help:match(":LazyVCS revert%s+(.-)\n\n"))
+				assert(
+					command:find("index", 1, true) and command:find("staged changes", 1, true),
+					"whole-file revert help omits Git's index scope and preserved staged changes"
+				)
+				assert(command:find("BASE", 1, true), "whole-file revert help omits SVN BASE scope")
+			end,
+		},
 		{
 			"test_revert_relocated_missing_entry_preserves_sibling",
 			function()

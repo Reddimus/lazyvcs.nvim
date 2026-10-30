@@ -59,6 +59,51 @@ and this project adheres to
   the gitsigns fallback when only the index base exceeds the native size limit.
 - Resume native signs when corrected decoding options make the base readable.
 - Keep diff previews and selected-line blame reports open without folded rows.
+- Protect saved files inside directory replacements during recursive SVN Discard
+  and Git whole-file revert.
+- Refuse Unstage when a stale file row would unstage replacement children,
+  including at a rename's old path.
+- Keep remote branch names stable when a tag has the same name.
+- Keep Git discovery, reads, and mutations in the selected repository when
+  inherited settings select another index or object directory. Preserve paired
+  `GIT_DIR` and `GIT_WORK_TREE` only for commands within that work tree and
+  outside repositories nested in it, supporting bare dotfiles repositories, and
+  read the environment safely in libuv callbacks.
+- Clarify that `s` follows the Sync setting, while `.` always opens repository
+  actions, and that Git whole-file revert preserves staged changes.
+- Keep popup replacement windows open when confirmation or commit input cancels.
+- Show complete destructive prompts in scrollable confirmation content.
+- Preserve selected files and loaded changes across repeated and repository-menu
+  refreshes.
+- Preserve the selected repository during incomplete discovery and keep a
+  selector available after hiding the only repository.
+- Bound repository failure notifications, keep the untracked Discard refusal
+  reason visible, and point to `.` for Show Last Error, which shows full
+  diagnostics.
+- Collect SVN AI context with the internal diff tool and check provider
+  availability before requesting consent.
+- Stop cancelled CopilotChat requests from starting more transports.
+- Document the fzf-lua fallback for branch and action pickers.
+- Keep UI tests from changing an inherited Git repository or leaving fixture
+  preferences in the user's state directory.
+- Refuse SVN directory Discard when a restored directory or its parent is a
+  symlink or junction, protecting files outside the working copy.
+- Protect untracked and ignored files at a staged rename's old path from
+  Discard. The confirmation now names both rename paths.
+- Refuse Unstage and Discard of staged additions that changed before the action
+  started, preserving newly committed files.
+- Refuse Stage when a file became a directory, while allowing tracked
+  submodules.
+- Resolve Git conflicts with Discard by restoring HEAD in the index and working
+  tree, or removing the file when HEAD deleted it. The confirmation names this
+  scope.
+- Publish Git branches even when a tag has the same name.
+- Skip unreadable subdirectories during repository discovery, keep the
+  repositories found, and show one notice for skipped directories. Preserve
+  saved repository visibility until discovery completes without errors. An
+  unreadable scan root still reports an error.
+- Report preference synchronization and close failures without replacing the
+  previous preferences.
 - Show staged final-newline changes in Git previews and hunk navigation,
   including after refresh. Mark snapshot text that has no final newline.
 - Find Git repositories for deleted files whose parent directories are also

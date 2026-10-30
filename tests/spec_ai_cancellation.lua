@@ -500,13 +500,22 @@ return function(ctx)
 						vim.api.nvim_buf_get_lines(sync.bufnr, 0, 1, false)[1] == "synchronous",
 						"stale confirmation replaced message"
 					)
+					-- Resetting privacy also restores the real executable lookup, and
+					-- generate() refuses unavailable providers before asking for
+					-- consent. Keep codex available so no case depends on the host PATH.
+					local function reset_privacy()
+						ai._test_reset_privacy()
+						ai._test_set_executable_checker(function()
+							return true
+						end)
+					end
 					config.confirm_privacy = true
-					ai._test_reset_privacy()
+					reset_privacy()
 					local privacy, cancellations = nil, 0
 					vim.ui.select = function(_, _, callback)
 						privacy = callback
 					end
-					ai.generate(repo, function()
+					local request, start_err = ai.generate(repo, function()
 						error("cancelled privacy completed")
 					end, {
 						owner = state,
@@ -514,35 +523,35 @@ return function(ctx)
 							cancellations = cancellations + 1
 						end,
 					})
+					assert(request, start_err)
 					assert(privacy and ops.cancel(root, { owner = state }) == 1, "privacy request not registered")
 					privacy("Send diff to configured AI provider")
 					assert(#processes == 5 and cancellations == 1, "cancelled privacy request started work")
 					config.confirm_privacy, hold_context = false, false
-					ai._test_set_executable_checker(function()
-						return true
-					end)
 					---@diagnostic disable-next-line: duplicate-set-field
 					util.system_start = function()
 						error("fixture spawn failure")
 					end
 					local failed, failed_provider
-					ai.generate(repo, function(_, failure, provider)
+					request, start_err = ai.generate(repo, function(_, failure, provider)
 						failed, failed_provider = failure, provider
 					end, { owner = state })
+					assert(request, start_err)
 					wait(function()
 						return failed ~= nil
 					end, "spawn failure did not settle")
 					assert(failed:find("fixture spawn failure", 1, true))
 					assert(ops.cancel(root, { owner = state }) == 0, "spawn failure retained registration")
 					config.confirm_privacy = true
-					ai._test_reset_privacy()
+					reset_privacy()
 					vim.ui.select = function()
 						error("fixture guarded failure\nsecond line")
 					end
 					failed = nil
-					ai.generate(repo, function(_, failure, provider)
+					request, start_err = ai.generate(repo, function(_, failure, provider)
 						failed, failed_provider = failure, provider
 					end, { owner = state })
+					assert(request, start_err)
 					assert(failed and not failed:find("[\r\n]"), "guarded error did not settle with sanitized text")
 					assert(failed_provider == nil, "guarded error passed a replacement count as provider")
 					assert(ops.cancel(root, { owner = state }) == 0, "guarded failure retained registration")

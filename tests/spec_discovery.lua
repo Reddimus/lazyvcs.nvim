@@ -207,6 +207,60 @@ return function(ctx)
 
 	return {
 		{
+			"test_source_control_incomplete_discovery_preserves_desired_focus",
+			function()
+				require("lazyvcs").setup({
+					source_control = {
+						scan_depth = 2,
+						selection_mode = "single",
+						show_clean = true,
+						remote_refresh = "manual",
+					},
+				})
+				local workspace = helpers.tempdir()
+				local denied = workspace .. "/zzz"
+				local chosen = denied .. "/chosen"
+				for _, root in ipairs({ workspace .. "/aaa", chosen }) do
+					vim.fn.mkdir(root, "p")
+					helpers.exec({ "git", "init" }, root)
+				end
+				local native = require("lazyvcs.source_control.native")
+				local persist = require("lazyvcs.source_control.persist")
+				local state = native.open({ path = workspace })
+				wait_for_discovery(state)
+				state.lazyvcs_focused_repo = chosen
+				state.lazyvcs_repo_visibility_overrides[chosen] = true
+				native.render(state)
+				local scan = vim.uv.fs_scandir
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.uv.fs_scandir = function(path, cb)
+					if path == denied then
+						vim.schedule(function()
+							cb("EACCES: permission denied", nil)
+						end)
+						return {}
+					end
+					return scan(path, cb)
+				end
+				local ok, err = xpcall(function()
+					native.refresh(false)
+					wait_for_discovery(state)
+					assert(state.lazyvcs_discovery_incomplete, "scan did not encounter access failure")
+					assert(state.lazyvcs_focused_repo == chosen, "incomplete scan replaced desired focus")
+					native.close()
+					assert(persist.load(workspace).focused_repo == chosen, "close persisted temporary fallback")
+				end, debug.traceback)
+				vim.uv.fs_scandir = scan
+				assert(ok, err)
+				state = native.open({ path = workspace })
+				wait_for_discovery(state)
+				assert(
+					state.lazyvcs_focused_repo == chosen and state.lazyvcs_repo_visibility[chosen],
+					"recovery did not restore selected changes"
+				)
+			end,
+		},
+		{
 			"test_source_control_incomplete_discovery_keeps_repositories_and_saved_visibility",
 			function()
 				require("lazyvcs").setup({

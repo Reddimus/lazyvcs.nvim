@@ -716,7 +716,7 @@ local function git_checkout(repo, item, context, opts)
 			return perform(repo, existing, opts, { "git", "switch", "--", existing.branch_name })
 		end
 
-		local tail = item.short:match("^[^/]+/(.+)$") or item.short
+		local tail = item.refname:match("^refs/remotes/[^/]+/(.+)$")
 		local function finish(name)
 			name = util.trim(name or "")
 			if name == "" then

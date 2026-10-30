@@ -610,11 +610,18 @@ local function resume_details(state)
 end
 
 invalidate_hydration = function(state, repo_root, reason, defer_cancel)
-	if reason == "source restarted" or reason == "source refreshed" then
-		state.lazyvcs_refresh_view = { saved = capture_view(state), expected = capture_view(state) }
-		state.lazyvcs_cancelled_summaries = {}
-		if reason == "source restarted" then
+	if reason == "source restarted" or reason == "source refreshed" or reason == "repository refreshed" then
+		local current = capture_view(state)
+		local pending = state.lazyvcs_refresh_view
+		local saved = pending and vim.deep_equal(current, pending.expected) and pending.saved or current
+		state.lazyvcs_refresh_view = { saved = saved, expected = current }
+		if reason == "repository refreshed" then
+			remember_details(state, repo_root)
+		elseif reason == "source restarted" then
 			remember_details(state)
+		end
+		if reason ~= "repository refreshed" then
+			state.lazyvcs_cancelled_summaries = {}
 		end
 	else
 		state.lazyvcs_refresh_view = nil
@@ -908,7 +915,9 @@ local function setup_buffer(state)
 			"h: collapse   q: close",
 			"Space/Tab: repository visibility   H: show clean repositories",
 			"R: refresh   X: cancel repository operation",
-			"s/.: repository actions   b: switch branch or target",
+			"s: Sync (sync_button_behavior: picker opens actions; direct synchronizes)",
+			"Direct Sync requests Git sync or SVN update, subject to confirm_mutations",
+			".: always open repository actions   b: switch branch or target",
 			"c: commit   e: edit commit message or auto-fit width",
 			"ga: stage   gu: unstage   gr: revert   gm: generate commit message",
 			"v: tree/list   S: change sort order   C: compare against base",
@@ -931,7 +940,7 @@ local function setup_buffer(state)
 	end, "Toggle clean repositories")
 	bind(bufnr, "s", function()
 		M.dispatch("sync_repo")
-	end, "Repository actions")
+	end, "Sync repository (sync_button_behavior)")
 	bind(bufnr, ".", function()
 		M.dispatch("repo_actions")
 	end, "Repository actions")

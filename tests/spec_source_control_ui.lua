@@ -1,5 +1,11 @@
 return function(ctx)
 	local h, api = ctx.helpers, vim.api
+	-- Read checkout files by absolute path; E2E runs from another directory.
+	local checkout =
+		vim.fn.fnamemodify(assert(vim.api.nvim_get_runtime_file("lua/lazyvcs/compat.lua", false)[1]), ":p:h:h:h")
+	local function checkout_lines(relpath)
+		return vim.fn.readfile(checkout .. "/" .. relpath)
+	end
 	local native = require("lazyvcs.source_control.native")
 	local model = require("lazyvcs.source_control.model")
 	local input = require("lazyvcs.source_control.input")
@@ -70,7 +76,7 @@ return function(ctx)
 			assert(ok, err)
 		end
 	end
-	local function refresh_selection(vcs, move)
+	local function refresh_selection(vcs, move, repeat_refresh)
 		local f = vcs == "svn" and h.make_svn_fixture() or h.make_git_fixture()
 		for i = 1, 15 do
 			h.write_file(f.root .. string.format("/file%02d.txt", i), "new change\n")
@@ -102,6 +108,13 @@ return function(ctx)
 		ctx.wait_for(function()
 			return release ~= nil
 		end, "discovery did not finish", 15000)
+		if repeat_refresh then
+			release = nil
+			key(s.bufnr, "R")
+			ctx.wait_for(function()
+				return release ~= nil
+			end, "second discovery did not finish", 15000)
+		end
 		local target = node.id
 		if move then
 			-- User movement during loading overrides the saved file selection.
@@ -117,6 +130,321 @@ return function(ctx)
 		assert(selected(s).id == target, "refresh lost the selected node: " .. selected(s).type)
 	end
 	local cases = {
+		{
+			"test_source_control_sync_mapping_help_matches_direct_behavior",
+			function()
+				local f = h.make_git_switch_fixture()
+				require("lazyvcs.config").get().source_control.sync_button_behavior = "direct"
+				require("lazyvcs.config").get().source_control.confirm_mutations = false
+				h.write_file(f.root .. "/sample.txt", "outgoing commit\n")
+				h.exec({ "git", "commit", "-am", "outgoing" }, f.root)
+				local head = h.exec({ "git", "rev-parse", "HEAD" }, f.root)
+				local s = open(f.root)
+				select_node(s, function(n)
+					return n.type == "repo" or n.type == "repo_changes"
+				end)
+				key(s.bufnr, "s")
+				ctx.wait_for(function()
+					return h.exec({ "git", "--git-dir", f.origin, "rev-parse", "refs/heads/main" }, f.root) == head
+				end, "direct s did not synchronize", 15000)
+				local description
+				for _, mapping in ipairs(api.nvim_buf_get_keymap(s.bufnr, "n")) do
+					if mapping.lhs == "s" then
+						description = mapping.desc
+					end
+				end
+				key(s.bufnr, "?")
+				local help = table.concat(api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+				assert(
+					help:find("sync_button_behavior", 1, true) and help:find("direct", 1, true),
+					"sidebar help presents s and . as equivalent under direct synchronization"
+				)
+				assert(description and description:lower():find("sync", 1, true), "s mapping description omits Sync")
+				local doc = table.concat(checkout_lines("doc/lazyvcs.txt"), "\n")
+				assert(
+					not doc:find("s, .         open repo actions", 1, true),
+					"manual conflates Sync and repository actions"
+				)
+				vim.cmd("close")
+			end,
+		},
+		{
+			"test_source_control_long_failure_has_bounded_notice_and_full_report",
+			function()
+				local f = h.make_git_fixture()
+				h.exec({ "git", "add", "sample.txt" }, f.root)
+				local s = open(f.root)
+				s.lazyvcs_commit_drafts[f.root] = "Keep draft"
+				require("lazyvcs.config").get().source_control.confirm_mutations = false
+				local diagnostics = string.rep("hook: 界 failed validation with detailed explanation\n", 15)
+				local util, ops = require("lazyvcs.util"), require("lazyvcs.source_control.ops")
+				local start, notify, select = util.system_start, vim.notify, require("lazyvcs.picker").select
+				local notice, report_action
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.system_start = function(args, opts, done)
+					if args[1] == "git" and vim.tbl_contains(args, "commit") then
+						done(nil, diagnostics, { code = 1, stderr = diagnostics })
+						return {}
+					end
+					return start(args, opts, done)
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.notify = function(message)
+					notice = message
+				end
+				local ok, err = xpcall(function()
+					ops.commit_repo(s, { path = f.root })
+					ctx.wait_for(function()
+						return notice ~= nil
+					end, "commit did not fail", 15000)
+					assert(
+						vim.fn.strdisplaywidth(notice) <= vim.o.columns - 1,
+						"long failure notification wraps across screen rows"
+					)
+					assert(s.lazyvcs_commit_drafts[f.root] == "Keep draft")
+					---@diagnostic disable-next-line: duplicate-set-field
+					require("lazyvcs.picker").select = function(items, _, done)
+						for _, item in ipairs(items) do
+							if item.action == "show_error" then
+								report_action = true
+								return done(item)
+							end
+						end
+					end
+					ops.repo_action_picker(s, { path = f.root })
+					assert(report_action, "failed operation has no diagnostics report action")
+					local text = table.concat(api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+					api.nvim_win_close(api.nvim_get_current_win(), true)
+					assert(text == diagnostics:gsub("\n$", ""), "report lost multiline diagnostics")
+				end, debug.traceback)
+				util.system_start, vim.notify, require("lazyvcs.picker").select = start, notify, select
+				require("lazyvcs.state").clear_repo_job(f.root)
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_source_control_failure_hint_opens_actions_under_direct_sync",
+			function()
+				local f = h.make_git_fixture()
+				h.exec({ "git", "add", "sample.txt" }, f.root)
+				local options = require("lazyvcs.config").get().source_control
+				options.sync_button_behavior, options.confirm_mutations = "direct", false
+				local s = open(f.root)
+				s.lazyvcs_commit_drafts[f.root] = "Rejected by hook"
+				local util, ops = require("lazyvcs.util"), require("lazyvcs.source_control.ops")
+				local picker, session = require("lazyvcs.picker"), require("lazyvcs.state")
+				local start, notify, select = util.system_start, vim.notify, picker.select
+				local notice, offered, mutated
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.system_start = function(args, opts, done)
+					if args[1] == "git" and vim.tbl_contains(args, "commit") then
+						done(nil, "hook rejected the commit", { code = 1, stderr = "hook rejected the commit" })
+						return {}
+					end
+					if args[1] == "git" then
+						for _, word in ipairs({ "pull", "push", "fetch", "update" }) do
+							mutated = mutated or vim.tbl_contains(args, word)
+						end
+					end
+					return start(args, opts, done)
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.notify = function(message)
+					notice = message
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				picker.select = function(items, _, done)
+					for _, item in ipairs(items) do
+						offered = offered or item.action == "show_error"
+					end
+					done(nil)
+				end
+				local ok, err = xpcall(function()
+					ops.commit_repo(s, { path = f.root })
+					ctx.wait_for(function()
+						return notice ~= nil
+					end, "commit did not fail", 15000)
+					local lhs = notice:match("; (%S+): Show Last Error$")
+					assert(lhs, "failure notice omits the Show Last Error key: " .. notice)
+					select_node(s, function(n)
+						return n.type == "repo" or n.type == "repo_changes"
+					end)
+					key(s.bufnr, lhs)
+					vim.wait(50, function()
+						return false
+					end)
+					assert(offered, "hinted key did not open repository actions with Show Last Error")
+					assert(not mutated, "hinted key started Sync under direct sync_button_behavior")
+					local job = session.get_repo_job(f.root)
+					assert(job and job.error == "hook rejected the commit", "hinted key replaced the stored error")
+					local readme, paragraph = table.concat(checkout_lines("README.md"), "\n") .. "\n\n", nil
+					for block in readme:gmatch("(.-)\n\n") do
+						paragraph = block:find("Show Last Error", 1, true) and block or paragraph
+					end
+					assert(
+						paragraph and paragraph:find("`.`", 1, true) and not paragraph:find("`s`", 1, true),
+						"README must send users to ., because s synchronizes under direct sync_button_behavior"
+					)
+				end, debug.traceback)
+				util.system_start, vim.notify, picker.select = start, notify, select
+				session.clear_repo_job(f.root)
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_source_control_branch_picker_fzf_fallback_matches_help",
+			function()
+				local f = h.make_git_fixture()
+				local s = open(f.root)
+				select_node(s, function(n)
+					return n.type == "repo_changes"
+				end)
+				local names = { "snacks.picker", "snacks.picker.select", "fzf-lua" }
+				local saved = {}
+				for _, name in ipairs(names) do
+					saved[name] = package.loaded[name]
+				end
+				package.loaded["snacks.picker"] = {}
+				package.loaded["snacks.picker.select"] = {}
+				local called
+				package.loaded["fzf-lua"] = {
+					fzf_exec = function(_, opts)
+						called = opts.prompt
+					end,
+				}
+				local ok, err = xpcall(function()
+					key(s.bufnr, "b")
+					ctx.wait_for(function()
+						return called ~= nil
+					end, "branch picker did not use fzf-lua", 15000)
+					assert(called:find("Checkout branch", 1, true))
+					local help = table.concat(checkout_lines("doc/lazyvcs.txt"), "\n")
+					assert(
+						help:find("Snacks, fzf-lua, then vim.ui.select", 1, true),
+						"help omits actual branch picker fallback"
+					)
+				end, debug.traceback)
+				for _, name in ipairs(names) do
+					package.loaded[name] = saved[name]
+				end
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_source_control_repeated_refresh_preserves_selection",
+			function()
+				refresh_selection("git", false, true)
+			end,
+		},
+		{
+			"test_source_control_repeated_refresh_respects_movement",
+			function()
+				refresh_selection("git", true, true)
+			end,
+		},
+		{
+			"test_source_control_modal_replacement_preserves_window",
+			function()
+				for _, kind in ipairs({ "confirm", "input" }) do
+					local f = h.make_git_fixture()
+					local calls, cancellations, cancelled = 0, 0, nil
+					local function done()
+						calls = calls + 1
+					end
+					local popup = kind == "confirm" and confirm.open({}, done)
+						or input.open_text({
+							can_generate = true,
+							on_generate = function(_, on_cancel)
+								cancelled = on_cancel
+								return {
+									cancel = function()
+										cancellations = cancellations + 1
+										cancelled()
+									end,
+								}
+							end,
+						}, done)
+					if kind == "input" then
+						popup.generate()
+					end
+					vim.cmd("stopinsert")
+					vim.cmd.edit(vim.fn.fnameescape(f.file))
+					api.nvim_buf_set_lines(0, 0, 1, false, { "unsaved replacement" })
+					local replacement = api.nvim_get_current_buf()
+					local config = api.nvim_win_get_config(popup.winid)
+					local live = popup.owner:is_live()
+					ctx.wait_for(function()
+						return calls > 0
+					end, "replacement did not cancel modal")
+					assert(api.nvim_win_is_valid(popup.winid), kind .. " cleanup closed replacement window")
+					assert(not live, "replaced modal still claimed window ownership")
+					assert(api.nvim_win_get_buf(popup.winid) == replacement and vim.bo[replacement].modified)
+					assert(api.nvim_get_current_win() == popup.winid, "replacement cleanup stole focus")
+					assert(
+						vim.deep_equal(api.nvim_win_get_config(popup.winid), config),
+						"cancellation changed replacement footer"
+					)
+					popup.close()
+					assert(calls == 1 and cancellations == (kind == "input" and 1 or 0))
+					api.nvim_win_close(popup.winid, true)
+				end
+			end,
+		},
+		{
+			"test_source_control_menu_refresh_restores_details_and_selection",
+			function()
+				local f = h.make_git_fixture()
+				local s = open(f.root)
+				details(s, f.root)
+				select_node(s, function(n)
+					return n.type == "section"
+				end)
+				key(s.bufnr, "l")
+				local target = select_node(s, function(n)
+					return n.type == "file"
+				end).id
+				local picker = require("lazyvcs.picker")
+				local original = picker.select
+				---@diagnostic disable-next-line: duplicate-set-field
+				picker.select = function(items, _, done)
+					for _, item in ipairs(items) do
+						if item.action == "refresh" then
+							return done(item)
+						end
+					end
+					error("Refresh action missing")
+				end
+				local ok, err = pcall(key, s.bufnr, "s")
+				picker.select = original
+				assert(ok, err)
+				settled(s)
+				ctx.wait_for(function()
+					return not next(s.lazyvcs_restore_details or {}) and not next(s.lazyvcs_loading_details or {})
+				end, "details not restored")
+				native.render(s)
+				assert(s.lazyvcs_repo_cache[f.root].details_loaded, "menu refresh discarded loaded changes")
+				assert(selected(s).id == target, "menu refresh lost file selection")
+			end,
+		},
+		{
+			"test_source_control_hidden_single_repo_keeps_recovery_selector",
+			function()
+				local f = h.make_git_fixture()
+				local s = open(f.root)
+				select_node(s, function(n)
+					return n.type == "repo_changes"
+				end)
+				key(s.bufnr, " ")
+				assert(s.lazyvcs_repo_visibility_overrides[f.root] == false)
+				native.close()
+				s = open(f.root)
+				select_node(s, function(n)
+					return n.type == "repo_selector"
+				end)
+				key(s.bufnr, "<Tab>")
+				assert(s.lazyvcs_repo_visibility[f.root], "selector did not restore hidden repository")
+			end,
+		},
 		{
 			"test_source_control_input_preserves_multiline_paste",
 			function()

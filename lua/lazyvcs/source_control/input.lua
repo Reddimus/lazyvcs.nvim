@@ -30,8 +30,8 @@ local function footer_text(opts, generating)
 	return " " .. table.concat(parts, " • ") .. " "
 end
 
-local function set_footer(winid, opts, generating)
-	if not util.win_is_valid(winid) then
+local function set_footer(winid, bufnr, opts, generating)
+	if not util.win_is_valid(winid) or vim.api.nvim_win_get_buf(winid) ~= bufnr then
 		return
 	end
 	pcall(vim.api.nvim_win_set_config, winid, {
@@ -84,7 +84,7 @@ function M.open_text(opts, on_submit)
 	util.set_win_option(winid, "winblend", 0)
 	util.set_win_option(winid, "winhighlight", "Normal:Normal,FloatBorder:FloatBorder,FloatTitle:FloatTitle")
 	local function resize()
-		if util.win_is_valid(winid) and util.buf_is_valid(bufnr) then
+		if util.win_is_valid(winid) and util.buf_is_valid(bufnr) and vim.api.nvim_win_get_buf(winid) == bufnr then
 			vim.api.nvim_win_set_height(
 				winid,
 				math.min(vim.api.nvim_buf_line_count(bufnr), math.max(1, math.floor(vim.o.lines * 0.4)))
@@ -165,7 +165,7 @@ function M.open_text(opts, on_submit)
 		generating = true
 		generation = generation + 1
 		local current_generation = generation
-		set_footer(winid, opts, true)
+		set_footer(winid, bufnr, opts, true)
 		local completed = false
 		local function cancelled()
 			if current_generation ~= generation then
@@ -175,7 +175,7 @@ function M.open_text(opts, on_submit)
 			generation = generation + 1
 			generating = false
 			owner:set_task(nil)
-			set_footer(winid, opts, false)
+			set_footer(winid, bufnr, opts, false)
 		end
 		local task = opts.on_generate(
 			util.safe_callback(function(message, err)
@@ -185,7 +185,7 @@ function M.open_text(opts, on_submit)
 				completed = true
 				owner:set_task(nil)
 				generating = false
-				set_footer(winid, opts, false)
+				set_footer(winid, bufnr, opts, false)
 				if err then
 					util.notify(err, vim.log.levels.WARN)
 					return

@@ -1,4 +1,5 @@
 local runtime = require("lazyvcs.process_runtime")
+local util = require("lazyvcs.util")
 
 local M = {}
 local scopes = setmetatable({}, { __mode = "k" })
@@ -42,6 +43,9 @@ function M.new_scope()
 				curl[name] = function(url, opts)
 					local scope, files = pending_scope, pending_files
 					pending_scope, pending_files = nil, nil
+					if scope and scope.terminal then
+						error("cancelled", 0)
+					end
 					if files then
 						files:adopt(opts)
 						opts = vim.tbl_extend("force", {}, opts or {}, { dump = { "-D", files:header() } })
@@ -69,6 +73,9 @@ function M.new_scope()
 			-- Keep the handoff synchronous within the leaf and clear it even if
 			-- request serialization throws before reaching curl.
 			local function leaf(scope, url, opts, callback)
+				if scope.terminal then
+					return callback(nil, "cancelled")
+				end
 				local files = require("lazyvcs.source_control.copilotchat_files").new()
 				local tmpname, tempname = os.tmpname, vim.fn.tempname
 				---@diagnostic disable-next-line: duplicate-set-field
@@ -94,9 +101,9 @@ function M.new_scope()
 				-- Plenary resumes chained requests in a libuv callback. The leaf
 				-- allocates temporary files through Vimscript, so enter the main loop first.
 				if vim.in_fast_event() then
-					vim.schedule(function()
+					vim.schedule(util.safe_callback(function()
 						leaf(scope, url, opts, callback)
-					end)
+					end))
 				else
 					return leaf(scope, url, opts, callback)
 				end

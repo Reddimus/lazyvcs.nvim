@@ -67,9 +67,14 @@ Native hunks preserve supported text encodings and EOF state and refuse symlink
 bases. See `:help lazyvcs-notes` for limits and undo behavior.
 
 Press `<Tab>` after `:LazyVCS ` for command completion. In the sidebar, `C`
-compares a repository against a base. `.` opens repository actions, `c` commits,
-`b` switches branches or SVN targets, `R` refreshes, `?` shows help, and `q`
-closes it.
+compares a repository against a base. `s` invokes Sync: the default `picker`
+setting opens actions, while `direct` synchronizes Git or updates SVN, subject
+to mutation confirmation. `.` always opens repository actions. `c` commits, `b`
+switches branches or SVN targets, `R` refreshes, `?` shows help, and `q` closes
+it.
+
+After a failed repository action, press `.` to open repository actions and
+choose **Show Last Error** to read the complete diagnostics.
 
 ## Compare a branch
 

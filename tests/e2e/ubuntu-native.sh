@@ -122,15 +122,19 @@ def ex(command):
 
 def wait_file(name):
     path = artifact_dir / name
-    for _ in range(80):
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline:
         if path.exists():
-            return path.read_text(encoding="utf-8").strip()
+            value = path.read_text(encoding="utf-8").strip()
+            if value:
+                return value
         time.sleep(0.1)
     raise AssertionError(f"missing artifact {path}")
 
 # Await the scheduled width change after a keypress. Record the actual width on timeout
 # for a useful assertion.
 def write_width(name, settle="~= nil"):
+    (artifact_dir / name).unlink(missing_ok=True)
     ex(
         "lua local function w() "
         "local s = require('lazyvcs.source_control.native')._state(); "

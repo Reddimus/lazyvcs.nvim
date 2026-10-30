@@ -53,16 +53,18 @@ return function(ctx)
 			end
 		end, "discard did not settle", 15000)
 	end
-	local function refusal_names(prefix)
+	local function refusal_names(root, prefix)
 		local message
 		---@diagnostic disable-next-line: duplicate-set-field
 		util.notify = function(text)
 			message = text
 		end
 		return function()
+			assert(message and vim.fn.strdisplaywidth(message) < vim.o.columns, "refusal summary exceeds one row")
+			local failure = assert(session.get_repo_job(root)).error
 			assert(
-				message and message:find("Tracked Discard refuses nested repository ancestor at " .. prefix, 1, true),
-				"refusal did not name ancestor " .. prefix .. ": " .. tostring(message)
+				failure and failure:find("Tracked Discard refuses nested repository ancestor at " .. prefix, 1, true),
+				"refusal did not name ancestor " .. prefix .. ": " .. tostring(failure)
 			)
 		end
 	end
@@ -419,7 +421,7 @@ return function(ctx)
 			end
 		end
 		local before = h.exec({ "git", "ls-files", "--stage" }, f.root)
-		local named = refusal_names(parent)
+		local named = refusal_names(f.root, parent)
 		local start, ran = util.system_start, false
 		---@diagnostic disable-next-line: duplicate-set-field
 		util.system_start = function(args, ...)
@@ -450,7 +452,7 @@ return function(ctx)
 		assert(node.extra.status:sub(1, 1) == "R", "fixture did not select rename")
 		local marker = f.root .. (source and "/outer/.git" or "/destination/.git")
 		h.write_file(marker, "gitdir: private metadata\n")
-		local named = refusal_names(source and "outer" or "destination")
+		local named = refusal_names(f.root, source and "outer" or "destination")
 		local start, ran = util.system_start, false
 		---@diagnostic disable-next-line: duplicate-set-field
 		util.system_start = function(args, ...)

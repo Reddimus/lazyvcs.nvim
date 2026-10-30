@@ -5,6 +5,34 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_core_confirm_displays_complete_long_prompt",
+			function()
+				local confirm = require("lazyvcs.source_control.confirm")
+				local prompt = "Discard "
+					.. string.rep("same-prefix-", 10)
+					.. "important"
+					.. string.rep("-suffix", 20)
+					.. "?"
+				local result
+				local popup = confirm.open({ prompt = prompt }, function(value)
+					result = value
+				end)
+				local text = table.concat(api.nvim_buf_get_lines(popup.bufnr, 0, -1, false), "\n")
+				local visible = text:gsub("\n", "")
+				local complete = visible:find(prompt, 1, true)
+				api.nvim_win_set_cursor(popup.winid, { 1, 0 })
+				feed("<CR>")
+				popup.close()
+				assert(complete, "complete target prompt is absent from scrollable popup content")
+				assert(result == "cancel", "prompt row selected a destructive action")
+				popup = confirm.open({ prompt = prompt }, function(value)
+					result = value
+				end)
+				feed("2")
+				assert(result == "confirm_session", "numeric choices changed after adding prompt rows")
+			end,
+		},
+		{
 			"test_core_confirm_uses_highlighted_cursor_row",
 			function()
 				local confirm = require("lazyvcs.source_control.confirm")
@@ -12,7 +40,7 @@ return function(ctx)
 					{ "G<CR>", "cancel" },
 					{ "jG<CR>", "cancel" },
 					{ "Gk<CR>", "confirm_session" },
-					{ "Ggg<CR>", "confirm" },
+					{ "Gggjj<CR>", "confirm" },
 					{ "1", "confirm" },
 					{ "2", "confirm_session" },
 					{ "3", "cancel" },
@@ -30,7 +58,7 @@ return function(ctx)
 				local popup = confirm.open({}, function(choice)
 					result = choice
 				end)
-				api.nvim_win_set_cursor(popup.winid, { 3, 0 })
+				api.nvim_win_set_cursor(popup.winid, { api.nvim_buf_line_count(popup.bufnr), 0 })
 				feed("<CR>")
 				assert(result == "cancel", "mouse-style cursor selection must control Enter")
 

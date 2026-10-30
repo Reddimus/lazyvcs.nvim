@@ -968,6 +968,16 @@ vim.cmd("qa!")
 			function()
 				local original = vim.system
 				local captured = {}
+				local function env_value(env, key)
+					if env[key] then
+						return env[key]
+					end
+					for _, entry in ipairs(env) do
+						if entry:sub(1, #key + 1) == key .. "=" then
+							return entry:sub(#key + 2)
+						end
+					end
+				end
 				vim.system = function(args, opts, cb)
 					captured[#captured + 1] = { args = vim.deepcopy(args), opts = opts }
 					local result = { code = 0, stdout = "", stderr = "" }
@@ -992,10 +1002,16 @@ vim.cmd("qa!")
 					util.system_result({ "svn", "info", "--non-interactive", "file@" })
 					assert(#captured[2].args == 4, "duplicate non-interactive flag")
 					util.system_start({ "git", "status" }, { env = { CUSTOM = "yes" } }, function() end)
-					assert(captured[3].opts.env.GIT_TERMINAL_PROMPT == "0", "Git terminal prompts remain enabled")
-					assert(captured[3].opts.env.CUSTOM == "yes")
+					assert(
+						env_value(captured[3].opts.env, "GIT_TERMINAL_PROMPT") == "0",
+						"Git terminal prompts remain enabled"
+					)
+					assert(env_value(captured[3].opts.env, "CUSTOM") == "yes")
 					util.system_result({ "git", "status" }, { env = { GIT_TERMINAL_PROMPT = "1" } })
-					assert(captured[4].opts.env.GIT_TERMINAL_PROMPT == "1", "explicit environment overridden")
+					assert(
+						env_value(captured[4].opts.env, "GIT_TERMINAL_PROMPT") == "1",
+						"explicit environment overridden"
+					)
 				end)
 				vim.system = original
 				vim.wait(20)

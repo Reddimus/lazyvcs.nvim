@@ -12,39 +12,59 @@ local options = {
 	{ key = "3", label = "Cancel", action = "cancel" },
 }
 
-local function clamp(value, min, max)
-	return math.max(min, math.min(max, value))
-end
-
-local function popup_size(prompt)
-	local width = vim.fn.strdisplaywidth(prompt or "")
+local function popup_content(prompt)
+	local max_width = math.max(1, vim.o.columns - 4)
+	local content_width = vim.fn.strdisplaywidth(prompt)
 	for _, item in ipairs(options) do
-		width = math.max(width, vim.fn.strdisplaywidth(item.key .. ". " .. item.label))
+		content_width = math.max(content_width, vim.fn.strdisplaywidth(item.key .. ". " .. item.label))
 	end
-	local max_width = math.max(10, vim.o.columns - 4)
-	local min_width = math.min(36, max_width)
-	width = clamp(width + 6, min_width, max_width)
-	return {
-		width = width,
-		height = #options,
-		row = math.max(0, math.floor((vim.o.lines - #options) / 2) - 2),
-		col = math.max(0, math.floor((vim.o.columns - width) / 2)),
-	}
+	local width = math.min(math.max(36, content_width + 6), max_width)
+	local lines, option_rows, first_option = {}, {}, nil
+	local function append(text, index)
+		local line, cells = "", 0
+		for _, char in ipairs(vim.fn.split(text, "\\zs")) do
+			local char_width = vim.fn.strdisplaywidth(char)
+			if cells + char_width > width and line ~= "" then
+				lines[#lines + 1] = line
+				option_rows[#lines] = index
+				line, cells = "", 0
+			end
+			line, cells = line .. char, cells + char_width
+		end
+		lines[#lines + 1] = line
+		option_rows[#lines] = index
+	end
+	append(prompt)
+	lines[#lines + 1] = ""
+	for index, item in ipairs(options) do
+		first_option = first_option or (#lines + 1)
+		append(item.key .. ". " .. item.label, index)
+	end
+	local height = math.min(#lines, math.max(1, vim.o.lines - 6))
+	return lines,
+		option_rows,
+		first_option,
+		{
+			width = width,
+			height = height,
+			row = math.max(0, math.floor((vim.o.lines - height) / 2) - 1),
+			col = math.max(0, math.floor((vim.o.columns - width) / 2)),
+		}
 end
 
 function M.open(opts, on_choice)
 	vim.cmd("stopinsert")
 	opts = opts or {}
-	local prompt = opts.prompt or "Confirm action?"
+	local prompt = vim.fn.strtrans(opts.prompt or "Confirm action?")
 	local previous_win = vim.api.nvim_get_current_win()
 	local previous_cursor = vim.api.nvim_win_is_valid(previous_win) and vim.api.nvim_win_get_cursor(previous_win) or nil
 	local bufnr = vim.api.nvim_create_buf(false, true)
-	local size = popup_size(prompt)
+	local lines, option_rows, first_option, size = popup_content(prompt)
 	local winid = vim.api.nvim_open_win(bufnr, true, {
 		relative = "editor",
 		style = "minimal",
 		border = "rounded",
-		title = " " .. prompt .. " ",
+		title = " Confirm ",
 		title_pos = "center",
 		row = size.row,
 		col = size.col,
@@ -63,24 +83,13 @@ function M.open(opts, on_choice)
 	util.set_win_option(winid, "signcolumn", "no")
 	util.set_win_option(winid, "foldcolumn", "0")
 	util.set_win_option(winid, "foldenable", false)
-	util.set_win_option(winid, "wrap", false)
+	util.set_win_option(winid, "wrap", true)
 	util.set_win_option(winid, "winhighlight", "Normal:NormalFloat,FloatBorder:FloatBorder,CursorLine:Visual")
 
-	local function render()
-		if not vim.api.nvim_buf_is_valid(bufnr) then
-			return
-		end
-		local lines = {}
-		for _, item in ipairs(options) do
-			lines[#lines + 1] = item.key .. ". " .. item.label
-		end
-		vim.bo[bufnr].modifiable = true
-		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-		vim.bo[bufnr].modifiable = false
-		if vim.api.nvim_win_is_valid(winid) then
-			vim.api.nvim_win_set_cursor(winid, { 1, 0 })
-		end
-	end
+	vim.bo[bufnr].modifiable = true
+	vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+	vim.bo[bufnr].modifiable = false
+	vim.api.nvim_win_set_cursor(winid, { #lines <= size.height and first_option or 1, 0 })
 
 	local owner = modal.new({
 		bufnr = bufnr,
@@ -111,18 +120,27 @@ function M.open(opts, on_choice)
 			return nil
 		end
 		local row = vim.api.nvim_win_get_cursor(winid)[1]
-		return options[row] and row or nil
+		return option_rows[row]
 	end
 
 	local function move(delta)
-		local row = selection()
-		if not row then
-			return owner:finish("cancel")
+		if owner:is_live() then
+			local row = vim.api.nvim_win_get_cursor(winid)[1]
+			vim.api.nvim_win_set_cursor(winid, { math.max(1, math.min(#lines, row + delta)), 0 })
 		end
-		vim.api.nvim_win_set_cursor(winid, { ((row - 1 + delta) % #options) + 1, 0 })
 	end
 
 	local map_opts = { buffer = bufnr, nowait = true, silent = true }
+	for _, lhs in ipairs({ "j", "<Down>" }) do
+		compat.keymap_set("n", lhs, function()
+			move(1)
+		end, map_opts)
+	end
+	for _, lhs in ipairs({ "k", "<Up>" }) do
+		compat.keymap_set("n", lhs, function()
+			move(-1)
+		end, map_opts)
+	end
 	for index, item in ipairs(options) do
 		compat.keymap_set("n", item.key, function()
 			choose(index)
@@ -131,18 +149,6 @@ function M.open(opts, on_choice)
 	compat.keymap_set("n", "<CR>", function()
 		choose(selection())
 	end, map_opts)
-	compat.keymap_set("n", "j", function()
-		move(1)
-	end, map_opts)
-	compat.keymap_set("n", "<Down>", function()
-		move(1)
-	end, map_opts)
-	compat.keymap_set("n", "k", function()
-		move(-1)
-	end, map_opts)
-	compat.keymap_set("n", "<Up>", function()
-		move(-1)
-	end, map_opts)
 	compat.keymap_set("n", "q", function()
 		owner:finish("cancel")
 	end, map_opts)
@@ -150,7 +156,6 @@ function M.open(opts, on_choice)
 		owner:finish("cancel")
 	end, map_opts)
 
-	render()
 	return {
 		bufnr = bufnr,
 		winid = winid,

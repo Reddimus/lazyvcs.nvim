@@ -856,24 +856,87 @@ function M.changed_files_async(path, on_done, opts)
 	return task
 end
 
+local function revert_index_error(result, relpath)
+	local mode, stage, indexed = result.stdout:match("^(%d+) %x+ (%d)\t([^%z]+)%z$")
+	if result.stdout == "" and not result.stdout_truncated then
+		return "File is untracked; nothing to revert"
+	end
+	if
+		result.stdout_truncated
+		or result.stderr_truncated
+		or stage ~= "0"
+		or indexed ~= relpath
+		or (mode ~= "100644" and mode ~= "100755" and mode ~= "120000")
+	then
+		return "Whole-file Discard requires an exact index file; refresh and retry"
+	end
+end
+
+local function revert_stat_error(stat, err)
+	if err and err ~= "ENOENT" and not tostring(err):match("^ENOENT[: ]") then
+		return "Cannot verify whole-file Discard target: " .. tostring(err)
+	end
+	if not stat and not err then
+		return "Cannot verify whole-file Discard target"
+	end
+	if stat and stat.type ~= "file" and stat.type ~= "link" then
+		return "Whole-file Discard refuses " .. stat.type .. " obstruction; refresh and retry"
+	end
+end
+
+-- Windows lstat also calls junctions links. Only symbolic links are eligible.
+local function revert_link_command(path)
+	return {
+		"powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		"$item = Get-Item -Force -ErrorAction Stop -LiteralPath $env:LAZYVCS_LINK; "
+			.. "'{0}|{1}' -f $item.LinkType, $item.PSIsContainer",
+	}, { LAZYVCS_LINK = path }
+end
+
+local function revert_link_valid(result)
+	local directory = result and util.trim(result.stdout):match("^SymbolicLink|(%a+)$")
+	return result
+		and not result.stdout_truncated
+		and not result.stderr_truncated
+		and (directory == "True" or directory == "False")
+end
+
 function M.revert_file(path)
 	local root, err = get_root(path)
 	if not root then
 		return nil, err or "Not a Git working tree"
 	end
-
 	local relpath, path_err = util.relpath(root, path)
 	if not relpath then
 		return nil, path_err
 	end
-	if not is_tracked(root, relpath) then
-		return nil, "File is untracked; nothing to revert"
+	local result, index_err = util.system(
+		{ "git", "ls-files", "--stage", "-z", "--", relpath },
+		{ cwd = root, text = false }
+	)
+	index_err = result and revert_index_error(result, relpath) or index_err
+	if not result or index_err then
+		return nil, index_err
+	end
+	local stat, stat_err = vim.uv.fs_lstat(path)
+	local refusal = revert_stat_error(stat, stat_err)
+	if refusal then
+		return nil, refusal
+	end
+	if stat and stat.type == "link" and vim.fn.has("win32") == 1 then
+		local command, env = revert_link_command(path)
+		if not revert_link_valid(util.system(command, { cwd = root, env = env })) then
+			return nil, "Whole-file Discard refuses junction or directory link obstruction"
+		end
 	end
 	local current, current_err = util.relpath(root, path)
 	if current ~= relpath or util.canonical_path(root) ~= root then
 		return nil, current_err or "Repository entry changed before discard; retry the action"
 	end
-	return util.system({ "git", "checkout", "--", relpath }, { cwd = root })
+	return util.system({ "git", "restore", "--worktree", "--no-recurse-submodules", "--", relpath }, { cwd = root })
 end
 
 function M.revert_file_async(path, on_done, opts)
@@ -890,35 +953,66 @@ function M.revert_file_async(path, on_done, opts)
 		if not relpath then
 			return task:finish(nil, path_err)
 		end
-		task:add(process.start({ "git", "ls-files", "--error-unmatch", "--", relpath }, {
-			cwd = info.root,
-			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-		}, function(_, tracked_err, raw)
+		local function restore()
 			if not task:is_active() then
 				return
-			end
-			if tracked_err then
-				if raw and raw.code == 1 then
-					return task:finish(nil, "File is untracked; nothing to revert")
-				end
-				return task:finish(nil, tracked_err)
 			end
 			local current, current_err = util.relpath(info.root, path)
 			if current ~= relpath or util.canonical_path(info.root) ~= info.root then
 				return task:finish(nil, current_err or "Repository entry changed before discard; retry the action")
 			end
 			local start = opts.start or util.system_start
-			task:add(start({ "git", "restore", "--worktree", "--", relpath }, {
+			task:add(start({ "git", "restore", "--worktree", "--no-recurse-submodules", "--", relpath }, {
 				cwd = info.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 				preserve_on_shutdown = true,
 				scope = "mutation",
 			}, function(result, restore_err)
-				if not result then
-					return task:finish(nil, restore_err)
-				end
-				task:finish(result)
+				task:finish(result, restore_err)
 			end))
+		end
+		task:add(process.start({ "git", "ls-files", "--stage", "-z", "--", relpath }, {
+			cwd = info.root,
+			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+		}, function(result, index_err)
+			if not task:is_active() then
+				return
+			end
+			index_err = result and revert_index_error(result, relpath) or index_err
+			if index_err or not result then
+				return task:finish(nil, index_err)
+			end
+			local request, submit_err = vim.uv.fs_lstat(path, function(stat_err, stat)
+				vim.schedule(util.safe_callback(function()
+					if not task:is_active() then
+						return
+					end
+					local refusal = revert_stat_error(stat, stat_err)
+					if refusal then
+						return task:finish(nil, refusal)
+					end
+					if stat and stat.type == "link" and vim.fn.has("win32") == 1 then
+						local command, env = revert_link_command(path)
+						return task:add(process.start(command, {
+							cwd = info.root,
+							env = env,
+							timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+						}, function(link)
+							if not revert_link_valid(link) then
+								return task:finish(
+									nil,
+									"Whole-file Discard refuses junction or directory link obstruction"
+								)
+							end
+							restore()
+						end))
+					end
+					restore()
+				end))
+			end)
+			if not request then
+				return task:finish(nil, "Cannot verify whole-file Discard target: " .. tostring(submit_err))
+			end
 		end))
 	end, opts))
 	return task
