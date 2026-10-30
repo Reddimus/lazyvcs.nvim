@@ -12,7 +12,12 @@ return function(ctx)
 				for _, group in ipairs(names) do
 					definitions[group] = api.nvim_get_hl(0, { name = group, create = false })
 				end
-				local ok, err = xpcall(fn, debug.traceback)
+				local ok, err = xpcall(fn, function(e)
+					if type(e) == "table" then
+						return e
+					end
+					return debug.traceback(tostring(e), 2)
+				end)
 				for _, group in ipairs(names) do
 					api.nvim_set_hl(0, group, definitions[group])
 				end
@@ -47,10 +52,15 @@ return function(ctx)
 	local function color(win)
 		vim.cmd.redraw()
 		local p = vim.fn.screenpos(win, 1, 1)
+		-- 0.11 can omit the implicit Normal foreground from cell attributes.
 		return api.nvim__inspect_cell(1, p.row - 1, p.col - 1)[2].foreground
+			or api.nvim_get_hl(0, { name = "Normal" }).fg
 	end
 
 	add("release_restores_inherited_namespace", function()
+		if not vim.version.ge(vim.version(), { 0, 11, 7 }) then
+			error({ lazyvcs_skip = "Namespace inheritance restoration requires Neovim 0.11.7 or newer" })
+		end
 		local win = sample()
 		local before = api.nvim_get_hl_ns({ winid = win })
 		assert(before == -1, "fixture must inherit global namespace")
@@ -141,7 +151,9 @@ return function(ctx)
 			require("lazyvcs").close()
 			assert(during == before and color(win) == before, "self-link changed rendered color")
 		end
-		api.nvim_win_set_hl_ns(win, -1)
+		-- Discard the custom namespace without disabling later native overlays on 0.11.0.
+		vim.cmd.new()
+		api.nvim_win_close(win, true)
 	end)
 	return cases
 end

@@ -10,8 +10,10 @@ and this project adheres to
 
 ### Fixed
 
-- Revert and navigate the hunk under the invoking cursor in splits of a live diff.
-- Keep a completed base refresh when returning from a pending live-diff transfer.
+- Revert and navigate the hunk under the invoking cursor in splits of a live
+  diff.
+- Keep a completed base refresh when returning from a pending live-diff
+  transfer.
 - Mirror wrapping options in the base pane after switching live-diff files.
 - Revert Git live hunks against the displayed index. Delegate to gitsigns only
   when its index base and complete hunk match the validated comparison.

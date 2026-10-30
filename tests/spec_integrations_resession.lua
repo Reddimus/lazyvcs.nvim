@@ -106,6 +106,9 @@ return function(ctx)
 			vim.cmd("silent! only!")
 			vim.cmd("diffoff")
 			util.set_win_option(api.nvim_get_current_win(), "winbar", "")
+			-- Discard restored namespaces that disable later native overlays on 0.11.0.
+			vim.cmd("tabnew")
+			vim.cmd("silent! tabonly!")
 			assert(ok, err)
 			assert(cleanup_ok, cleanup_err)
 		end

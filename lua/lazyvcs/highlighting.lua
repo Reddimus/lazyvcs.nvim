@@ -322,7 +322,8 @@ function M.release(win)
 			local restore = owned(win, state)
 			local user = user_mappings(util.get_win_option(win, "winhighlight"), state)
 			write_mapping(win, user)
-			if restore and user == "" then
+			-- Older runtimes stop activating native overlays after restoring inheritance.
+			if restore and user == "" and vim.version.ge(vim.version(), { 0, 11, 7 }) then
 				api.nvim_win_set_hl_ns(win, state.previous)
 			end
 		end

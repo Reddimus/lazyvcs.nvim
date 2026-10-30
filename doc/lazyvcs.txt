@@ -920,6 +920,8 @@ while the window is managed. New splits and floats keep only your mappings.
 If a native overlay does not activate on Neovim 0.11, LazyVCS uses an explicitly
 activated reusable namespace. Empty mappings restore namespace inheritance on
 release. User mapping changes and later external namespace owners are preserved.
+On Neovim older than 0.11.7, a released diff window keeps the explicit window
+namespace instead of returning to inheritance.
 Explicit custom highlight namespaces use a reusable namespace that resolves
 links through the source theme; closing restores the previous namespace.
 On runtimes with link_global support, LazyVCS keeps a window's source namespace
