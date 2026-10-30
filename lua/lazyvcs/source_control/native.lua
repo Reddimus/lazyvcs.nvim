@@ -184,18 +184,21 @@ local function compose_right_meta(primary, sync, counts, max_width)
 	return fit_right_text(primary, max_width, 8) or ""
 end
 
--- Cancel discovery and clear known specs. Advance the generation so late callbacks cannot
--- write into the reset state.
-local function reset_discovery(state)
+-- Advance the generation so late callbacks cannot write into the reset state. A refresh
+-- keeps the last completed specs until their replacement arrives; a path change clears them.
+local function reset_discovery(state, keep_specs)
 	if state.lazyvcs_discovery_handle and type(state.lazyvcs_discovery_handle.kill) == "function" then
 		pcall(state.lazyvcs_discovery_handle.kill, state.lazyvcs_discovery_handle, 15)
 	end
 	state.lazyvcs_discovery_handle = nil
 	state.lazyvcs_discovery_generation = (state.lazyvcs_discovery_generation or 0) + 1
 	state.lazyvcs_discovering = false
-	state.lazyvcs_repo_specs = nil
+	if not keep_specs then
+		state.lazyvcs_repo_specs = nil
+	end
 	state.lazyvcs_discovery_error = nil
 	state.lazyvcs_discovery_incomplete = nil
+	state.lazyvcs_discovery_cancelled = nil
 end
 
 local function remember_details(state, root)
@@ -222,6 +225,8 @@ local function reset_for_path(state, path)
 	ops.cancel_diff_target(state, "source path changed")
 	reset_discovery(state)
 	state.lazyvcs_restore_details = {}
+	state.lazyvcs_cancelled_summaries = {}
+	state.lazyvcs_refresh_view = nil
 	state.lazyvcs_repo_cache = {}
 	state.lazyvcs_loading_details = {}
 	state.lazyvcs_hydration_generation = (state.lazyvcs_hydration_generation or 0) + 1
@@ -232,21 +237,20 @@ local function reset_for_path(state, path)
 	state.lazyvcs_repo_root = path
 end
 
----Begin asynchronous repository discovery if the state does not already know
----its specs.
+---Begin asynchronous repository discovery if specs are unknown or rediscovery is requested.
 ---
 ---@return boolean pending `true` when discovery is in flight, so the caller
 ---should render a loading state and leave `M.navigate` to the callback;
 ---`false` when the specs are already known and the caller should navigate now.
-local function start_discovery(state)
+local function start_discovery(state, rediscover)
 	if state.lazyvcs_discovering then
 		return true
 	end
-	if state.lazyvcs_repo_specs ~= nil then
+	if state.lazyvcs_repo_specs ~= nil and not rediscover then
 		return false
 	end
 	state.lazyvcs_discovering = true
-	state.lazyvcs_repo_specs = {}
+	state.lazyvcs_repo_specs = state.lazyvcs_repo_specs or {}
 	state.lazyvcs_discovery_error = nil
 	state.lazyvcs_discovery_incomplete = nil
 	state.lazyvcs_discovery_generation = (state.lazyvcs_discovery_generation or 0) + 1
@@ -606,8 +610,14 @@ local function resume_details(state)
 end
 
 invalidate_hydration = function(state, repo_root, reason, defer_cancel)
-	if reason == "source restarted" then
-		remember_details(state)
+	if reason == "source restarted" or reason == "source refreshed" then
+		state.lazyvcs_refresh_view = { saved = capture_view(state), expected = capture_view(state) }
+		state.lazyvcs_cancelled_summaries = {}
+		if reason == "source restarted" then
+			remember_details(state)
+		end
+	else
+		state.lazyvcs_refresh_view = nil
 	end
 	state.lazyvcs_hydration_generation = (state.lazyvcs_hydration_generation or 0) + 1
 	local roots = {}
@@ -621,7 +631,12 @@ invalidate_hydration = function(state, repo_root, reason, defer_cancel)
 			roots[root] = true
 		end
 	end
+	state.lazyvcs_cancelled_summaries = state.lazyvcs_cancelled_summaries or {}
 	for root in pairs(roots) do
+		state.lazyvcs_cancelled_summaries[root] = reason == "user" or nil
+		if reason == "user" and state.lazyvcs_restore_details then
+			state.lazyvcs_restore_details[root] = nil
+		end
 		if state.lazyvcs_reload_after_summary then
 			state.lazyvcs_reload_after_summary[root] = nil
 		end
@@ -673,7 +688,7 @@ local function start_summary_hydration(state, remote_refresh)
 	local queue = {}
 	for _, repo in ipairs(specs) do
 		local cached = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[repo.root] or nil
-		if not (cached and cached.loading_summary) then
+		if not (state.lazyvcs_cancelled_summaries or {})[repo.root] and not (cached and cached.loading_summary) then
 			local refresh = remote_refresh == true
 			if remote_refresh == "auto" then
 				refresh = remote_admission.claim(
@@ -880,13 +895,17 @@ local function setup_buffer(state)
 	end, "Open lazyvcs node")
 	bind(bufnr, "h", function()
 		local node = current_node(state)
+		if node and node.type == "repo_changes" then
+			return ops.collapse_repo(state, node)
+		end
 		if node and node_can_expand(node) and state.lazyvcs_expanded[node.id] then
 			toggle_node(state)
 		end
 	end, "Close lazyvcs node")
 	bind(bufnr, "?", function()
 		require("lazyvcs.util").show_text("Source control help", {
-			"Enter/l: open or expand   h: collapse   q: close",
+			"Enter/l: open or expand; toggle Changes repository rows",
+			"h: collapse   q: close",
 			"Space/Tab: repository visibility   H: show clean repositories",
 			"R: refresh   X: cancel repository operation",
 			"s/.: repository actions   b: switch branch or target",
@@ -1017,6 +1036,14 @@ local function render(state)
 		return
 	end
 	local saved_view = capture_view(state)
+	local pending = state.lazyvcs_refresh_view
+	if pending and not vim.deep_equal(saved_view, pending.expected) then
+		state.lazyvcs_refresh_view = nil
+		pending = nil
+	end
+	if pending then
+		saved_view = pending.saved
+	end
 	state.lazyvcs_commit_drafts = state.lazyvcs_commit_drafts or {}
 	local root = model.collect(state, {
 		root = state.path,
@@ -1058,6 +1085,21 @@ local function render(state)
 		end
 	end
 	restore_view(state, saved_view)
+	if pending then
+		if
+			line_for_node_id(state, saved_view and saved_view.node_id)
+			or (
+				not state.lazyvcs_discovering
+				and not state.lazyvcs_hydration_active
+				and not next(state.lazyvcs_restore_details or {})
+				and not next(state.lazyvcs_loading_details or {})
+			)
+		then
+			state.lazyvcs_refresh_view = nil
+		else
+			pending.expected = capture_view(state)
+		end
+	end
 	if owns_window(state) then
 		state.lazyvcs_rendered_width = vim.api.nvim_win_get_width(state.winid)
 		state.lazyvcs_rendered_columns = vim.o.columns
@@ -1157,6 +1199,7 @@ local function prepare_state(path)
 		state.lazyvcs_auto_expand_width = config.get().source_control.auto_expand_width
 	end
 	state.lazyvcs_render = M.navigate
+	state.lazyvcs_repaint = M.render
 	state.lazyvcs_invalidate_hydration = invalidate_hydration
 	state.lazyvcs_repository_changed = M.repository_changed
 	state.lazyvcs_window_exists = function(current)
@@ -1198,10 +1241,15 @@ function M.open(opts)
 	opts = opts or {}
 	local state = prepare_state(opts.path or opts.root)
 	ensure_window(state, { focus = opts.focus })
+	state.lazyvcs_cancelled_summaries = {}
+	local rediscover = state.lazyvcs_discovery_cancelled
+	if rediscover then
+		reset_discovery(state, true)
+	end
 	state.lazyvcs_remote_refresh = should_remote_refresh(state)
 	-- Start discovery before painting. While pending, render without consuming remote-
 	-- refresh intent; navigate once specs arrive.
-	if start_discovery(state) then
+	if start_discovery(state, rediscover) then
 		M.render(state)
 	else
 		M.navigate(state)
@@ -1296,8 +1344,8 @@ function M.refresh(remote_refresh)
 	persist.save_state(state)
 	-- Rediscover on refresh so repositories created or removed while the sidebar was open
 	-- are reflected.
-	reset_discovery(state)
-	if start_discovery(state) then
+	reset_discovery(state, true)
+	if start_discovery(state, true) then
 		M.render(state)
 	else
 		M.navigate(state)
@@ -1311,7 +1359,23 @@ function M.cancel(path)
 	end
 	local normalized = path and path ~= "" and normalize(vim.fn.fnamemodify(path, ":p")) or nil
 	local state = states[tabid()]
-	local hydration_count = state and invalidate_hydration(state, normalized, "user") or 0
+	local hydration_count = 0
+	for _, current in pairs(states) do
+		if not normalized or not state or current == state then
+			hydration_count = hydration_count + invalidate_hydration(current, normalized, "user")
+			if not normalized or util.relative_literal_path(normalized, current.path) ~= nil then
+				local handle = current.lazyvcs_discovery_handle
+				current.lazyvcs_discovery_generation = (current.lazyvcs_discovery_generation or 0) + 1
+				current.lazyvcs_discovery_handle = nil
+				current.lazyvcs_discovery_cancelled = current.lazyvcs_discovering or current.lazyvcs_discovery_cancelled
+				current.lazyvcs_discovering = false
+				current.lazyvcs_remote_refresh = nil
+				if handle and type(handle.kill) == "function" then
+					pcall(handle.kill, handle, 15)
+				end
+			end
+		end
+	end
 	local count
 	if normalized and state then
 		count = ops.cancel(normalized, { owner = state })
@@ -1319,18 +1383,20 @@ function M.cancel(path)
 	else
 		count = ops.cancel(normalized, { all_owners = true })
 	end
-	if state then
-		state.lazyvcs_loading_details = state.lazyvcs_loading_details or {}
-		for root, repo in pairs(state.lazyvcs_repo_cache or {}) do
-			if not normalized or normalize(root) == normalized then
-				state.lazyvcs_loading_details[root] = nil
-				repo.loading_details = false
+	for _, current in pairs(states) do
+		if not normalized or not state or current == state then
+			current.lazyvcs_loading_details = current.lazyvcs_loading_details or {}
+			for root, repo in pairs(current.lazyvcs_repo_cache or {}) do
+				if not normalized or normalize(root) == normalized then
+					current.lazyvcs_loading_details[root] = nil
+					repo.loading_details = false
+				end
 			end
+			if not normalized or current.lazyvcs_diff_target_root == normalized then
+				ops.cancel_diff_target(current, "user")
+			end
+			M.render(current)
 		end
-		if not normalized or state.lazyvcs_diff_target_root == normalized then
-			ops.cancel_diff_target(state, "user")
-		end
-		M.navigate(state)
 	end
 	return count + hydration_count
 end
@@ -1344,6 +1410,9 @@ function M.dispatch(action)
 	if action == "open" then
 		if not node then
 			return
+		end
+		if node.type == "message" and node.extra and node.extra.action == "retry_repo" then
+			return ops.retry_repo(state, node)
 		end
 		if node.type == "message" and node.extra and node.extra.action == "load_repo_details" then
 			ops.load_repo_details(state, node.extra.repo_root)

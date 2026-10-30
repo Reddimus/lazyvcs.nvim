@@ -207,12 +207,12 @@ return function(ctx)
 				return warnings == 2
 			end, "collapsed repository did not retry", 1000)
 			select(s, function(node)
-				return node.name == "Press <CR> to load changes"
+				return node.extra and node.extra.action == "retry_repo" and node.name:find("Status failed:", 1, true)
 			end)
 			key(s, "<CR>")
 			ctx.wait_for(function()
 				return warnings == 3
-			end, "load prompt did not explicitly retry", 1000)
+			end, "error row did not explicitly retry", 1000)
 			assert(calls == 3 and s.lazyvcs_expanded[id], "explicit retry collapsed repository")
 		end, debug.traceback)
 		model.load_repo_details_async, require("lazyvcs.util").notify = loader, notify

@@ -62,6 +62,7 @@ function M.open(opts, on_choice)
 	util.set_win_option(winid, "relativenumber", false)
 	util.set_win_option(winid, "signcolumn", "no")
 	util.set_win_option(winid, "foldcolumn", "0")
+	util.set_win_option(winid, "foldenable", false)
 	util.set_win_option(winid, "wrap", false)
 	util.set_win_option(winid, "winhighlight", "Normal:NormalFloat,FloatBorder:FloatBorder,CursorLine:Visual")
 

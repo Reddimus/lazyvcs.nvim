@@ -357,7 +357,7 @@ buffer-local and fixed; `config.keymaps` does not reach them.
     q            close the sidebar
     <CR>, l      focus repo, toggle Changes repo rows, run action, or open file
                  diff
-    h            collapse node
+    h            collapse node, including Changes repository rows
     C            compare the selected repository against a base
     <Space>      toggle repo visibility; expand/collapse sections
     <Tab>        toggle repo visibility; expand/collapse sections
@@ -617,16 +617,21 @@ use the last completed write. Invalid preference fields are ignored.
 
 Git and SVN commits read messages from private temporary files, which are deleted
 when the commit process exits. Message length does not consume process argument
-space. Failed or cancelled commits preserve the draft. Sidebar Git commits store
+space. Pasted commit messages retain their subject and body when saved and
+reopened.
+The input grows to show multiple lines and scrolls through longer messages.
+Failed or cancelled commits preserve the draft. Sidebar Git commits store
 UTF-8 messages without changing repository configuration.
 
 Refresh restores previously loaded or loading expanded changes and preserves
-section and folder expansion. Enter on "Press <CR> to load changes" loads the
-changes without collapsing the repository.
+section and folder expansion. It also restores the selected file unless you
+move during loading. Failed local status reads show an error and a retry action.
+Enter on "Press <CR> to load changes" loads the changes without collapsing the
+repository.
 Enter on an expanded repository collapses it while an action or detail load is
 running, or after a detail load fails. When no action is running, Enter on a
-collapsed repository loads or retries missing details. The load prompt also
-retries failed detail loads explicitly.
+collapsed repository loads or retries missing details. The error row
+retries failed status reads explicitly.
 Resumed detail requests show "Loading changes..." until they finish.
 Repository actions refresh local rows in sibling sidebars across tabs. Sibling
 reconciliation reads local status; it does not request another remote check.
@@ -1047,7 +1052,8 @@ Every scheduled command is cancellable and bounded. A mutation that hangs
 forever cannot be distinguished from one still in progress, so
 mutation_timeout_ms rejects values below 1 ms. Cancel in-flight work with :LazyVCS sidebar
 cancel, with `X` in the sidebar, or with
-require("lazyvcs").source_control_cancel().
+require("lazyvcs").source_control_cancel(). Cancel also stops repository discovery.
+Cancelled status reads stay stopped until an explicit refresh or reopen.
 
 Logical cancellation can finish before physical cleanup; the worker stays
 occupied until cleanup completes. On POSIX, timeout and cancellation terminate

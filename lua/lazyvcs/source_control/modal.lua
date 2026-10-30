@@ -43,9 +43,12 @@ function M.new(opts)
 		return not self.closed and util.buf_is_valid(self.bufnr) and util.win_is_valid(self.winid)
 	end
 
-	function owner:finish(value)
+	function owner:finish(value, restore_focus)
 		if self.closed then
 			return false
+		end
+		if restore_focus == nil then
+			restore_focus = vim.api.nvim_get_current_win() == self.winid
 		end
 		self.closed = true
 		if type(self.before_finish) == "function" then
@@ -66,7 +69,7 @@ function M.new(opts)
 			end
 			pcall(vim.api.nvim_win_close, self.winid, true)
 		end
-		if util.win_is_valid(self.previous_win) then
+		if restore_focus and util.win_is_valid(self.previous_win) then
 			pcall(vim.api.nvim_set_current_win, self.previous_win)
 			if self.previous_cursor then
 				pcall(vim.api.nvim_win_set_cursor, self.previous_win, self.previous_cursor)
@@ -83,8 +86,9 @@ function M.new(opts)
 		group = owner.augroup,
 		pattern = tostring(owner.winid),
 		callback = function()
+			local restore_focus = vim.api.nvim_get_current_win() == owner.winid
 			vim.schedule(util.safe_callback(function()
-				owner:finish(owner.cancel_value)
+				owner:finish(owner.cancel_value, restore_focus)
 			end))
 		end,
 	})
@@ -92,8 +96,9 @@ function M.new(opts)
 		group = owner.augroup,
 		buffer = owner.bufnr,
 		callback = function()
+			local restore_focus = vim.api.nvim_get_current_win() == owner.winid
 			vim.schedule(util.safe_callback(function()
-				owner:finish(owner.cancel_value)
+				owner:finish(owner.cancel_value, restore_focus)
 			end))
 		end,
 	})

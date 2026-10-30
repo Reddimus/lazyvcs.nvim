@@ -10,7 +10,10 @@ local function popup_size(opts)
 	width = math.min(width, math.max(20, vim.o.columns - 8))
 	return {
 		width = width,
-		height = 1,
+		height = math.min(
+			#vim.split(opts.default_value or "", "\n", { plain = true }),
+			math.max(1, math.floor(vim.o.lines * 0.4))
+		),
 		row = math.max(1, math.floor((vim.o.lines - 1) / 2) - 1),
 		col = math.max(0, math.floor((vim.o.columns - width) / 2)),
 	}
@@ -38,13 +41,13 @@ local function set_footer(winid, opts, generating)
 end
 
 local function line_value(bufnr)
-	return table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, 1, false), "\n")
+	return table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
 end
 
 local function set_line(bufnr, value)
 	if util.buf_is_valid(bufnr) then
 		local text = value or ""
-		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { text })
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, vim.split(text, "\n", { plain = true }))
 	end
 end
 
@@ -61,7 +64,7 @@ function M.open_text(opts, on_submit)
 	vim.bo[bufnr].buftype = "nofile"
 	vim.bo[bufnr].bufhidden = "wipe"
 	vim.bo[bufnr].swapfile = false
-	vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { opts.default_value or "" })
+	set_line(bufnr, opts.default_value)
 
 	local winid = vim.api.nvim_open_win(bufnr, true, {
 		relative = "editor",
@@ -77,8 +80,21 @@ function M.open_text(opts, on_submit)
 		col = size.col,
 	})
 	util.unbind_window(winid)
+	util.set_win_option(winid, "foldenable", false)
 	util.set_win_option(winid, "winblend", 0)
 	util.set_win_option(winid, "winhighlight", "Normal:Normal,FloatBorder:FloatBorder,FloatTitle:FloatTitle")
+	local function resize()
+		if util.win_is_valid(winid) and util.buf_is_valid(bufnr) then
+			vim.api.nvim_win_set_height(
+				winid,
+				math.min(vim.api.nvim_buf_line_count(bufnr), math.max(1, math.floor(vim.o.lines * 0.4)))
+			)
+		end
+	end
+	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+		buffer = bufnr,
+		callback = util.safe_callback(resize),
+	})
 	vim.cmd("startinsert!")
 
 	local owner = modal.new({
@@ -115,23 +131,29 @@ function M.open_text(opts, on_submit)
 							return
 						end
 						set_line(bufnr, message)
+						resize()
 						if type(opts.on_generated_accept) == "function" then
 							opts.on_generated_accept(message)
 						end
 						if util.win_is_valid(winid) then
 							pcall(vim.api.nvim_set_current_win, winid)
-							pcall(vim.api.nvim_win_set_cursor, winid, { 1, #message })
+							pcall(
+								vim.api.nvim_win_set_cursor,
+								winid,
+								{ 1, #vim.split(message, "\n", { plain = true })[1] }
+							)
 						end
 					end
 				end)
 			)
 		else
 			set_line(bufnr, message)
+			resize()
 			if type(opts.on_generated_accept) == "function" then
 				opts.on_generated_accept(message)
 			end
 			if util.win_is_valid(winid) then
-				pcall(vim.api.nvim_win_set_cursor, winid, { 1, #message })
+				pcall(vim.api.nvim_win_set_cursor, winid, { 1, #vim.split(message, "\n", { plain = true })[1] })
 			end
 		end
 	end

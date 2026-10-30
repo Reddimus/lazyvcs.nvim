@@ -74,6 +74,14 @@ and this project adheres to
   points to another commit.
 - Correct the security support table for 0.12.x and describe picker preview
   cleanup accurately.
+- Preserve pasted commit message bodies when saving and reopening sidebar
+  drafts.
+- Keep confirmation choices visible when the editor uses closed folds.
+- Keep the selected file after a sidebar refresh unless you move during loading.
+- Show failed status reads with a retry action instead of a clean working tree.
+- Let `h` collapse repository rows and clarify the documented `l` toggle.
+- Preserve the active tab and cursor when a background popup closes.
+- Stop cancelled sidebar status reads and repository discovery until you retry.
 
 ## [0.12.1] - 2026-10-23
 
