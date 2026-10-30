@@ -773,9 +773,8 @@ return function(ctx)
 		collectgarbage("collect")
 		assert(weak[1] == nil, "buffer attachment retained closed session")
 		-- Reuse the same attachment through another open; idle edits remain harmless.
-		local reopened = open()
+		open()
 		actions.close(b)
-		reopened = nil
 		vim.api.nvim_buf_set_lines(b, 0, 1, false, { "idle edit" })
 		assert(not state.get(b))
 	end)
@@ -812,7 +811,7 @@ return function(ctx)
 	end
 	for _, mode in ipairs({ "unsupported", "failed", "cancelled" }) do
 		add("departed_close_preserves_incoming_options_" .. mode, function()
-			local f, s = fixture(nil, nil, function()
+			local _, s = fixture(nil, nil, function()
 				vim.wo.wrap, vim.wo.linebreak, vim.wo.number = false, false, false
 			end)
 			local path = h.tempdir() .. "/outside.md"

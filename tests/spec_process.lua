@@ -639,7 +639,7 @@ vim.cmd("qa!")
 				vim.fn.has = function(name)
 					return name == "win32" and 1 or has(name)
 				end
-				vim.system = function(args, opts, cb)
+				vim.system = function(args, _opts, cb)
 					if args[1] == "taskkill" then
 						taskkill = args
 						vim.schedule(function()

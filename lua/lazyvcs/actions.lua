@@ -816,16 +816,6 @@ attach_session = function(session)
 	})
 end
 
-local function current_session_or_warn()
-	local session = state.current()
-	if session then
-		return session
-	end
-
-	util.notify("No active lazyvcs diff session for the current buffer", vim.log.levels.WARN)
-	return nil
-end
-
 function M.open(opts)
 	opts = opts or {}
 	if vim.w[opts.winid or vim.api.nvim_get_current_win()].lazyvcs_compare then
