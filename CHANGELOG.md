@@ -39,6 +39,15 @@ and this project adheres to
 - Complete current and parent directories in sidebar path arguments.
 - Restore the original Tree-sitter parser language after closing a Markdown live
   diff.
+- Open editable Compare for Mac-format files containing embedded line feeds and
+  preserve those bytes when capturing buffer contents.
+- Keep native jump routing after Compare recovers a deleted working buffer.
+- Preserve opened diff folds when Compare switches between side-by-side and
+  stacked layouts.
+- Keep the cursor on the same line when returning to the editor immediately
+  after inserting or deleting lines in editable Compare.
+- Avoid accumulating jump tracking resources when repeatedly opening and closing
+  Compare tabs.
 - Refuse SVN directory Discard when a restored directory or its parent is a
   symlink or junction, protecting files outside the working copy.
 - Protect untracked and ignored files at a staged rename's old path from

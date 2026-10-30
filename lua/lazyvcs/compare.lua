@@ -90,7 +90,9 @@ local function preview_options(s, win)
 	vim.api.nvim_win_call(win, function()
 		vim.w.lazyvcs_compare = true
 		util.set_win_option(0, "winfixbuf", false)
-		vim.cmd(s.mode == "text" and "diffthis" or "diffoff")
+		if s.mode ~= "text" or not util.get_win_option(win, "diff") then
+			vim.cmd(s.mode == "text" and "diffthis" or "diffoff")
+		end
 		if s.mode ~= "text" then
 			util.set_win_options(win, { foldenable = false, cursorbind = false, scrollbind = false })
 		end
@@ -1243,7 +1245,7 @@ function M.close(s, return_focus)
 	require("lazyvcs.window_controls").unregister(s)
 	invalidate_panes(s)
 	if s.router then
-		s.router.cancel()
+		s.router.close()
 	end
 	s.deferred_display = nil
 	navigation.cancel(s)
@@ -1398,14 +1400,16 @@ local function edit(s)
 	local win = vim.api.nvim_get_current_win()
 	if s.mode == "text" and s.preview_result and (win == s.leftwin or win == s.rightwin) then
 		position = vim.api.nvim_win_get_cursor(win)
-		local saved = s.preview_result.right
-		if win == s.leftwin then
-			position = map_position(s.preview_result.left, saved, position)
-		end
-		if vim.api.nvim_buf_get_offset(buf, vim.api.nvim_buf_line_count(buf)) <= common.max_file_bytes then
-			position = map_position(saved, vim.api.nvim_buf_get_lines(buf, 0, -1, false), position)
-		else
-			util.notify("Large editing buffer: review position is clamped to its line count", vim.log.levels.INFO)
+		if win ~= s.rightwin or vim.api.nvim_win_get_buf(win) ~= buf then
+			local saved = s.preview_result.right
+			if win == s.leftwin then
+				position = map_position(s.preview_result.left, saved, position)
+			end
+			if vim.api.nvim_buf_get_offset(buf, vim.api.nvim_buf_line_count(buf)) <= common.max_file_bytes then
+				position = map_position(saved, vim.api.nvim_buf_get_lines(buf, 0, -1, false), position)
+			else
+				util.notify("Large editing buffer: review position is clamped to its line count", vim.log.levels.INFO)
+			end
 		end
 	end
 	edit_buffer(s, buf, position)
@@ -1904,7 +1908,7 @@ local function open_session(opts, origin)
 		pcall(cancel, s, field)
 	end
 	if s.router then
-		pcall(s.router.cancel)
+		pcall(s.router.close)
 	end
 	if s.augroup then
 		pcall(vim.api.nvim_del_augroup_by_id, s.augroup)

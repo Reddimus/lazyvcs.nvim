@@ -1,6 +1,7 @@
 local util = require("lazyvcs.util")
 local buffers = require("lazyvcs.compare_buffers")
 local M = {}
+local namespaces = {}
 
 local function protected(callback)
 	return function(...)
@@ -28,7 +29,7 @@ function M.setup(s, actions)
 	-- Observe native jump keys without replacing user mappings. A picker that
 	-- selects the same real buffer must still open it in the original editor.
 	local jump_win
-	local namespace = vim.api.nvim_create_namespace("lazyvcs_compare_jumps_" .. s.buffer_id)
+	local namespace = table.remove(namespaces) or vim.api.nvim_create_namespace("lazyvcs_compare_jumps_" .. s.buffer_id)
 	vim.on_key(
 		protected(function(key)
 			if (key == "\15" or key == "\9") and vim.fn.mode() == "n" then
@@ -181,8 +182,15 @@ function M.setup(s, actions)
 			return false
 		end,
 		cancel = function()
-			vim.on_key(nil, namespace)
-			pending = {}
+			pending, views, jump_win = {}, nil, nil
+		end,
+		close = function()
+			pending, views, jump_win = {}, nil, nil
+			if namespace then
+				vim.on_key(nil, namespace)
+				namespaces[#namespaces + 1] = namespace
+				namespace = nil
+			end
 		end,
 	}
 end
