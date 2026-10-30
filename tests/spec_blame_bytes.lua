@@ -322,7 +322,7 @@ return function(ctx)
 			"test_blame_saved_snapshot_preserves_original_bytes",
 			function()
 				local process = require("lazyvcs.backends.process")
-				local run = process.lines
+				local run, run_bytes = process.lines, process.bytes
 				for _, legacy in ipairs({ false, true }) do
 					-- Force the pre-2.41 rejection, but run every fallback command with real Git.
 					t.patch(package.loaded, "lazyvcs.backends.blame_selection", nil)
@@ -335,10 +335,14 @@ return function(ctx)
 							end)
 							return { kill = function() end }
 						end
+						return run(args, opts, callback)
+					end)
+					-- The fallback reads the committed blob as bytes so it can decode it.
+					t.patch(process, "bytes", function(args, opts, callback)
 						if args[2] == "show" then
 							historical = historical + 1
 						end
-						return run(args, opts, callback)
+						return run_bytes(args, opts, callback)
 					end)
 					for _, format in ipairs(formats) do
 						local f = fixture(format)

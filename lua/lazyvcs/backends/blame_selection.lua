@@ -82,16 +82,10 @@ function M.load(target, contents, callback, capture)
 				task:finish(entries)
 			end
 			local function historical(relpath, retry)
-				-- Before Git 2.41, --contents cannot accompany a revision. Its fallback
-				-- maps git-show bytes, so byte-compatible previews must use captured bytes
-				-- too (including encoding and BOM). Retain decoded rows when Git reencodes
-				-- the file, or full-file validation checks its line model or filter output.
-				if document and not full_file and policy.profile.fileencoding == opts.profile.fileencoding then
-					snapshot_lines, lines_err = comparison.lines(contents)
-					if not snapshot_lines then
-						return task:finish(nil, lines_err)
-					end
-				end
+				-- Before Git 2.41, --contents cannot accompany a revision. This fallback
+				-- decodes the committed blob and maps it against the decoded preview, so
+				-- encoding, BOM, CRLF and final-newline differences compare as text
+				-- instead of raw bytes.
 				if policy and policy.validate and not policy.validated then
 					return task:add(
 						process.lines(
