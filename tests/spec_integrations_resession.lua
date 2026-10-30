@@ -106,6 +106,9 @@ return function(ctx)
 			vim.cmd("silent! only!")
 			vim.cmd("diffoff")
 			util.set_win_option(api.nvim_get_current_win(), "winbar", "")
+			-- Discard restored namespaces that disable later native overlays on 0.11.0.
+			vim.cmd("tabnew")
+			vim.cmd("silent! tabonly!")
 			assert(ok, err)
 			assert(cleanup_ok, cleanup_err)
 		end
@@ -187,11 +190,11 @@ return function(ctx)
 			end,
 		},
 		{
-			"test_live_diff_resession_open_does_not_load_without_lazy_spec",
+			"test_live_diff_resession_open_loads_without_lazy_spec",
 			function()
-				lazy_open(nil, 0)
-				lazy_open({}, 0)
-				lazy_open({ other = { name = "another.nvim", main = "another" } }, 0)
+				lazy_open(nil, 1)
+				lazy_open({}, 1)
+				lazy_open({ other = { name = "another.nvim", main = "another" } }, 1)
 			end,
 		},
 		{

@@ -344,12 +344,15 @@ the GitHub release.
   O(sessions + unique windows + closed diff folds).
 - `highlighting.lua` uses native `winhighlight` overlays for inherited colors
   and strips copied overlays from unowned windows. Only explicit theme
-  namespaces use its pool, which grows with concurrently managed custom
-  namespaces. On runtimes supporting `link_global`, keep the source namespace
-  when any link target resolves differently in the source and global graphs.
-  Follow chains and ignore definition defaults when comparing resolved colors.
-  Recheck on refresh, release pool slots on fallback, and respect later external
-  namespace owners. Source-preserving windows keep semantic overlays.
+  namespaces and inactive native overlays use its pool, which grows with
+  concurrently managed pooled windows. Native release restores namespace
+  inheritance for empty mappings. Sanitize private mappings copied into global
+  defaults without removing user mappings. On runtimes supporting `link_global`,
+  keep the source namespace when any link target resolves differently in the
+  source and global graphs. Follow chains and ignore definition defaults when
+  comparing resolved colors. Recheck on refresh, release pool slots on fallback,
+  and respect later external namespace owners. Source-preserving windows keep
+  semantic overlays.
 - `signs.lua` and `blame.lua` own loaded-buffer state and cancel stale
   generations. Native signs retain only eligibility metadata for size-skipped
   buffers or unavailable bases and release state on unload. Matching base

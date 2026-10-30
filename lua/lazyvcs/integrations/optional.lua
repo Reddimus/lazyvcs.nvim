@@ -5,7 +5,7 @@ local integrations = {
 		key = "gitsigns",
 		label = "gitsigns.nvim",
 		module = "gitsigns",
-		feature = "Git hunk reset delegation",
+		feature = "Git signs, navigation, previews; live resets only for an exact hunk match against the index",
 		fallback = "plugin-owned hunk replacement",
 	},
 	{

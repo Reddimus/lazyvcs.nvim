@@ -164,11 +164,8 @@ local function resolver(theme, global)
 		elseif value and value.link then
 			if value.link == name then
 				value = global[name] or {}
-				if value.link and value.link ~= name then
-					value = inherited(value.link)
-				elseif value.link then
-					value = {}
-				end
+				value = vim.deepcopy(value)
+				value.link = nil
 			else
 				value = inherited(value.link)
 			end
@@ -203,7 +200,7 @@ local function requires_source_namespace(theme, global)
 		end
 		checked[name] = true
 		local value = theme[name] or global[name]
-		if value and value.link then
+		if value and value.link and value.link ~= name then
 			return not vim.deep_equal(local_value(value.link), global_value(value.link)) or ambiguous(value.link)
 		end
 		return false
@@ -303,6 +300,12 @@ function M.refresh(win)
 	end
 	if state.native then
 		overlay(win, state)
+		if state.native_ns <= 0 and next(state.suppressed) then
+			write_mapping(win, state.user)
+			state.native, state.preserved = nil, true
+			api.nvim_win_set_hl_ns(win, state.previous)
+			return M.refresh(win)
+		end
 	else
 		api.nvim_win_set_hl_ns(win, slot.ns)
 	end
@@ -316,7 +319,13 @@ function M.release(win)
 	windows[win] = nil
 	if state.native then
 		if api.nvim_win_is_valid(win) then
-			write_mapping(win, user_mappings(util.get_win_option(win, "winhighlight"), state))
+			local restore = owned(win, state)
+			local user = user_mappings(util.get_win_option(win, "winhighlight"), state)
+			write_mapping(win, user)
+			-- Older runtimes stop activating native overlays after restoring inheritance.
+			if restore and user == "" and vim.version.ge(vim.version(), { 0, 11, 7 }) then
+				api.nvim_win_set_hl_ns(win, state.previous)
+			end
 		end
 	elseif not state.preserved and owned(win, state) then
 		api.nvim_win_set_hl_ns(win, state.previous)
@@ -389,9 +398,22 @@ local function listen()
 		group = group,
 		pattern = "winhighlight",
 		callback = protected(function()
+			if writing then
+				return
+			end
+			local global = api.nvim_get_option_value("winhighlight", { scope = "global" })
+			local clean = user_mappings(global)
+			if clean ~= global then
+				writing = true
+				local ok, err = pcall(api.nvim_set_option_value, "winhighlight", clean, { scope = "global" })
+				writing = false
+				if not ok then
+					error(err)
+				end
+			end
 			local win = api.nvim_get_current_win()
 			local state = windows[win]
-			if state and not writing then
+			if state then
 				schedule(win, state, true)
 			end
 		end),
@@ -469,8 +491,12 @@ function M.apply(win, policy)
 		return
 	end
 	if not explicit(win) then
-		local state =
-			{ native = true, user = util.get_win_option(win, "winhighlight"), buf = api.nvim_win_get_buf(win) }
+		local state = {
+			native = true,
+			previous = api.nvim_get_hl_ns({ winid = win }),
+			user = util.get_win_option(win, "winhighlight"),
+			buf = api.nvim_win_get_buf(win),
+		}
 		windows[win] = state
 		M.refresh(win)
 		listen()

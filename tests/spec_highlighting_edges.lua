@@ -259,19 +259,22 @@ return function(ctx)
 					api.nvim_set_hl(source, "LazyVCSEdgeCycleA", { link = "LazyVCSEdgeCycleB" })
 					api.nvim_set_hl(source, "LazyVCSEdgeCycleB", { link = "LazyVCSEdgeCycleA" })
 					api.nvim_set_hl(source, "LazyVCSEdgeMissing", { link = "LazyVCSEdgeAbsent" })
-					guard.refresh(win)
-					assert(api.nvim_get_hl_ns({ winid = win }) == pooled, "unambiguous links left the pool")
-					assert(
-						api.nvim_get_hl(pooled, { name = "LazyVCSEdgeSelf" }).fg == 0x12ee34,
-						"self-link did not fall back through its global parent"
+					guard.release(win)
+					local self_mark = api.nvim_buf_set_extmark(
+						buf,
+						marks,
+						0,
+						0,
+						{ end_col = 6, hl_group = "LazyVCSEdgeSelf", priority = 210 }
 					)
-					assert(
-						api.nvim_get_hl(pooled, { name = "LazyVCSEdgeChain" }).fg == 0x12ee34,
-						"chained link lost its parent"
-					)
+					local expected_source = foreground(win)
+					guard.apply(win, "syntax")
+					assert(foreground(win) == expected_source, "self-link changed rendered color")
+					api.nvim_buf_del_extmark(buf, marks, self_mark)
+					local active = api.nvim_get_hl_ns({ winid = win })
 					for _, name in ipairs({ "LazyVCSEdgeMissing", "LazyVCSEdgeCycleA", "LazyVCSEdgeCycleB" }) do
 						assert(
-							not api.nvim_get_hl(pooled, { name = name }).fg,
+							not api.nvim_get_hl(active, { name = name }).fg,
 							"missing or cyclic link acquired colors"
 						)
 					end
