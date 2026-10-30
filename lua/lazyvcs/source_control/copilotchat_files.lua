@@ -13,7 +13,7 @@ function M.new()
 		return path
 	end
 	function registry:adopt(opts)
-		for _, key in ipairs({ "body", "in_file", "output" }) do
+		for _, key in ipairs({ "body", "in_file", "output", "dump" }) do
 			local path = opts and opts[key]
 			if type(path) == "string" and names[path] and not owned[path] then
 				-- Capture identity before the leaf can return or another request can replace it.
@@ -23,6 +23,21 @@ function M.new()
 				end
 			end
 		end
+	end
+	function registry:header()
+		local path = util.normalize_literal_path(vim.fn.tempname()) .. "-lazyvcs-headers"
+		local fd, err = vim.uv.fs_open(path, "wx", 384)
+		if not fd then
+			error("Could not create private CopilotChat header file: " .. tostring(err), 0)
+		end
+		local closed, close_err = vim.uv.fs_close(fd)
+		if not closed then
+			pcall(vim.uv.fs_unlink, path)
+			error("Could not close CopilotChat header file: " .. tostring(close_err), 0)
+		end
+		self:record(path)
+		self:adopt({ dump = path })
+		return path
 	end
 	function registry:release(done)
 		local paths = owned

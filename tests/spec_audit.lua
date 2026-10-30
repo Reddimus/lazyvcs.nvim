@@ -446,8 +446,9 @@ return function(ctx)
 				local backends = require("lazyvcs.backends")
 				backends.invalidate()
 				local done, resolved
+				local cancelled_calls = 0
 				local first = backends.resolve_async(fixture.file, function()
-					error("cancelled subscriber ran")
+					cancelled_calls = cancelled_calls + 1
 				end)
 				backends.resolve_async(fixture.file, function(value)
 					resolved, done = value, true
@@ -457,6 +458,7 @@ return function(ctx)
 					return done
 				end)
 				assert(resolved and resolved.name == "git")
+				assert(cancelled_calls == 0, "cancelled subscriber ran")
 			end,
 		},
 		{

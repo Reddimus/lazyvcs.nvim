@@ -122,7 +122,7 @@ jobs:
           actionlint
           zizmor --offline --format plain .github
           shellcheck tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
-          bash -n tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
+          for script in tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh; do bash -n "$script" || exit "$?"; done
 
       - name: Check whitespace
         # PR checkout is a merge commit. Check its first-parent diff; --cc omits changes

@@ -3,6 +3,54 @@ return function(ctx)
 	local tests = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h")
 	return {
 		{
+			"test_source_control_copilotchat_chained_requests_from_fast_event",
+			function()
+				local model = assert(loadfile(tests .. "/fixtures/ai_transport_helpers.lua"))()
+				model.with_transport(ctx, function(f)
+					local scope = assert(require("lazyvcs.source_control.copilotchat_transport").new_scope())
+					local options = { headers = { Authorization = "fixture" } }
+					local auth_fast, models_fast, response, failure
+					f.async.run(function()
+						scope:run(function()
+							local auth
+							auth, failure = f.chat.get("offline://fixture", options)
+							if not auth then
+								return
+							end
+							auth_fast = vim.in_fast_event()
+							local models
+							models, failure = f.chat.get("offline://fixture", options)
+							if not models then
+								return
+							end
+							models_fast = vim.in_fast_event()
+							response, failure = f.chat.post(
+								"offline://fixture",
+								vim.tbl_extend("force", options, {
+									json_request = true,
+									body = { diff = "private" },
+									temp_source = "vim",
+								})
+							)
+						end)
+					end)
+					for index = 1, 3 do
+						local job = f.ready(index)
+						h.write_file(f.jobs[index].path .. ".finish", "done")
+						wait(function()
+							return failure ~= nil or (job.is_shutdown and (index == 3 or #f.jobs > index))
+						end, "chained request did not advance")
+						assert(not failure, failure)
+					end
+					assert(auth_fast and models_fast, "fixture hid the fast-event callback context")
+					assert(response and response.body == "Generated subject", "chained response missing")
+					wait(function()
+						return not next(scope.jobs)
+					end, "chained jobs retained")
+				end)
+			end,
+		},
+		{
 			"test_source_control_copilotchat_cancel_and_timeout_stop_transport",
 			function()
 				local names = {

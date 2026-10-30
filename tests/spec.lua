@@ -546,29 +546,34 @@ local function test_ai_commit_message_auto_falls_back_to_next_cli_provider()
 	local message
 	local err
 	local provider
-	local ok = ai.generate({
-		vcs = "git",
-		root = vim.fs.normalize(vim.fn.tempname()),
-	}, function(generated, generate_err, used_provider)
-		message = generated
-		err = generate_err
-		provider = used_provider
+	local ok
+	ok, err = pcall(function()
+		assert(
+			ai.generate({
+				vcs = "git",
+				root = vim.fs.normalize(vim.fn.tempname()),
+			}, function(generated, generate_err, used_provider)
+				message = generated
+				err = generate_err
+				provider = used_provider
+			end),
+			"AI generation should start"
+		)
+		wait_for(function()
+			return message ~= nil or err ~= nil
+		end, "AI generation did not finish")
+		eq(message, "Add generated commit message")
+		eq(err, nil)
+		eq(provider, "codex")
+		assert(codex_stdin:match("Use ticket IDs when present"), "custom instructions should be included")
+		assert(codex_stdin:match("diff %-%-git"), "diff context should be included")
+		eq(calls[1], "git diff --staged --no-ext-diff --no-color --stat --patch --minimal --unified=1")
+		assert(calls[2]:match("^claude "), "auto provider should try claude first")
+		eq(calls[3], "codex --ask-for-approval never exec --skip-git-repo-check --ephemeral --sandbox read-only -")
 	end)
-	assert(ok, "AI generation should start")
-	wait_for(function()
-		return message ~= nil or err ~= nil
-	end, "AI generation did not finish")
-	eq(message, "Add generated commit message")
-	eq(err, nil)
-	eq(provider, "codex")
-	assert(codex_stdin:match("Use ticket IDs when present"), "custom instructions should be included")
-	assert(codex_stdin:match("diff %-%-git"), "diff context should be included")
-	eq(calls[1], "git diff --staged --stat --patch --minimal --unified=1")
-	assert(calls[2]:match("^claude "), "auto provider should try claude first")
-	eq(calls[3], "codex --ask-for-approval never exec --skip-git-repo-check --ephemeral --sandbox read-only -")
-
 	util.system_start = previous_system_start
 	ai._test_reset_privacy()
+	assert(ok, err)
 end
 
 local function test_picker_uses_snacks_select_module_when_available()
@@ -4061,13 +4066,20 @@ end
 ---to the line below them, which is exactly the padding being asserted here.
 function align_specs.pane_screen_row(winid, lnum)
 	local pos = vim.fn.screenpos(winid, lnum, 1)
-	if not pos or (pos.row or 0) == 0 then
-		return nil
-	end
+	assert(pos and type(pos.row) == "number" and pos.row > 0, "alignment sample is not visible: " .. lnum)
 	return pos.row - 1 - vim.api.nvim_win_get_position(winid)[1]
 end
 
 function align_specs.same_screen_row()
+	if #vim.api.nvim_list_uis() == 0 then
+		assert(
+			require("ui_helpers").run_case(
+				"live_diff",
+				"test_live_diff_align_puts_wrapped_lines_on_the_same_screen_row"
+			)
+		)
+		return
+	end
 	local session
 	local ok, err = pcall(function()
 		with_diffopt_flag("followwrap", true, function()
@@ -4083,29 +4095,36 @@ function align_specs.same_screen_row()
 				"smoothscroll must stay off while alignment owns the padding"
 			)
 
+			for _, win in ipairs({ session.base_win, session.editable_win }) do
+				vim.api.nvim_win_call(win, function()
+					vim.cmd("normal! ggzRzt")
+				end)
+			end
 			require("lazyvcs.align").apply(session)
+			vim.cmd("redraw")
 
 			-- Lines 13..24 are identical on both sides, so after the mismatched
 			-- pair above them they must face each other again.
-			local misaligned = {}
+			local positions = {}
 			for _, lnum in ipairs({ 13, 16, 20 }) do
 				local base_row = align_specs.pane_screen_row(session.base_win, lnum)
 				local edit_row = align_specs.pane_screen_row(session.editable_win, lnum)
-				if base_row ~= edit_row then
-					misaligned[#misaligned + 1] =
-						string.format("line %d base=%s edit=%s", lnum, tostring(base_row), tostring(edit_row))
-				end
+				positions[lnum] = { base_row, edit_row }
+				eq(
+					base_row,
+					edit_row,
+					string.format("line %d base=%s edit=%s", lnum, tostring(base_row), tostring(edit_row))
+				)
 			end
-			eq(#misaligned, 0, "corresponding lines should share a screen row: " .. table.concat(misaligned, "; "))
 
 			-- A second pass must not stack more padding on top of the first.
 			eq(require("lazyvcs.align").apply(session), false, "an unchanged plan should not be re-applied")
-			for _, lnum in ipairs({ 13, 20 }) do
-				eq(
+			vim.cmd("redraw")
+			for _, lnum in ipairs({ 13, 16, 20 }) do
+				eq({
 					align_specs.pane_screen_row(session.base_win, lnum),
 					align_specs.pane_screen_row(session.editable_win, lnum),
-					"alignment should be idempotent"
-				)
+				}, positions[lnum], "alignment should be idempotent")
 			end
 
 			local editable_bufnr = session.editable_bufnr
@@ -7212,6 +7231,8 @@ vim.list_extend(cases, require("spec_integrations_editor")({ helpers = helpers, 
 vim.list_extend(cases, require("spec_process_shutdown")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_process_flows")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_windows_process")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_harness_regressions")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_process_regressions")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_process")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_copilotchat_files")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_copilotchat_lifecycle")({ helpers = helpers, wait_for = wait_for }))

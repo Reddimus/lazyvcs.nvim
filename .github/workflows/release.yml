@@ -17,7 +17,7 @@ jobs:
     name: Verify release commit
     uses: ./.github/workflows/verify.yml
     with:
-      ref: ${{ github.ref }}
+      ref: ${{ github.sha }}
 
   release:
     name: Publish verified tag
@@ -28,16 +28,17 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout tag and full history
+      - name: Checkout verified commit and full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Validate release tag
         env:
           TAG: ${{ github.ref_name }}
+          EVENT_SHA: ${{ github.sha }}
         run: |
           set -Eeuo pipefail
           if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
@@ -48,6 +49,7 @@ jobs:
           test -s .github/allowed_signers
           git config gpg.ssh.allowedSignersFile "${GITHUB_WORKSPACE}/.github/allowed_signers"
           git verify-tag "${TAG}"
+          test "$(git rev-parse "${TAG}^{commit}")" = "${EVENT_SHA}"
           git fetch --no-tags origin main
           git merge-base --is-ancestor "${TAG}^{commit}" origin/main
           test "$(git rev-parse HEAD)" = "$(git rev-parse "${TAG}^{commit}")"
@@ -73,6 +75,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          set -Eeuo pipefail
+          remote_tag="$(git ls-remote --exit-code origin "refs/tags/${TAG}")"
+          test "${remote_tag%%$'\t'*}" = "$(git rev-parse "${TAG}^{tag}")"
           gh release create "${TAG}" \
             --verify-tag \
             --title "${TAG}" \

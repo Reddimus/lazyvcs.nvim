@@ -17,7 +17,11 @@ local function copilot_chat_installed()
 	if package.loaded["CopilotChat"] then
 		return true
 	end
-	if package.searchpath("CopilotChat", package.path) then
+	if
+		package.searchpath("CopilotChat", package.path)
+		or #vim.api.nvim_get_runtime_file("lua/CopilotChat.lua", false) > 0
+		or #vim.api.nvim_get_runtime_file("lua/CopilotChat/init.lua", false) > 0
+	then
 		return true
 	end
 	local ok, lazy_config = pcall(require, "lazy.core.config")
@@ -192,12 +196,22 @@ local function git_context(request, repo_root, callback)
 	local context = config.get().ai.commit_message.context
 	local commands = {
 		{
-			args = { "git", "diff", "--staged", "--stat", "--patch", "--minimal", "--unified=1" },
+			args = {
+				"git",
+				"diff",
+				"--staged",
+				"--no-ext-diff",
+				"--no-color",
+				"--stat",
+				"--patch",
+				"--minimal",
+				"--unified=1",
+			},
 			cwd = repo_root,
 			timeout = timeout,
 		},
 		{
-			args = { "git", "diff", "--stat", "--patch", "--minimal", "--unified=1" },
+			args = { "git", "diff", "--no-ext-diff", "--no-color", "--stat", "--patch", "--minimal", "--unified=1" },
 			cwd = repo_root,
 			timeout = timeout,
 		},

@@ -4,6 +4,34 @@ return function(ctx)
 	local model = assert(loadfile(tests .. "/fixtures/ai_transport_helpers.lua"))()
 	return {
 		{
+			"test_source_control_copilotchat_header_dump_uses_plenary_argument_pair",
+			function()
+				model.with_transport(ctx, function(f)
+					local scope = assert(require("lazyvcs.source_control.copilotchat_transport").new_scope())
+					local response, failure
+					f.async.run(function()
+						scope:run(function()
+							response, failure =
+								f.chat.get("offline://fixture", { headers = { Authorization = "fixture" } })
+						end)
+					end)
+					assert(not failure, failure)
+					local job = f.ready(1)
+					local dump = job.options.dump
+					assert(type(dump) == "table" and dump[1] == "-D", "missing curl header flag")
+					assert(vim.uv.fs_stat(dump[2]), "private header file missing")
+					h.write_file(f.jobs[1].path .. ".finish", "done")
+					wait(function()
+						return response ~= nil
+					end, "header response was not parsed")
+					assert(not failure and response.status == 200 and response.headers[1] == "X-Fixture: offline")
+					wait(function()
+						return not next(scope.jobs) and not vim.uv.fs_stat(dump[2])
+					end, "completed header file or job retained")
+				end)
+			end,
+		},
+		{
 			"test_source_control_copilotchat_files_cancel_timeout_and_errors",
 			function()
 				model.with_transport(ctx, function(f)
@@ -40,6 +68,10 @@ return function(ctx)
 						vim.defer_fn = defer
 						local job = f.ready(index)
 						local path = job.options.body
+						local header = job.options.dump[2]
+						if vim.fn.has("win32") == 0 then
+							assert(bit.band(vim.uv.fs_stat(header).mode, 511) == 384, "header dump is not private")
+						end
 						assert(
 							vim.fn.readfile(path, "b")[1]:find("PRIVATE_DIFF_SENTINEL"),
 							"fixture request body missing"
@@ -64,6 +96,9 @@ return function(ctx)
 						wait(function()
 							return vim.uv.fs_stat(path) == nil
 						end, kind .. " retained private request file", 2000)
+						wait(function()
+							return vim.uv.fs_stat(header) == nil
+						end, kind .. " retained header dump", 2000)
 						if kind ~= "cancel" then
 							wait(function()
 								return callback_count == index - 1
@@ -129,21 +164,28 @@ return function(ctx)
 					-- Keep the old inode allocated so replacement cannot reuse its identity.
 					assert(vim.uv.fs_rename(path, f.dir .. "/old-body"))
 					h.write_file(path, "replacement")
+					local header = replaced_job.options.dump[2]
+					assert(vim.uv.fs_rename(header, f.dir .. "/old-header"))
+					h.write_file(header, "replacement header")
 					replaced:cancel()
 					wait(function()
 						return process.reaped(replaced_job.pid) and not next(replaced.jobs)
 					end, "replacement job retained", 5000)
 					vim.wait(30)
 					assert(vim.fn.readfile(path)[1] == "replacement", "replaced file was deleted")
+					assert(vim.fn.readfile(header)[1] == "replacement header", "replaced header was deleted")
 					local external = f.dir .. "/external"
 					h.write_file(external, "external body")
+					local external_header = f.dir .. "/external-header"
+					h.write_file(external_header, "external header")
 					local other = assert(transport.new_scope())
 					f.async.run(function()
 						other:run(function()
-							f.chat.post(
-								"offline://fixture",
-								{ headers = { Authorization = "fixture" }, body = external }
-							)
+							f.chat.post("offline://fixture", {
+								headers = { Authorization = "fixture" },
+								body = external,
+								dump = { "-D", external_header },
+							})
 						end)
 					end)
 					local outside = f.ready(3)
@@ -152,6 +194,7 @@ return function(ctx)
 						return process.reaped(outside.pid)
 					end, "external-body child not reaped", 5000)
 					assert(vim.fn.readfile(external)[1] == "external body", "caller file was deleted")
+					assert(vim.fn.readfile(external_header)[1] == "external header", "caller header was deleted")
 				end)
 			end,
 		},
@@ -189,8 +232,8 @@ return function(ctx)
 						"spawn error contract changed"
 					)
 					wait(function()
-						return not vim.uv.fs_stat(path)
-					end, "spawn failure retained private request file", 2000)
+						return not vim.uv.fs_stat(path) and not vim.uv.fs_stat(path .. "-lazyvcs-headers")
+					end, "spawn failure retained private request file or header", 2000)
 				end)
 			end,
 		},

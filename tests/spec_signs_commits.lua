@@ -66,6 +66,7 @@ return function(ctx)
 			assert(counts.finish == 1, "commit must finish exactly one base change")
 			assert(counts.done == 1, "commit must complete exactly once")
 			assert(counts.exit <= 1, "commit must not call on_exit twice")
+			assert(not counts.callback_error, counts.callback_error)
 		end, debug.traceback)
 		s.signs.begin_base_change, s.signs.finish_base_change, jobs.command = begin, finish, command
 		util.system_start, vim.system, vim.uv.fs_open = start, system, open
@@ -146,17 +147,22 @@ return function(ctx)
 					lifecycle(function(counts)
 						local start, open = util.system_start, vim.uv.fs_open
 						local function pending()
-							assert(counts.begin == 1 and counts.finish == 0)
-							assert(not s.signs.current_state(buf).loaded)
-							vim.cmd("LazyVCS preview")
+							local ok, err = pcall(function()
+								assert(counts.begin == 1 and counts.finish == 0)
+								assert(not s.signs.current_state(buf).loaded)
+								vim.cmd("LazyVCS preview")
+							end)
+							if not ok then
+								counts.callback_error = err
+							end
 						end
-						vim.uv.fs_open = function(file, ...)
-							if failure == "starter_throw" and message_file(file) then
+						vim.uv.fs_open = function(file, flags, ...)
+							if failure == "starter_throw" and flags == "wx" and message_file(file) then
 								pending()
 								path = file
 								error("injected starter error")
 							end
-							return open(file, ...)
+							return open(file, flags, ...)
 						end
 						---@diagnostic disable-next-line: duplicate-set-field
 						util.system_start = function(args, options, cb)
