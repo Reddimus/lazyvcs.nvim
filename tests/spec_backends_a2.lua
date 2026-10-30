@@ -301,6 +301,112 @@ return function(ctx)
 		assert(#list(f, false) == 0, "sparse exclusion became a missing row")
 	end)
 
+	local function preview_unavailable(session)
+		local buf = session.left
+		return buf
+			and api.nvim_buf_is_valid(buf)
+			and api.nvim_buf_get_lines(buf, 0, 1, false)[1] == "Preview unavailable"
+	end
+
+	add("test_svn_compare_missing_directories_take_directory_path", function()
+		local f = h.make_svn_fixture()
+		h.exec({ "svn", "revert", f.file }, f.root)
+		vim.fn.mkdir(f.root .. "/dir/empty", "p")
+		vim.fn.mkdir(f.root .. "/lone", "p")
+		h.write_file(f.root .. "/dir/d.txt", "d")
+		h.exec({ "svn", "add", "dir", "lone" }, f.root)
+		h.exec({ "svn", "commit", "-m", "directories" }, f.root)
+		-- Remove versioned directories from disk without scheduling a deletion.
+		vim.fn.delete(f.root .. "/dir", "rf")
+		vim.fn.delete(f.root .. "/lone", "rf")
+		local expected = { dir = "dir", ["dir/d.txt"] = "file", ["dir/empty"] = "dir", lone = "dir" }
+		for _, include in ipairs({ false, true }) do
+			for _, recovery in ipairs({ false, true }) do
+				local kinds = {}
+				for _, item in ipairs(list(f, include, "2", recovery)) do
+					assert(item.status == "!", "missing node has status " .. item.status .. ": " .. item.relpath)
+					kinds[item.relpath] = item.kind == "dir" and "dir" or "file"
+					local result = await(function(done)
+						require("lazyvcs.backends.compare_svn").preview(snapshot(f, "2"), item, done)
+					end)
+					if item.relpath == "dir/d.txt" then
+						assert(result.left[1] == "d" and #result.right == 0, "missing child lost its base text")
+					end
+				end
+				assert(vim.deep_equal(kinds, expected), "missing node kinds: " .. vim.inspect(kinds))
+			end
+		end
+		setup()
+		local compare = require("lazyvcs.compare")
+		for _, editable in ipairs({ false, true }) do
+			local session =
+				assert(compare.open({ path = f.root, base = h.file_url(f.repo) .. "@2", editable = editable }))
+			ctx.wait_for(function()
+				return session.preview_result
+					or preview_unavailable(session)
+					or session.message == "Comparison unavailable"
+			end, "missing directory preview", 15000)
+			assert(session.preview_result, "missing directory preview failed")
+			assert(session.shown_item.relpath == "dir" and session.shown_item.status == "!")
+			compare.close(session)
+		end
+	end)
+
+	add("test_svn_compare_missing_rows_pair_before_relabel", function()
+		local f = h.make_svn_fixture()
+		h.exec({ "svn", "revert", f.file }, f.root)
+		local x, y = f.root .. "/x", f.root .. "/y"
+		h.write_file(x, "file at base\n")
+		h.exec({ "svn", "add", "x" }, f.root)
+		h.exec({ "svn", "commit", "-m", "file" }, f.root)
+		h.exec({ "svn", "delete", "x" }, f.root)
+		h.exec({ "svn", "commit", "-m", "remove file" }, f.root)
+		vim.fn.mkdir(x)
+		vim.fn.mkdir(y)
+		h.write_file(x .. "/i.txt", "inner\n")
+		h.write_file(y .. "/j.txt", "added\n")
+		h.exec({ "svn", "add", "x", "y" }, f.root)
+		h.exec({ "svn", "commit", "-m", "directories" }, f.root)
+		h.exec({ "svn", "update" }, f.root)
+		-- At r2, x is a file and y is absent. The working copy has both as
+		-- directories, and the disk has neither.
+		vim.fn.delete(x, "rf")
+		vim.fn.delete(y, "rf")
+		local svn = require("lazyvcs.backends.compare_svn")
+		for _, include in ipairs({ false, true }) do
+			local items = list(f, include, "2")
+			local relpaths = vim.tbl_map(function(item)
+				return item.relpath .. " " .. item.status
+			end, items)
+			assert(
+				vim.deep_equal(relpaths, { "x !", "x/i.txt !", "y !", "y/j.txt !" }),
+				"missing rows: " .. vim.inspect(relpaths)
+			)
+			assert(items[1].kind_before == "file" and items[1].kind_after == "dir", "kind change lost its pair")
+			local result = await(function(done)
+				svn.preview(snapshot(f, "2"), items[1], done)
+			end)
+			assert(result.left[1] == "file at base" and result.right[1] == "Directory: x")
+			for index = 2, 4 do
+				result = await(function(done)
+					svn.preview(snapshot(f, "2"), items[index], done)
+				end)
+				assert(
+					#result.left == 0 and #result.right == 0,
+					"added missing row read a base: " .. items[index].relpath
+				)
+			end
+		end
+		setup()
+		local compare = require("lazyvcs.compare")
+		local session = assert(compare.open({ path = f.root, base = h.file_url(f.repo) .. "@2" }))
+		ctx.wait_for(function()
+			return session.preview_result or preview_unavailable(session) or session.message == "Comparison unavailable"
+		end, "kind change preview", 15000)
+		assert(session.preview_result and #session.items == 4, "kind change Compare unavailable")
+		compare.close(session)
+	end)
+
 	add("test_core_leader_validation_matches_native_mappings", function()
 		local leader, localleader = vim.g.mapleader, vim.g.maplocalleader
 		local ok, err = xpcall(function()

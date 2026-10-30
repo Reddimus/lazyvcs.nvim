@@ -122,6 +122,17 @@ function M.parse_info(raw)
 	}
 end
 
+function M.parse_info_entries(raw)
+	local entries = {}
+	for _, block in ipairs(each_entry(raw)) do
+		local entry = M.attributes(open_tag(block, "entry"))
+		if entry.path then
+			entries[#entries + 1] = { path = M.local_path(entry.path), kind = entry.kind }
+		end
+	end
+	return entries
+end
+
 function M.parse_status(raw)
 	local entries = {}
 	for _, block in ipairs(each_entry(raw)) do

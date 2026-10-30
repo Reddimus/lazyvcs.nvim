@@ -259,13 +259,15 @@ return function(ctx)
 			assert(line:match("%d%d%d%d%-%d%d%-%d%d$"), "clamped split clipped date")
 		end),
 	}
-	for _, variant in ipairs({ "latin1", "bom", "eof", "normalized", "encoding_change", "cp1252" }) do
+	local legacy_variants =
+		{ "latin1", "bom", "eof", "normalized", "encoding_change", "cp1252", "reopened", "reopened_edit" }
+	for _, variant in ipairs(legacy_variants) do
 		cases[#cases + 1] = {
 			"test_blame_legacy_saved_document_" .. variant,
 			t.guard(function()
 				local f, buf = t.open(false)
 				local bytes = variant == "cp1252" and "price \128\ntwo\nthree\n"
-					or variant == "encoding_change" and "café\ntwo\nthree\n"
+					or (variant == "encoding_change" or variant:find("^reopened")) and "café\ntwo\nthree\n"
 					or variant == "latin1" and "caf\233\ntwo\nthree\n"
 					or variant == "bom" and "\239\187\191one\ntwo\nthree\n"
 					or "one\ntwo\nthree\n"
@@ -278,12 +280,12 @@ return function(ctx)
 				t.h.exec({ "git", "commit", "--allow-empty", "-m", "encoded" }, f.root)
 				if variant == "encoding_change" then
 					write_bytes(f.file, "caf\233\ntwo\nthree\n")
+				elseif variant == "reopened_edit" then
+					write_bytes(f.file, "café\ntwo\nedited\n")
 				end
-				vim.cmd(
-					variant == "cp1252" and "edit! ++enc=cp1252"
-						or (variant == "latin1" or variant == "encoding_change") and "edit! ++enc=latin1"
-						or "edit!"
-				)
+				-- The reopened variants read committed UTF-8 bytes as Latin-1 text.
+				local latin1 = variant == "latin1" or variant == "encoding_change" or variant:find("^reopened")
+				vim.cmd(variant == "cp1252" and "edit! ++enc=cp1252" or latin1 and "edit! ++enc=latin1" or "edit!")
 				if variant == "eof" then
 					vim.bo[buf].fixendofline, vim.bo[buf].endofline = false, false
 				end
@@ -325,7 +327,8 @@ return function(ctx)
 				end, "legacy selection absent", 15000)
 				assert(entries, err)
 				assert(not entries[1].uncommitted and not entries[2].uncommitted, "unchanged encoded text lost history")
-				assert((entries[3].uncommitted or false) == (variant == "eof"), "EOF history incorrect")
+				local changed = variant == "eof" or variant == "reopened_edit"
+				assert((entries[3].uncommitted or false) == changed, "last line history incorrect")
 			end),
 		}
 	end

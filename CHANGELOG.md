@@ -31,8 +31,8 @@ and this project adheres to
 - Load SVN replacement files without depending on the diagnostic language, while
   preserving readable bases for replacements with copy history.
 - Exclude SVN file externals from parent comparisons while keeping parent
-  deletions at the same path. Show physically missing versioned files as missing
-  rows with labeled empty previews.
+  deletions at the same path. Show versioned files and directories that are
+  missing from disk as missing rows with labeled previews.
 - Validate Leader and LocalLeader mappings using Neovim's native expansion.
 - Restore native gutter signs in other loaded buffers after repeated setup.
 - Describe gitsigns delegation and native fallback accurately in health output.
@@ -59,24 +59,6 @@ and this project adheres to
   the gitsigns fallback when only the index base exceeds the native size limit.
 - Resume native signs when corrected decoding options make the base readable.
 - Keep diff previews and selected-line blame reports open without folded rows.
-- Refuse SVN directory Discard when a restored directory or its parent is a
-  symlink or junction, protecting files outside the working copy.
-- Protect untracked and ignored files at a staged rename's old path from
-  Discard. The confirmation now names both rename paths.
-- Refuse Unstage and Discard of staged additions that changed before the action
-  started, preserving newly committed files.
-- Refuse Stage when a file became a directory, while allowing tracked
-  submodules.
-- Resolve Git conflicts with Discard by restoring HEAD in the index and working
-  tree, or removing the file when HEAD deleted it. The confirmation names this
-  scope.
-- Publish Git branches even when a tag has the same name.
-- Skip unreadable subdirectories during repository discovery, keep the
-  repositories found, and show one notice for skipped directories. Preserve
-  saved repository visibility until discovery completes without errors. An
-  unreadable scan root still reports an error.
-- Report preference synchronization and close failures without replacing the
-  previous preferences.
 - Show staged final-newline changes in Git previews and hunk navigation,
   including after refresh. Mark snapshot text that has no final newline.
 - Find Git repositories for deleted files whose parent directories are also

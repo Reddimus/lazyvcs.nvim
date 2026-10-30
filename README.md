@@ -82,9 +82,10 @@ Git compares the common ancestor with your saved working tree, including
 committed, staged, unstaged, and nonignored untracked changes. SVN compares the
 selected repository revision with the working copy. The file list reflects saved
 changes; save and refresh to discover new paths. Parent comparisons exclude
-changes to SVN file externals. Missing versioned files appear as `!` rows,
-separate from scheduled deletions. Their previews show a labeled empty side when
-the selected base contains the file.
+changes to SVN file externals. Versioned files and directories missing from disk
+appear as `!` rows, separate from scheduled deletions. File previews show a
+labeled empty side when the selected base contains the file. Directory rows show
+property previews.
 
 The comparison uses native Neovim buffers and windows. Press `Enter` or
 double-click a file in the list to focus its first hunk. `]v` and `[v` cycle
