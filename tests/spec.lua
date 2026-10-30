@@ -1575,11 +1575,11 @@ local function test_source_control_jobs_cancel_holds_worker_until_delayed_exit()
 	local processes = {}
 	local started = {}
 	local done = 0
+	local callback_err, callback_raw
 	local start = fake_process_start(processes, started)
 	enqueue_fake_svn_job(jobs, repo, start, "cancel-delayed", { kill_grace_ms = 100 }, function(_, err, raw)
 		done = done + 1
-		assert(err and err:match("Cancelled"), "cancel should report its logical result immediately")
-		assert(raw and raw.cancelled, "cancel callback should receive the forced cancellation result")
+		callback_err, callback_raw = err, raw
 	end)
 	enqueue_fake_svn_job(jobs, repo, start, "after-cancel-delayed")
 
@@ -1591,6 +1591,8 @@ local function test_source_control_jobs_cancel_holds_worker_until_delayed_exit()
 		1
 	)
 	eq(done, 1, "cancel should complete logically exactly once")
+	assert(callback_err and callback_err:match("Cancelled"), "cancel should report its logical result immediately")
+	assert(callback_raw and callback_raw.cancelled, "cancel callback should receive the forced cancellation result")
 	eq(processes["cancel-delayed"].signals, { 15 })
 	eq(started, { "cancel-delayed" }, "the queued job must wait for the cancelled child to exit")
 
@@ -1654,7 +1656,7 @@ local function test_source_control_jobs_timeout_racing_late_exit_completes_once(
 	local processes = {}
 	local started = {}
 	local done = 0
-	local forced
+	local forced, callback_err
 	local start = fake_process_start(processes, started)
 	enqueue_fake_svn_job(
 		jobs,
@@ -1664,8 +1666,7 @@ local function test_source_control_jobs_timeout_racing_late_exit_completes_once(
 		{ timeout_ms = 10, kill_grace_ms = 100 },
 		function(_, err, raw)
 			done = done + 1
-			forced = raw
-			assert(err and err:match("Timed out"), "timeout should report immediately")
+			forced, callback_err = raw, err
 		end
 	)
 	enqueue_fake_svn_job(jobs, repo, start, "after-timeout-late")
@@ -1673,6 +1674,7 @@ local function test_source_control_jobs_timeout_racing_late_exit_completes_once(
 	wait_for(function()
 		return done == 1
 	end, "timeout callback should fire")
+	assert(callback_err and callback_err:match("Timed out"), "timeout should report immediately")
 	assert(forced and forced.timed_out, "timeout callback should receive the forced timeout result")
 	eq(started, { "timeout-late" }, "timing out must not free a live child's worker slot")
 	processes["timeout-late"]:exit({ code = 0, stdout = "late success", stderr = "" })
@@ -3279,6 +3281,7 @@ local function test_async_system_owns_timeout_escalation_and_bounded_output()
 	local system_opts
 	local signals = {}
 	local termination_count = 0
+	local termination_err, termination_raw
 	local callback_count = 0
 	local callback_raw
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -3301,8 +3304,7 @@ local function test_async_system_owns_timeout_escalation_and_bounded_output()
 			output_limit = 256,
 			on_terminate = function(_, terminate_err, raw)
 				termination_count = termination_count + 1
-				assert(terminate_err and terminate_err:match("Timed out"), terminate_err)
-				assert(raw and raw.timed_out, "the logical timeout should be reported by the process owner")
+				termination_err, termination_raw = terminate_err, raw
 			end,
 		}, function(_, _, raw)
 			callback_count = callback_count + 1
@@ -3320,6 +3322,11 @@ local function test_async_system_owns_timeout_escalation_and_bounded_output()
 		wait_for(function()
 			return termination_count == 1
 		end, "system timeout should report logical termination")
+		assert(termination_err and termination_err:match("Timed out"), "logical timeout should report an error")
+		assert(
+			termination_raw and termination_raw.timed_out,
+			"the logical timeout should be reported by the process owner"
+		)
 		eq(signals, { 15 })
 		eq(callback_count, 0, "physical completion must wait for the child exit")
 		wait_for(function()
@@ -7245,6 +7252,7 @@ vim.list_extend(cases, require("spec_process_shutdown")({ helpers = helpers, wai
 vim.list_extend(cases, require("spec_process_flows")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_windows_process")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_harness_regressions")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_harness_a2")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_process_regressions")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_process")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_copilotchat_files")({ helpers = helpers, wait_for = wait_for }))

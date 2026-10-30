@@ -7,6 +7,19 @@ package.path = table.concat({
 	package.path,
 }, ";")
 
+-- Each child, including restarts, owns storage until all exit persistence ends.
+local test_storage = vim.fs.normalize(vim.fn.tempname())
+vim.fn.mkdir(test_storage, "p")
+test_storage = vim.fs.normalize(vim.uv.fs_realpath(test_storage) or test_storage)
+vim.env.XDG_STATE_HOME = test_storage .. "/state"
+vim.env.XDG_CACHE_HOME = test_storage .. "/cache"
+vim.api.nvim_create_autocmd("VimLeave", {
+	once = true,
+	callback = function()
+		pcall(vim.fn.delete, test_storage, "rf")
+	end,
+})
+
 vim.g.mapleader = " "
 vim.cmd.runtime("plugin/lazyvcs.lua")
 vim.keymap.set("n", "<leader>vs", "<cmd>LazyVCS sidebar toggle<cr>", { desc = "Toggle VCS sidebar" })

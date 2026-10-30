@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Git's repository and configuration overrides take precedence over -C. Keep
+# dependency setup and Neovim children out of any inherited repository.
+for git_env_var in "${!GIT_@}"; do
+	unset "${git_env_var}"
+done
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 

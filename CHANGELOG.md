@@ -83,6 +83,8 @@ and this project adheres to
   availability before requesting consent.
 - Stop cancelled CopilotChat requests from starting more transports.
 - Document the fzf-lua fallback for branch and action pickers.
+- Keep UI tests from changing an inherited Git repository or leaving fixture
+  preferences in the user's state directory.
 - Refuse SVN directory Discard when a restored directory or its parent is a
   symlink or junction, protecting files outside the working copy.
 - Protect untracked and ignored files at a staged rename's old path from
