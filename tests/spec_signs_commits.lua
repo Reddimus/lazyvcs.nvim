@@ -144,7 +144,7 @@ return function(ctx)
 					local message = state.lazyvcs_commit_drafts[f.root]
 					local path, exit, process_opts
 					lifecycle(function(counts)
-						local start, system, open = util.system_start, vim.system, vim.uv.fs_open
+						local start, open = util.system_start, vim.uv.fs_open
 						local function pending()
 							assert(counts.begin == 1 and counts.finish == 0)
 							assert(not s.signs.current_state(buf).loaded)

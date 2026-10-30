@@ -5159,7 +5159,6 @@ local function test_git_base_window_leader_q_closes_session()
 	local fixture = helpers.make_git_fixture()
 	vim.cmd.edit(vim.fn.fnameescape(fixture.file))
 
-	local actions = require("lazyvcs.actions")
 	local state = require("lazyvcs.state")
 	local session = open_diff()
 	local function count_close_maps(bufnr)
@@ -6535,7 +6534,6 @@ local function test_source_control_switch_repo_closes_matching_sessions_and_refr
 	})
 
 	local fixture = helpers.make_git_fixture()
-	local model = require("lazyvcs.source_control.model")
 	local ops = require("lazyvcs.source_control.ops")
 	local switch = require("lazyvcs.source_control.switch")
 	local actions = require("lazyvcs.actions")
@@ -6657,7 +6655,6 @@ local function test_svn_buffer_transfer_handles_added_and_untracked_files()
 	local fixture = helpers.make_svn_transfer_fixture()
 	vim.cmd.edit(vim.fn.fnameescape(fixture.file1))
 
-	local actions = require("lazyvcs.actions")
 	local state = require("lazyvcs.state")
 	local first_session = open_diff()
 
@@ -6711,7 +6708,6 @@ local function test_transfer_to_unsupported_buffer_closes_session()
 	local fixture = helpers.make_git_transfer_fixture()
 	vim.cmd.edit(vim.fn.fnameescape(fixture.file1))
 
-	local actions = require("lazyvcs.actions")
 	local state = require("lazyvcs.state")
 	local first_session = open_diff()
 

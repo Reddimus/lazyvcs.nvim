@@ -1,0 +1,11 @@
+{
+  "files": [
+    { "path": "AGENTS.md" },
+    { "path": ".github/review-policy.md" },
+    {
+      "path": "CONTRIBUTING.md",
+      "description": "Conventions, architecture, and invariants for the plugin and its tests",
+      "scope": ["lua/**", "plugin/**", "tests/**"]
+    }
+  ]
+}

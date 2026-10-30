@@ -6,6 +6,18 @@
   "diagnostics": {
     "globals": [
       "vim"
+    ],
+    "severity": {
+      "unused-local": "Warning!",
+      "unused-function": "Warning!",
+      "unused-vararg": "Warning!",
+      "redundant-value": "Warning!",
+      "redundant-return-value": "Warning!",
+      "code-after-break": "Warning!",
+      "unreachable-code": "Warning!"
+    },
+    "unusedLocalExclude": [
+      "_*"
     ]
   },
   "workspace": {

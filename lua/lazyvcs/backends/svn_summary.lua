@@ -67,7 +67,7 @@ function M.load(task, snapshot, command, done, local_path)
 		rows[path] = rows[path] and rows[path] .. row or row
 		return true
 	end
-	local function expand(path, before, after, next_path)
+	local function expand(path, before, _after, next_path)
 		local url = require("lazyvcs.backends.svn_url").append_path(snapshot.url, path)
 		local local_target = snapshot.root .. "/" .. path
 		local removing = before == "dir"

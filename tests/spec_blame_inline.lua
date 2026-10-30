@@ -5,7 +5,7 @@ return function(ctx)
 		{
 			"test_blame_inline_resolves_again_after_dirchanged",
 			function()
-				local f, buf = t.open(false, { blame = { delay_ms = 100 } })
+				local _, buf = t.open(false, { blame = { delay_ms = 100 } })
 				assert(require("lazyvcs.blame").blame())
 				assert(require("lazyvcs.blame")._test_inline_state().views[buf].timer)
 				vim.cmd.cd(vim.fn.fnameescape(t.h.tempdir()))

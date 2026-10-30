@@ -200,7 +200,7 @@ function M.open_text(opts, on_submit)
 	}
 end
 
-function M.open(state, repo, default_value, on_submit)
+function M.open(_state, repo, default_value, on_submit)
 	local title = string.format(" Commit Message: %s ", repo.name)
 	if repo.branch and repo.branch ~= "" then
 		title = string.format(" Commit Message: %s (%s) ", repo.name, repo.branch)

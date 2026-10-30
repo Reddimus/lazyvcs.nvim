@@ -374,7 +374,7 @@ return function(ctx)
 				local repo = { root = root, name = "fixture", vcs = "git" }
 				local held, hold_context
 				---@diagnostic disable-next-line: duplicate-set-field
-				util.system_start = function(args, opts, done)
+				util.system_start = function(args, _opts, done)
 					if args[1] == "git" then
 						if hold_context then
 							held = done
