@@ -217,8 +217,27 @@ jobs:
 
       - name: Install Subversion
         shell: pwsh
+        # The official archive, pinned by checksum, instead of the Chocolatey
+        # community feed, which has failed intermittently.
         run: |
-          choco install sliksvn --version=1.14.5 -y --no-progress
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'sliksvn.zip'
+          $dir = Join-Path $env:RUNNER_TEMP 'sliksvn'
+          Invoke-WebRequest -Uri 'https://sliksvn.com/pub/Slik-Subversion-1.14.5-x64.zip' `
+            -OutFile $zip -MaximumRetryCount 5 -RetryIntervalSec 5
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash
+          if ($hash -ne '77D4FE02999DDA3BDC3A20E86243AE6EDE99AAF072B4C12B0CDEDB54D88E954A') {
+            throw "SlikSvn archive checksum mismatch: $hash"
+          }
+          Expand-Archive -Path $zip -DestinationPath $dir
+          $msi = Join-Path $dir 'Slik-Subversion-1.14.5-x64.msi'
+          $log = Join-Path $env:RUNNER_TEMP 'sliksvn-install.log'
+          $install = Start-Process msiexec.exe -Wait -PassThru `
+            -ArgumentList '/i', "`"$msi`"", '/qn', '/norestart', 'INSTALLLEVEL=300', '/l*v', "`"$log`""
+          if ($install.ExitCode -notin 0, 3010) {
+            Get-Content $log -Tail 40
+            throw "SlikSvn install failed with exit code $($install.ExitCode)"
+          }
           "C:\Program Files\SlikSvn\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Configure Git identity
