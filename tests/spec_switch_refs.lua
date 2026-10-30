@@ -61,6 +61,29 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_source_control_switch_remote_name_ignores_tag_collision",
+			guarded(function()
+				for _, collision in ipairs({ false, true }) do
+					local f = h.make_git_switch_fixture()
+					local repo = { root = f.root, vcs = "git", name = "clone" }
+					git(f.root, "tag", "origin/feature/remote")
+					if collision then
+						git(f.root, "branch", "feature/remote")
+					end
+					assert(pick(repo, { "refs/remotes/origin/feature/remote" }, "chosen-name") == 1)
+					local expected = collision and "chosen-name" or "feature/remote"
+					assert(
+						git(f.root, "branch", "--show-current") == expected,
+						"tag collision changed the remote branch's default name or bypassed its naming prompt"
+					)
+					assert(
+						git(f.root, "rev-parse", "--symbolic-full-name", "@{upstream}")
+							== "refs/remotes/origin/feature/remote"
+					)
+				end
+			end),
+		},
+		{
 			"test_source_control_switch_branch_tag_collision",
 			guarded(function()
 				local f = h.make_git_switch_fixture()

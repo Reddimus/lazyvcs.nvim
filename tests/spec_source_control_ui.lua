@@ -118,6 +118,44 @@ return function(ctx)
 	end
 	local cases = {
 		{
+			"test_source_control_sync_mapping_help_matches_direct_behavior",
+			function()
+				local f = h.make_git_switch_fixture()
+				require("lazyvcs.config").get().source_control.sync_button_behavior = "direct"
+				require("lazyvcs.config").get().source_control.confirm_mutations = false
+				h.write_file(f.root .. "/sample.txt", "outgoing commit\n")
+				h.exec({ "git", "commit", "-am", "outgoing" }, f.root)
+				local head = h.exec({ "git", "rev-parse", "HEAD" }, f.root)
+				local s = open(f.root)
+				select_node(s, function(n)
+					return n.type == "repo" or n.type == "repo_changes"
+				end)
+				key(s.bufnr, "s")
+				ctx.wait_for(function()
+					return h.exec({ "git", "--git-dir", f.origin, "rev-parse", "refs/heads/main" }, f.root) == head
+				end, "direct s did not synchronize", 15000)
+				local description
+				for _, mapping in ipairs(api.nvim_buf_get_keymap(s.bufnr, "n")) do
+					if mapping.lhs == "s" then
+						description = mapping.desc
+					end
+				end
+				key(s.bufnr, "?")
+				local help = table.concat(api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+				assert(
+					help:find("sync_button_behavior", 1, true) and help:find("direct", 1, true),
+					"sidebar help presents s and . as equivalent under direct synchronization"
+				)
+				assert(description and description:lower():find("sync", 1, true), "s mapping description omits Sync")
+				local doc = table.concat(vim.fn.readfile("doc/lazyvcs.txt"), "\n")
+				assert(
+					not doc:find("s, .         open repo actions", 1, true),
+					"manual conflates Sync and repository actions"
+				)
+				vim.cmd("close")
+			end,
+		},
+		{
 			"test_source_control_input_preserves_multiline_paste",
 			function()
 				local result

@@ -223,15 +223,24 @@ the GitHub release.
   disables submodule recursion. Windows links also require an asynchronous
   PowerShell LinkType check to exclude junctions; pass the path through the
   child's environment. SVN revalidates its recorded node kind before choosing
-  file or directory scope. Recursive SVN Discard enumerates recorded directories
-  and checks them and their parents with asynchronous lstat, parents first.
-  Links are refused before any child path is checked. Missing directories remain
+  file or directory scope. Recursive SVN Discard enumerates every recorded
+  restore target and checks it and its parents with asynchronous lstat, parents
+  first. Recorded files refuse directory and special-file obstructions. Links
+  are refused before any child path is checked. Missing directories remain
   restorable. Addition removals require an exact stage-zero index entry and
   either an absent HEAD path or a HEAD tree replaced by that entry. Rename
   Discard refuses untracked or ignored source files. Stage accepts directory
   targets only for exact stage-zero index gitlinks. Its ancestor checks inspect
   the working tree and index, allowing ordinary files beneath a former HEAD
-  gitlink.
+  gitlink. Unstage checks every non-addition operand, including rename sources,
+  against complete index and HEAD records to refuse subtree expansion.
+- Git child environments omit repository selectors, including alternate indexes
+  and object directories, for discovery, reads, and mutations. Preserve ordinary
+  configuration and authentication without changing Neovim's environment.
+  Whole-file Git revert requires an exact stage-zero index file and checks its
+  filesystem kind after confirmation, before starting restore. Files, symlinks,
+  and missing files remain eligible. Directory replacements and special files
+  are refused. These checks cannot make external replacement atomic.
 - `compare.lua` owns review tabs, source-control navigation, and read-only
   previews. Its `set_panes()` transition installs both panes before publishing
   their slots and defers results while the picker router owns a borrowed buffer.

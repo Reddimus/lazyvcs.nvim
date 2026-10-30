@@ -250,7 +250,107 @@ return function(ctx)
 		assert(ok, err)
 	end
 
+	local function replacement_unstage(rename, queued, missing)
+		setup()
+		local f = rename and rename_fixture() or h.make_git_fixture()
+		local path = rename and "new [1].txt" or "sample.txt"
+		if not rename then
+			git(f.root, "add", path)
+		end
+		local state, repo, node = node_for(f, "staged", path)
+		local operand = rename and "sample.txt" or path
+		local function replace()
+			vim.fn.delete(f.root .. "/" .. operand, "rf")
+			vim.fn.mkdir(f.root .. "/" .. operand, "p")
+			h.write_file(f.root .. "/" .. operand .. "/child.txt", "unselected staged snapshot\n")
+			git(f.root, "add", "-A", "--", operand)
+			if missing then
+				vim.fn.delete(f.root .. "/" .. operand, "rf")
+			end
+		end
+		if queued then
+			delay_mutation(repo, function()
+				ops.unstage_file(state, node)
+			end, replace)
+		else
+			confirmed(function()
+				ops.unstage_file(state, node)
+			end, replace)
+		end
+		local job = finished(f.root)
+		assert(
+			git(f.root, "ls-files", "--", operand .. "/child.txt") == operand .. "/child.txt",
+			"Unstage removed an unselected child's staged snapshot"
+		)
+		assert(job and job.error:find("retry"), "stale file Unstage must request refresh and retry")
+	end
+
 	local cases = {
+		{
+			"test_source_control_unstage_refuses_subtree_replacement",
+			function()
+				for _, rename in ipairs({ false, true }) do
+					for _, queued in ipairs({ false, true }) do
+						for _, missing in ipairs({ false, true }) do
+							replacement_unstage(rename, queued, missing)
+						end
+					end
+				end
+			end,
+		},
+		{
+			"test_source_control_svn_discard_refuses_recorded_file_directory",
+			function()
+				setup()
+				local f = svn_directory_fixture()
+				h.exec({ "svn", "delete", "dir" }, f.root)
+				vim.fn.mkdir(f.root .. "/dir/nested/child.txt", "p")
+				local precious = f.root .. "/dir/nested/child.txt/precious.txt"
+				h.write_file(precious, "saved unversioned work\n")
+				h.write_file(f.root .. "/dir/sibling.txt", "ordinary unversioned sibling\n")
+				local state, _, node = node_for(f, "changes", "dir", "svn")
+				confirmed(function()
+					ops.revert_file(state, node)
+				end)
+				wait_mutation(f.root, "svn_revert")
+				local job = finished(f.root)
+				assert(vim.fn.filereadable(precious) == 1, "recursive Discard deleted the recorded file's obstruction")
+				assert(job and job.error:find("obstruction"), "recorded file obstruction must be refused")
+				vim.fn.delete(f.root .. "/dir/nested/child.txt", "rf")
+				state, _, node = node_for(f, "changes", "dir", "svn")
+				confirmed(function()
+					ops.revert_file(state, node)
+				end)
+				success(f.root)
+				assert(vim.fn.readfile(f.root .. "/dir/nested/child.txt")[1] == "child base")
+				assert(vim.fn.readfile(f.root .. "/dir/sibling.txt")[1] == "ordinary unversioned sibling")
+			end,
+		},
+		{
+			"test_source_control_stage_isolates_inherited_index",
+			function()
+				setup()
+				local a, b = h.make_git_fixture(), h.make_git_fixture()
+				h.write_file(a.file, "A staged work\n")
+				git(a.root, "add", "sample.txt")
+				h.write_file(b.file, "B saved work\n")
+				local saved = vim.env.GIT_INDEX_FILE
+				vim.env.GIT_INDEX_FILE = a.root .. "/.git/index"
+				local ok, err = xpcall(function()
+					local state, _, node = node_for(b, "changes", "sample.txt")
+					ops.stage_file(state, node)
+					success(b.root)
+					assert(vim.env.GIT_INDEX_FILE == a.root .. "/.git/index", "editor environment changed")
+				end, debug.traceback)
+				vim.env.GIT_INDEX_FILE = saved
+				assert(ok, err)
+				assert(git(a.root, "show", ":sample.txt") == "A staged work", "Stage changed another checkout's index")
+				assert(
+					git(b.root, "show", ":sample.txt") == "B saved work",
+					"Stage did not update the selected checkout"
+				)
+			end,
+		},
 		{
 			"test_source_control_unstage_directory_to_file_replacement",
 			function()

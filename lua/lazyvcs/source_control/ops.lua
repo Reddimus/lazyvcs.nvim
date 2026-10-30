@@ -1147,12 +1147,22 @@ function M.unstage_file(state, node)
 	local args = index == "A" and { "git", "rm", "--cached", "-f", "--" } or { "git", "restore", "--staged", "--" }
 	vim.list_extend(args, paths)
 	confirm_mutation(state, "Unstage " .. relpath .. " in " .. repo.name .. "?", function()
-		start_simple_repo_job(state, repo, {
-			action = "unstage_file",
-			label = "Unstaging " .. relpath .. "...",
-			sync_text = "Unstage",
-			remote_refresh = false,
-		}, "git_unstage_file", args, { git_addition = index == "A" and relpath or nil })
+		start_simple_repo_job(
+			state,
+			repo,
+			{
+				action = "unstage_file",
+				label = "Unstaging " .. relpath .. "...",
+				sync_text = "Unstage",
+				remote_refresh = false,
+			},
+			"git_unstage_file",
+			args,
+			{
+				git_addition = index == "A" and relpath or nil,
+				git_unstage = index ~= "A" and paths or nil,
+			}
+		)
 	end)
 end
 

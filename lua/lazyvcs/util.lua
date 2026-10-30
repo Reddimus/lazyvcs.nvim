@@ -84,10 +84,77 @@ function M.svn_target(path, revision)
 	return path .. "@" .. (revision and tostring(revision) or "")
 end
 
+local function relative_normalized_path(root, path, ignorecase)
+	local base, target = root, path
+	if ignorecase then
+		base, target = base:lower(), target:lower()
+	end
+	if base == target then
+		return "."
+	end
+	local prefix = base:sub(-1) == "/" and base or (base .. "/")
+	if target:sub(1, #prefix) == prefix then
+		return path:sub(#prefix + 1)
+	end
+	return nil
+end
+
+local git_work_tree_cache = {}
+local function uses_git_work_tree(environment, cwd)
+	local git_dir, work_tree
+	for key, value in pairs(environment) do
+		local name = key:upper()
+		if name == "GIT_DIR" then
+			git_dir = value
+		elseif name == "GIT_WORK_TREE" then
+			work_tree = value
+		end
+	end
+	if git_work_tree_cache.git_dir ~= git_dir or git_work_tree_cache.work_tree ~= work_tree then
+		git_work_tree_cache = { git_dir = git_dir, work_tree = work_tree }
+		if type(git_dir) == "string" and git_dir ~= "" and type(work_tree) == "string" and work_tree ~= "" then
+			git_work_tree_cache.canonical = M.canonical_path(work_tree)
+		end
+	end
+	if not git_work_tree_cache.canonical or not cwd or cwd == "" then
+		return false
+	end
+	return relative_normalized_path(git_work_tree_cache.canonical, M.canonical_path(cwd), vim.fn.has("win32") == 1)
+		~= nil
+end
+
 local function command_options(args, opts)
 	opts = vim.tbl_extend("force", {}, opts or {})
 	if args[1] == "git" then
-		opts.env = vim.tbl_extend("force", { GIT_TERMINAL_PROMPT = "0" }, opts.env or {}, {
+		-- Preserve a dotfiles repository only within its explicit work tree.
+		-- Snapshot via libuv because commands can start in fast-event callbacks.
+		local environment = vim.tbl_extend(
+			"force",
+			opts.clear_env and {} or vim.uv.os_environ(),
+			{ GIT_TERMINAL_PROMPT = "0" },
+			opts.env or {}
+		)
+		local keep_work_tree = uses_git_work_tree(environment, opts.cwd)
+		local selectors = {
+			GIT_DIR = not keep_work_tree,
+			GIT_WORK_TREE = not keep_work_tree,
+			GIT_COMMON_DIR = true,
+			GIT_INDEX_FILE = true,
+			GIT_OBJECT_DIRECTORY = true,
+			GIT_ALTERNATE_OBJECT_DIRECTORIES = true,
+			GIT_NAMESPACE = true,
+			GIT_PREFIX = true,
+			GIT_SHALLOW_FILE = true,
+			GIT_GRAFT_FILE = true,
+			GIT_IMPLICIT_WORK_TREE = true,
+		}
+		for key in pairs(environment) do
+			if selectors[key:upper()] then
+				environment[key] = nil
+			end
+		end
+		opts.clear_env = true
+		opts.env = vim.tbl_extend("force", environment, {
 			GIT_LITERAL_PATHSPECS = "1",
 			GIT_GLOB_PATHSPECS = "0",
 			GIT_NOGLOB_PATHSPECS = "0",
@@ -99,6 +166,18 @@ local function command_options(args, opts)
 		args = vim.list_extend({ "svn", "--non-interactive" }, vim.list_slice(args, 2))
 	end
 	return opts, args
+end
+
+-- Neovim before 0.11.3 passes clear_env straight to libuv, which needs a list.
+local function system_options(opts)
+	if opts.clear_env and opts.env and vim.fn.has("nvim-0.11.3") == 0 and not vim.islist(opts.env) then
+		local entries = {}
+		for name, value in pairs(opts.env) do
+			entries[#entries + 1] = name .. "=" .. tostring(value)
+		end
+		return vim.tbl_extend("force", opts, { env = entries })
+	end
+	return opts
 end
 
 function M.show_text(title, lines)
@@ -192,7 +271,7 @@ function M.system_result(args, opts)
 	-- vim.system raises synchronously when the executable is missing (ENOENT).
 	-- Convert that into a normal non-zero result so callers can handle it via
 	-- the usual result.code path instead of crashing.
-	local ok, proc = pcall(vim.system, args, opts)
+	local ok, proc = pcall(vim.system, args, system_options(opts))
 	if not ok or not proc then
 		return { code = 127, stdout = "", stderr = M.spawn_error(args, proc) }
 	end
@@ -756,7 +835,7 @@ function M.system_start(args, opts, on_exit)
 	local ok, proc = pcall(
 		vim.system,
 		spawn_args,
-		vim.tbl_extend("keep", spawn_opts, { text = true }),
+		system_options(vim.tbl_extend("keep", spawn_opts, { text = true })),
 		M.safe_callback(complete_exit)
 	)
 	if not ok then
@@ -907,21 +986,6 @@ end
 ---@return string
 function M.normalize_literal_path(path)
 	return vim.fs.normalize(path:sub(1, 1) == "~" and ("./" .. path) or path, { expand_env = false })
-end
-
-local function relative_normalized_path(root, path, ignorecase)
-	local base, target = root, path
-	if ignorecase then
-		base, target = base:lower(), target:lower()
-	end
-	if base == target then
-		return "."
-	end
-	local prefix = base:sub(-1) == "/" and base or (base .. "/")
-	if target:sub(1, #prefix) == prefix then
-		return path:sub(#prefix + 1)
-	end
-	return nil
 end
 
 ---Lexical membership only: no environment expansion, realpath, or per-file I/O.

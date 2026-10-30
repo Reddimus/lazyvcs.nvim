@@ -908,7 +908,9 @@ local function setup_buffer(state)
 			"h: collapse   q: close",
 			"Space/Tab: repository visibility   H: show clean repositories",
 			"R: refresh   X: cancel repository operation",
-			"s/.: repository actions   b: switch branch or target",
+			"s: Sync (sync_button_behavior: picker opens actions; direct synchronizes)",
+			"Direct Sync requests Git sync or SVN update, subject to confirm_mutations",
+			".: always open repository actions   b: switch branch or target",
 			"c: commit   e: edit commit message or auto-fit width",
 			"ga: stage   gu: unstage   gr: revert   gm: generate commit message",
 			"v: tree/list   S: change sort order   C: compare against base",
@@ -931,7 +933,7 @@ local function setup_buffer(state)
 	end, "Toggle clean repositories")
 	bind(bufnr, "s", function()
 		M.dispatch("sync_repo")
-	end, "Repository actions")
+	end, "Sync repository (sync_button_behavior)")
 	bind(bufnr, ".", function()
 		M.dispatch("repo_actions")
 	end, "Repository actions")

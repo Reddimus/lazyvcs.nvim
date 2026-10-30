@@ -29,6 +29,14 @@ the right. Git compares against the index. SVN uses BASE with
 `svn cat -r BASE path`. Git untracked files and SVN added files use an empty
 base. See |lazyvcs-inline-signs| for Git attribute handling.
 
+Git subprocesses always strip GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY,
+GIT_ALTERNATE_OBJECT_DIRECTORIES, GIT_NAMESPACE, GIT_PREFIX, GIT_SHALLOW_FILE,
+GIT_GRAFT_FILE, GIT_COMMON_DIR, and GIT_IMPLICIT_WORK_TREE; they keep GIT_DIR and
+GIT_WORK_TREE only when both are set and the command has a working directory
+inside that canonical work tree, with case-insensitive comparison on Windows.
+Authentication and ordinary Git configuration remain inherited, and Neovim's
+environment is unchanged.
+
 Explicit live-diff, signs, and sidebar refresh commands
 redetect repository ownership. BufEnter and BufWritePost also revalidate the
 buffer directory asynchronously, at most once per five seconds. Cursor movement
@@ -93,8 +101,14 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
 
 :LazyVCS preview      Preview the current buffer diff in a floating window.
 
-:LazyVCS revert       Revert all changes in the current file, after confirming.
+:LazyVCS revert       Discard saved working-tree changes in the current file,
+                      after confirming. Git restores the index version and
+                      preserves staged changes. SVN runs svn revert, restoring
+                      BASE for ordinary modified versioned files.
                       Refuse paths that cannot be placed in the repository.
+                      Git refuses directory replacements and requires an exact
+                      index file. External filesystem changes are not atomic
+                      with these checks.
 
 :LazyVCS profile {show|clear}
                       Show or clear recent source-control job timings.
@@ -372,7 +386,8 @@ buffer-local and fixed; `config.keymaps` does not reach them.
     H            toggle clean repos
     e            edit commit message, or toggle auto-fit width
     b            switch Git branch/tag or SVN target
-    s, .         open repo actions
+    s            invoke Sync according to sync_button_behavior
+    .            always open repo actions
     c            commit repo
     gm           generate commit message
     ga           stage Git file
@@ -1033,7 +1048,9 @@ Source-control options:
     changes_sort       `path`, `name`, or `status`.
     compact_folders    Collapse single-child folder chains in tree mode.
     sync_button_behavior
-                       `picker` or `direct` for the Sync button.
+                       Applies to the Sync button and `s` mapping. `picker`
+                       opens repo actions. `direct` requests Git synchronization
+                       or SVN update, subject to confirm_mutations.
     always_show_repositories
                        Keep the Repositories section visible with one repo.
     show_action_button Show the sidebar action button.

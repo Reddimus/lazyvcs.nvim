@@ -584,6 +584,43 @@ function M.start(repo, args, opts, guards, on_exit)
 					end)
 				end)
 			end)
+		elseif guards.git_unstage then
+			local index = 0
+			local function check_next()
+				index = index + 1
+				local path = guards.git_unstage[index]
+				if not path then
+					return mutate()
+				end
+				local function refuse()
+					return reject("Unstage scope changed at " .. path .. "; refresh and retry.")
+				end
+				spawn({ "git", "ls-files", "--stage", "-z", "--", path }, function(result)
+					if result.stdout_truncated then
+						return refuse()
+					end
+					local remaining = result.stdout
+					while remaining ~= "" do
+						local entry, rest = remaining:match("^([^%z]+)%z(.*)$")
+						local indexed = entry and entry:match("^%d+ %x+ %d\t(.*)$")
+						if indexed ~= path then
+							return refuse()
+						end
+						remaining = rest
+					end
+					spawn({ "git", "ls-tree", "-z", "HEAD", "--", path }, function(tree)
+						local mode, kind, previous = tree.stdout:match("^(%d+) (%w+) %x+\t([^%z]+)%z$")
+						if
+							tree.stdout_truncated
+							or (tree.stdout ~= "" and (not mode or kind == "tree" or previous ~= path))
+						then
+							return refuse()
+						end
+						check_next()
+					end)
+				end)
+			end
+			return check_next()
 		elseif guards.git_rename_source then
 			local path = guards.git_rename_source
 			return spawn(
@@ -649,35 +686,33 @@ function M.start(repo, args, opts, guards, on_exit)
 					return reject("Cannot verify SVN restore directories; refresh and retry.")
 				end
 				local xml = require("lazyvcs.backends.xml")
-				local directories = {}
+				local targets = {}
 				for block in result.stdout:gmatch("<entry%f[%s>].-</entry%s*>") do
 					local entry = xml.parse_info(block)
-					if not entry or not entry.path or not entry.kind then
-						return reject("Cannot verify SVN restore directories; refresh and retry.")
+					if not entry or not entry.path or (entry.kind ~= "dir" and entry.kind ~= "file") then
+						return reject("Cannot verify SVN restore targets; refresh and retry.")
 					end
-					if entry.kind == "dir" then
-						local path = util.normalize_literal_path(repo.root .. "/" .. entry.path)
-						local relative = util.relative_literal_path(repo.root, path)
-						if
-							not relative
-							or (relative ~= plan.relpath and relative:sub(1, #plan.relpath + 1) ~= plan.relpath .. "/")
-						then
-							return reject("SVN restore directory changed; refresh and retry.")
-						end
-						-- Check parents first. Never lstat a child through an unchecked link.
-						local prefix = ""
-						for component in relative:gmatch("[^/]+") do
-							prefix = prefix == "" and component or prefix .. "/" .. component
-							directories[prefix] = true
-						end
+					local path = util.normalize_literal_path(repo.root .. "/" .. entry.path)
+					local relative = util.relative_literal_path(repo.root, path)
+					if
+						not relative
+						or (relative ~= plan.relpath and relative:sub(1, #plan.relpath + 1) ~= plan.relpath .. "/")
+					then
+						return reject("SVN restore target changed; refresh and retry.")
+					end
+					-- Check parents first. Never lstat a child through an unchecked link.
+					local prefix = ""
+					for component in relative:gmatch("[^/]+") do
+						prefix = prefix == "" and component or prefix .. "/" .. component
+						targets[prefix] = prefix == relative and entry.kind or "dir"
 					end
 				end
 				guards.tracked_discard = {}
-				for _, relative in ipairs(vim.fn.sort(vim.tbl_keys(directories))) do
+				for _, relative in ipairs(vim.fn.sort(vim.tbl_keys(targets))) do
 					guards.tracked_discard[#guards.tracked_discard + 1] = {
 						path = util.normalize_literal_path(repo.root .. "/" .. relative),
 						relpath = relative,
-						directory = true,
+						directory = targets[relative] == "dir",
 					}
 				end
 			end

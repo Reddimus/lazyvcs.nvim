@@ -46,6 +46,13 @@ The following are out of scope:
 - Prompt-injection of a configured AI provider by repository content. Treat
   generated commit messages as untrusted text and review before committing.
 
+## Git repository selection
+
+Git subprocesses ignore inherited repository selectors, including alternate
+index and object-directory settings. Commands use the selected repository.
+Alternate-index workflows are not supported. Authentication and ordinary Git
+configuration remain inherited. LazyVCS does not change Neovim's environment.
+
 ## Handling of repository content
 
 Diffs passed to an AI provider are sent over stdin or a private,

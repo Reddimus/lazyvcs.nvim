@@ -24,7 +24,251 @@ return function(ctx)
 			return true
 		end)
 	end
+	local function with_environment(overrides, fn)
+		local saved = {}
+		for key, value in pairs(overrides) do
+			saved[key], vim.env[key] = vim.env[key], value or nil
+		end
+		local ok, err = xpcall(fn, debug.traceback)
+		for key in pairs(overrides) do
+			vim.env[key] = saved[key]
+		end
+		assert(ok, err)
+	end
+	local function dotfiles_fixture()
+		local source, parent = h.make_git_fixture(), h.tempdir()
+		local root, git_dir = parent .. "/home", parent .. "/dotfiles.git"
+		vim.fn.mkdir(root .. "/config", "p")
+		h.exec({ "git", "clone", "--bare", source.root, git_dir }, parent)
+		h.exec({ "git", "--git-dir=" .. git_dir, "--work-tree=" .. root, "read-tree", "HEAD" }, parent)
+		h.write_file(root .. "/sample.txt", "dotfiles work\n")
+		local file = root .. "/config/settings.txt"
+		h.write_file(file, "settings\n")
+		return { root = root, git_dir = git_dir, file = file, source = source, parent = parent }
+	end
 	return {
+		{
+			"test_core_git_work_tree_environment_selection",
+			guarded(function()
+				local f = dotfiles_fixture()
+				local raw_tree, cwd = f.root .. "/config/..", f.root .. "/config"
+				local canonical, has = util.canonical_path, vim.fn.has
+				local resolutions, child_env = {}, nil
+				util.canonical_path = function(path)
+					resolutions[path] = (resolutions[path] or 0) + 1
+					return canonical(path)
+				end
+				vim.system = function(_, opts)
+					child_env = opts.env
+					if vim.islist(child_env) then
+						child_env = {}
+						for _, entry in ipairs(opts.env) do
+							local key, value = entry:match("^([^=]+)=(.*)$")
+							child_env[key] = value
+						end
+					end
+					return {
+						wait = function()
+							return { code = 0, stdout = "", stderr = "" }
+						end,
+					}
+				end
+				local ok, err = xpcall(function()
+					with_environment({ GIT_DIR = f.git_dir, GIT_WORK_TREE = raw_tree }, function()
+						local function probe(opts, keep)
+							util.system_result({ "git", "status" }, opts)
+							assert((child_env.GIT_DIR ~= nil) == keep, "incorrect GIT_DIR selection")
+							assert((child_env.GIT_WORK_TREE ~= nil) == keep, "incorrect GIT_WORK_TREE selection")
+						end
+						probe({ cwd = cwd }, true)
+						probe({ cwd = cwd, env = { CUSTOM = "changed" } }, true)
+						assert(resolutions[raw_tree] == 1, "work tree was canonicalized per command")
+						probe({ cwd = cwd, env = { GIT_DIR = f.git_dir .. "/." } }, true)
+						assert(resolutions[raw_tree] == 2, "GIT_DIR change did not invalidate the cache")
+						probe({ cwd = cwd, env = { GIT_WORK_TREE = f.parent } }, true)
+						assert(resolutions[f.parent] == 1, "GIT_WORK_TREE change did not invalidate the cache")
+						probe({ cwd = cwd }, true)
+						probe({}, false)
+						probe({ cwd = "" }, false)
+						probe({ cwd = cwd, clear_env = true }, false)
+						probe({ cwd = cwd, env = { GIT_WORK_TREE = "" } }, false)
+						probe({ cwd = cwd, env = { GIT_DIR = "" } }, false)
+						with_environment({ GIT_WORK_TREE = false }, function()
+							probe({ cwd = cwd }, false)
+						end)
+						with_environment({ GIT_DIR = false }, function()
+							probe({ cwd = cwd }, false)
+						end)
+						vim.fn.has = function(name)
+							return name == "win32" and 1 or has(name)
+						end
+						probe({ cwd = cwd:upper() }, true)
+					end)
+				end, debug.traceback)
+				util.canonical_path, vim.fn.has = canonical, has
+				assert(ok, err)
+			end),
+		},
+		{
+			"test_core_git_dotfiles_environment_discovery_and_status",
+			guarded(function()
+				local f = dotfiles_fixture()
+				h.write_file(f.source.file, "poisoned inherited index\n")
+				h.exec({ "git", "add", "sample.txt" }, f.source.root)
+				with_environment({
+					GIT_DIR = f.git_dir,
+					GIT_WORK_TREE = f.root,
+					GIT_INDEX_FILE = f.source.root .. "/.git/index",
+					GIT_COMMON_DIR = f.parent .. "/absent",
+				}, function()
+					local git = require("lazyvcs.backends.git")
+					local root, err = git.root(f.file)
+					assert(root == f.root, "dotfiles root resolution failed: " .. tostring(err))
+					local done, info, failure
+					git.probe_async(f.file, function(value, e)
+						done, info, failure = true, value, e
+					end)
+					wait(function()
+						return done
+					end)
+					assert(info and info.root == f.root, failure or "asynchronous dotfiles discovery failed")
+					local result = assert(util.system({ "git", "status", "--porcelain", "--", "sample.txt" }, {
+						cwd = root,
+					}))
+					assert(result.stdout == " M sample.txt\n", "dotfiles status used the inherited index")
+					done, info, failure = false, nil, nil
+					util.system_start({ "git", "status", "--porcelain", "--", "settings.txt" }, {
+						cwd = root .. "/config",
+					}, function(value, e)
+						done, info, failure = true, value, e
+					end)
+					wait(function()
+						return done
+					end)
+					assert(info, failure)
+					assert(info.stdout == "?? config/settings.txt\n", "nested dotfiles status failed")
+				end)
+			end),
+		},
+		{
+			"test_core_git_dotfiles_environment_unrelated_repository",
+			guarded(function()
+				local f = dotfiles_fixture()
+				-- A sibling with the same path prefix must not count as membership.
+				local other = f.root .. "-other"
+				h.exec({ "git", "clone", f.source.root, other }, f.parent)
+				with_environment({ GIT_DIR = f.git_dir, GIT_WORK_TREE = f.root }, function()
+					local result = assert(util.system({ "git", "rev-parse", "--show-toplevel" }, { cwd = other }))
+					assert(
+						util.canonical_path(util.trim(result.stdout)) == other,
+						"dotfiles redirected another repository"
+					)
+					local done, result_async, failure
+					util.system_start({ "git", "rev-parse", "--show-toplevel" }, { cwd = other }, function(value, e)
+						done, result_async, failure = true, value, e
+					end)
+					wait(function()
+						return done
+					end)
+					assert(result_async, failure)
+					assert(util.canonical_path(util.trim(result_async.stdout)) == other)
+				end)
+			end),
+		},
+		{
+			"test_core_git_environment_fast_event",
+			guarded(function()
+				local f = dotfiles_fixture()
+				with_environment({ GIT_DIR = f.git_dir, GIT_WORK_TREE = f.root }, function()
+					local done, result, failure, launch_error
+					local timer = assert(vim.uv.new_timer())
+					timer:start(0, 0, function()
+						timer:close()
+						local ok, err = pcall(function()
+							assert(vim.in_fast_event(), "probe must run in a libuv callback")
+							util.system_start({ "git", "rev-parse", "--show-toplevel" }, {
+								cwd = f.root .. "/config",
+							}, function(value, e)
+								done, result, failure = true, value, e
+							end)
+						end)
+						if not ok then
+							done, launch_error = true, err
+						end
+					end)
+					wait(function()
+						return done
+					end)
+					assert(not launch_error, launch_error)
+					assert(result, failure)
+					assert(util.canonical_path(util.trim(result.stdout)) == f.root)
+				end)
+			end),
+		},
+		{
+			"test_core_git_repository_environment_isolation",
+			guarded(function()
+				local a, b = h.make_git_fixture(), h.make_git_fixture()
+				local overrides = {
+					GIT_DIR = a.root .. "/.git",
+					GIT_WORK_TREE = a.root,
+					GIT_COMMON_DIR = a.root .. "/.git",
+					GIT_INDEX_FILE = a.root .. "/.git/index",
+					GIT_OBJECT_DIRECTORY = a.root .. "/.git/objects",
+					GIT_ALTERNATE_OBJECT_DIRECTORIES = a.root .. "/.git/objects",
+					GIT_NAMESPACE = "other",
+					GIT_PREFIX = "other/",
+					GIT_SHALLOW_FILE = a.root .. "/absent",
+					GIT_GRAFT_FILE = a.root .. "/absent",
+					GIT_IMPLICIT_WORK_TREE = "0",
+				}
+				local saved = {}
+				for key, value in pairs(overrides) do
+					saved[key], vim.env[key] = vim.env[key], value
+				end
+				local ok, err = xpcall(function()
+					for _, supplied in ipairs({ false, true }) do
+						local opts = { cwd = b.root, env = supplied and overrides or nil }
+						local args = { "git", "rev-parse", "--show-toplevel" }
+						local result, failure = util.system(args, opts)
+						assert(result, failure)
+						assert(
+							util.canonical_path(util.trim(result.stdout)) == b.root,
+							"synchronous Git escaped its cwd"
+						)
+						local done, value, command_err
+						util.system_start(args, opts, function(v, e)
+							done, value, command_err = true, v, e
+						end)
+						wait(function()
+							return done
+						end, "environment probe did not settle", 15000)
+						assert(value, command_err)
+						assert(
+							util.canonical_path(util.trim(value.stdout)) == b.root,
+							"asynchronous Git escaped its cwd"
+						)
+					end
+					for key, value in pairs(overrides) do
+						assert(vim.env[key] == value, "editor environment changed")
+					end
+					local args = { "git", "config", "user.name" }
+					local result = assert(util.system(args, {
+						cwd = b.root,
+						env = {
+							GIT_CONFIG_COUNT = "1",
+							GIT_CONFIG_KEY_0 = "user.name",
+							GIT_CONFIG_VALUE_0 = "ordinary configuration",
+						},
+					}))
+					assert(util.trim(result.stdout) == "ordinary configuration", "ordinary configuration was lost")
+				end, debug.traceback)
+				for key in pairs(overrides) do
+					vim.env[key] = saved[key]
+				end
+				assert(ok, err)
+			end),
+		},
 		{
 			"test_core_process_termination_is_failure",
 			guarded(function()
