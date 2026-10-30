@@ -127,9 +127,12 @@ TOTAL COMPARISON                                           *lazyvcs-comparison*
 :LazyVCS compare prompts for a Git branch/commit or an SVN URL@revision.
 Git uses the common ancestor of HEAD and the chosen base. Its net comparison
 includes committed, staged, and saved working-tree changes. SVN compares the
-chosen repository revision to the saved working copy. Neither includes unsaved
-buffers. Nonignored untracked files are included by default. SVN ignore matching
-follows SVN wildcard rules, including inherited rules in switched subtrees.
+chosen repository revision to the saved working copy. Parent comparisons exclude
+changes to SVN file externals. Missing versioned files appear as ! rows with a
+labeled empty side when the pinned base exists. Scheduled deletions remain D
+rows. Neither includes unsaved buffers. Nonignored untracked files are included
+by default. SVN ignore matching follows SVN wildcard rules, including inherited
+rules in switched subtrees.
 Omitted sparse-checkout files use a read-only INDEX (sparse checkout) snapshot
 when Git confirms a stage-zero, regular skip-worktree entry. Present files
 still use saved filesystem contents. Sparse snapshots receive the full 1 MiB

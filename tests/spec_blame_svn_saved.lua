@@ -136,6 +136,14 @@ return function(ctx)
 					lines[#lines + 1] = "local line " .. i
 				end
 				save(buf, lines)
+				-- Finish BufWritePost repository revalidation before counting blame's chain.
+				local resolved = false
+				require("lazyvcs.backends").resolve_async(f.file, function()
+					resolved = true
+				end, { revalidate = true })
+				t.wait(function()
+					return resolved
+				end, "repository revalidation did not finish", 15000)
 				local util, commands = require("lazyvcs.util"), {}
 				local run = util.system_start
 				t.patch(util, "system_start", function(args, opts, callback)

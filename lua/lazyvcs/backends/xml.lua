@@ -92,6 +92,7 @@ local function open_tag(block, name)
 end
 
 local function child_text(block, name)
+	name = vim.pesc(name)
 	local value = (block or ""):match("<" .. name .. "%f[%s/>][^>]*>(.-)</" .. name .. "%s*>")
 	return value and M.decode(value) or nil
 end
@@ -117,6 +118,7 @@ function M.parse_info(raw)
 		path = entry.path and M.local_path(entry.path),
 		kind = entry.kind,
 		schedule = child_text(block, "schedule"),
+		copy_from_url = child_text(block, "copy-from-url"),
 	}
 end
 
@@ -137,6 +139,7 @@ function M.parse_status(raw)
 				revision = wc.revision,
 				tree_conflicted = wc["tree-conflicted"] == "true",
 				switched = wc.switched == "true",
+				file_external = wc["file-external"] == "true",
 			}
 		end
 	end

@@ -254,11 +254,6 @@ local function normalize(opts)
 	local active_keymaps = {}
 	local reserved = {}
 	local function effective(key)
-		key = key:gsub("<[Ll][Oo][Cc][Aa][Ll][Ll][Ee][Aa][Dd][Ee][Rr]>", function()
-			return vim.g.maplocalleader or "\\"
-		end):gsub("<[Ll][Ee][Aa][Dd][Ee][Rr]>", function()
-			return vim.g.mapleader or "\\"
-		end)
 		return vim.api.nvim_replace_termcodes(key, true, true, true)
 	end
 	for _, action in ipairs(require("lazyvcs.compare_actions")) do

@@ -1565,8 +1565,16 @@ function M.setup()
 		end),
 	})
 
-	if opts().enabled and vim.api.nvim_get_current_buf() ~= 0 then
-		M.refresh(vim.api.nvim_get_current_buf(), true)
+	if opts().enabled then
+		local current = vim.api.nvim_get_current_buf()
+		if not vim.tbl_contains(attached, current) then
+			attached[#attached + 1] = current
+		end
+		for _, bufnr in ipairs(attached) do
+			if vim.api.nvim_buf_is_loaded(bufnr) then
+				M.refresh(bufnr, true)
+			end
+		end
 	end
 end
 

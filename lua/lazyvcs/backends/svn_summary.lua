@@ -338,7 +338,11 @@ function M.load(task, snapshot, command, done, local_path)
 			end
 			for _, item in ipairs(xml.parse_status(status)) do
 				local path = relative(item.path)
-				if item.wc_item ~= "unversioned" and item.wc_item ~= "ignored" and item.wc_item ~= "external" then
+				if item.file_external then
+					if candidates[path] then
+						candidates[path].status = "external"
+					end
+				elseif item.wc_item ~= "unversioned" and item.wc_item ~= "ignored" and item.wc_item ~= "external" then
 					local entry, why = candidate(path)
 					if not entry then
 						return done(nil, why)

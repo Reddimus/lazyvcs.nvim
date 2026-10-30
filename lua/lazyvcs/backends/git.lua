@@ -117,8 +117,8 @@ local function discover_root_async(path, opts, callback)
 			cwd = cwd,
 			root = opts.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-		}, function(root, err)
-			task:finish(root, err)
+		}, function(root, err, extra)
+			task:finish(root, err, extra)
 		end))
 	end
 	if opts.root then
@@ -379,12 +379,12 @@ local function load_payload_async(path, on_done, opts, base_only)
 		return task
 	end
 
-	task:add(discover_root_async(path, opts, function(result, err)
+	task:add(discover_root_async(path, opts, function(result, err, extra)
 		if not task:is_active() then
 			return
 		end
 		if err then
-			return task:finish(nil, err)
+			return task:finish(nil, err, extra)
 		end
 		local root = result
 		local relpath, path_err = util.relpath(root, path)

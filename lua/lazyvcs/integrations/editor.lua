@@ -72,11 +72,13 @@ function M.guard_markdown_buffer(bufnr, path)
 	end
 
 	local highlighter = vim.treesitter.highlighter
+	local active = highlighter and highlighter.active and highlighter.active[bufnr]
 	local state = {
 		bufnr = bufnr,
 		snacks_scope = capture_var(bufnr, "snacks_scope"),
 		snacks_indent = capture_var(bufnr, "snacks_indent"),
-		treesitter_active = highlighter and highlighter.active and highlighter.active[bufnr] ~= nil or false,
+		treesitter_active = not not active,
+		treesitter_language = active and active.tree:lang() or nil,
 	}
 	vim.b[bufnr].snacks_scope = false
 	vim.b[bufnr].snacks_indent = false
@@ -92,7 +94,7 @@ function M.restore_buffer(state)
 	restore_var(state.bufnr, "snacks_scope", state.snacks_scope)
 	restore_var(state.bufnr, "snacks_indent", state.snacks_indent)
 	if state.treesitter_active then
-		pcall(vim.treesitter.start, state.bufnr)
+		pcall(vim.treesitter.start, state.bufnr, state.treesitter_language)
 	end
 end
 

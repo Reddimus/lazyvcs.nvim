@@ -42,7 +42,12 @@ return function(ctx)
 			"test_core_directory_completion_hides_dot_names",
 			directory_case(function()
 				assert(vim.deep_equal(complete(""), { "skip/", "visible/" }), "empty prefix exposed .git")
-				assert(vim.deep_equal(complete("."), { ".git/" }), "dot prefix hid .git")
+				assert(vim.deep_equal(complete("."), { "../", "./", ".git/" }), "dot prefix hid navigation entries")
+				assert(vim.deep_equal(complete(".."), { "../" }))
+				assert(vim.deep_equal(complete("./.."), { "./../" }))
+				assert(vim.deep_equal(complete("../.."), { "../../" }))
+				vim.o.wildignore = "../"
+				assert(#complete("..") == 0, "navigation bypassed wildignore")
 			end),
 		},
 		{

@@ -45,7 +45,9 @@ function M.check()
 		if cfg.use_gitsigns then
 			local has_gitsigns = package.loaded["gitsigns"] ~= nil or pcall(require, "gitsigns")
 			if has_gitsigns then
-				health.ok("gitsigns.nvim detected; Git gutter signs are delegated to it")
+				health.ok(
+					"gitsigns.nvim detected; eligible Git buffers delegate signs to it; unattached buffers use native signs"
+				)
 			else
 				health.ok("gitsigns.nvim not installed; lazyvcs renders Git signs natively")
 			end

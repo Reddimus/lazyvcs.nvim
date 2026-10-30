@@ -259,9 +259,6 @@ function M.list(snapshot, include_untracked, callback)
 			end
 			reconcile()
 		end
-		if not include_untracked then
-			return finish()
-		end
 		command(
 			task,
 			snapshot,
@@ -270,23 +267,52 @@ function M.list(snapshot, include_untracked, callback)
 				if not status then
 					return task:finish(nil, status_err)
 				end
-				require("lazyvcs.backends.svn_untracked").expand(
-					task,
-					snapshot,
-					xml.parse_status(status),
-					function(paths, expand_err)
-						if not paths then
-							return task:finish(nil, expand_err)
-						end
-						for _, relpath in ipairs(paths) do
-							if not seen[relpath] then
-								items[#items + 1] = { relpath = relpath, status = "?", untracked = true }
-								seen[relpath] = true
-							end
-						end
-						finish()
+				local entries, externals, missing = xml.parse_status(status), {}, {}
+				local util = require("lazyvcs.util")
+				for _, entry in ipairs(entries) do
+					local path = local_path(entry.path)
+					local relpath = common.relative(path) and path or util.relative_literal_path(root, path)
+					if not relpath or not common.relative(relpath) then
+						return task:finish(nil, "SVN returned a status path outside the comparison")
 					end
-				)
+					if entry.file_external then
+						externals[relpath] = true
+					elseif entry.wc_item == "missing" then
+						missing[relpath] = true
+					end
+				end
+				local retained = {}
+				for _, item in ipairs(items) do
+					-- The pinned parent may delete a path now owned by an external.
+					if not externals[item.relpath] or item.status == "D" then
+						if missing[item.relpath] then
+							item.status = "!"
+						end
+						retained[#retained + 1] = item
+					end
+				end
+				items = retained
+				for relpath in pairs(missing) do
+					if not seen[relpath] then
+						items[#items + 1] = { relpath = relpath, status = "!" }
+						seen[relpath] = true
+					end
+				end
+				if not include_untracked then
+					return finish()
+				end
+				require("lazyvcs.backends.svn_untracked").expand(task, snapshot, entries, function(paths, expand_err)
+					if not paths then
+						return task:finish(nil, expand_err)
+					end
+					for _, relpath in ipairs(paths) do
+						if not seen[relpath] then
+							items[#items + 1] = { relpath = relpath, status = "?", untracked = true }
+							seen[relpath] = true
+						end
+					end
+					finish()
+				end)
 			end
 		)
 	end)
@@ -302,6 +328,10 @@ function M.preview(snapshot, item, callback, opts)
 		right_label = "SAVED WORKTREE",
 		loaded = { text = not (opts and opts.mode == "metadata"), metadata = true },
 	}
+	if item.status == "!" then
+		result.right_label = "MISSING FROM WORKTREE"
+		result.details = { "Versioned path is missing from disk; no SVN deletion is scheduled." }
+	end
 	if item.property_check_error then
 		result.details = { "Property validation failed: " .. tostring(item.property_check_error):gsub("%s+", " ") }
 	end
@@ -351,7 +381,7 @@ function M.preview(snapshot, item, callback, opts)
 			result.right = { "Directory: " .. vim.fn.strtrans(item.relpath) }
 			return finish()
 		end
-		if item.status == "D" then
+		if item.status == "D" or item.status == "!" then
 			common.decode_side(result, "right", "", { encoding = "utf-8" })
 			return finish()
 		end

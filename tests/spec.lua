@@ -740,6 +740,7 @@ local function test_svn_xml_parses_info_status_list_and_entities()
 		revision = "7",
 		tree_conflicted = true,
 		switched = true,
+		file_external = false,
 	})
 
 	local listed = xml.parse_list([[
@@ -1122,6 +1123,9 @@ local function test_svn_async_blame_cancels_active_child_process()
 		local job = backend.blame_lines_async(path, function()
 			completed = true
 		end)
+		wait_for(function()
+			return callbacks[1] ~= nil
+		end, "SVN discovery did not start", ASYNC_TIMEOUT_MS)
 		callbacks[1]({ stdout = vim.fs.dirname(path) .. "\n", code = 0 })
 		eq(#handles, 2)
 		callbacks[2]({ stdout = "", code = 0 })
@@ -7161,6 +7165,7 @@ local cases = {
 }
 
 -- Put new cases in sibling spec modules; this chunk is at LuaJIT's 200-local limit.
+vim.list_extend(cases, require("spec_backends_a2")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_highlight_regressions")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(
 	cases,
