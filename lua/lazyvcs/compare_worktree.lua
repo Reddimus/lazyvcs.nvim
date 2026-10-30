@@ -540,7 +540,10 @@ function M.release(s, record, release_jump)
 		return
 	end
 	adopt(record)
-	record.owners[s] = nil
+	-- Expiring a jump entry must not release a pane that reacquired the buffer.
+	if not release_jump then
+		record.owners[s] = nil
+	end
 	-- Native jump history has at most 100 entries per pane. Keep private
 	-- targets only while that history or a live pane needs them.
 	record.jump_owners = record.jump_owners or {}

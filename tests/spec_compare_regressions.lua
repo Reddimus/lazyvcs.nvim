@@ -137,6 +137,36 @@ return function(ctx)
 		compare.close(s)
 		assert(not api.nvim_buf_is_loaded(second), "private jump target survived Compare close")
 	end)
+	add("test_compare_reacquired_worktree_keeps_live_updates_after_clearjumps", function()
+		local f = h.make_git_transfer_fixture()
+		local s = open(f)
+		api.nvim_set_current_win(s.rightwin)
+		local first = s.right
+		assert(s.worktree and not vim.bo[first].buflisted)
+		keys("]b")
+		ready(s)
+		assert(s.shown_item.relpath == "beta.txt")
+		keys("[b")
+		ready(s)
+		assert(s.shown_item.relpath == "alpha.txt" and s.right == first)
+		assert(s.jump_buffers[first], "the reacquired buffer has no jump retention to trim")
+		vim.cmd("clearjumps")
+		-- A profile change rebuilds the preview and trims expired jump targets.
+		keys(":setlocal fileformat=dos<CR>")
+		ctx.wait_for(function()
+			return not s.jump_buffers[first] and not s.preview_job
+		end, "expired jump retention was not trimmed", 3000)
+		assert(vim.bo[first].modifiable and s.right == first)
+		api.nvim_buf_set_lines(first, 0, -1, false, { "one", "two", "three", "edited four", "five" })
+		ctx.wait_for(function()
+			return s.preview_result.right[4] == "edited four"
+				and #s.navigation.saved == 1
+				and s.navigation.saved[1].current_start == 4
+		end, "trimming jump retention disconnected the active pane's live updates", 3000)
+		api.nvim_win_set_cursor(s.rightwin, { 1, 0 })
+		keys("]v")
+		assert(api.nvim_win_get_cursor(s.rightwin)[1] == 4, "hunk navigation used stale text")
+	end)
 	for _, vcs in ipairs({ "git", "svn" }) do
 		add("test_compare_" .. vcs .. "_metadata_reacquire_updates_hunks", function()
 			local f, lines = fixture(vcs)
