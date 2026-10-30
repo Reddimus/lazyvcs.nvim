@@ -253,6 +253,63 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_blame_split_skips_invalid_virtual_rows_and_restores_them_on_undo",
+			function()
+				local _, buf, win = t.open(false)
+				local ns = api.nvim_create_namespace("lazyvcs_a1_invalid_virtual_rows")
+				t.cleanups[#t.cleanups + 1] = function()
+					if api.nvim_buf_is_valid(buf) then
+						api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+					end
+				end
+				local mark = api.nvim_buf_set_extmark(buf, ns, 0, 0, {
+					end_row = 1,
+					invalidate = true,
+					virt_lines = { { { "virtual row", "Normal" } } },
+				})
+				local blame = require("lazyvcs.blame")
+				assert(blame.blame_split())
+				t.wait(function()
+					local v = blame._test_blame_views()[buf]
+					return v and v.winid
+				end, "split absent", 15000)
+				local v = blame._test_blame_views()[buf]
+				local function aligned(count)
+					t.wait(function()
+						vim.cmd.redraw()
+						if api.nvim_buf_line_count(v.bufnr) ~= count then
+							return false
+						end
+						for line = 1, count do
+							local a = vim.fn.screenpos(win, line, 1).row
+							local b = vim.fn.screenpos(v.winid, line, 1).row
+							if a == 0 or a ~= b then
+								return false
+							end
+						end
+						return true
+					end, "invalidated virtual rows misalign attribution", 15000)
+				end
+				aligned(3)
+				assert(vim.fn.screenpos(win, 2, 1).row == vim.fn.screenpos(win, 1, 1).row + 2)
+				vim.cmd("normal! ggdd")
+				api.nvim_exec_autocmds("TextChanged", { buffer = buf })
+				local details = api.nvim_buf_get_extmark_by_id(buf, ns, mark, { details = true })[3]
+				-- Neovim 0.11 keeps virtual-line marks visible after their range is deleted.
+				local invalidates = vim.fn.has("nvim-0.12") == 1
+				assert(details and (details.invalid or false) == invalidates, "unexpected extmark invalidation state")
+				aligned(2)
+				local gap = invalidates and 1 or 2
+				assert(vim.fn.screenpos(win, 2, 1).row == vim.fn.screenpos(win, 1, 1).row + gap)
+				vim.cmd("silent undo")
+				api.nvim_exec_autocmds("TextChanged", { buffer = buf })
+				details = api.nvim_buf_get_extmark_by_id(buf, ns, mark, { details = true })[3]
+				assert(details and not details.invalid, "undo did not restore the virtual-line extmark")
+				aligned(3)
+				assert(vim.fn.screenpos(win, 2, 1).row == vim.fn.screenpos(win, 1, 1).row + 2)
+			end,
+		},
+		{
 			"test_files_picker_contains_deferred_switch_errors",
 			function()
 				local f, buf, win = t.open(false)

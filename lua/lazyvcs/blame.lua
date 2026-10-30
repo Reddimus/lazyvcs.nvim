@@ -547,7 +547,7 @@ local function virtual_rows(source_bufnr)
 		ipairs(vim.api.nvim_buf_get_extmarks(source_bufnr, -1, 0, -1, { details = true, type = "virt_lines" }))
 	do
 		local details = mark[4]
-		if details and details.virt_lines and #details.virt_lines > 0 then
+		if details and not details.invalid and details.virt_lines and #details.virt_lines > 0 then
 			rows[#rows + 1] = { row = mark[2], count = #details.virt_lines, above = details.virt_lines_above or false }
 		end
 	end
