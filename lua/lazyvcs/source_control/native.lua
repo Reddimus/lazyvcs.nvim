@@ -184,16 +184,18 @@ local function compose_right_meta(primary, sync, counts, max_width)
 	return fit_right_text(primary, max_width, 8) or ""
 end
 
--- Cancel discovery and clear known specs. Advance the generation so late callbacks cannot
--- write into the reset state.
-local function reset_discovery(state)
+-- Advance the generation so late callbacks cannot write into the reset state. A refresh
+-- keeps the last completed specs until their replacement arrives; a path change clears them.
+local function reset_discovery(state, keep_specs)
 	if state.lazyvcs_discovery_handle and type(state.lazyvcs_discovery_handle.kill) == "function" then
 		pcall(state.lazyvcs_discovery_handle.kill, state.lazyvcs_discovery_handle, 15)
 	end
 	state.lazyvcs_discovery_handle = nil
 	state.lazyvcs_discovery_generation = (state.lazyvcs_discovery_generation or 0) + 1
 	state.lazyvcs_discovering = false
-	state.lazyvcs_repo_specs = nil
+	if not keep_specs then
+		state.lazyvcs_repo_specs = nil
+	end
 	state.lazyvcs_discovery_error = nil
 	state.lazyvcs_discovery_incomplete = nil
 	state.lazyvcs_discovery_cancelled = nil
@@ -235,21 +237,20 @@ local function reset_for_path(state, path)
 	state.lazyvcs_repo_root = path
 end
 
----Begin asynchronous repository discovery if the state does not already know
----its specs.
+---Begin asynchronous repository discovery if specs are unknown or rediscovery is requested.
 ---
 ---@return boolean pending `true` when discovery is in flight, so the caller
 ---should render a loading state and leave `M.navigate` to the callback;
 ---`false` when the specs are already known and the caller should navigate now.
-local function start_discovery(state)
+local function start_discovery(state, rediscover)
 	if state.lazyvcs_discovering then
 		return true
 	end
-	if state.lazyvcs_repo_specs ~= nil then
+	if state.lazyvcs_repo_specs ~= nil and not rediscover then
 		return false
 	end
 	state.lazyvcs_discovering = true
-	state.lazyvcs_repo_specs = {}
+	state.lazyvcs_repo_specs = state.lazyvcs_repo_specs or {}
 	state.lazyvcs_discovery_error = nil
 	state.lazyvcs_discovery_incomplete = nil
 	state.lazyvcs_discovery_generation = (state.lazyvcs_discovery_generation or 0) + 1
@@ -1241,13 +1242,14 @@ function M.open(opts)
 	local state = prepare_state(opts.path or opts.root)
 	ensure_window(state, { focus = opts.focus })
 	state.lazyvcs_cancelled_summaries = {}
-	if state.lazyvcs_discovery_cancelled then
-		reset_discovery(state)
+	local rediscover = state.lazyvcs_discovery_cancelled
+	if rediscover then
+		reset_discovery(state, true)
 	end
 	state.lazyvcs_remote_refresh = should_remote_refresh(state)
 	-- Start discovery before painting. While pending, render without consuming remote-
 	-- refresh intent; navigate once specs arrive.
-	if start_discovery(state) then
+	if start_discovery(state, rediscover) then
 		M.render(state)
 	else
 		M.navigate(state)
@@ -1342,8 +1344,8 @@ function M.refresh(remote_refresh)
 	persist.save_state(state)
 	-- Rediscover on refresh so repositories created or removed while the sidebar was open
 	-- are reflected.
-	reset_discovery(state)
-	if start_discovery(state) then
+	reset_discovery(state, true)
+	if start_discovery(state, true) then
 		M.render(state)
 	else
 		M.navigate(state)

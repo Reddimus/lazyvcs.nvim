@@ -177,7 +177,7 @@ local function present_status(status)
 		status.error = nil
 	elseif job.status == "error" then
 		status.sync = sync_badge("!", "error", "DiagnosticError")
-		status.error = job.error or status.error
+		-- Keep mutation errors in status.job; a status reload cannot resolve them.
 	end
 	return status
 end
@@ -1818,7 +1818,7 @@ function M.collect(state, opts)
 
 	ordered_repositories(loaded, source_opts.repositories_sort)
 	-- Only complete discovery can establish that a saved repository was removed.
-	if state.lazyvcs_discovering or state.lazyvcs_discovery_error then
+	if state.lazyvcs_discovering or state.lazyvcs_discovery_error or state.lazyvcs_discovery_cancelled then
 		-- `normalize_visibility_state` owns initialising these; keep them
 		-- defined so the render below never indexes a nil table.
 		state.lazyvcs_repo_visibility = state.lazyvcs_repo_visibility or {}

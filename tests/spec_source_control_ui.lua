@@ -242,6 +242,60 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_source_control_mutation_errors_do_not_offer_status_retry",
+			function()
+				local f = h.make_git_fixture()
+				local s = open(f.root)
+				details(s, f.root)
+				local runtime = require("lazyvcs.state")
+				local ops = require("lazyvcs.source_control.ops")
+				local node = { path = f.root, extra = { repo_root = f.root } }
+				runtime.set_repo_job(f.root, {
+					status = "error",
+					action = "commit",
+					label = "Committing...",
+					error = "commit hook rejected the message",
+				})
+				local ok, err = xpcall(function()
+					-- Successful real status/detail reads cannot resolve a failed commit.
+					for _ = 1, 2 do
+						ops.retry_repo(s, node)
+						settled(s)
+						ctx.wait_for(function()
+							return s.lazyvcs_repo_cache[f.root].details_loaded
+						end, "status reload did not restore details", 15000)
+						s.lazyvcs_expanded[f.root .. "::section::changes"] = true
+						native.render(s)
+						local text = table.concat(api.nvim_buf_get_lines(s.bufnr, 0, -1, false), "\n")
+						assert(not text:find("Status failed:", 1, true), "failed commit was labelled a status failure")
+						assert(text:find("sample.txt", 1, true), "mutation error hid loaded changes")
+						for _, row in ipairs(s.lazyvcs_line_nodes) do
+							assert(
+								not (row.extra and row.extra.action == "retry_repo"),
+								"mutation error offered a status retry"
+							)
+							if row.type == "repo_changes" then
+								assert(row.extra.sync.status == "error", "mutation failure lost its error badge")
+							end
+						end
+						assert(runtime.get_repo_job(f.root).error == "commit hook rejected the message")
+					end
+					-- A simultaneous read failure must still offer its own retry.
+					for _, field in ipairs({ "error", "detail_error" }) do
+						s.lazyvcs_repo_cache[f.root][field] = "status read failed"
+						native.render(s)
+						local retry = select_node(s, function(n)
+							return n.extra and n.extra.action == "retry_repo"
+						end)
+						assert(retry.name:find("status read failed", 1, true), "mutation error masked the read failure")
+						s.lazyvcs_repo_cache[f.root][field] = nil
+					end
+				end, debug.traceback)
+				runtime.clear_repo_job(f.root)
+				assert(ok, err)
+			end,
+		},
+		{
 			"test_source_control_status_errors_preserve_cached_rows",
 			function()
 				local f = h.make_git_fixture()
@@ -394,6 +448,115 @@ return function(ctx)
 					assert(s.lazyvcs_repo_cache[f.root].summary_loaded, "explicit refresh did not retry")
 					native.close()
 				end
+			end,
+		},
+		{
+			"test_source_control_cancelled_refresh_preserves_repository_preferences",
+			function()
+				local original = model.discover_async
+				local persist = require("lazyvcs.source_control.persist")
+				for _, mode in ipairs({ "single", "multiple" }) do
+					for _, retry in ipairs({ "refresh", "open" }) do
+						local f = h.make_git_source_control_fixture()
+						local s = open(f.root)
+						s.lazyvcs_selection_mode = mode
+						s.lazyvcs_repo_visibility_overrides = { [f.git_clean] = true, [f.git_dirty] = false }
+						s.lazyvcs_focused_repo = f.git_clean
+						native.render(s)
+						persist.save_state(s)
+						local preferences = persist.load(f.root)
+						local specs = vim.deepcopy(s.lazyvcs_repo_specs)
+						local visibility = vim.deepcopy(s.lazyvcs_repo_visibility)
+						local late
+						---@diagnostic disable-next-line: duplicate-set-field
+						model.discover_async = function(root, depth, done, opts)
+							return original(root, depth, function(found, err)
+								late = function()
+									done(found, err)
+								end
+							end, opts)
+						end
+						native.refresh(false)
+						ctx.wait_for(function()
+							return late ~= nil
+						end, "refresh discovery did not finish", 15000)
+						local function check(phase)
+							assert(
+								vim.deep_equal(s.lazyvcs_repo_specs, specs),
+								phase .. " discarded completed repository specs"
+							)
+							assert(
+								vim.deep_equal(s.lazyvcs_repo_visibility, visibility),
+								phase .. " changed repository visibility"
+							)
+							assert(s.lazyvcs_focused_repo == f.git_clean, phase .. " lost focused repository")
+							persist.save_state(s)
+							assert(
+								vim.deep_equal(persist.load(f.root), preferences),
+								phase .. " overwrote saved preferences"
+							)
+						end
+						check("pending refresh")
+						native.cancel(retry == "open" and f.root or nil)
+						native.render(s)
+						check("cancelled refresh")
+						assert(late)()
+						check("late discovery")
+						late = nil
+						if retry == "open" then
+							native.open({ path = f.root })
+						else
+							native.refresh(false)
+						end
+						ctx.wait_for(function()
+							return late ~= nil
+						end, "explicit retry did not rediscover", 15000)
+						check("pending retry")
+						assert(late)()
+						settled(s)
+						check("completed retry")
+						model.discover_async = original
+						native.close()
+					end
+				end
+			end,
+		},
+		{
+			"test_source_control_cancelled_initial_discovery_preserves_saved_preferences",
+			function()
+				local f = h.make_git_source_control_fixture()
+				local persist = require("lazyvcs.source_control.persist")
+				persist.save(f.root, {
+					visible_repos = { f.git_clean },
+					hidden_repos = { f.git_dirty },
+					focused_repo = f.git_clean,
+					show_clean = true,
+					selection_mode = "multiple",
+					changes_view_mode = "tree",
+					changes_sort = "path",
+				})
+				local preferences = persist.load(f.root)
+				local s = native.open({ path = f.root })
+				assert(s.lazyvcs_discovering, "initial discovery must be pending")
+				native.cancel()
+				native.render(s)
+				assert(s.lazyvcs_focused_repo == f.git_clean, "cancelled discovery cleared saved focus")
+				assert(
+					s.lazyvcs_repo_visibility_overrides[f.git_clean] == true,
+					"cancelled discovery cleared visible override"
+				)
+				assert(
+					s.lazyvcs_repo_visibility_overrides[f.git_dirty] == false,
+					"cancelled discovery cleared hidden override"
+				)
+				persist.save_state(s)
+				assert(
+					vim.deep_equal(persist.load(f.root), preferences),
+					"cancelled discovery overwrote saved preferences"
+				)
+				native.refresh(false)
+				settled(s)
+				assert(s.lazyvcs_focused_repo == f.git_clean and s.lazyvcs_repo_visibility[f.git_clean])
 			end,
 		},
 		{
