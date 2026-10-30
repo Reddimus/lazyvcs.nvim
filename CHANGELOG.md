@@ -94,6 +94,17 @@ and this project adheres to
 - Render and remove native signs in batches so large changes allow input and
   redraw between batches.
 - Report failed file-picker buffer switches without a callback traceback.
+- Keep Compare shortcuts inside the focused pane and honor explicit editable
+  settings when reopening the same repository through another path.
+- Restore native jump history when cycling editable Compare files.
+- Update Compare hunk navigation after metadata review and external file
+  rereads.
+- Avoid false changes in editable files with mixed line endings and retain
+  final-newline-only hunks in snapshot review.
+- Preview deleted and replaced Git submodules with plain text and enforce the 1
+  MiB preview limit. Reject sparse previews if the index changes during loading.
+- Show removed SVN file properties and omit canceled file changes when bounded
+  content and property checks confirm they match the selected revision.
 
 ## [0.12.1] - 2026-10-23
 

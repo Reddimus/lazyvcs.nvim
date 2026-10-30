@@ -180,10 +180,14 @@ end
 ---@param snapshot table
 ---@param item table
 ---@param done fun(before: table?, after: table?, err: string?)
-function M.load_directory_maps(task, snapshot, item, done)
+function M.load_directory_maps(task, snapshot, item, done, deadline)
 	local path = snapshot.root .. "/" .. item.relpath
 	local url = require("lazyvcs.backends.svn_url").append_path(snapshot.url, item.relpath)
 	local function read(target, revision, callback)
+		local remaining = deadline and math.floor(deadline - vim.uv.hrtime() / 1e6)
+		if remaining and remaining <= 0 then
+			return callback(nil, "Property validation timed out")
+		end
 		local args = { "svn", "--non-interactive", "proplist", "--xml", "--verbose", "--depth", "empty" }
 		if revision then
 			vim.list_extend(args, { "-r", revision })
@@ -201,7 +205,7 @@ function M.load_directory_maps(task, snapshot, item, done)
 				return callback(nil, "Malformed SVN property XML")
 			end
 			callback(properties, parse_err)
-		end, { output_limit_bytes = 16 * common.max_file_bytes })
+		end, { output_limit_bytes = 16 * common.max_file_bytes, timeout_ms = remaining })
 	end
 	local function working(before)
 		if item.status == "D" then

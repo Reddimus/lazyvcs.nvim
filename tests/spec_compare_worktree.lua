@@ -101,12 +101,18 @@ return function(ctx)
 					return s.shown_item.relpath == "b.txt" and s.worktree ~= nil
 				end, "next file", 15000)
 				if mode == "clean" then
-					assert(not api.nvim_buf_is_valid(buf), "private clean buffer was retained")
+					assert(
+						api.nvim_buf_is_valid(buf) and not vim.bo[buf].buflisted,
+						"private jump target was lost or listed"
+					)
 				else
 					assert(api.nvim_buf_is_valid(buf), "user-owned buffer was deleted")
 					assert(vim.bo[buf].modified == (mode == "dirty"))
 				end
 				compare.close(s)
+				if mode == "clean" then
+					assert(not api.nvim_buf_is_valid(buf), "private jump target survived close")
+				end
 				vim.o.hidden = hidden
 			end,
 		}

@@ -140,7 +140,8 @@ working-tree-encoding applies to saved files; normalized blobs use UTF-8. Other
 sources try the encoding of an exactly matching loaded file buffer, then
 'fileencodings' if that hint cannot decode the bytes. Preview ignores buffer
 'fileformat' and 'fileformats': both sides normalize CRLF to LF, and a lone CR
-stays inside its line. Git UTF-16LE-BOM and UTF-16BE-BOM encoding names are
+stays inside its line. Editable Compare reads the base with the real buffer's
+newline format and the base's own encoding. Git UTF-16LE-BOM and UTF-16BE-BOM encoding names are
 accepted without regard to case. Unsupported, lossy, binary, or oversized
 conversions show an unavailable reason that names the preview side. Both raw and
 decoded text are limited to 1 MiB per side. Blame retains the original source
@@ -243,6 +244,8 @@ text previews stay in the list. Text panes preserve normal Vim motions,
 search, macros, marks, and jump history. The base remains read-only. Deleted,
 symlink, sparse-index, property-only, binary, oversized, and unsupported text
 paths retain snapshot behavior. Compare does not offer hunk revert.
+Private working buffers in pane jump history stay loaded until their entries
+expire or Compare closes. Native jumps can list their destination buffer.
 Set compare.editable = false for an entirely read-only review. A single Lua open
 can override it: require("lazyvcs").compare({ editable = false }).
 Use :LazyVCS compare metadata to toggle metadata from a pane; width, refresh,

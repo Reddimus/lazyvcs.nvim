@@ -1,4 +1,3 @@
-local compat = require("lazyvcs.compat")
 local diff = require("lazyvcs.diff")
 local util = require("lazyvcs.util")
 local M = {}
@@ -216,9 +215,6 @@ local function discard(s, pair)
 			if visible(buf) then
 				resources[buf] = { detached = true, lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false) }
 				vim.bo[buf].bufhidden = "wipe"
-				for _, mapping in ipairs(s.pane_mappings or {}) do
-					pcall(compat.keymap_del, "n", mapping.key, { buffer = buf })
-				end
 			else
 				resources[buf] = nil
 				vim.api.nvim_buf_delete(buf, { force = true })

@@ -191,7 +191,8 @@ return function(ctx)
 				local commit = vim.trim(h.exec({ "git", "rev-parse", "HEAD" }, f.root))
 				h.exec({ "git", "update-index", "--cacheinfo", "160000," .. commit .. "," .. path }, f.root)
 				h.exec({ "git", "update-index", "--skip-worktree", "--", path }, f.root)
-				assert(not preview(), "index gitlink was treated as a regular file")
+				result = assert(preview())
+				assert(result.right_label == "SUBMODULE / DIRECTORY", "index gitlink was treated as a regular file")
 				local stages = vim.system({ "git", "update-index", "--index-info" }, {
 					cwd = f.root,
 					stdin = "0 "

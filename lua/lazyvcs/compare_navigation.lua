@@ -70,7 +70,8 @@ function M.restore(s, saved, stamp)
 end
 
 function M.load(s, result, item, computed)
-	s.navigation = { base = {}, saved = {}, reviewed = false }
+	s.navigation =
+		{ base = {}, saved = {}, reviewed = false, documents = { result.left_document, result.right_document } }
 	if
 		(result.loaded and not result.loaded.text)
 		or item.kind == "dir"
@@ -82,8 +83,7 @@ function M.load(s, result, item, computed)
 	end
 	local hunks = computed
 		or (
-			s.worktree
-				and result.left_document
+			result.left_document
 				and result.right_document
 				and diff.compute_text_hunks(result.left_document, result.right_document)
 			or diff.compute_hunks(result.left, result.right)

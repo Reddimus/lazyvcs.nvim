@@ -176,13 +176,12 @@ return function(ctx)
 			for _, opts in ipairs({ { keymaps = { next_hunk = "]x", prev_hunk = false } }, { session_keymaps = false } }) do
 				require("lazyvcs").setup(opts)
 				local _, s = fixture("git")
-				for _, buf in ipairs({ s.sidebar, s.left, s.right }) do
-					vim.api.nvim_buf_call(buf, function()
-						assert(vim.fn.maparg("]v", "n") == "" and vim.fn.maparg("[v", "n") == "")
-						if opts.keymaps then
-							assert(vim.fn.maparg("]x", "n") ~= "")
-						end
-					end)
+				for _, win in ipairs({ s.sidewin, s.leftwin, s.rightwin }) do
+					vim.api.nvim_set_current_win(win)
+					assert(vim.fn.maparg("]v", "n") == "" and vim.fn.maparg("[v", "n") == "")
+					if opts.keymaps then
+						assert(vim.fn.maparg("]x", "n") ~= "")
+					end
 				end
 				if opts.keymaps then
 					keys("]x")

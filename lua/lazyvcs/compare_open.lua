@@ -25,6 +25,24 @@ function M.setup(s, actions)
 			and vim.api.nvim_win_is_valid(s.rightwin)
 	end
 	local views, pending = nil, {}
+	-- Observe native jump keys without replacing user mappings. A picker that
+	-- selects the same real buffer must still open it in the original editor.
+	local jump_win
+	local namespace = vim.api.nvim_create_namespace("lazyvcs_compare_jumps_" .. s.buffer_id)
+	vim.on_key(
+		protected(function(key)
+			if (key == "\15" or key == "\9") and vim.fn.mode() == "n" then
+				local win = vim.api.nvim_get_current_win()
+				if (win == s.leftwin or win == s.rightwin) and slots()[win] == vim.api.nvim_get_current_buf() then
+					jump_win = win
+					vim.schedule(protected(function()
+						jump_win = nil
+					end))
+				end
+			end
+		end),
+		namespace
+	)
 	vim.api.nvim_create_autocmd("BufWinLeave", {
 		group = s.augroup,
 		callback = protected(function(args)
@@ -76,8 +94,13 @@ function M.setup(s, actions)
 			end
 			local request = pending[win]
 			if not request or request.buf ~= buf then
-				request =
-					{ buf = buf, views = views, generation = s.generation, preview_generation = s.preview_generation }
+				request = {
+					buf = buf,
+					views = views,
+					generation = s.generation,
+					preview_generation = s.preview_generation,
+					native_jump = jump_win == win,
+				}
 				pending[win] = request
 			end
 			local saved, generation, preview_generation = request.views, request.generation, request.preview_generation
@@ -132,6 +155,9 @@ function M.setup(s, actions)
 					if resource and resource.session and not resource.session.closed then
 						return actions.snapshot(resource, position)
 					end
+					if request.native_jump and actions.jump(buf, position) then
+						return
+					end
 					actions.edit(buf, position)
 				end)
 				actions.resume()
@@ -155,6 +181,7 @@ function M.setup(s, actions)
 			return false
 		end,
 		cancel = function()
+			vim.on_key(nil, namespace)
 			pending = {}
 		end,
 	}

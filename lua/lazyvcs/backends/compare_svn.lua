@@ -203,6 +203,16 @@ function M.list(snapshot, include_untracked, callback)
 				end
 			end
 			local cursor, retained = 0, {}
+			local file_budget = { paths = 128, bytes = 8 * common.max_file_bytes }
+			local deadline = vim.uv.hrtime() / 1e6 + 30000
+			file_budget.deadline = deadline
+			local function bounded_command(owner, repo, args, cb, opts)
+				local remaining = math.floor(deadline - vim.uv.hrtime() / 1e6)
+				if remaining <= 0 then
+					return cb(nil, "File reconciliation timed out")
+				end
+				command(owner, repo, args, cb, vim.tbl_extend("force", opts or {}, { timeout_ms = remaining }))
+			end
 			local function reconcile()
 				if not task:is_active() then
 					return
@@ -223,6 +233,21 @@ function M.list(snapshot, include_untracked, callback)
 								end
 								schedule(task, reconcile)
 							end
+						)
+					end
+					if item.status == "M" and item.kind == "file" and vim.uv.hrtime() / 1e6 < deadline then
+						return require("lazyvcs.backends.svn_summary").file_equal(
+							task,
+							snapshot,
+							item,
+							bounded_command,
+							function(equal)
+								if not equal then
+									retained[#retained + 1] = item
+								end
+								schedule(task, reconcile)
+							end,
+							file_budget
 						)
 					end
 					retained[#retained + 1] = item
@@ -286,7 +311,7 @@ function M.preview(snapshot, item, callback, opts)
 				item.properties
 				or item.property_only
 				or item.load_properties
-				or (item.status == "A" and not item.untracked)
+				or ((item.status == "A" or item.status == "D") and not item.untracked)
 			)
 		then
 			return task:finish(result)

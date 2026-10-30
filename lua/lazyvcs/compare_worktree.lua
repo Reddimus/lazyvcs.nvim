@@ -42,6 +42,9 @@ local function adopt(record)
 		for owner in pairs(record.owners) do
 			owned = owned or (not owner.closed and win == owner.rightwin)
 		end
+		for owner in pairs(record.jump_owners or {}) do
+			owned = owned or (not owner.closed and win == owner.rightwin)
+		end
 		if not owned then
 			record.retained = true
 		end
@@ -103,7 +106,13 @@ local function attach(record)
 			end))
 		end,
 		on_reload = function(_, changed_buf)
-			reread(records[changed_buf])
+			local current = records[changed_buf]
+			reread(current)
+			vim.schedule(util.safe_callback(function()
+				if current and records[changed_buf] == current then
+					changed(current)
+				end
+			end))
 		end,
 		on_detach = function(_, changed_buf)
 			attachments[changed_buf] = nil
@@ -469,13 +478,80 @@ function M.capture(record)
 	return text.capture(record.buf, 1024 * 1024)
 end
 
-function M.release(s, record)
+-- Match the real buffer's newline interpretation while decoding the base in
+-- its own encoding. Snapshot-only previews keep their normalized documents.
+function M.result(record, result, current)
+	current = current or M.capture(record)
+	if not current then
+		return nil, "Working buffer is unavailable"
+	end
+	local disk = result.disk_result or result
+	local base = disk.left_document
+	if base and disk.left_bytes then
+		local profile = assert(text.profile(record.buf))
+		local encoding = base.encoding
+		local key = encoding .. ":editable:" .. profile.fileformat
+		if result.left_document and result.left_document.profile_key == key then
+			base = result.left_document
+		else
+			base = assert(text.decode(disk.left_bytes, {
+				fileencoding = encoding,
+				fileformat = profile.fileformat,
+				bomb = false,
+				binary = false,
+				key = key,
+			}, 1024 * 1024))
+		end
+	end
+	return vim.tbl_extend("force", result, {
+		left = base and base.lines or result.left,
+		left_document = base,
+		right = current.lines,
+		right_document = current,
+		disk_result = disk,
+		profile_key = (base and base.profile_key or "") .. "\0" .. current.profile_key,
+	})
+end
+
+local function jump_targets(s)
+	local targets = {}
+	for _, win in ipairs({ s.leftwin, s.rightwin }) do
+		if win and vim.api.nvim_win_is_valid(win) then
+			for _, jump in ipairs(vim.api.nvim_win_call(win, vim.fn.getjumplist)[1]) do
+				targets[jump.bufnr] = true
+			end
+		end
+	end
+	return targets
+end
+
+function M.trim_jumps(s, closing)
+	local targets = not closing and jump_targets(s) or {}
+	for buf, record in pairs(s.jump_buffers or {}) do
+		if not targets[buf] then
+			s.jump_buffers[buf] = nil
+			M.release(s, record, true)
+		end
+	end
+end
+
+function M.release(s, record, release_jump)
 	if not record then
 		return
 	end
 	adopt(record)
 	record.owners[s] = nil
-	if next(record.owners) then
+	-- Native jump history has at most 100 entries per pane. Keep private
+	-- targets only while that history or a live pane needs them.
+	record.jump_owners = record.jump_owners or {}
+	if not release_jump and not s.closed and not record.retained and jump_targets(s)[record.buf] then
+		s.jump_buffers = s.jump_buffers or {}
+		s.jump_buffers[record.buf] = record
+		record.jump_owners[s] = true
+	else
+		record.jump_owners[s] = nil
+	end
+	if next(record.owners) or next(record.jump_owners) then
 		return
 	end
 	if records[record.buf] == record then
