@@ -4,6 +4,34 @@ return function(ctx)
 	local model = assert(loadfile(tests .. "/fixtures/ai_transport_helpers.lua"))()
 	return {
 		{
+			"test_source_control_copilotchat_header_dump_uses_plenary_argument_pair",
+			function()
+				model.with_transport(ctx, function(f)
+					local scope = assert(require("lazyvcs.source_control.copilotchat_transport").new_scope())
+					local response, failure
+					f.async.run(function()
+						scope:run(function()
+							response, failure =
+								f.chat.get("offline://fixture", { headers = { Authorization = "fixture" } })
+						end)
+					end)
+					assert(not failure, failure)
+					local job = f.ready(1)
+					local dump = job.options.dump
+					assert(type(dump) == "table" and dump[1] == "-D", "missing curl header flag")
+					assert(vim.uv.fs_stat(dump[2]), "private header file missing")
+					h.write_file(f.jobs[1].path .. ".finish", "done")
+					wait(function()
+						return response ~= nil
+					end, "header response was not parsed")
+					assert(not failure and response.status == 200 and response.headers[1] == "X-Fixture: offline")
+					wait(function()
+						return not next(scope.jobs) and not vim.uv.fs_stat(dump[2])
+					end, "completed header file or job retained")
+				end)
+			end,
+		},
+		{
 			"test_source_control_copilotchat_files_cancel_timeout_and_errors",
 			function()
 				model.with_transport(ctx, function(f)
@@ -40,7 +68,7 @@ return function(ctx)
 						vim.defer_fn = defer
 						local job = f.ready(index)
 						local path = job.options.body
-						local header = job.options.dump
+						local header = job.options.dump[2]
 						if vim.fn.has("win32") == 0 then
 							assert(bit.band(vim.uv.fs_stat(header).mode, 511) == 384, "header dump is not private")
 						end
@@ -136,7 +164,7 @@ return function(ctx)
 					-- Keep the old inode allocated so replacement cannot reuse its identity.
 					assert(vim.uv.fs_rename(path, f.dir .. "/old-body"))
 					h.write_file(path, "replacement")
-					local header = replaced_job.options.dump
+					local header = replaced_job.options.dump[2]
 					assert(vim.uv.fs_rename(header, f.dir .. "/old-header"))
 					h.write_file(header, "replacement header")
 					replaced:cancel()
@@ -153,10 +181,11 @@ return function(ctx)
 					local other = assert(transport.new_scope())
 					f.async.run(function()
 						other:run(function()
-							f.chat.post(
-								"offline://fixture",
-								{ headers = { Authorization = "fixture" }, body = external, dump = external_header }
-							)
+							f.chat.post("offline://fixture", {
+								headers = { Authorization = "fixture" },
+								body = external,
+								dump = { "-D", external_header },
+							})
 						end)
 					end)
 					local outside = f.ready(3)

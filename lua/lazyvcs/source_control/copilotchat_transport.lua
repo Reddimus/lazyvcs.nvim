@@ -44,7 +44,7 @@ function M.new_scope()
 					pending_scope, pending_files = nil, nil
 					if files then
 						files:adopt(opts)
-						opts = vim.tbl_extend("force", {}, opts or {}, { dump = files:header() })
+						opts = vim.tbl_extend("force", {}, opts or {}, { dump = { "-D", files:header() } })
 					end
 					if scope and runtime.is_shutting_down() then
 						error("CopilotChat transport is shutting down", 0)
@@ -66,10 +66,9 @@ function M.new_scope()
 	if not installed[chat_curl] then
 		for _, name in ipairs({ "get", "post" }) do
 			local original = chat_curl[name]
-			-- Delegate through the public callback form of async.wrap. This keeps
-			-- the handoff synchronous and clears it even if the leaf throws before
-			-- reaching curl (for example, while serializing a request body).
-			local invoke = async.wrap(function(scope, url, opts, callback)
+			-- Keep the handoff synchronous within the leaf and clear it even if
+			-- request serialization throws before reaching curl.
+			local function leaf(scope, url, opts, callback)
 				local files = require("lazyvcs.source_control.copilotchat_files").new()
 				local tmpname, tempname = os.tmpname, vim.fn.tempname
 				---@diagnostic disable-next-line: duplicate-set-field
@@ -89,6 +88,17 @@ function M.new_scope()
 						files:release()
 					end
 					callback(nil, err)
+				end
+			end
+			local invoke = async.wrap(function(scope, url, opts, callback)
+				-- Plenary resumes chained requests in a libuv callback. The leaf
+				-- allocates temporary files through Vimscript, so enter the main loop first.
+				if vim.in_fast_event() then
+					vim.schedule(function()
+						leaf(scope, url, opts, callback)
+					end)
+				else
+					return leaf(scope, url, opts, callback)
 				end
 			end, 4)
 			chat_curl[name] = function(...)

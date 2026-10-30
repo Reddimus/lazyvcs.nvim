@@ -42,18 +42,25 @@ function M.transport(dir, child, async)
 		local path = dir .. "/job-" .. (#jobs + 1)
 		local job = setmetatable({ exit_callbacks = {}, options = opts }, { __index = self })
 		function job:_user_on_exit(code, _signal)
-			vim.schedule(function()
-				-- Match plenary curl's code-only success test, including signal exits.
-				if code == 0 then
-					os.remove(opts.dump)
-					if opts.stream then
-						opts.stream(nil, "Generated subject")
+			-- Plenary invokes curl callbacks directly from the libuv exit callback.
+			-- Match plenary curl's code-only success test, including signal exits.
+			if code == 0 then
+				local header = assert(io.open(opts.dump[2], "r"))
+				local headers = {}
+				for line in header:lines() do
+					if line ~= "" and not line:match("^HTTP/") then
+						headers[#headers + 1] = line
 					end
-					opts.callback({ status = opts.http_error and 500 or 200, body = "Generated subject" })
-				elseif opts.on_error then
-					opts.on_error({ stderr = "cancelled" })
 				end
-			end)
+				header:close()
+				os.remove(opts.dump[2])
+				if opts.stream then
+					opts.stream(nil, "Generated subject")
+				end
+				opts.callback({ status = opts.http_error and 500 or 200, headers = headers, body = "Generated subject" })
+			elseif opts.on_error then
+				opts.on_error({ stderr = "cancelled" })
+			end
 		end
 		function job:_shutdown(code, signal)
 			if job.is_shutdown then
@@ -102,8 +109,14 @@ function M.transport(dir, child, async)
 	for _, name in ipairs({ "get", "post" }) do
 		curl[name] = function(url, opts)
 			local options = vim.tbl_extend("force", {}, opts)
-			options.dump = options.dump or (dir .. "/header-" .. (#jobs + 1))
-			vim.fn.writefile({ "HTTP/1.1 200 OK", "X-Fixture: offline", "" }, options.dump)
+			options.dump = options.dump or { "-D", dir .. "/header-" .. (#jobs + 1) }
+			assert(
+				type(options.dump) == "table" and options.dump[1] == "-D" and type(options.dump[2]) == "string",
+				"Plenary dump must be { '-D', pathname }"
+			)
+			local header = assert(io.open(options.dump[2], "w"))
+			header:write("HTTP/1.1 200 OK\nX-Fixture: offline\n\n")
+			header:close()
 			return Job:new(url, options)
 		end
 		chat_curl[name] = async.wrap(function(url, opts, done)
@@ -199,7 +212,7 @@ function M.with_transport(ctx, run)
 		return true
 	end, 10)
 	for _, item in ipairs(jobs) do
-		os.remove(item.job.options.dump)
+		os.remove(item.job.options.dump[2])
 		if item.job.options.json_request and type(item.job.options.body) == "string" then
 			os.remove(item.job.options.body)
 		end
