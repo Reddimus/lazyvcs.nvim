@@ -367,15 +367,16 @@ the GitHub release.
   generations. Native signs retain only eligibility metadata for size-skipped
   buffers or unavailable bases and release state on unload. Matching base
   mutations retry suspended records without retaining their contents. Hunk
-  computation and gutter rendering have separate caches. Large sign comparisons
-  and native previews share a histogram diff worker, which prefers
-  `vim.text.diff` and falls back to `vim.diff` on Neovim 0.11. Signs fall back
-  synchronously if neither is available in the worker; large previews report the
-  limitation. Preview cancellation releases command ownership while retaining
-  physical-worker bookkeeping until completion. Results must match the state
-  object, buffer text identity, and base generation. Index and SVN BASE mutation
-  hooks run after preflight at process startup and settlement. Logical
-  cancellation does not release base ownership.
+  computation and gutter rendering have separate caches. Sign updates reuse
+  marks. Rendering and removal yield to input after at most 500 operations per
+  batch. Large sign comparisons and native previews share a histogram diff
+  worker, which prefers `vim.text.diff` and falls back to `vim.diff` on Neovim
+  0.11. Signs fall back synchronously if neither is available in the worker;
+  large previews report the limitation. Preview cancellation releases command
+  ownership while retaining physical-worker bookkeeping until completion.
+  Results must match the state object, buffer text identity, and base
+  generation. Index and SVN BASE mutation hooks run after preflight at process
+  startup and settlement. Logical cancellation does not release base ownership.
 - New regression cases belong in sibling `tests/spec_*.lua` modules. The main
   spec is near LuaJIT's local-variable limit.
 
@@ -418,15 +419,15 @@ changes use cached measurements; cursor movement does not load previews.
 Selection blame sends one bounded request chain, never a command per line. Git
 maps selections to historical ranges on older Git; SVN maps historical blame
 through decoded captured contents. Compare passes raw bytes and a decoded
-document for SVN saved snapshots. SVN blame reads BASE explicitly, decodes that
-source independently, and checks the record count before mapping it onto the
-captured preview. Git receives file bytes with its attributes and filters
-active. Representations that may use a different Git line model require bounded
-full-file blame and record-count validation before selecting editor lines.
-Active Git clean filters also require ordered source-row validation, allowing
-only trailing horizontal whitespace and ident collapse as normalization.
-Ordinary selections and line history keep bounded `-L` requests. CI also runs
-native E2E with Ubuntu 22.04 Git.
+document for Git and SVN saved snapshots. SVN blame reads BASE explicitly,
+decodes that source independently, and checks the record count before mapping it
+onto the captured preview. Git receives file bytes with its attributes and
+filters active. Representations that may use a different Git line model require
+bounded full-file blame and record-count validation before selecting editor
+lines. Active Git clean filters also require ordered source-row validation,
+allowing only trailing horizontal whitespace and ident collapse as
+normalization. Ordinary selections and line history keep bounded `-L` requests.
+CI also runs native E2E with Ubuntu 22.04 Git.
 
 Compare file navigation selects its destination in O(1) and loads only that
 preview. Review history stores O(visited paths) view metadata, prunes removed

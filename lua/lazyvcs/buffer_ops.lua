@@ -28,17 +28,21 @@ function M.files()
 
 		local backend = backends.resolve_cached(path)
 		local backend_name = backend and backend.name or "vcs"
-		picker.select(items, {
-			prompt = string.format("%s changed files", backend_name:upper()),
-			format_item = function(item)
-				return string.format("%s %s", item.status, item.path)
-			end,
-		}, function(item)
-			if not item then
-				return
-			end
-			vim.cmd.edit(vim.fn.fnameescape(item.absolute_path))
-		end)
+		picker.select(
+			items,
+			{
+				prompt = string.format("%s changed files", backend_name:upper()),
+				format_item = function(item)
+					return string.format("%s %s", item.status, item.path)
+				end,
+			},
+			util.safe_callback(function(item)
+				if not item then
+					return
+				end
+				vim.cmd.edit(vim.fn.fnameescape(item.absolute_path))
+			end)
+		)
 	end)
 end
 

@@ -72,13 +72,33 @@ function M.compute_text_hunks(base, current)
 	return M.text_hunks(raw, base, current)
 end
 
+-- A final empty physical row without EOL serializes as the preceding record's
+-- newline. Extend terminal diff ranges back through that physical row.
+local function record_count(document)
+	return #document.lines - (not document.eol and document.lines[#document.lines] == "" and 1 or 0)
+end
+
+local function physical_range(start, count, document)
+	local records = record_count(document)
+	local terminal = start + math.max(count - 1, 0) >= records
+	if terminal and #document.lines > records then
+		if count == 0 then
+			start = start + 1
+		end
+		count = count + #document.lines - records
+	end
+	return start, count, terminal
+end
+
 function M.text_hunks(raw, base, current)
 	local hunks = {}
 	for _, item in ipairs(type(raw) == "table" and raw or {}) do
 		local hunk = normalize_hunk(item)
-		local base_end = hunk.base_start + math.max(hunk.base_count - 1, 0)
-		local current_end = hunk.current_start + math.max(hunk.current_count - 1, 0)
-		hunk.covers_eof = base_end >= #base.lines and current_end >= #current.lines
+		local base_eof, current_eof
+		hunk.base_start, hunk.base_count, base_eof = physical_range(hunk.base_start, hunk.base_count, base)
+		hunk.current_start, hunk.current_count, current_eof =
+			physical_range(hunk.current_start, hunk.current_count, current)
+		hunk.covers_eof = base_eof and current_eof
 		hunks[#hunks + 1] = hunk
 	end
 	return hunks

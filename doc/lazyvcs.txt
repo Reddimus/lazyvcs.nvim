@@ -478,13 +478,16 @@ Inline blame refreshes after a buffer is unloaded and reopened or reread with
 The blame split reloads from unsaved buffer contents after edits. Reloads use
 blame.delay_ms and discard results from earlier edits or format changes. The split
 aligns its initial viewport and subsequent reloads with the source. While it is
-open, the source window has wrapping and folding disabled so each source line
-occupies one row. Closing the split restores the source's previous window-local
-wrap, foldenable, scrollbind, and cursorbind values, preserving fold definitions.
+open, the source window has wrapping and folding disabled. Blank virtual rows in
+the blame pane mirror source virtual lines, including diagnostic display changes.
+Closing the split restores the source's previous window-local wrap, foldenable,
+scrollbind, and cursorbind values, preserving fold definitions.
 Ordinary source splits inherit this restoration. Later user overrides and
 independent source windows keep their own values.
 The split closes when the source window changes buffers, the source is unloaded,
-or either window closes. Line history uses the current buffer contents and has
+or either window closes. Git line history shows the attributed commit with
+commit-wide statistics, including history before a rename. Author names and
+messages use UTF-8. Line history uses the current buffer contents and has
 no committed revision for newly inserted lines. Pending history is cancelled
 when its source changes, closes, or moves its cursor, including during loading.
 

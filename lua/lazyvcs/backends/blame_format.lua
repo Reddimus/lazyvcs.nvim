@@ -94,16 +94,20 @@ function M.select(lines, opts, policy)
 	return selected, nil, validated_source_lines
 end
 
+function M.svn_document(decoded, records, fileformat)
+	local effective = { fileencoding = decoded.encoding, fileformat = fileformat }
+	if M.full_file({ profile = effective, text = decoded }) or #decoded.lines ~= #records then
+		return nil, "Unsupported blame line format: SVN and the editor use different lines"
+	end
+	return decoded
+end
+
 function M.svn_base(bytes, profile, records, limit)
 	local decoded, err = require("lazyvcs.compare_text").decode(bytes, profile, limit)
 	if not decoded then
 		return nil, err
 	end
-	local effective = { fileencoding = decoded.encoding, fileformat = profile.fileformat }
-	if M.full_file({ profile = effective, text = decoded }) or #decoded.lines ~= #records then
-		return nil, "Unsupported blame line format: SVN and the editor use different lines"
-	end
-	return decoded
+	return M.svn_document(decoded, records, profile.fileformat)
 end
 
 return M

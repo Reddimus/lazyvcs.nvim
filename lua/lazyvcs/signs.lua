@@ -44,11 +44,35 @@ local function setup_highlights()
 	vim.api.nvim_set_hl(0, "LazyVcsBlameAuthor", { default = true, link = "Comment" })
 end
 
+local sign_batch_size = 500
+
+local function retire_signs(bufnr, state)
+	local marks = state and state.sign_marks or {}
+	if state then
+		state.sign_marks, state.sign_render = {}, nil
+		state.decorated_hunks, state.decorated_enabled = nil, nil
+	end
+	local function remove()
+		if not vim.api.nvim_buf_is_loaded(bufnr) then
+			return
+		end
+		for _ = 1, sign_batch_size do
+			local id = table.remove(marks)
+			if not id then
+				return
+			end
+			pcall(vim.api.nvim_buf_del_extmark, bufnr, ns_id, id)
+		end
+		if #marks > 0 then
+			vim.defer_fn(util.safe_callback(remove), 1)
+		end
+	end
+	remove()
+end
+
 local function clear(bufnr)
 	local state = buffers[bufnr]
-	if util.buf_is_valid(bufnr) then
-		pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns_id, 0, -1)
-	end
+	retire_signs(bufnr, state)
 	buffers[bufnr] = nil
 	if state and state.preview_pending then
 		state.preview_pending.cancel()
@@ -166,52 +190,78 @@ local function hunk_kind(hunk)
 	return "change"
 end
 
-local function hunk_rows(bufnr, hunk)
-	local line_count = math.max(vim.api.nvim_buf_line_count(bufnr), 1)
-	if hunk.current_count == 0 then
-		return { math.max(math.min(diff.hunk_anchor(hunk), line_count), 1) - 1 }
-	end
-
-	local rows = {}
-	for offset = 0, hunk.current_count - 1 do
-		rows[#rows + 1] = math.max(math.min(hunk.current_start + offset, line_count), 1) - 1
-	end
-	return rows
-end
-
 local function render_signs(bufnr, state)
 	if state.delegate_after_command and defers_to_gitsigns(state.backend or "git", bufnr) then
-		vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
-		state.decorated_hunks, state.decorated_enabled = nil, nil
+		retire_signs(bufnr, state)
 		return
 	end
 	if state.decorated_hunks == state.hunks and state.decorated_enabled == opts().enabled then
 		return
 	end
 	state.decorated_hunks, state.decorated_enabled = state.hunks, opts().enabled
-	vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
 	if not opts().enabled then
-		return
+		return retire_signs(bufnr, state)
 	end
-	local text = opts().text
-	for _, hunk in ipairs(state.hunks) do
-		local kind = hunk_kind(hunk)
-		local sign_text = text[kind] or text.change
-		local hl_group = kind == "add" and "LazyVcsSignAdd"
-			or (kind == "delete" or kind == "topdelete") and "LazyVcsSignDelete"
-			or "LazyVcsSignChange"
-		for _, row in ipairs(hunk_rows(bufnr, hunk)) do
-			local ok, err = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_id, row, 0, {
-				sign_text = sign_text,
-				sign_hl_group = hl_group,
-				priority = opts().sign_priority,
-			})
-			if not ok and state.sign_error_generation ~= state.generation then
-				state.sign_error_generation = state.generation
-				util.notify("Could not render native sign: " .. tostring(err), vim.log.levels.WARN)
+	local token, identity, generation = {}, compare_text.identity(bufnr), state.base_generation
+	state.sign_render = token
+	state.sign_marks = state.sign_marks or {}
+	local marks, hunks = state.sign_marks, state.hunks
+	local index, hunk_index, offset = 1, 1, 0
+	local line_count = math.max(vim.api.nvim_buf_line_count(bufnr), 1)
+	local function batch()
+		if buffers[bufnr] ~= state or state.sign_render ~= token or not vim.api.nvim_buf_is_loaded(bufnr) then
+			return
+		end
+		if
+			not opts().enabled
+			or state.base_generation ~= generation
+			or util.buf_path(bufnr) ~= state.path
+			or not vim.deep_equal(compare_text.identity(bufnr), identity)
+		then
+			return retire_signs(bufnr, state)
+		end
+		for _ = 1, sign_batch_size do
+			local hunk = hunks[hunk_index]
+			if not hunk then
+				if #marks < index then
+					state.sign_render = nil
+					return
+				end
+				pcall(vim.api.nvim_buf_del_extmark, bufnr, ns_id, table.remove(marks))
+			else
+				local kind = hunk_kind(hunk)
+				local row = math.max(
+					math.min(
+						hunk.current_count == 0 and diff.hunk_anchor(hunk) or hunk.current_start + offset,
+						line_count
+					),
+					1
+				) - 1
+				local ok, id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_id, row, 0, {
+					id = marks[index],
+					sign_text = opts().text[kind] or opts().text.change,
+					sign_hl_group = kind == "add" and "LazyVcsSignAdd"
+						or (kind == "delete" or kind == "topdelete") and "LazyVcsSignDelete"
+						or "LazyVcsSignChange",
+					priority = opts().sign_priority,
+				})
+				if ok then
+					marks[index] = id
+					index = index + 1
+				elseif state.sign_error_generation ~= state.generation then
+					state.sign_error_generation = state.generation
+					util.notify("Could not render native sign: " .. tostring(id), vim.log.levels.WARN)
+				end
+				offset = offset + 1
+				if offset >= math.max(hunk.current_count, 1) then
+					hunk_index, offset = hunk_index + 1, 0
+				end
 			end
 		end
+		-- A timer yields to input and redraw; schedule alone can drain in one turn.
+		vim.defer_fn(util.safe_callback(batch), 1)
 	end
+	batch()
 end
 
 local start_diff_work = require("lazyvcs.diff_work").start
@@ -333,6 +383,9 @@ render = function(bufnr, on_ready)
 				or state.base_generation ~= generation
 				or not vim.deep_equal(compare_text.identity(bufnr), identity)
 			then
+				if not state.base_text and not state.unavailable_reason then
+					return
+				end
 				return render(bufnr)
 			end
 			if diff_err then
@@ -419,9 +472,7 @@ local function invalidate_base(bufnr, state, reason)
 	if job then
 		pcall(job.kill, job, 15)
 	end
-	if vim.api.nvim_buf_is_loaded(bufnr) then
-		vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
-	end
+	retire_signs(bufnr, state)
 end
 
 local function suspend_base(bufnr, state, reason)

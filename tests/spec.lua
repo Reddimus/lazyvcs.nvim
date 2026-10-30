@@ -7216,6 +7216,7 @@ vim.list_extend(cases, require("spec_source_control_refresh")({ helpers = helper
 vim.list_extend(cases, require("spec_source_control_sidebar")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_source_control_ui")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_persistence")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_blame_signs_a1")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_signs_performance")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_signs_attributes")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_signs_rendering")({ helpers = helpers, wait_for = wait_for }))
