@@ -1,5 +1,11 @@
 return function(ctx)
 	local h, util = ctx.helpers, require("lazyvcs.util")
+	-- Read checkout files by absolute path; E2E runs from another directory.
+	local checkout =
+		vim.fn.fnamemodify(assert(vim.api.nvim_get_runtime_file("lua/lazyvcs/compat.lua", false)[1]), ":p:h:h:h")
+	local function checkout_lines(relpath)
+		return vim.fn.readfile(checkout .. "/" .. relpath)
+	end
 	local cases = {
 		{
 			"test_revert_checks_file_kind_after_index_read",
@@ -138,7 +144,7 @@ return function(ctx)
 				end, "revert did not finish", 15000)
 				assert(vim.fn.readfile(f.file)[1] == "STAGED content")
 				assert(h.exec({ "git", "show", ":sample.txt" }, f.root) == "STAGED content\n")
-				local help = table.concat(vim.fn.readfile("doc/lazyvcs.txt"), "\n")
+				local help = table.concat(checkout_lines("doc/lazyvcs.txt"), "\n")
 				local command = assert(help:match(":LazyVCS revert%s+(.-)\n\n"))
 				assert(
 					command:find("index", 1, true) and command:find("staged changes", 1, true),

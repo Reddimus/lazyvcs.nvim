@@ -1,5 +1,11 @@
 return function(ctx)
 	local h, api = ctx.helpers, vim.api
+	-- Read checkout files by absolute path; E2E runs from another directory.
+	local checkout =
+		vim.fn.fnamemodify(assert(vim.api.nvim_get_runtime_file("lua/lazyvcs/compat.lua", false)[1]), ":p:h:h:h")
+	local function checkout_lines(relpath)
+		return vim.fn.readfile(checkout .. "/" .. relpath)
+	end
 	local native = require("lazyvcs.source_control.native")
 	local model = require("lazyvcs.source_control.model")
 	local input = require("lazyvcs.source_control.input")
@@ -154,7 +160,7 @@ return function(ctx)
 					"sidebar help presents s and . as equivalent under direct synchronization"
 				)
 				assert(description and description:lower():find("sync", 1, true), "s mapping description omits Sync")
-				local doc = table.concat(vim.fn.readfile("doc/lazyvcs.txt"), "\n")
+				local doc = table.concat(checkout_lines("doc/lazyvcs.txt"), "\n")
 				assert(
 					not doc:find("s, .         open repo actions", 1, true),
 					"manual conflates Sync and repository actions"
@@ -271,7 +277,7 @@ return function(ctx)
 					assert(not mutated, "hinted key started Sync under direct sync_button_behavior")
 					local job = session.get_repo_job(f.root)
 					assert(job and job.error == "hook rejected the commit", "hinted key replaced the stored error")
-					local readme, paragraph = table.concat(vim.fn.readfile("README.md"), "\n") .. "\n\n", nil
+					local readme, paragraph = table.concat(checkout_lines("README.md"), "\n") .. "\n\n", nil
 					for block in readme:gmatch("(.-)\n\n") do
 						paragraph = block:find("Show Last Error", 1, true) and block or paragraph
 					end
@@ -312,7 +318,7 @@ return function(ctx)
 						return called ~= nil
 					end, "branch picker did not use fzf-lua", 15000)
 					assert(called:find("Checkout branch", 1, true))
-					local help = table.concat(vim.fn.readfile("doc/lazyvcs.txt"), "\n")
+					local help = table.concat(checkout_lines("doc/lazyvcs.txt"), "\n")
 					assert(
 						help:find("Snacks, fzf-lua, then vim.ui.select", 1, true),
 						"help omits actual branch picker fallback"
