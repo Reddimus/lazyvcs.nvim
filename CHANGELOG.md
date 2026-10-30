@@ -21,6 +21,29 @@ and this project adheres to
 - Restore inherited highlight namespaces, keep private overlays out of global
   defaults, and retain semantic suppression after theme changes on Neovim 0.11.
 - Preserve syntax colors for self-links in custom highlight namespaces.
+- Show staged final-newline changes in Git previews and hunk navigation,
+  including after refresh. Mark snapshot text that has no final newline.
+- Find Git repositories for deleted files whose parent directories are also
+  gone.
+- Show staged final-newline changes in Git previews and hunk navigation,
+  including after refresh. Mark snapshot text that has no final newline.
+- Find Git repositories for deleted files whose parent directories are also
+  gone.
+- Open SVN directory rows as shallow property previews, including local and
+  incoming additions. Keep file contents visible in file and directory
+  replacements.
+- Keep untracked files from SVN directory externals out of the parent Compare.
+- Preserve whitespace and decode base64 in inherited SVN ignore properties.
+  Accept undefined configuration references as literal ignore patterns.
+- List individual nonignored files inside new SVN directories in the files
+  picker.
+- Skip unloaded buffers when finding preview encoding hints to avoid navigation
+  delays in sessions with many buffers.
+- Complete sidebar shorthand paths, arguments before the cursor, and commands
+  with Ex modifiers or ranges. Respect Unicode case matching for directory
+  names.
+- Escape control characters in repository paths shown by the job profile.
+- Reject duplicate mappings that spell the same less-than key as `<lt>` and `<`.
 
 ## [0.12.1] - 2026-10-23
 

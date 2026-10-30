@@ -6,6 +6,7 @@ local fold_state = require("lazyvcs.fold_state")
 
 local M = {}
 local departed_buffers = {}
+local eof_namespace = vim.api.nvim_create_namespace("lazyvcs_snapshot_eof")
 
 local function sanitize_root(text)
 	return (util.normalize_literal_path(text or ""):gsub("[%c]", " "))
@@ -722,6 +723,23 @@ function M.sync_scroll(session, source_win)
 end
 
 function M.refresh(session)
+	if session.readonly_comparison then
+		for _, side in ipairs({
+			{ session.base_bufnr, session.base_text },
+			{ session.editable_bufnr, session.current_text },
+		}) do
+			local buf, document = side[1], side[2]
+			if util.buf_is_valid(buf) then
+				vim.api.nvim_buf_clear_namespace(buf, eof_namespace, 0, -1)
+				if document and not document.empty and not document.eol then
+					vim.api.nvim_buf_set_extmark(buf, eof_namespace, math.max(#document.lines - 1, 0), 0, {
+						virt_text = { { " [No newline at end of file]", "WarningMsg" } },
+						virt_text_pos = "eol",
+					})
+				end
+			end
+		end
+	end
 	set_window_labels(session)
 	if util.win_is_valid(session.editable_win) then
 		vim.api.nvim_win_call(session.editable_win, function()

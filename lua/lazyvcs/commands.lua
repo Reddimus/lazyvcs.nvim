@@ -39,7 +39,7 @@ local function show_profile(args)
 			item.status or "",
 			item.vcs or "",
 			item.kind or "",
-			item.root or ""
+			require("lazyvcs.source_control.display").label(item.root or "")
 		)
 		if item.error and item.error ~= "" then
 			for _, line in ipairs(require("lazyvcs.util").split_text_lines(item.error)) do
@@ -333,10 +333,24 @@ local function dispatch(opts)
 	return action.run(vim.list_slice(rest, 2))
 end
 
-local function complete(arg_lead, cmd_line)
-	-- Split what has been typed so far, ignoring the command name itself.
-	local typed = vim.split(vim.trim(cmd_line), "%s+")
-	table.remove(typed, 1)
+local function complete(arg_lead, cmd_line, cursor_pos)
+	cursor_pos = cursor_pos or #cmd_line
+	local suffix = cmd_line:sub(cursor_pos + 1)
+	if suffix ~= "" and arg_lead:sub(-#suffix) == suffix then
+		arg_lead = arg_lead:sub(1, #arg_lead - #suffix)
+	end
+	cmd_line = cmd_line:sub(1, cursor_pos)
+	-- Modifiers and ranges precede the user command, outside its arguments.
+	local command_end
+	for start, command, after in cmd_line:gmatch("()%f[%a](L%a*)()%f[%A]") do
+		local previous = cmd_line:sub(start - 1, start - 1)
+		if previous ~= "'" and previous ~= "`" and vim.startswith("LazyVCS", command) then
+			command_end = after - 1
+			break
+		end
+	end
+	cmd_line = command_end and cmd_line:sub(command_end + 1) or ""
+	local typed = vim.split(vim.trim(cmd_line), "%s+", { trimempty = true })
 	-- A trailing space means the user is starting a new token.
 	local completing_new = cmd_line:sub(-1) == " "
 	local depth = #typed + (completing_new and 1 or 0)
@@ -357,7 +371,12 @@ local function complete(arg_lead, cmd_line)
 	end
 
 	if depth == 2 then
-		return matching(sorted_keys(entry.verbs))
+		local candidates = matching(sorted_keys(entry.verbs))
+		local default = entry.default and entry.verbs[entry.default]
+		if default and default.complete == "dir" then
+			vim.list_extend(candidates, require("lazyvcs.command_path").complete(arg_lead))
+		end
+		return candidates
 	end
 
 	-- Third token: only directory-taking verbs accept an argument.

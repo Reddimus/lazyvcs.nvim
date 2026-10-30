@@ -1048,9 +1048,13 @@ return function(ctx)
 			revert_called = true
 			vim.api.nvim_buf_set_lines(0, 0, -1, false, { "edited while discard was preparing" })
 			---@diagnostic disable-next-line: duplicate-set-field
-			util.system_start = function()
-				mutation_started = true
-				return {}
+			util.system_start = function(args, ...)
+				if args[1] == "git" and args[2] == "restore" then
+					mutation_started = true
+					return {}
+				end
+				-- Async repository revalidation may still issue read commands.
+				return previous_system_start(args, ...)
 			end
 			assert(opts and opts.start, "buffer discard should guard the destructive process start")
 			return opts.start({ "git", "restore", "--worktree", "--", "sample.txt" }, {}, function(result, err)

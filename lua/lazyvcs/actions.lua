@@ -420,6 +420,8 @@ refresh = function(bufnr)
 		session.capture_error = nil
 		session.current_text = current
 		session.hunks = diff.compute_text_hunks(session.base_text, current)
+	elseif session.base_text and session.current_text then
+		session.hunks = diff.compute_text_hunks(session.base_text, session.current_text)
 	else
 		session.hunks = diff.compute_hunks(session.base_lines, util.get_buf_lines(session.editable_bufnr))
 	end
@@ -968,6 +970,10 @@ local function comparison_buffer(comparison, side, editor_win)
 	vim.bo[bufnr].swapfile = false
 	vim.bo[bufnr].modifiable = true
 	vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, side.lines or {})
+	if side.document then
+		vim.bo[bufnr].endofline = side.document.eol
+		vim.bo[bufnr].fixendofline = false
+	end
 	local extension = vim.fn.fnamemodify(comparison.path or comparison.relpath or "", ":e")
 	if comparison.property_only or comparison.kind == "git_submodule" then
 		vim.bo[bufnr].filetype = "diff"
@@ -1062,6 +1068,8 @@ local function open_target_impl(comparison, failure_context)
 		left_label = comparison.left.label,
 		right_label = comparison.right.label,
 		base_lines = comparison.left.lines or {},
+		base_text = comparison.left.document,
+		current_text = comparison.right.document,
 		opts = vim.deepcopy(config.get()),
 		readonly_comparison = not (comparison.editable_side == "right" and comparison.right.modifiable),
 		owned_editable_buf = owned,
@@ -1389,6 +1397,11 @@ reload_session = function(session)
 				vim.bo[live.editable_bufnr].modifiable = true
 				vim.bo[live.editable_bufnr].readonly = false
 				vim.api.nvim_buf_set_lines(live.editable_bufnr, 0, -1, false, result.right.lines or {})
+				live.base_text, live.current_text = result.left.document, result.right.document
+				if live.current_text then
+					vim.bo[live.editable_bufnr].endofline = live.current_text.eol
+					vim.bo[live.editable_bufnr].fixendofline = false
+				end
 				vim.bo[live.editable_bufnr].modifiable = false
 				vim.bo[live.editable_bufnr].readonly = true
 			end

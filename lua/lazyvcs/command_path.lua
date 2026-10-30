@@ -65,11 +65,13 @@ function M.complete(lead)
 		if not name then
 			break
 		end
-		local lead_name = name:sub(1, #prefix)
-		local fold = vim.o.fileignorecase or vim.o.wildignorecase
+		local folded_name, folded_prefix = name, prefix
+		if vim.o.fileignorecase or vim.o.wildignorecase then
+			folded_name, folded_prefix = vim.fn.tolower(name), vim.fn.tolower(prefix)
+		end
 		if
 			(name:sub(1, 1) ~= "." or prefix:sub(1, 1) == ".")
-			and ((fold and lead_name:lower() == prefix:lower()) or (not fold and lead_name == prefix))
+			and folded_name:sub(1, #folded_prefix) == folded_prefix
 		then
 			local candidate = (parent == "" and name:sub(1, 1) == "~") and ("./" .. name) or (parent .. name)
 			local stat = (kind == "link" or kind == "unknown") and vim.uv.fs_stat(candidate)

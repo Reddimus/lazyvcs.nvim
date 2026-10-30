@@ -816,6 +816,87 @@ function M.dir_of(path)
 	return vim.fs.dirname(path)
 end
 
+---Find a command directory for an entry whose parent directories may be deleted.
+function M.existing_directory(path)
+	local cwd = M.dir_of(path)
+	while cwd do
+		local stat, err, code = vim.uv.fs_stat(cwd)
+		if stat then
+			if stat.type ~= "directory" then
+				return nil, "Not a directory: " .. cwd
+			end
+			return M.normalize_literal_path(cwd)
+		end
+		-- Only absent entries permit ascent. A dangling link still owns its path.
+		if code ~= "ENOENT" then
+			return nil, err
+		end
+		local entry, entry_err, entry_code = vim.uv.fs_lstat(cwd)
+		if entry or entry_code ~= "ENOENT" then
+			return nil, entry_err or err
+		end
+		local parent = vim.fs.dirname(cwd)
+		if parent == cwd then
+			break
+		end
+		cwd = parent
+	end
+	return nil, "No existing directory for " .. path
+end
+
+---Discover ancestors without blocking navigation; cancellation stops the walk.
+function M.existing_directory_async(path, callback)
+	local task = require("lazyvcs.backends.task").new(callback)
+	local pending
+	task:on_cancel(function()
+		if pending then
+			pcall(vim.uv.cancel, pending)
+		end
+	end)
+	local function stat_async(method, candidate, done)
+		pending = vim.uv[method](candidate, function(err, stat)
+			vim.schedule(M.safe_callback(function()
+				pending = nil
+				if task:is_active() then
+					done(err, stat)
+				end
+			end))
+		end)
+	end
+	local visit
+	visit = function(cwd)
+		if not cwd then
+			return task:finish(nil, "No existing directory for " .. path)
+		end
+		stat_async("fs_stat", cwd, function(err, stat)
+			if stat then
+				if stat.type ~= "directory" then
+					return task:finish(nil, "Not a directory: " .. cwd)
+				end
+				return task:finish(M.normalize_literal_path(cwd))
+			end
+			if not err or not err:match("^ENOENT:") then
+				return task:finish(nil, err)
+			end
+			-- Distinguish a missing ancestor from a dangling symlink before ascent.
+			stat_async("fs_lstat", cwd, function(entry_err, entry)
+				if entry or not entry_err or not entry_err:match("^ENOENT:") then
+					return task:finish(nil, entry_err or err)
+				end
+				local parent = vim.fs.dirname(cwd)
+				visit(parent ~= cwd and parent or nil)
+			end)
+		end)
+	end
+	stat_async("fs_stat", path, function(_, stat)
+		if stat and stat.type == "directory" then
+			return task:finish(M.normalize_literal_path(path))
+		end
+		visit(vim.fs.dirname(path))
+	end)
+	return task
+end
+
 ---Normalize filesystem data literally. Join repository entries to their root first.
 ---Unlike user-input expansion, this also preserves a leading tilde in a filename.
 ---@param path string

@@ -393,8 +393,7 @@ function M.preview(snapshot, item, callback, opts)
 		)
 		return task
 	end
-	local left_options = common.decode_options(snapshot.root .. "/" .. (item.old_path or item.relpath))
-	left_options.hint = nil
+	local left_options = { fileencodings = vim.o.fileencodings }
 	local right_options = common.decode_options(snapshot.root .. "/" .. item.relpath)
 	local blob_options = vim.deepcopy(right_options)
 	blob_options.hint = nil

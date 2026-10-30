@@ -259,7 +259,7 @@ local function normalize(opts)
 		end):gsub("<[Ll][Ee][Aa][Dd][Ee][Rr]>", function()
 			return vim.g.mapleader or "\\"
 		end)
-		return vim.api.nvim_replace_termcodes(key, true, false, true)
+		return vim.api.nvim_replace_termcodes(key, true, true, true)
 	end
 	for _, action in ipairs(require("lazyvcs.compare_actions")) do
 		if action.key then

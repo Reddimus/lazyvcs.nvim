@@ -136,7 +136,11 @@ function M.decode_options(path)
 	local resolved = util.canonical_path(path)
 	local hint
 	for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-		if util.is_real_file_buffer(buf) and util.canonical_path(vim.api.nvim_buf_get_name(buf)) == resolved then
+		if
+			vim.api.nvim_buf_is_loaded(buf)
+			and util.is_real_file_buffer(buf)
+			and util.canonical_path(vim.api.nvim_buf_get_name(buf)) == resolved
+		then
 			local profile = text.profile(buf)
 			if profile then
 				hint = { fileencoding = profile.fileencoding }
