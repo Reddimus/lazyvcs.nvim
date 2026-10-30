@@ -183,6 +183,9 @@ function M.new(lifecycle)
 					assert(layout.bind_pair(s, s.editable_win), "could not restore diff pair")
 					aerial.refetch_buffer(s.editable_bufnr)
 				end
+				if p.refresh_completion then
+					p.refresh_completion()
+				end
 				-- Leaving installed close-only controls; restore the hunk maps.
 				require("lazyvcs.window_controls").sync()
 			end

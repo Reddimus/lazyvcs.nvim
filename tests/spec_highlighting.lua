@@ -10,6 +10,8 @@ return function(ctx)
 		vim.bo[buf].filetype = "c"
 		vim.wo[win].number, vim.wo[win].relativenumber, vim.wo[win].signcolumn = false, false, "no"
 		vim.wo[win].foldcolumn = "0"
+		vim.cmd.redraw()
+		api.nvim__inspect_cell(1, 0, 0)
 		api.nvim_set_hl(0, "LazyVCSTestSyntax", { fg = "#ff0000" })
 		api.nvim_set_hl(0, "@lsp.type.comment.c", { fg = "#777777", italic = true })
 		local marks = api.nvim_create_namespace("lazyvcs-test-semantic")

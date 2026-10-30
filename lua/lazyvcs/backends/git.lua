@@ -879,7 +879,7 @@ function M.revert_file_async(path, on_done, opts)
 	return task
 end
 
-function M.revert_hunk(session, hunk)
+function M.revert_hunk(session, hunk, winid)
 	if not session.tracked or session.base_label ~= "INDEX" or not session.opts.use_gitsigns then
 		return false
 	end
@@ -889,8 +889,53 @@ function M.revert_hunk(session, hunk)
 		return false
 	end
 
-	local winid = session.editable_win
-	if not util.win_is_valid(winid) then
+	-- Gitsigns has an independent, mutable base. Unknown cache layouts fall back
+	-- to the validated native replacement rather than guessing the revision.
+	local cache = package.loaded["gitsigns.cache"]
+	local entry = type(cache) == "table" and type(cache.cache) == "table" and cache.cache[session.editable_bufnr]
+	if
+		type(entry) ~= "table"
+		or entry.file_mode
+		or type(entry.git_obj) ~= "table"
+		or (entry.git_obj.revision ~= nil and entry.git_obj.revision ~= ":0")
+		or type(gitsigns.get_hunks) ~= "function"
+		or type(gitsigns.reset_hunk) ~= "function"
+	then
+		return false
+	end
+	local read_ok, hunks = pcall(gitsigns.get_hunks, session.editable_bufnr)
+	if not read_ok or type(hunks) ~= "table" or not session.base_text or not session.current_text then
+		return false
+	end
+	local matches = 0
+	for _, candidate in ipairs(hunks) do
+		if type(candidate) ~= "table" then
+			return false
+		end
+		local added, removed = candidate.added, candidate.removed
+		if
+			type(added) == "table"
+			and type(removed) == "table"
+			and added.start == hunk.current_start
+			and added.count == hunk.current_count
+			and removed.start == hunk.base_start
+			and removed.count == hunk.base_count
+			and vim.deep_equal(
+				added.lines,
+				util.slice(session.current_text.lines, hunk.current_start, hunk.current_count)
+			)
+			and vim.deep_equal(removed.lines, util.slice(session.base_text.lines, hunk.base_start, hunk.base_count))
+			and (added.no_nl_at_eof or false) == (hunk.covers_eof and not session.current_text.eol or false)
+			and (removed.no_nl_at_eof or false) == (hunk.covers_eof and not session.base_text.eol or false)
+		then
+			matches = matches + 1
+		end
+	end
+	if matches ~= 1 then
+		return false
+	end
+	winid = winid or session.editable_win
+	if not util.win_is_valid(winid) or vim.api.nvim_win_get_buf(winid) ~= session.editable_bufnr then
 		return false
 	end
 

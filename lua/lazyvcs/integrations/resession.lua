@@ -59,20 +59,9 @@ function M.setup(load_plugin)
 	if attached then
 		return true
 	end
-	-- Only a live diff may load a known lazy.nvim plugin. Ordinary setup stays lazy.
+	-- Opening a live diff attaches save hooks for any available plugin loader.
 	if load_plugin and package.loaded.resession == nil then
-		local ok, lazy = pcall(require, "lazy.core.config")
-		if ok and type(lazy) == "table" and type(lazy.plugins) == "table" then
-			for _, plugin in pairs(lazy.plugins) do
-				if
-					type(plugin) == "table"
-					and (plugin.name == "resession.nvim" or plugin.main == "resession" or plugin.module == "resession")
-				then
-					pcall(require, "resession")
-					break
-				end
-			end
-		end
+		pcall(require, "resession")
 	end
 	local resession = package.loaded.resession
 	if

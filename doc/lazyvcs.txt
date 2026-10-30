@@ -340,6 +340,13 @@ files pause the view and show the reason in the base pane. Selecting a supported
 file resumes it; :LazyVCS diff refresh retries the paused file. Special or unnamed
 buffers close the view. Hunk revert is unavailable while paused or until a pending
 transfer finishes. Close and toggle also work while the new base is loading.
+
+Git live-diff reverts use the displayed index base. With use_gitsigns enabled,
+LazyVCS calls gitsigns.reset_hunk() only when its current base is the index and
+its hunk boundaries, removed text, added text, and final-newline state match the
+validated LazyVCS hunk. Unknown bases or mismatched hunks use native replacement.
+Standalone hunk reverts follow the native and large-file rules below.
+
 Splits of the editable window share its diff while the session is active and
 leave diff mode when it closes or moves to another buffer, including a move
 that is abandoned before it completes.
@@ -690,7 +697,7 @@ LazyVCS when Neovim rereads a Compare snapshot buffer, such as after `:edit`.
 
 Optional integrations are detected at runtime:
 
-    gitsigns.nvim     Git hunk reset delegation
+    gitsigns.nvim     Git signs, navigation, previews, and validated live resets
     snacks.nvim       Action picker, VS Code-style Git branch picker,
                       and SVN file pickers
     fzf-lua           SVN file picker fallback
@@ -843,7 +850,10 @@ Main options:
     debounce_ms        Delay before live diff refresh.
     diff_highlighting  "syntax" (default) hides LSP semantic overlays in all
                        diff panes. "editor" keeps the editor's colors.
-    use_gitsigns       Prefer `gitsigns.reset_hunk()` for Git hunks.
+    use_gitsigns       Delegate Git signs, navigation, and previews to gitsigns.
+                       Live hunk resets delegate only with a verified index base
+                       and an exact hunk match, including text and EOF state.
+                       Other live resets use native replacement.
     set_winbar         Set simple winbar labels during live diff.
     session_keymaps    Add buffer-local live diff and Compare navigation mappings.
     base_window.width  Left/base diff window width. Values <= 1 are a ratio
@@ -907,6 +917,9 @@ colors. For inherited window colors, LazyVCS adds semantic-group mappings to
 'winhighlight' and removes them on release, preserving mappings you change
 while the diff is open. Statuslines and other raw option readers see this overlay
 while the window is managed. New splits and floats keep only your mappings.
+If a native overlay does not activate on Neovim 0.11, LazyVCS uses an explicitly
+activated reusable namespace. Empty mappings restore namespace inheritance on
+release. User mapping changes and later external namespace owners are preserved.
 Explicit custom highlight namespaces use a reusable namespace that resolves
 links through the source theme; closing restores the previous namespace.
 On runtimes with link_global support, LazyVCS keeps a window's source namespace

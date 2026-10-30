@@ -542,6 +542,9 @@ function M.rebind(old, replacement)
 		vim.bo[buf].fixendofline = false
 	end
 	vim.bo[buf].filetype = replacement.paused and "" or vim.bo[replacement.editable_bufnr].filetype
+	for _, name in ipairs({ "wrap", "linebreak", "breakindent" }) do
+		util.set_win_option(replacement.base_win, name, util.get_win_option(replacement.editable_win, name))
+	end
 	local old_name = vim.api.nvim_buf_get_name(buf)
 	local new_name = resolve_base_buffer_name(replacement)
 	vim.api.nvim_buf_set_name(buf, new_name)

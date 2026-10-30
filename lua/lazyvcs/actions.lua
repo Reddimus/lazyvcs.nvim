@@ -1188,6 +1188,18 @@ function M.toggle()
 	return M.open()
 end
 
+local function hunk_window(session)
+	local win = vim.api.nvim_get_current_win()
+	if
+		vim.api.nvim_win_get_tabpage(win) == session.tabpage
+		and vim.api.nvim_win_get_buf(win) == session.editable_bufnr
+		and util.get_win_option(win, "diff")
+	then
+		return win
+	end
+	return session.editable_win
+end
+
 function M.revert_hunk()
 	if require("lazyvcs.compare_navigation").owns(require("lazyvcs.compare").current()) then
 		util.notify("Hunk revert is unavailable in Compare", vim.log.levels.WARN)
@@ -1202,10 +1214,14 @@ function M.revert_hunk()
 		return false
 	end
 
+	local action_win = hunk_window(session)
 	local function can_mutate()
 		return state.get(session.editable_bufnr) == session
 			and not session.closing
 			and session.phase == "active"
+			and util.win_is_valid(action_win)
+			and vim.api.nvim_win_get_buf(action_win) == session.editable_bufnr
+			and util.get_win_option(action_win, "diff")
 			and util.win_is_valid(session.editable_win)
 			and vim.api.nvim_win_get_buf(session.editable_win) == session.editable_bufnr
 	end
@@ -1215,13 +1231,13 @@ function M.revert_hunk()
 	end
 
 	refresh(session.editable_bufnr)
-	local line = vim.api.nvim_win_get_cursor(session.editable_win)[1]
+	local line = vim.api.nvim_win_get_cursor(action_win)[1]
 	local hunk = diff.find_current_hunk(session.hunks or {}, line)
 	if not hunk then
 		util.notify("No modified hunk at the cursor", vim.log.levels.WARN)
 		return
 	end
-	local context = util.capture_buffer_context(session.editable_win)
+	local context = util.capture_buffer_context(action_win)
 	if not context or context.bufnr ~= session.editable_bufnr then
 		return false
 	end
@@ -1257,8 +1273,8 @@ function M.revert_hunk()
 			if not context_is_unchanged() then
 				return false
 			end
-			return vim.api.nvim_win_call(session.editable_win, function()
-				if not session.backend_impl.revert_hunk(session, confirmed_hunk) then
+			return vim.api.nvim_win_call(action_win, function()
+				if not session.backend_impl.revert_hunk(session, confirmed_hunk, action_win) then
 					diff.reset_text_hunk(session.editable_bufnr, confirmed_base, session.current_text, confirmed_hunk)
 				end
 
@@ -1298,15 +1314,16 @@ function M.jump_to_hunk(direction)
 	end
 
 	refresh(session.editable_bufnr)
+	local action_win = hunk_window(session)
 	local hunks = session.hunks or {}
 	if #hunks == 0 then
 		util.notify("No hunks in the current buffer", vim.log.levels.INFO)
 		return
 	end
 
-	local line = vim.api.nvim_win_get_cursor(session.editable_win)[1]
+	local line = vim.api.nvim_win_get_cursor(action_win)[1]
 	local hunk = diff.find_neighbor_hunk(hunks, line, direction)
-	diff.focus_hunk(session.editable_win, session.editable_bufnr, hunk)
+	diff.focus_hunk(action_win, session.editable_bufnr, hunk)
 end
 
 function M.next_hunk()
@@ -1334,6 +1351,13 @@ reload_session = function(session)
 			return
 		end
 		live.refresh_job = nil
+		local pending = state.peek_pending_transfer(live.editable_win)
+		if live.phase ~= "active" and pending and pending.session == live and pending.detached then
+			pending.refresh_completion = function()
+				loaded_impl(result, err)
+			end
+			return
+		end
 		local current_profile = compare_text.profile(live.editable_bufnr)
 		if
 			not current_profile

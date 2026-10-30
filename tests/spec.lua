@@ -7115,6 +7115,11 @@ local cases = {
 }
 
 -- Put new cases in sibling spec modules; this chunk is at LuaJIT's 200-local limit.
+vim.list_extend(cases, require("spec_highlight_regressions")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(
+	cases,
+	require("spec_live_regressions")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
+)
 vim.list_extend(
 	cases,
 	require("spec_discovery")({
