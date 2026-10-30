@@ -536,8 +536,10 @@ Behavior:
   Discard names both paths in its confirmation and refuses to overwrite an
   untracked or ignored file at the source path. Move that file before retrying.
   Addition Unstage and Discard recheck the index and HEAD when the action starts.
-  Changed additions require a refresh and retry. Stage refuses directory
-  replacements of files, but permits exact stage-zero index gitlinks.
+  Changed additions require a refresh and retry. Additions replacing HEAD
+  directories remain eligible. Stage refuses directory replacements of files,
+  but permits exact stage-zero index gitlinks and ordinary indexed files beneath
+  a former HEAD gitlink.
 - Conflict Discard restores HEAD in both the index and working tree. If HEAD
   lacks the path, Discard removes it. The confirmation names this scope.
 - Tracked-file Discard checks every restore target, including rename sources

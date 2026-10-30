@@ -161,55 +161,142 @@ return function(ctx)
 		end
 	end
 
-	local function svn_link_obstruction(descendant)
-		for _, junction in ipairs(vim.fn.has("win32") == 1 and { false, true } or { false }) do
+	local function directory_to_file(operation)
+		for _, queued in ipairs({ false, true }) do
 			setup()
-			local f = svn_directory_fixture()
-			h.exec({ "svn", "delete", "dir" }, f.root)
-			local outside = h.tempdir()
-			h.write_file(outside .. "/child.txt", "precious outside\n")
-			vim.fn.mkdir(outside .. "/nested", "p")
-			h.write_file(outside .. "/nested/child.txt", "precious nested\n")
-			local target = f.root .. "/dir"
-			if descendant then
-				vim.fn.mkdir(target, "p")
-				target = target .. "/nested"
-			end
-			assert(vim.uv.fs_symlink(outside, target, junction and { junction = true } or { dir = true }))
-			local state, _, node = node_for(f, "changes", "dir", "svn")
-			local lstat, checked, followed = vim.uv.fs_lstat, false, false
-			---@diagnostic disable-next-line: duplicate-set-field
-			vim.uv.fs_lstat = function(path, cb)
-				if cb then
-					checked = checked or path == target
-					followed = followed or path:sub(1, #target + 1) == target .. "/"
-				end
-				return lstat(path, cb)
-			end
-			local ok, err = xpcall(function()
+			local f = h.make_git_fixture()
+			git(f.root, "restore", "sample.txt")
+			local path = "converted [1]"
+			vim.fn.mkdir(f.root .. "/" .. path .. "/nested", "p")
+			h.write_file(f.root .. "/" .. path .. "/nested/child.txt", "old child\n")
+			git(f.root, "add", "--", path)
+			git(f.root, "commit", "-m", "tracked directory")
+			vim.fn.delete(f.root .. "/" .. path, "rf")
+			h.write_file(f.root .. "/" .. path, "replacement file\n")
+			git(f.root, "add", "-A", "--", path)
+			local state, repo, node = node_for(f, "staged", path)
+			assert(node.extra.index_status == "A", "fixture must expose a staged addition")
+			if queued then
+				delay_mutation(repo, function()
+					ops[operation](state, node)
+				end, function() end)
+			else
 				confirmed(function()
-					ops.revert_file(state, node)
+					ops[operation](state, node)
 				end)
-				wait_mutation(f.root, "svn_revert")
-				local job = finished(f.root)
-				assert(
-					vim.fn.readfile(outside .. "/child.txt")[1] == "precious outside",
-					"revert followed descendant link"
-				)
-				assert(
-					vim.fn.readfile(outside .. "/nested/child.txt")[1] == "precious nested",
-					"revert followed selected link"
-				)
-				assert(job and job.error:find("obstruction"), "directory link must be refused")
-				assert(checked and not followed, "directory validation followed a link instead of refusing it")
-				assert(vim.uv.fs_lstat(target).type == "link", "Discard replaced link")
-			end, debug.traceback)
-			vim.uv.fs_lstat = lstat
-			assert(ok, err)
+			end
+			success(f.root)
+			assert(git(f.root, "ls-files", "--", path) == "", "replacement remains indexed")
+			assert(
+				git(f.root, "diff", "--cached", "--name-only", "--diff-filter=D") == path .. "/nested/child.txt",
+				"removing the addition changed the former child deletion"
+			)
+			if operation == "unstage_file" then
+				assert(vim.fn.readfile(f.root .. "/" .. path)[1] == "replacement file")
+			else
+				assert(not vim.uv.fs_lstat(f.root .. "/" .. path), "Discard left the replacement file")
+			end
+			assert(vim.fn.readfile(f.file)[1] == "one", "mutation changed an unselected file")
 		end
 	end
 
+	local function svn_link_obstruction(descendant, junction)
+		setup()
+		local f = svn_directory_fixture()
+		h.exec({ "svn", "delete", "dir" }, f.root)
+		local outside = h.tempdir()
+		h.write_file(outside .. "/child.txt", "precious outside\n")
+		vim.fn.mkdir(outside .. "/nested", "p")
+		h.write_file(outside .. "/nested/child.txt", "precious nested\n")
+		local target = f.root .. "/dir"
+		if descendant then
+			vim.fn.mkdir(target, "p")
+			target = target .. "/nested"
+		end
+		local linked, link_err, code =
+			vim.uv.fs_symlink(outside, target, junction and { junction = true } or { dir = true })
+		if not linked and not junction and vim.fn.has("win32") == 1 then
+			if code == "EPERM" or code == "EACCES" or code == "ENOTSUP" or code == "ENOSYS" then
+				error({ lazyvcs_skip = "Windows directory symlinks unavailable: " .. tostring(link_err) })
+			end
+		end
+		assert(linked, link_err)
+		local state, _, node = node_for(f, "changes", "dir", "svn")
+		local lstat, checked, followed = vim.uv.fs_lstat, false, false
+		---@diagnostic disable-next-line: duplicate-set-field
+		vim.uv.fs_lstat = function(path, cb)
+			if cb then
+				checked = checked or path == target
+				followed = followed or path:sub(1, #target + 1) == target .. "/"
+			end
+			return lstat(path, cb)
+		end
+		local ok, err = xpcall(function()
+			confirmed(function()
+				ops.revert_file(state, node)
+			end)
+			wait_mutation(f.root, "svn_revert")
+			local job = finished(f.root)
+			assert(vim.fn.readfile(outside .. "/child.txt")[1] == "precious outside", "revert followed descendant link")
+			assert(
+				vim.fn.readfile(outside .. "/nested/child.txt")[1] == "precious nested",
+				"revert followed selected link"
+			)
+			assert(job and job.error:find("obstruction"), "directory link must be refused")
+			assert(checked and not followed, "directory validation followed a link instead of refusing it")
+			assert(vim.uv.fs_lstat(target).type == "link", "Discard replaced link")
+		end, debug.traceback)
+		vim.uv.fs_lstat = lstat
+		assert(ok, err)
+	end
+
 	local cases = {
+		{
+			"test_source_control_unstage_directory_to_file_replacement",
+			function()
+				directory_to_file("unstage_file")
+			end,
+		},
+		{
+			"test_source_control_discard_directory_to_file_replacement",
+			function()
+				directory_to_file("revert_file")
+			end,
+		},
+		{
+			"test_source_control_stage_edits_after_submodule_to_files_conversion",
+			function()
+				for _, queued in ipairs({ false, true }) do
+					setup()
+					local f = h.make_git_fixture()
+					git(f.root, "restore", "sample.txt")
+					-- A gitlink in HEAD, replaced by ordinary stage-zero index entries.
+					local head = git(f.root, "rev-parse", "HEAD")
+					git(f.root, "update-index", "--add", "--cacheinfo", "160000," .. head .. ",sub")
+					git(f.root, "commit", "-m", "gitlink")
+					git(f.root, "update-index", "--force-remove", "--", "sub")
+					vim.fn.mkdir(f.root .. "/sub/nested", "p")
+					h.write_file(f.root .. "/sub/nested/child.txt", "indexed child\n")
+					h.write_file(f.root .. "/sub/sibling.txt", "indexed sibling\n")
+					git(f.root, "add", "--", "sub")
+					h.write_file(f.root .. "/sub/nested/child.txt", "saved child edit\n")
+					local state, repo, node = node_for(f, "changes", "sub/nested/child.txt")
+					if queued then
+						delay_mutation(repo, function()
+							ops.stage_file(state, node)
+						end, function() end)
+					else
+						confirmed(function()
+							ops.stage_file(state, node)
+						end)
+					end
+					success(f.root)
+					assert(git(f.root, "show", ":sub/nested/child.txt") == "saved child edit")
+					assert(git(f.root, "show", ":sub/sibling.txt") == "indexed sibling")
+					assert(git(f.root, "ls-tree", "HEAD", "sub"):find("160000 commit", 1, true))
+				end
+			end,
+		},
 		{
 			"test_source_control_svn_discard_directory_preflight_interruptions",
 			function()
@@ -333,6 +420,24 @@ return function(ctx)
 			"test_source_control_svn_discard_refuses_descendant_directory_link",
 			function()
 				svn_link_obstruction(true)
+			end,
+		},
+		{
+			"test_source_control_svn_discard_refuses_selected_directory_junction",
+			function()
+				if vim.fn.has("win32") ~= 1 then
+					error({ lazyvcs_skip = "Directory junctions exist only on Windows" })
+				end
+				svn_link_obstruction(false, true)
+			end,
+		},
+		{
+			"test_source_control_svn_discard_refuses_descendant_directory_junction",
+			function()
+				if vim.fn.has("win32") ~= 1 then
+					error({ lazyvcs_skip = "Directory junctions exist only on Windows" })
+				end
+				svn_link_obstruction(true, true)
 			end,
 		},
 		{

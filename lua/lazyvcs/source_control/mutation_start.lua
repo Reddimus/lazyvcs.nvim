@@ -478,6 +478,11 @@ function M.start(repo, args, opts, guards, on_exit)
 								elseif linked then
 									return refuse()
 								end
+								-- Stage writes the current index, so a former HEAD gitlink
+								-- does not obstruct ordinary files indexed beneath it.
+								if guards.git_stage then
+									return check_ancestor()
+								end
 								check_head(function(exists)
 									if not exists then
 										return check_ancestor()
@@ -558,25 +563,27 @@ function M.start(repo, args, opts, guards, on_exit)
 	local function git_preflight()
 		if guards.git_addition then
 			local path = guards.git_addition
-			return spawn(
-				{ "git", "diff", "--cached", "--name-status", "--no-renames", "-z", "--", path },
-				function(result)
-					if result.stdout_truncated or result.stdout ~= "A\0" .. path .. "\0" then
-						return reject("Addition changed before mutation at " .. path .. "; refresh and retry.")
-					end
-					check_head(function(exists)
-						if not exists then
-							return mutate()
-						end
-						spawn({ "git", "ls-tree", "-z", "HEAD", "--", path }, function(tree)
-							if tree.stdout_truncated or tree.stdout ~= "" then
-								return reject("Addition changed before mutation at " .. path .. "; refresh and retry.")
-							end
-							mutate()
-						end)
-					end)
+			return spawn({ "git", "ls-files", "--stage", "-z", "--", path }, function(result)
+				-- A file replacing a HEAD tree also reports deletions below this
+				-- path. Validate the exact index entry instead of that whole diff.
+				local mode, stage, indexed = result.stdout:match("^(%d+) %x+ (%d)\t([^%z]+)%z$")
+				if result.stdout_truncated or not mode or stage ~= "0" or indexed ~= path then
+					return reject("Addition changed before mutation at " .. path .. "; refresh and retry.")
 				end
-			)
+				check_head(function(exists)
+					if not exists then
+						return mutate()
+					end
+					spawn({ "git", "ls-tree", "-z", "HEAD", "--", path }, function(tree)
+						local mode, kind, previous = tree.stdout:match("^(%d+) (%w+) %x+\t([^%z]+)%z$")
+						local directory = mode == "040000" and kind == "tree" and previous == path
+						if tree.stdout_truncated or (tree.stdout ~= "" and not directory) then
+							return reject("Addition changed before mutation at " .. path .. "; refresh and retry.")
+						end
+						mutate()
+					end)
+				end)
+			end)
 		elseif guards.git_rename_source then
 			local path = guards.git_rename_source
 			return spawn(
