@@ -105,7 +105,363 @@ return function(ctx)
 			end
 		end, "mutation did not finish: " .. kind, 15000)
 	end
+
+	local function confirmed(run, before)
+		require("lazyvcs.config").get().source_control.confirm_mutations = true
+		local confirm = require("lazyvcs.source_control.confirm")
+		local open = confirm.open
+		local popup, prompt
+		---@diagnostic disable-next-line: duplicate-set-field
+		confirm.open = function(opts, cb)
+			prompt = opts.prompt
+			popup = open(opts, cb)
+			return popup
+		end
+		local ok, err = xpcall(function()
+			run()
+			ctx.wait_for(function()
+				return popup ~= nil
+			end, "confirmation did not open", 15000)
+			if before then
+				before()
+			end
+			vim.fn.maparg("1", "n", false, true).callback()
+		end, debug.traceback)
+		confirm.open = open
+		if popup then
+			popup.close()
+		end
+		assert(ok, err)
+		return prompt
+	end
+	local function stale_addition(operation)
+		for _, queued in ipairs({ false, true }) do
+			setup()
+			local f = h.make_git_fixture()
+			git(f.root, "restore", "sample.txt")
+			h.write_file(f.root .. "/added.txt", "committed content\n")
+			git(f.root, "add", "added.txt")
+			local state, repo, node = node_for(f, "staged", "added.txt")
+			local function commit()
+				git(f.root, "commit", "-m", "external commit")
+			end
+			if queued then
+				delay_mutation(repo, function()
+					ops[operation](state, node)
+				end, commit)
+			else
+				confirmed(function()
+					ops[operation](state, node)
+				end, commit)
+			end
+			local job = finished(f.root)
+			assert(git(f.root, "diff", "--cached", "--name-only") == "", "stale addition staged a deletion")
+			assert(vim.fn.readfile(f.root .. "/added.txt")[1] == "committed content")
+			assert(job and job.error:find("retry"), "stale addition must request refresh and retry")
+		end
+	end
+
+	local function svn_link_obstruction(descendant)
+		for _, junction in ipairs(vim.fn.has("win32") == 1 and { false, true } or { false }) do
+			setup()
+			local f = svn_directory_fixture()
+			h.exec({ "svn", "delete", "dir" }, f.root)
+			local outside = h.tempdir()
+			h.write_file(outside .. "/child.txt", "precious outside\n")
+			vim.fn.mkdir(outside .. "/nested", "p")
+			h.write_file(outside .. "/nested/child.txt", "precious nested\n")
+			local target = f.root .. "/dir"
+			if descendant then
+				vim.fn.mkdir(target, "p")
+				target = target .. "/nested"
+			end
+			assert(vim.uv.fs_symlink(outside, target, junction and { junction = true } or { dir = true }))
+			local state, _, node = node_for(f, "changes", "dir", "svn")
+			local lstat, checked, followed = vim.uv.fs_lstat, false, false
+			---@diagnostic disable-next-line: duplicate-set-field
+			vim.uv.fs_lstat = function(path, cb)
+				if cb then
+					checked = checked or path == target
+					followed = followed or path:sub(1, #target + 1) == target .. "/"
+				end
+				return lstat(path, cb)
+			end
+			local ok, err = xpcall(function()
+				confirmed(function()
+					ops.revert_file(state, node)
+				end)
+				wait_mutation(f.root, "svn_revert")
+				local job = finished(f.root)
+				assert(
+					vim.fn.readfile(outside .. "/child.txt")[1] == "precious outside",
+					"revert followed descendant link"
+				)
+				assert(
+					vim.fn.readfile(outside .. "/nested/child.txt")[1] == "precious nested",
+					"revert followed selected link"
+				)
+				assert(job and job.error:find("obstruction"), "directory link must be refused")
+				assert(checked and not followed, "directory validation followed a link instead of refusing it")
+				assert(vim.uv.fs_lstat(target).type == "link", "Discard replaced link")
+			end, debug.traceback)
+			vim.uv.fs_lstat = lstat
+			assert(ok, err)
+		end
+	end
+
 	local cases = {
+		{
+			"test_source_control_svn_discard_directory_preflight_interruptions",
+			function()
+				for _, mode in ipairs({ "cancel", "timeout", "error", "truncated" }) do
+					setup()
+					local f = svn_directory_fixture()
+					h.exec({ "svn", "delete", "dir" }, f.root)
+					local lstat, start = vim.uv.fs_lstat, util.system_start
+					local pending, done, terminated, raw, failure, spawned
+					---@diagnostic disable-next-line: duplicate-set-field
+					vim.uv.fs_lstat = function(path, cb)
+						if cb and path == f.root .. "/dir" then
+							pending = cb
+							return {}
+						end
+						return lstat(path, cb)
+					end
+					---@diagnostic disable-next-line: duplicate-set-field
+					util.system_start = function(args, opts, cb)
+						spawned = spawned or vim.tbl_contains(args, "revert")
+						return start(args, opts, function(result, err, output)
+							if mode == "truncated" then
+								output = output or result
+								output.stdout_truncated = true
+							end
+							cb(result, err, output)
+						end)
+					end
+					local ok, err = xpcall(function()
+						local handle = require("lazyvcs.source_control.mutation_start").start(
+							{ root = f.root, vcs = "svn" },
+							{ "svn", "revert", "--depth", "infinity", "--", "dir" },
+							{
+								cwd = f.root,
+								timeout = mode == "timeout" and 500 or 10000,
+								on_terminate = function()
+									terminated = true
+								end,
+							},
+							{ svn_discard = { relpath = "dir", recursive = true, kind = "dir" } },
+							function(_, command_err, output)
+								done, failure, raw = true, command_err, output
+							end
+						)
+						ctx.wait_for(function()
+							return pending or done
+						end, "SVN preflight did not reach filesystem", 15000)
+						if mode ~= "truncated" then
+							assert(pending, "filesystem preflight did not run")
+							if mode == "cancel" then
+								handle:cancel("test")
+							end
+							if mode == "timeout" then
+								ctx.wait_for(function()
+									return terminated
+								end, "preflight deadline did not expire", 2000)
+							end
+							assert(not done, "worker released before pending filesystem callback")
+							pending(mode == "error" and "EACCES: test refusal" or nil, { type = "directory" })
+						end
+						ctx.wait_for(function()
+							return done
+						end, "interrupted SVN preflight did not settle", 15000)
+						assert(failure and not spawned, "unsafe SVN preflight reached revert")
+						if mode == "cancel" then
+							assert(raw.cancelled)
+						end
+						if mode == "timeout" then
+							assert(raw.timed_out)
+						end
+						assert(vim.fn.isdirectory(f.root .. "/dir") == 0, "interrupted Discard restored directory")
+					end, debug.traceback)
+					vim.uv.fs_lstat, util.system_start = lstat, start
+					assert(ok, err)
+				end
+			end,
+		},
+		{
+			"test_source_control_stage_allows_saved_file_and_tracked_submodule",
+			function()
+				setup()
+				local f = h.make_git_fixture()
+				local state, _, node = node_for(f, "changes", "sample.txt")
+				confirmed(function()
+					ops.stage_file(state, node)
+				end, function()
+					h.write_file(f.file, "saved after confirmation\n")
+				end)
+				success(f.root)
+				assert(git(f.root, "show", ":sample.txt") == "saved after confirmation")
+				local child = h.make_git_fixture()
+				git(child.root, "restore", "sample.txt")
+				git(f.root, "-c", "protocol.file.allow=always", "submodule", "add", child.root, "sub")
+				git(f.root, "commit", "-am", "submodule")
+				h.write_file(f.root .. "/sub/sample.txt", "new submodule revision\n")
+				git(
+					f.root .. "/sub",
+					"-c",
+					"user.name=test",
+					"-c",
+					"user.email=test@example.com",
+					"commit",
+					"-am",
+					"advance"
+				)
+				state, _, node = node_for(f, "changes", "sub")
+				confirmed(function()
+					ops.stage_file(state, node)
+				end)
+				success(f.root)
+				assert(git(f.root, "rev-parse", ":sub") == git(f.root .. "/sub", "rev-parse", "HEAD"))
+			end,
+		},
+		{
+			"test_source_control_svn_discard_refuses_selected_directory_link",
+			function()
+				svn_link_obstruction(false)
+			end,
+		},
+		{
+			"test_source_control_svn_discard_refuses_descendant_directory_link",
+			function()
+				svn_link_obstruction(true)
+			end,
+		},
+		{
+			"test_source_control_unstage_refuses_committed_addition",
+			function()
+				stale_addition("unstage_file")
+			end,
+		},
+		{
+			"test_source_control_discard_refuses_committed_addition",
+			function()
+				stale_addition("revert_file")
+			end,
+		},
+		{
+			"test_source_control_rename_discard_preserves_untracked_source",
+			function()
+				for _, ignored in ipairs({ false, true }) do
+					setup()
+					local f = rename_fixture()
+					if ignored then
+						h.write_file(f.root .. "/.git/info/exclude", "sample.txt\n")
+					end
+					h.write_file(f.file, "independent content\n")
+					local state, _, node = node_for(f, "staged", "new [1].txt")
+					local prompt = confirmed(function()
+						ops.revert_file(state, node)
+					end)
+					local job = finished(f.root)
+					assert(
+						vim.fn.readfile(f.file)[1] == "independent content",
+						"Discard overwrote independent rename source"
+					)
+					assert(job and job.error:find("sample.txt", 1, true), "refusal must name source")
+					assert(
+						prompt:find("sample.txt", 1, true) and prompt:find("new [1].txt", 1, true),
+						"prompt must name both rename paths"
+					)
+					assert(git(f.root, "diff", "--cached", "--name-status"):find("R100"))
+				end
+			end,
+		},
+		{
+			"test_source_control_stage_refuses_replacement_directory",
+			function()
+				for _, queued in ipairs({ false, true }) do
+					setup()
+					local f = h.make_git_fixture()
+					local state, repo, node = node_for(f, "changes", "sample.txt")
+					local function replace()
+						assert(vim.uv.fs_unlink(f.file))
+						vim.fn.mkdir(f.file, "p")
+						h.write_file(f.file .. "/secret.txt", "unselected secret\n")
+					end
+					if queued then
+						delay_mutation(repo, function()
+							ops.stage_file(state, node)
+						end, replace)
+					else
+						confirmed(function()
+							ops.stage_file(state, node)
+						end, replace)
+					end
+					local job = finished(f.root)
+					assert(
+						git(f.root, "diff", "--cached", "--name-only") == "",
+						"file Stage recursed into replacement directory"
+					)
+					assert(job and job.error:find("directory"), "directory obstruction must be refused")
+				end
+			end,
+		},
+		{
+			"test_source_control_discard_merge_conflicts_to_head",
+			function()
+				for _, deleted in ipairs({ false, true }) do
+					setup()
+					local f = h.make_git_fixture()
+					git(f.root, "restore", "sample.txt")
+					git(f.root, "branch", "-M", "main")
+					git(f.root, "checkout", "-b", "other")
+					h.write_file(f.file, "other branch\n")
+					git(f.root, "commit", "-am", "other")
+					git(f.root, "checkout", "main")
+					if deleted then
+						git(f.root, "rm", "sample.txt")
+					else
+						h.write_file(f.file, "head content\n")
+					end
+					git(f.root, "commit", "-am", "head")
+					local merge = vim.system({ "git", "merge", "other" }, { cwd = f.root }):wait()
+					assert(merge.code ~= 0, "fixture must conflict")
+					local state, _, node = node_for(f, "merge", "sample.txt")
+					local prompt = confirmed(function()
+						ops.revert_file(state, node)
+					end)
+					success(f.root)
+					assert(git(f.root, "status", "--porcelain") == "", "Discard left conflict unresolved")
+					assert(
+						prompt:find("HEAD", 1, true) and prompt:find("index", 1, true),
+						"conflict prompt must explain restore source and index replacement"
+					)
+					if deleted then
+						assert(vim.fn.filereadable(f.file) == 0)
+					else
+						assert(vim.fn.readfile(f.file)[1] == "head content")
+					end
+				end
+			end,
+		},
+		{
+			"test_source_control_publish_branch_with_same_named_tag",
+			function()
+				setup()
+				local f = h.make_git_fixture()
+				git(f.root, "restore", "sample.txt")
+				git(f.root, "branch", "-M", "main")
+				git(f.root, "tag", "main")
+				local remote = h.tempdir()
+				git(remote, "init", "--bare")
+				git(f.root, "remote", "add", "origin", remote)
+				local state, repo = state_for(f.root)
+				action(state, repo, "push")
+				success(f.root)
+				assert(git(remote, "rev-parse", "refs/heads/main") == git(f.root, "rev-parse", "HEAD"))
+				assert(git(f.root, "rev-parse", "--abbrev-ref", "@{upstream}") == "origin/main")
+				assert(git(remote, "tag", "--list") == "", "Publish also pushed tag")
+			end,
+		},
 		{
 			"test_source_control_switch_protects_selected_ref_arguments",
 			function()

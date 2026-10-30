@@ -117,9 +117,9 @@ end
 
 -- Repository discovery is asynchronous at runtime. Tests wait for the same path.
 function M.discover(root, max_depth)
-	local done, specs, err
-	require("lazyvcs.source_control.model").discover_async(root, max_depth, function(value, failure)
-		done, specs, err = true, value, failure
+	local done, specs, err, problems
+	require("lazyvcs.source_control.model").discover_async(root, max_depth, function(value, failure, discovery_problems)
+		done, specs, err, problems = true, value, failure, discovery_problems
 	end)
 	assert(
 		vim.wait(15000, function()
@@ -128,7 +128,7 @@ function M.discover(root, max_depth)
 		"repository discovery did not finish"
 	)
 	assert(specs, err)
-	return specs
+	return specs, problems
 end
 
 -- Build file URLs with three slashes before Windows drive letters; otherwise SVN treats

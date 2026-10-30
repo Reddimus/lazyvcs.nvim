@@ -4,6 +4,47 @@ return function(ctx)
 	local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
 	return {
 		{
+			"test_source_control_json_write_preserves_previous_on_sync_or_close_failure",
+			function()
+				local json = require("lazyvcs.json_file")
+				for _, seam in ipairs({ "sync", "sync_throw", "close", "close_throw" }) do
+					local path = h.tempdir() .. "/state.json"
+					assert(json.write(path, { changes_sort = "path" }))
+					local sync, close = vim.uv.fs_fsync, vim.uv.fs_close
+					local injected = false
+					---@diagnostic disable-next-line: duplicate-set-field
+					vim.uv.fs_fsync = function(fd)
+						if seam:find("sync", 1, true) then
+							injected = true
+							if seam == "sync_throw" then
+								error("EIO sync")
+							end
+							return nil, "ENOSPC sync"
+						end
+						return sync(fd)
+					end
+					---@diagnostic disable-next-line: duplicate-set-field
+					vim.uv.fs_close = function(fd)
+						local result = close(fd)
+						if seam:find("close", 1, true) then
+							injected = true
+							if seam == "close_throw" then
+								error("EIO close")
+							end
+							return nil, "EIO close"
+						end
+						return result
+					end
+					local ok, saved, err = pcall(json.write, path, { changes_sort = "name" })
+					vim.uv.fs_fsync, vim.uv.fs_close = sync, close
+					assert(injected)
+					assert(ok and not saved and err, seam .. " must return a save error")
+					assert(json.read(path).changes_sort == "path", seam .. " replaced previous preferences")
+					assert(#vim.fn.glob(path .. ".tmp.*", false, true) == 0, "temporary file leaked")
+				end
+			end,
+		},
+		{
 			"test_source_control_json_read_follows_regular_symlink",
 			function()
 				local dir = h.tempdir()

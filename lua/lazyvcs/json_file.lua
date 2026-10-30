@@ -64,14 +64,21 @@ function M.write(path, value)
 	if not fd then
 		return nil, open_err or "Could not open temporary state file"
 	end
-	local written, write_err = fs.write_all(fd, encoded, 0)
-	if written then
-		pcall(vim.uv.fs_fsync, fd)
+	local write_ok, written, write_err = pcall(fs.write_all, fd, encoded, 0)
+	local sync_ok, synced, sync_err
+	if write_ok and written then
+		sync_ok, synced, sync_err = pcall(vim.uv.fs_fsync, fd)
+	else
+		sync_ok, synced = true, true
 	end
-	vim.uv.fs_close(fd)
-	if not written then
+	local close_ok, closed, close_err = pcall(vim.uv.fs_close, fd)
+	if not write_ok or not written or not sync_ok or not synced or not close_ok or not closed then
 		pcall(vim.uv.fs_unlink, tmp)
-		return nil, write_err or "Could not write temporary state file"
+		local err = not write_ok and written
+			or write_err
+			or (not sync_ok and synced or sync_err)
+			or (not close_ok and closed or close_err)
+		return nil, err or "Could not write temporary state file"
 	end
 	local renamed, rename_err = vim.uv.fs_rename(tmp, path)
 	if not renamed then

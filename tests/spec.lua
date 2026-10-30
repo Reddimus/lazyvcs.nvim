@@ -5605,7 +5605,7 @@ local function test_source_control_git_publish_branch_sets_upstream_to_origin()
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
 		["git remote"] = "fork\norigin\n",
-		["git push --set-upstream -- origin feature/new"] = "",
+		["git push --set-upstream -- origin refs/heads/feature/new:refs/heads/feature/new"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5624,7 +5624,7 @@ local function test_source_control_git_publish_branch_sets_upstream_to_origin()
 		"git remote",
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
-		"git push --set-upstream -- origin feature/new",
+		"git push --set-upstream -- origin refs/heads/feature/new:refs/heads/feature/new",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
 
@@ -5673,7 +5673,7 @@ local function test_source_control_git_sync_without_upstream_publishes_branch()
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
 		["git remote"] = "origin\n",
-		["git push --set-upstream -- origin feature/new"] = "",
+		["git push --set-upstream -- origin refs/heads/feature/new:refs/heads/feature/new"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5693,7 +5693,7 @@ local function test_source_control_git_sync_without_upstream_publishes_branch()
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
 		"git symbolic-ref --quiet HEAD",
-		"git push --set-upstream -- origin feature/new",
+		"git push --set-upstream -- origin refs/heads/feature/new:refs/heads/feature/new",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
 
@@ -5803,7 +5803,7 @@ local function test_source_control_git_publish_falls_back_to_single_remote()
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
 		["git remote"] = "fork\n",
-		["git push --set-upstream -- fork feature/new"] = "",
+		["git push --set-upstream -- fork refs/heads/feature/new:refs/heads/feature/new"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5822,7 +5822,7 @@ local function test_source_control_git_publish_falls_back_to_single_remote()
 		"git remote",
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
-		"git push --set-upstream -- fork feature/new",
+		"git push --set-upstream -- fork refs/heads/feature/new:refs/heads/feature/new",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
 

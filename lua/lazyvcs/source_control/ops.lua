@@ -703,7 +703,13 @@ local function start_git_publish(repo, on_done, expected_branch)
 						guards
 					)
 				end
-				start_command(repo, "git_publish", git_push_args(remote, branch, true), on_done, guards)
+				start_command(
+					repo,
+					"git_publish",
+					git_push_args(remote, "refs/heads/" .. branch .. ":refs/heads/" .. branch, true),
+					on_done,
+					guards
+				)
 			end)
 		end)
 	end)
@@ -1079,12 +1085,23 @@ function M.stage_file(state, node)
 	local relpath = node.extra.relpath
 	local args = node.extra.deleted and { "git", "add", "-A", "--", relpath } or { "git", "add", "--", relpath }
 	confirm_mutation(state, "Stage " .. relpath .. " in " .. repo.name .. "?", function()
-		start_simple_repo_job(state, repo, {
-			action = "stage_file",
-			label = "Staging " .. relpath .. "...",
-			sync_text = "Stage",
-			remote_refresh = false,
-		}, "git_stage_file", args)
+		start_simple_repo_job(
+			state,
+			repo,
+			{
+				action = "stage_file",
+				label = "Staging " .. relpath .. "...",
+				sync_text = "Stage",
+				remote_refresh = false,
+			},
+			"git_stage_file",
+			args,
+			{
+				git_stage = { { path = node.path, relpath = relpath } },
+				guard_paths = { node.path },
+				guard_relpaths = { relpath },
+			}
+		)
 	end)
 end
 
@@ -1121,7 +1138,7 @@ function M.unstage_file(state, node)
 			label = "Unstaging " .. relpath .. "...",
 			sync_text = "Unstage",
 			remote_refresh = false,
-		}, "git_unstage_file", args)
+		}, "git_unstage_file", args, { git_addition = index == "A" and relpath or nil })
 	end)
 end
 
@@ -1179,12 +1196,20 @@ function M.revert_file(state, node)
 		}
 	elseif repo.vcs == "git" and section == "staged" then
 		action = "discard_staged"
-		prompt = "Discard staged and working tree changes for " .. relpath .. " in " .. repo.name .. "?"
+		prompt = "Discard staged and working tree changes for "
+			.. table.concat(relpaths, " and ")
+			.. " in "
+			.. repo.name
+			.. "?"
 		args = status:sub(1, 1) == "A" and { "git", "rm", "-f", "--", relpath }
 			or vim.list_extend(
 				{ "git", "restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--" },
 				relpaths
 			)
+	elseif repo.vcs == "git" and section == "merge" then
+		action = "discard_staged"
+		prompt = "Restore " .. relpath .. " to HEAD, replacing index and working tree changes in " .. repo.name .. "?"
+		args = { "git", "restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--", relpath }
 	elseif repo.vcs == "git" then
 		action = "discard_unstaged"
 		prompt = "Discard unstaged changes for " .. relpath .. " in " .. repo.name .. "?"
@@ -1223,12 +1248,17 @@ function M.revert_file(state, node)
 					guard_relpaths = relpaths,
 					guard_subtrees = subtrees,
 					svn_discard = svn_discard,
-					tracked_discard = action ~= "delete_untracked"
-							and (not svn_discard or svn_discard.kind == "file")
-							and vim.tbl_map(function(index)
-								return { path = paths[index], relpath = relpaths[index] }
-							end, vim.fn.range(1, #paths))
+					git_addition = repo.vcs == "git" and section == "staged" and status:sub(1, 1) == "A" and relpath
 						or nil,
+					git_conflict = repo.vcs == "git" and section == "merge" and relpath or nil,
+					git_rename_source = #relpaths > 1 and relpaths[2] or nil,
+					tracked_discard = action ~= "delete_untracked" and vim.tbl_map(function(index)
+						return {
+							path = paths[index],
+							relpath = relpaths[index],
+							directory = svn_discard and svn_discard.kind == "dir",
+						}
+					end, vim.fn.range(1, #paths)) or nil,
 					git_untracked_delete = action == "delete_untracked" and { path = node.path, relpath = relpath }
 						or nil,
 				}
