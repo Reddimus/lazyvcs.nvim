@@ -5,6 +5,10 @@ local M = {}
 
 function M.section(rel, text)
 	local header = "Index: " .. rel .. "\n" .. string.rep("=", 67) .. "\n"
+	if text == "" then
+		-- SVN's native header alone cannot express an empty file addition.
+		return "diff --git a/" .. rel .. " b/" .. rel .. "\nnew file mode 100644\n"
+	end
 	if text:sub(1, 8192):find("\0", 1, true) then
 		return header .. "Cannot display: file marked as a binary type.\nsvn:mime-type = application/octet-stream\n"
 	end

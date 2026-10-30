@@ -66,58 +66,133 @@ local function git_header_path(header)
 	return header:match("^a/(.-) b/")
 end
 
-local function index_text(text, default_root)
-	local rows, hunks, files = {}, {}, {}
-	local root, file, hunk = default_root, nil, nil
-	local added, deleted = 0, 0
-	for number, raw_line in ipairs(lines(text)) do
-		local line = raw_line:gsub("\r$", "")
-		if line:match("^# Repository: ") then
-			root, file, hunk = line:sub(15), nil, nil
-		elseif line:match("^diff %-%-git ") or line:match("^Index: ") then
-			file = {
-				root = root,
-				svn = line:match("^Index: ") ~= nil,
-				path = line:match("^Index: (.*)$") or git_header_path(line:sub(12)),
-				start = number,
-				hunks = {},
-			}
-			files[#files + 1], hunk = file, nil
-		elseif file and not hunk and line:match("^rename to ") then
-			local name = line:sub(11)
-			file.path = name:sub(1, 1) == '"' and git_path(name:gsub('^"', '"b/')) or name
-		elseif file and not hunk and line:match("^Binary files ") then
-			file.path = line:match(" and b/(.*) differ$") or file.path
-		elseif file and not hunk and line:match("^%-%-%- ") then
-			file.old = file.svn and file.path or git_path(line:sub(5))
-		elseif file and not hunk and line:match("^%+%+%+ ") then
-			file.path = file.svn and file.path or git_path(line:sub(5))
-		elseif file and line:match("^@@ ") then
-			local old, new = line:match("^@@ %-(%d+)[^ ]* %+(%d+)")
-			if new then
-				hunk = { row = number, line = tonumber(new), old = tonumber(old), offset = 0 }
-				file.hunks[#file.hunks + 1], hunks[#hunks + 1] = hunk, number
-			end
-		elseif hunk then
-			local prefix = line:sub(1, 1)
-			if prefix == "+" then
-				added = added + 1
-			end
-			if prefix == "-" then
-				deleted = deleted + 1
-			end
-		end
-		rows[number] = {
-			file = file,
-			hunk = hunk,
-			line = hunk and math.max(1, hunk.line + hunk.offset) or 1,
-			kind = line:sub(1, 1),
-		}
-		if hunk and number ~= hunk.row and (line:sub(1, 1) == "+" or line:sub(1, 1) == " ") then
-			hunk.offset = hunk.offset + 1
+-- Header arrays own navigation metadata. Sparse numeric checkpoints bound a
+-- position lookup to 255 buffer rows even inside a million-line hunk.
+local STRIDE = 256
+local function preceding(items, row, field)
+	local lo, hi = 1, #items
+	while lo <= hi do
+		local mid = math.floor((lo + hi) / 2)
+		local value = field and items[mid][field] or items[mid]
+		if value <= row then
+			lo = mid + 1
+		else
+			hi = mid - 1
 		end
 	end
-	return { rows = rows, hunks = hunks, files = files, added = added, deleted = deleted }
+	return hi
+end
+
+local function index_text(text, default_root, saved, schedule, done)
+	-- Count prefixes in C over the whole text, excluding file headers below.
+	local _, added = text:gsub("\n%+", "")
+	local _, deleted = text:gsub("\n%-", "")
+	added = added + (text:sub(1, 1) == "+" and 1 or 0)
+	deleted = deleted + (text:sub(1, 1) == "-" and 1 or 0)
+	local index = { hunks = {}, files = {}, added = added, deleted = deleted }
+	local content, cursor, number = {}, 1, 0
+	local root, file, hunk = default_root, nil, nil
+	local closest, distance
+	local function close_file()
+		if file then
+			file.last = number - 1
+		end
+	end
+	local step
+	step = function()
+		for _ = 1, 8192 do
+			if cursor > #text then
+				if file then
+					file.last = number
+				end
+				return done(index, content, closest)
+			end
+			local last = text:find("\n", cursor, true)
+			local raw_line = text:sub(cursor, last and last - 1 or #text)
+			cursor, number = last and last + 1 or #text + 1, number + 1
+			content[number] = raw_line
+			local line = raw_line:gsub("\r$", "")
+			local prefix = line:sub(1, 1)
+			if line:match("^# Repository: ") then
+				close_file()
+				root, file, hunk = line:sub(15), nil, nil
+			elseif line:match("^diff %-%-git ") or line:match("^Index: ") then
+				close_file()
+				file = {
+					root = root,
+					svn = line:match("^Index: ") ~= nil,
+					path = line:match("^Index: (.*)$") or git_header_path(line:sub(12)),
+					start = number,
+					hunks = {},
+				}
+				index.files[#index.files + 1], hunk = file, nil
+			elseif file and not hunk and line:match("^rename to ") then
+				local name = line:sub(11)
+				file.path = name:sub(1, 1) == '"' and git_path(name:gsub('^"', '"b/')) or name
+			elseif file and not hunk and line:match("^Binary files ") then
+				file.path = line:match(" and b/(.*) differ$") or file.path
+			elseif file and not hunk and line:match("^%-%-%- ") then
+				file.old = file.svn and file.path or git_path(line:sub(5))
+				index.deleted = index.deleted - 1
+			elseif file and not hunk and line:match("^%+%+%+ ") then
+				file.path = file.svn and file.path or git_path(line:sub(5))
+				index.added = index.added - 1
+			elseif file and line:match("^@@ ") then
+				local new = line:match("^@@ %-%d+[^ ]* %+(%d+)")
+				if new then
+					hunk =
+						{ row = number, line = tonumber(new), next_line = tonumber(new), checks = {}, positions = {} }
+					file.hunks[#file.hunks + 1], index.hunks[#index.hunks + 1] = hunk, number
+				end
+			end
+			local new_line = hunk and math.max(1, hunk.next_line) or 1
+			if saved and file and file.root == saved.root and file.path == saved.path then
+				local delta = math.abs(new_line - saved.line) * 2 + (prefix == saved.kind and 0 or 1)
+				if not distance or delta < distance then
+					closest, distance = number, delta
+				end
+			end
+			if hunk and number ~= hunk.row then
+				if (number - hunk.row - 1) % STRIDE == 0 then
+					hunk.checks[#hunk.checks + 1], hunk.positions[#hunk.positions + 1] = number, hunk.next_line
+				end
+				if prefix == "+" or prefix == " " or line == "" then
+					hunk.next_line = hunk.next_line + 1
+				end
+			end
+		end
+		schedule(step)
+	end
+	schedule(step)
+end
+
+local function row_position(view, row)
+	local index = view.index
+	if not index then
+		return
+	end
+	local file = index.files[preceding(index.files, row, "start")]
+	if not file or row > file.last then
+		return
+	end
+	local hunk = file.hunks[preceding(file.hunks, row, "row")]
+	local line = hunk and hunk.line or 1
+	if hunk and row > hunk.row then
+		local check = preceding(hunk.checks, row)
+		local start = hunk.checks[check]
+		line = hunk.positions[check]
+		for _, context in ipairs(api.nvim_buf_get_lines(view.buf, start - 1, row - 1, false)) do
+			local prefix = context:sub(1, 1)
+			if prefix == "+" or prefix == " " or context == "" or context == "\r" then
+				line = line + 1
+			end
+		end
+	end
+	return {
+		file = file,
+		line = math.max(1, line),
+		kind = api.nvim_buf_get_lines(view.buf, row - 1, row, false)[1]:sub(1, 1),
+	}
 end
 
 local function visible(view)
@@ -133,7 +208,7 @@ end
 
 local function guard(view, generation, fn)
 	return function(...)
-		if view.generation ~= generation or not api.nvim_buf_is_valid(view.buf) then
+		if view.generation ~= generation or view.task.cancelled or not api.nvim_buf_is_valid(view.buf) then
 			return
 		end
 		local ok, err = pcall(fn, ...)
@@ -159,21 +234,24 @@ local function clear_departed_winbars(view)
 	end))
 end
 
-local function fill(view, text, loading)
+local function fill(view, text, loading, content)
 	vim.bo[view.buf].modifiable = true
-	api.nvim_buf_set_lines(view.buf, 0, -1, false, lines(text))
+	api.nvim_buf_set_lines(view.buf, 0, -1, false, content or lines(text))
 	-- Raw patch bytes must survive both :write and yanks, even when the user's
 	-- defaults request CRLF, a BOM, or an output encoding.
 	vim.bo[view.buf].fileformat = "unix"
 	vim.bo[view.buf].fileencoding = ""
 	vim.bo[view.buf].bomb = false
-	vim.bo[view.buf].endofline = true
+	vim.bo[view.buf].endofline = text ~= ""
 	vim.bo[view.buf].fixendofline = false
 	vim.bo[view.buf].modified = false
 	vim.bo[view.buf].modifiable = false
 	local info = view.index or { files = {}, added = 0, deleted = 0 }
 	local title = loading and ("PATCH | " .. view.path .. " | LOADING")
 		or string.format("PATCH | %s | %d files +%d -%d", view.path, #info.files, info.added, info.deleted)
+	if not loading and view.text == "" then
+		title = "PATCH | No changes under " .. view.path
+	end
 	title = (title .. " | q close  R reload  Y copy  <CR> file  ]v/[v hunk"):gsub("%%", "%%%%")
 	for _, win in ipairs(vim.fn.win_findbuf(view.buf)) do
 		util.set_win_option(win, "winbar", title)
@@ -183,6 +261,13 @@ end
 
 local function collect(path, opts, done)
 	local task = Task.new(util.safe_callback(done))
+	-- Inject raw output through the real completion/index/fill path in specs.
+	if M._test_text then
+		vim.schedule(function()
+			task:finish(M._test_text, nil, { { root = path, vcs = "git" } })
+		end)
+		return task
+	end
 	local parts, size, truncated, roots = {}, 0, false, {}
 	local cap = M._test_output_limit or LIMIT
 	local function finish(err)
@@ -295,7 +380,7 @@ local function collect(path, opts, done)
 end
 
 local function position(view)
-	local row = view.index and view.index.rows[api.nvim_win_get_cursor(0)[1]]
+	local row = row_position(view, api.nvim_win_get_cursor(0)[1])
 	return row and row.file and { root = row.file.root, path = row.file.path, line = row.line, kind = row.kind } or nil
 end
 
@@ -307,40 +392,38 @@ local function rerun(view)
 	local generation, saved = view.generation, position(view)
 	view.text, view.index = nil, nil
 	fill(view, "Loading patch for " .. view.path .. "...\n", true)
-	view.task = collect(
+	local task = Task.new()
+	view.task = task
+	task:add(collect(
 		view.path,
 		view.opts,
 		guard(view, generation, function(text, err, repos)
 			view.text = text
-			view.index = index_text(text or "", repos[1] and repos[1].root)
-			fill(view, err or (text == "" and ("No changes under " .. view.path .. "\n") or text))
-			if err then
-				util.notify(err, vim.log.levels.ERROR)
-			end
-			local win = visible(view)
-			if saved and win then
-				local closest, distance
-				for row, item in ipairs(view.index.rows) do
-					if item.file and item.file.root == saved.root and item.file.path == saved.path then
-						local delta = math.abs(item.line - saved.line) * 2 + (item.kind == saved.kind and 0 or 1)
-						if not distance or delta < distance then
-							closest, distance = row, delta
-						end
-					end
+			index_text(text or "", repos[1] and repos[1].root, saved, function(step)
+				-- Nested vim.schedule callbacks can drain in the same loop turn.
+				-- A timer yields to input and rendering between indexing batches.
+				vim.defer_fn(guard(view, generation, step), 1)
+			end, function(index, content, closest)
+				view.index = index
+				fill(view, err or text, false, not err and content or nil)
+				if err then
+					util.notify(err, vim.log.levels.ERROR)
 				end
-				if closest then
+				local win = visible(view)
+				if closest and win then
 					api.nvim_win_set_cursor(win, { closest, 0 })
 				end
-			end
+				task:finish()
+			end)
 		end)
-	)
+	))
 	return view.task
 end
 
 local function open_file(view)
-	local item = view.index and view.index.rows[api.nvim_win_get_cursor(0)[1]]
+	local item = row_position(view, api.nvim_win_get_cursor(0)[1])
 	local file = item and item.file
-	if not file or not file.path then
+	if not item or not file or not file.path then
 		return
 	end
 	local rel = file.path == "/dev/null" and file.old or file.path
@@ -383,7 +466,11 @@ local function mappings(view)
 			return
 		end
 		local register = vim.v.register
-		vim.fn.setreg(register, view.text == "" and {} or view.text, "V")
+		local content = view.text == "" and {} or lines(view.text)
+		for i, line in ipairs(content) do
+			content[i] = line:gsub("%z", "\n")
+		end
+		vim.fn.setreg(register, content, "V")
 		util.notify("Patch copied (" .. (view.text == "" and 0 or #lines(view.text)) .. " lines)")
 	end, "Copy whole patch")
 	for _, key in ipairs({ "<CR>", "gf" }) do
@@ -416,7 +503,7 @@ end
 
 function M.open(opts)
 	opts = vim.tbl_extend("force", {}, opts or {})
-	local path = util.canonical_path(opts.path or vim.fn.getcwd())
+	local path = assert(util.canonical_entry_path(opts.path or vim.fn.getcwd()))
 	if opts.include_untracked == nil then
 		opts.include_untracked = require("lazyvcs.config").get().patch.include_untracked
 	end

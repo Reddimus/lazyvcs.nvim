@@ -231,7 +231,9 @@ return function(ctx)
 		callbacks[2](true)
 		appends[1]("stale run\n")
 		callbacks[1](true)
-		assert(second.done)
+		wait(function()
+			return second.done
+		end)
 		assert(vim.api.nvim_buf_get_lines(buf, 0, -1, false)[1] == "new run")
 	end)
 	case("enter_opens_new_side_line", function()
@@ -331,7 +333,9 @@ return function(ctx)
 		vim.api.nvim_set_current_win(side)
 		local picker = require("lazyvcs.picker")
 		local select, public = picker.select, require("lazyvcs")
-		local open, options = public.patch
+		local open = public.patch
+		local options
+		---@diagnostic disable-next-line: duplicate-set-field
 		picker.select = function(items, _, done)
 			for _, item in ipairs(items) do
 				if item.label == "Show patch" then
@@ -485,7 +489,8 @@ return function(ctx)
 		assert(get(f.root) == "")
 		assert(#vim.api.nvim_list_wins() == wins)
 		local _, rows = ui(f.root)
-		assert(rows[1] == "No changes under " .. f.root)
+		assert(rows[1] == "")
+		contains(vim.wo.winbar, "No changes under " .. f.root)
 	end)
 	case("not_a_repository", function()
 		local root = h.tempdir()
@@ -667,7 +672,7 @@ return function(ctx)
 		local f = h.make_svn_fixture()
 		write(f.root .. "/empty", "")
 		write(f.root .. "/large", string.rep("large\n", 4000))
-		contains(get(f.root), "Index: empty")
+		contains(get(f.root), "diff --git a/empty b/empty\nnew file mode 100644")
 		patch._test_output_limit = 700
 		local text = get(f.root)
 		contains(text, "# lazyvcs: output truncated at 16 MiB\n")

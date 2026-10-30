@@ -7252,6 +7252,7 @@ vim.list_extend(
 	require("spec_live_regressions")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
 )
 vim.list_extend(cases, require("spec_patch")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_review")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(
 	cases,
 	require("spec_discovery")({

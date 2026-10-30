@@ -61,7 +61,7 @@ function M.collect(repo, path, opts, callback)
 		return task
 	end
 	if repo.vcs == "git" then
-		local prefix = { "git", "-c", "core.quotepath=false" }
+		local prefix = { "git", "-c", "core.quotepath=false", "-c", "diff.suppressBlankEmpty=false" }
 		local function git(args, done, extra, difference, metadata)
 			command(vim.list_extend(vim.deepcopy(prefix), args), done, extra, difference, metadata)
 		end
@@ -87,6 +87,8 @@ function M.collect(repo, path, opts, callback)
 						"--no-ext-diff",
 						"--no-color",
 						"--no-textconv",
+						"--src-prefix=a/",
+						"--dst-prefix=b/",
 						"--no-index",
 						"--",
 						"/dev/null",
@@ -102,15 +104,22 @@ function M.collect(repo, path, opts, callback)
 			end, nil, false, true)
 		end
 		local function diff(base)
-			git(
-				{ "diff", "--no-ext-diff", "--no-color", "--no-textconv", base, "--", relative },
-				function(text, truncated)
-					if not append(text, truncated) then
-						return finish()
-					end
-					untracked()
+			git({
+				"diff",
+				"--no-ext-diff",
+				"--no-color",
+				"--no-textconv",
+				"--src-prefix=a/",
+				"--dst-prefix=b/",
+				base,
+				"--",
+				relative,
+			}, function(text, truncated)
+				if not append(text, truncated) then
+					return finish()
 				end
-			)
+				untracked()
+			end)
 		end
 		-- Only a normal exit of 1 means HEAD is unborn; other failures are errors.
 		task:add(process.start(
@@ -134,51 +143,59 @@ function M.collect(repo, path, opts, callback)
 		))
 	else
 		local target = util.svn_target(relative)
-		local function untracked()
+		local function untracked(raw)
 			if not opts.include_untracked then
 				return finish()
 			end
-			command({ "svn", "status", "--xml", "--ignore-externals", "--", target }, function(raw)
-				local paths, switched = {}, {}
-				for _, entry in ipairs(xml.parse_status(raw)) do
-					if entry.switched then
-						switched[#switched + 1] = entry.path
-					end
-					if entry.wc_item == "unversioned" then
-						paths[#paths + 1] = util.normalize_literal_path(repo.root .. "/" .. entry.path)
-					end
+			local paths, switched = {}, {}
+			for _, entry in ipairs(xml.parse_status(raw)) do
+				if entry.switched then
+					switched[#switched + 1] = entry.path
 				end
-				if #paths == 0 then
-					return finish()
+				if entry.wc_item == "unversioned" then
+					paths[#paths + 1] = util.normalize_literal_path(repo.root .. "/" .. entry.path)
 				end
-				local svn = require("lazyvcs.backends.patch_svn")
-				svn.files(task, repo, paths, guard, function(files)
-					local index = 0
-					local next_file
-					next_file = guard(function()
-						index = index + 1
-						local file = files[index]
-						if not file then
-							return finish()
-						end
-						svn.read(task, file, opts.remaining() + 8192, guard, function(text, truncated)
-							local rel = util.relative_literal_path(repo.root, file)
-							if not append(svn.section(rel, text), truncated) then
-								return finish()
-							end
-							next_file()
-						end)
-					end)
-					next_file()
-				end, switched)
-			end, nil, false, true)
-		end
-		command({ "svn", "diff", "--internal-diff", "--", relative }, function(text, truncated)
-			if not append(text, truncated) then
+			end
+			if #paths == 0 then
 				return finish()
 			end
-			untracked()
-		end)
+			local svn = require("lazyvcs.backends.patch_svn")
+			svn.files(task, repo, paths, guard, function(files)
+				local index = 0
+				local next_file
+				next_file = guard(function()
+					index = index + 1
+					local file = files[index]
+					if not file then
+						return finish()
+					end
+					svn.read(task, file, opts.remaining() + 8192, guard, function(text, truncated)
+						local rel = util.relative_literal_path(repo.root, file)
+						if not append(svn.section(rel, text), truncated) then
+							return finish()
+						end
+						next_file()
+					end)
+				end)
+				next_file()
+			end, switched)
+		end
+		-- SVN rejects an unversioned operand to diff. Inspect status first so
+		-- selected loose files and directories can use the addition collector.
+		command({ "svn", "status", "--xml", "--ignore-externals", "--", target }, function(raw)
+			for _, entry in ipairs(xml.parse_status(raw)) do
+				local entry_path = util.normalize_literal_path(repo.root .. "/" .. entry.path)
+				if entry.wc_item == "unversioned" and entry_path == path then
+					return untracked(raw)
+				end
+			end
+			command({ "svn", "diff", "--internal-diff", "--", relative }, function(text, truncated)
+				if not append(text, truncated) then
+					return finish()
+				end
+				untracked(raw)
+			end)
+		end, nil, false, true)
 	end
 	return task
 end
