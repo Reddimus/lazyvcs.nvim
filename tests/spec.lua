@@ -7317,6 +7317,7 @@ vim.list_extend(cases, require("spec_commands_config")({ helpers = helpers, wait
 vim.list_extend(cases, require("spec_live_diff_lifecycle")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_live_diff_alignment")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_live_diff_a2")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_integrations_resession_batch")({ helpers = helpers, wait_for = wait_for }))
 
@@ -7336,6 +7337,7 @@ vim.list_extend(cases, require("spec_live_diff_nested_folds")({ helpers = helper
 vim.list_extend(cases, require("spec_live_diff_fold_methods")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_highlighting_links")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_highlighting_a2")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_json_file")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_command_paths")({ helpers = helpers, wait_for = wait_for }))

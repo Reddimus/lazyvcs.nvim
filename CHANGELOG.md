@@ -86,6 +86,19 @@ and this project adheres to
 - Document the fzf-lua fallback for branch and action pickers.
 - Keep UI tests from changing an inherited Git repository or leaving fixture
   preferences in the user's state directory.
+- Preserve an existing diff and its window settings when a live diff closes
+  after its base pane is replaced or moved to another tab.
+- Align wrapped insertions, deletions, and unequal replacements without counting
+  native diff filler twice. Remove shared alignment padding when another window
+  shows the file, and restore it when that window closes.
+- Release scratch buffers when a read-only comparison fails to open over unsaved
+  changes.
+- Update active diff colors when a theme changes its highlight namespace.
+  Restore theme inheritance in splits after removing copied diff overlays on
+  Neovim 0.11.7 and newer.
+- Reuse live hunks during navigation when the text and base have not changed.
+- Revert exactly the confirmed live hunk against the validated displayed base
+  when Gitsigns is installed, including when the action starts in the base pane.
 - Refuse SVN directory Discard when a restored directory or its parent is a
   symlink or junction, protecting files outside the working copy.
 - Protect untracked and ignored files at a staged rename's old path from
@@ -184,6 +197,23 @@ and this project adheres to
   MiB preview limit. Reject sparse previews if the index changes during loading.
 - Show removed SVN file properties and omit canceled file changes when bounded
   content and property checks confirm they match the selected revision.
+- Revert and navigate the hunk under the invoking cursor in splits of a live
+  diff.
+- Keep a completed base refresh when returning from a pending live-diff
+  transfer.
+- Mirror wrapping options in the base pane after switching live-diff files.
+- Attach Resession save hooks when a live diff opens with any plugin loader.
+- Restore inherited highlight namespaces, keep private overlays out of global
+  defaults, and retain semantic suppression after theme changes on Neovim 0.11.
+- Preserve syntax colors for self-links in custom highlight namespaces.
+- Preserve pasted commit message bodies when saving and reopening sidebar
+  drafts.
+- Keep confirmation choices visible when the editor uses closed folds.
+- Keep the selected file after a sidebar refresh unless you move during loading.
+- Show failed status reads with a retry action instead of a clean working tree.
+- Let `h` collapse repository rows and clarify the documented `l` toggle.
+- Preserve the active tab and cursor when a background popup closes.
+- Stop cancelled sidebar status reads and repository discovery until you retry.
 
 ## [0.12.1] - 2026-10-23
 

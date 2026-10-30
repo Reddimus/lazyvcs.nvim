@@ -354,6 +354,15 @@ local function ensure_global_autocmds()
 		callback = safe_callback(function()
 			for _, session in ipairs(state.list()) do
 				transfer.schedule(session)
+				require("lazyvcs.align").schedule(session)
+			end
+		end),
+	})
+	vim.api.nvim_create_autocmd({ "WinNew", "WinClosed", "BufWinLeave" }, {
+		group = global_augroup,
+		callback = safe_callback(function()
+			for _, session in ipairs(state.list()) do
+				require("lazyvcs.align").schedule(session)
 			end
 		end),
 	})
@@ -383,7 +392,7 @@ local function ensure_global_autocmds()
 	})
 end
 
-refresh = function(bufnr)
+refresh = function(bufnr, reuse)
 	local session = state.get(bufnr)
 	if not session or session.closing or session.phase ~= "active" then
 		return
@@ -392,6 +401,7 @@ refresh = function(bufnr)
 	if not session.readonly_comparison then
 		local profile = compare_text.profile(session.editable_bufnr)
 		if session.failed_profile_key and profile and session.failed_profile_key == profile.key then
+			session.hunk_cache = nil
 			session.hunks = {}
 			return
 		end
@@ -402,12 +412,32 @@ refresh = function(bufnr)
 			or session.base_text.profile_key ~= profile.key
 			or util.buf_path(session.editable_bufnr) ~= session.source_path
 		then
+			session.hunk_cache = nil
 			session.hunks, session.base_invalid = {}, true
 			if not session.refresh_job and (not session.reload_retry_at or vim.uv.now() >= session.reload_retry_at) then
 				reload_session(session)
 			end
 			return
 		end
+	end
+	local identity = compare_text.identity(session.editable_bufnr)
+	local cache = session.hunk_cache
+	if
+		reuse
+		and identity
+		and cache
+		and cache.bufnr == bufnr
+		and cache.path == session.source_path
+		and cache.base == (session.base_text or session.base_lines)
+		and cache.generation == session.base_generation
+		and cache.hunks == session.hunks
+		and cache.current == session.current_text
+		and vim.deep_equal(cache.identity, identity)
+	then
+		return
+	end
+	session.hunk_cache = nil
+	if not session.readonly_comparison then
 		local current, err = compare_text.capture(session.editable_bufnr, TEXT_LIMIT)
 		if not current then
 			session.hunks = {}
@@ -425,6 +455,15 @@ refresh = function(bufnr)
 	else
 		session.hunks = diff.compute_hunks(session.base_lines, util.get_buf_lines(session.editable_bufnr))
 	end
+	session.hunk_cache = {
+		bufnr = bufnr,
+		path = session.source_path,
+		base = session.base_text or session.base_lines,
+		generation = session.base_generation,
+		identity = identity,
+		current = session.current_text,
+		hunks = session.hunks,
+	}
 	layout.refresh(session)
 end
 
@@ -946,7 +985,7 @@ local function target_editor_window()
 	return vim.api.nvim_get_current_win(), true
 end
 
-local function comparison_buffer(comparison, side, editor_win)
+local function comparison_buffer(comparison, side, editor_win, failure_context)
 	if comparison.editable_side == "right" and side.modifiable and side.path then
 		local bufnr = vim.fn.bufadd(side.path)
 		vim.fn.bufload(bufnr)
@@ -956,6 +995,7 @@ local function comparison_buffer(comparison, side, editor_win)
 
 	target_sequence = target_sequence + 1
 	local bufnr = vim.api.nvim_create_buf(false, true)
+	failure_context.editable_bufnr, failure_context.owned_editable_buf = bufnr, true
 	local name = string.format(
 		"lazyvcs://comparison/%s/%s/%s//right-%d",
 		comparison.backend or comparison.vcs or "vcs",
@@ -1039,7 +1079,7 @@ local function open_target_impl(comparison, failure_context)
 	end
 	local original_bufnr = vim.api.nvim_win_get_buf(editor_win)
 	failure_context.original_bufnr = original_bufnr
-	local editable_bufnr, owned = comparison_buffer(comparison, comparison.right, editor_win)
+	local editable_bufnr, owned = comparison_buffer(comparison, comparison.right, editor_win, failure_context)
 	failure_context.editable_bufnr = editable_bufnr
 	failure_context.owned_editable_buf = owned
 	assert(
@@ -1282,9 +1322,7 @@ function M.revert_hunk()
 				return false
 			end
 			return vim.api.nvim_win_call(action_win, function()
-				if not session.backend_impl.revert_hunk(session, confirmed_hunk, action_win) then
-					diff.reset_text_hunk(session.editable_bufnr, confirmed_base, session.current_text, confirmed_hunk)
-				end
+				diff.reset_text_hunk(session.editable_bufnr, confirmed_base, session.current_text, confirmed_hunk)
 
 				schedule_refresh(session.editable_bufnr)
 				return true
@@ -1321,7 +1359,7 @@ function M.jump_to_hunk(direction)
 		return require("lazyvcs.signs").jump_to_hunk(direction)
 	end
 
-	refresh(session.editable_bufnr)
+	refresh(session.editable_bufnr, true)
 	local action_win = hunk_window(session)
 	local hunks = session.hunks or {}
 	if #hunks == 0 then

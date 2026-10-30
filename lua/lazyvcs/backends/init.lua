@@ -471,14 +471,6 @@ function M.root(path)
 	return root
 end
 
-function M.revert_hunk(session, hunk)
-	local impl = session and session.backend_impl
-	if not impl or not impl.revert_hunk then
-		return false
-	end
-	return impl.revert_hunk(session, hunk)
-end
-
 -- Keep the resolved backend accurate when the user changes directory.
 vim.api.nvim_create_autocmd("DirChanged", {
 	group = vim.api.nvim_create_augroup("lazyvcs_backends", { clear = true }),
