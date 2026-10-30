@@ -195,6 +195,7 @@ local function reset_discovery(state)
 	state.lazyvcs_discovering = false
 	state.lazyvcs_repo_specs = nil
 	state.lazyvcs_discovery_error = nil
+	state.lazyvcs_discovery_incomplete = nil
 end
 
 local function remember_details(state, root)
@@ -247,12 +248,13 @@ local function start_discovery(state)
 	state.lazyvcs_discovering = true
 	state.lazyvcs_repo_specs = {}
 	state.lazyvcs_discovery_error = nil
+	state.lazyvcs_discovery_incomplete = nil
 	state.lazyvcs_discovery_generation = (state.lazyvcs_discovery_generation or 0) + 1
 	local generation = state.lazyvcs_discovery_generation
 	state.lazyvcs_discovery_handle = model.discover_async(
 		state.path,
 		config.get().source_control.scan_depth,
-		function(specs, err)
+		function(specs, err, problems)
 			safely(function()
 				if
 					states[state.tabid] ~= state
@@ -265,6 +267,7 @@ local function start_discovery(state)
 				state.lazyvcs_discovering = false
 				state.lazyvcs_repo_specs = specs or {}
 				state.lazyvcs_discovery_error = err
+				state.lazyvcs_discovery_incomplete = problems and problems.incomplete or nil
 				M.navigate(state)
 			end)
 		end,

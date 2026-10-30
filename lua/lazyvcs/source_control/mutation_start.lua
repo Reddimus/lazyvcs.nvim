@@ -109,7 +109,7 @@ function M.start(repo, args, opts, guards, on_exit)
 		if environment then
 			process_opts.env = vim.tbl_extend("force", opts.env or {}, environment)
 		end
-		if guards.git_untracked_delete then
+		if guards.git_untracked_delete or vim.tbl_contains(command, "-z") then
 			process_opts.text = false
 		end
 		if mutation and guards.on_mutation_start then
@@ -174,6 +174,16 @@ function M.start(repo, args, opts, guards, on_exit)
 				end
 			end
 		end
+	end
+	local head_exists
+	local function check_head(continuation)
+		if head_exists ~= nil then
+			return continuation(head_exists)
+		end
+		return spawn({ "git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}" }, function(result)
+			head_exists = result.code == 0
+			continuation(head_exists)
+		end, nil, nil, 1)
 	end
 	local function native_discard()
 		local plan = guards.git_untracked_delete
@@ -274,21 +284,11 @@ function M.start(repo, args, opts, guards, on_exit)
 			end
 			request = value
 		end
-		if guards.tracked_discard then
-			local head_exists
-			local function check_head(continuation)
-				if head_exists ~= nil then
-					return continuation(head_exists)
-				end
-				return spawn({ "git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}" }, function(result)
-					head_exists = result.code == 0
-					continuation(head_exists)
-				end, nil, nil, 1)
-			end
+		if guards.tracked_discard or guards.git_stage then
 			local index = 0
 			local function check_next()
 				index = index + 1
-				local target = guards.tracked_discard[index]
+				local target = (guards.tracked_discard or guards.git_stage)[index]
 				if not target then
 					local err = guard_error()
 					if err then
@@ -310,7 +310,23 @@ function M.start(repo, args, opts, guards, on_exit)
 				end
 				local function check_target()
 					filesystem(vim.uv.fs_lstat, function(stat)
-						if stat and stat.type == "directory" and repo.vcs == "git" and args[2] == "restore" then
+						if target.directory then
+							if stat and stat.type ~= "directory" then
+								return reject(
+									"SVN Discard refuses "
+										.. stat.type
+										.. " directory obstruction at "
+										.. target.relpath
+								)
+							end
+							return check_next()
+						end
+						if
+							stat
+							and stat.type == "directory"
+							and repo.vcs == "git"
+							and (args[2] == "restore" or guards.git_stage)
+						then
 							-- Validate the source restore will write, including rename sources.
 							local from_head = false
 							for _, argument in ipairs(args) do
@@ -338,7 +354,11 @@ function M.start(repo, args, opts, guards, on_exit)
 									and path == target.relpath
 							end
 							local function refuse()
-								return reject("Tracked Discard refuses directory obstruction at " .. target.relpath)
+								return reject(
+									(guards.git_stage and "Stage" or "Tracked Discard")
+										.. " refuses directory obstruction at "
+										.. target.relpath
+								)
 							end
 							return spawn(
 								{ "git", "--literal-pathspecs", "ls-files", "--stage", "-z", "--", target.relpath },
@@ -458,6 +478,11 @@ function M.start(repo, args, opts, guards, on_exit)
 								elseif linked then
 									return refuse()
 								end
+								-- Stage writes the current index, so a former HEAD gitlink
+								-- does not obstruct ordinary files indexed beneath it.
+								if guards.git_stage then
+									return check_ancestor()
+								end
 								check_head(function(exists)
 									if not exists then
 										return check_ancestor()
@@ -527,12 +552,67 @@ function M.start(repo, args, opts, guards, on_exit)
 		if err then
 			return reject(err)
 		end
-		if guards.git_untracked_delete or guards.tracked_discard then
+		if guards.git_untracked_delete or guards.tracked_discard or guards.git_stage then
 			return native_discard()
 		end
 		spawn(args, function(result)
 			finish(result, nil, result)
 		end, true)
+	end
+
+	local function git_preflight()
+		if guards.git_addition then
+			local path = guards.git_addition
+			return spawn({ "git", "ls-files", "--stage", "-z", "--", path }, function(result)
+				-- A file replacing a HEAD tree also reports deletions below this
+				-- path. Validate the exact index entry instead of that whole diff.
+				local mode, stage, indexed = result.stdout:match("^(%d+) %x+ (%d)\t([^%z]+)%z$")
+				if result.stdout_truncated or not mode or stage ~= "0" or indexed ~= path then
+					return reject("Addition changed before mutation at " .. path .. "; refresh and retry.")
+				end
+				check_head(function(exists)
+					if not exists then
+						return mutate()
+					end
+					spawn({ "git", "ls-tree", "-z", "HEAD", "--", path }, function(tree)
+						local mode, kind, previous = tree.stdout:match("^(%d+) (%w+) %x+\t([^%z]+)%z$")
+						local directory = mode == "040000" and kind == "tree" and previous == path
+						if tree.stdout_truncated or (tree.stdout ~= "" and not directory) then
+							return reject("Addition changed before mutation at " .. path .. "; refresh and retry.")
+						end
+						mutate()
+					end)
+				end)
+			end)
+		elseif guards.git_rename_source then
+			local path = guards.git_rename_source
+			return spawn(
+				{ "git", "status", "--porcelain=v1", "-z", "--ignored", "--untracked-files=all", "--", path },
+				function(result)
+					if
+						result.stdout_truncated
+						or result.stdout:find("?? " .. path .. "\0", 1, true)
+						or result.stdout:find("!! " .. path .. "\0", 1, true)
+					then
+						return reject(
+							"Discard refuses untracked or ignored rename source at " .. path .. "; move it and retry."
+						)
+					end
+					mutate()
+				end
+			)
+		elseif guards.git_conflict then
+			return spawn({ "git", "ls-tree", "-z", "HEAD", "--", guards.git_conflict }, function(result)
+				if result.stdout_truncated then
+					return reject("Cannot verify conflict HEAD; refresh and retry.")
+				end
+				if result.stdout == "" then
+					args = { "git", "rm", "-f", "--", guards.git_conflict }
+				end
+				mutate()
+			end)
+		end
+		mutate()
 	end
 
 	if guards.branch_ref then
@@ -544,7 +624,15 @@ function M.start(repo, args, opts, guards, on_exit)
 		end)
 	elseif guards.svn_discard then
 		local plan = guards.svn_discard
-		spawn({ "svn", "info", "--xml", "--depth", "empty", "--", util.svn_target(plan.relpath) }, function(result)
+		spawn({
+			"svn",
+			"info",
+			"--xml",
+			"--depth",
+			plan.recursive and "infinity" or "empty",
+			"--",
+			util.svn_target(plan.relpath),
+		}, function(result)
 			local info = require("lazyvcs.backends.xml").parse_info(result.stdout)
 			local recursive = info and info.kind == "dir" and info.schedule == "delete"
 			if
@@ -556,10 +644,47 @@ function M.start(repo, args, opts, guards, on_exit)
 			then
 				return reject("SVN directory classification changed before discard; refresh and retry.")
 			end
+			if plan.recursive then
+				if result.stdout_truncated then
+					return reject("Cannot verify SVN restore directories; refresh and retry.")
+				end
+				local xml = require("lazyvcs.backends.xml")
+				local directories = {}
+				for block in result.stdout:gmatch("<entry%f[%s>].-</entry%s*>") do
+					local entry = xml.parse_info(block)
+					if not entry or not entry.path or not entry.kind then
+						return reject("Cannot verify SVN restore directories; refresh and retry.")
+					end
+					if entry.kind == "dir" then
+						local path = util.normalize_literal_path(repo.root .. "/" .. entry.path)
+						local relative = util.relative_literal_path(repo.root, path)
+						if
+							not relative
+							or (relative ~= plan.relpath and relative:sub(1, #plan.relpath + 1) ~= plan.relpath .. "/")
+						then
+							return reject("SVN restore directory changed; refresh and retry.")
+						end
+						-- Check parents first. Never lstat a child through an unchecked link.
+						local prefix = ""
+						for component in relative:gmatch("[^/]+") do
+							prefix = prefix == "" and component or prefix .. "/" .. component
+							directories[prefix] = true
+						end
+					end
+				end
+				guards.tracked_discard = {}
+				for _, relative in ipairs(vim.fn.sort(vim.tbl_keys(directories))) do
+					guards.tracked_discard[#guards.tracked_discard + 1] = {
+						path = util.normalize_literal_path(repo.root .. "/" .. relative),
+						relpath = relative,
+						directory = true,
+					}
+				end
+			end
 			mutate()
 		end)
 	else
-		mutate()
+		git_preflight()
 	end
 	return handle
 end

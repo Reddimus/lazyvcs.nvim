@@ -2391,8 +2391,7 @@ local function test_source_control_confirm_session_choice_disables_more_prompts(
 		},
 	})
 
-	local root = vim.fs.normalize(vim.fn.tempname())
-	vim.fn.mkdir(root, "p")
+	local root = helpers.tempdir()
 	helpers.exec({ "git", "init" }, root)
 	helpers.write_file(root .. "/changed.txt", "changed\n")
 
@@ -2422,7 +2421,30 @@ local function test_source_control_confirm_session_choice_disables_more_prompts(
 	wait_for(function()
 		local result = vim.system({ "git", "diff", "--cached", "--name-only" }, { cwd = root, text = true }):wait()
 		return result.stdout:match("changed%.txt") ~= nil
-	end, "stage confirmation did not run git add")
+	end, "stage confirmation did not run git add", ASYNC_TIMEOUT_MS)
+end
+
+local function test_source_control_confirm_session_with_aliased_temp_root()
+	local parent = helpers.tempdir()
+	vim.fn.mkdir(parent .. "/real", "p")
+	local alias = parent .. "/alias"
+	local linked, link_err =
+		vim.uv.fs_symlink(parent .. "/real", alias, vim.fn.has("win32") == 1 and { junction = true } or { dir = true })
+	assert(linked, link_err)
+	local tempname = vim.fn.tempname
+	local calls = 0
+	---@diagnostic disable-next-line: duplicate-set-field
+	vim.fn.tempname = function()
+		calls = calls + 1
+		if calls == 1 then
+			return alias .. "/repo"
+		end
+		return tempname()
+	end
+	local ok, err = xpcall(test_source_control_confirm_session_choice_disables_more_prompts, debug.traceback)
+	vim.fn.tempname = tempname
+	assert(calls > 0, "fixture did not use the aliased temporary path")
+	assert(ok, err)
 end
 
 local function test_source_control_tree_view_groups_files_into_folders()
@@ -5605,7 +5627,7 @@ local function test_source_control_git_publish_branch_sets_upstream_to_origin()
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
 		["git remote"] = "fork\norigin\n",
-		["git push --set-upstream -- origin feature/new"] = "",
+		["git push --set-upstream -- origin refs/heads/feature/new:refs/heads/feature/new"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5624,7 +5646,7 @@ local function test_source_control_git_publish_branch_sets_upstream_to_origin()
 		"git remote",
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
-		"git push --set-upstream -- origin feature/new",
+		"git push --set-upstream -- origin refs/heads/feature/new:refs/heads/feature/new",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
 
@@ -5673,7 +5695,7 @@ local function test_source_control_git_sync_without_upstream_publishes_branch()
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
 		["git remote"] = "origin\n",
-		["git push --set-upstream -- origin feature/new"] = "",
+		["git push --set-upstream -- origin refs/heads/feature/new:refs/heads/feature/new"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5693,7 +5715,7 @@ local function test_source_control_git_sync_without_upstream_publishes_branch()
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
 		"git symbolic-ref --quiet HEAD",
-		"git push --set-upstream -- origin feature/new",
+		"git push --set-upstream -- origin refs/heads/feature/new:refs/heads/feature/new",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
 
@@ -5803,7 +5825,7 @@ local function test_source_control_git_publish_falls_back_to_single_remote()
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
 		["git remote"] = "fork\n",
-		["git push --set-upstream -- fork feature/new"] = "",
+		["git push --set-upstream -- fork refs/heads/feature/new:refs/heads/feature/new"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5822,7 +5844,7 @@ local function test_source_control_git_publish_falls_back_to_single_remote()
 		"git remote",
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
-		"git push --set-upstream -- fork feature/new",
+		"git push --set-upstream -- fork refs/heads/feature/new:refs/heads/feature/new",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
 
@@ -6958,6 +6980,10 @@ local cases = {
 		test_source_control_toggle_repo_visibility_ignores_section_rows,
 	},
 	{ "test_source_control_repo_actions_ignore_non_repo_rows", test_source_control_repo_actions_ignore_non_repo_rows },
+	{
+		"test_source_control_confirm_session_with_aliased_temp_root",
+		test_source_control_confirm_session_with_aliased_temp_root,
+	},
 	{
 		"test_source_control_confirm_session_choice_disables_more_prompts",
 		test_source_control_confirm_session_choice_disables_more_prompts,

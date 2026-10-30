@@ -533,6 +533,15 @@ Behavior:
   starts. A branch change stops the operation with a retry error.
 - Unstage preserves working-file edits made after staging a new file. Staged
   rename Unstage and Discard cover both the source and destination paths.
+  Discard names both paths in its confirmation and refuses to overwrite an
+  untracked or ignored file at the source path. Move that file before retrying.
+  Addition Unstage and Discard recheck the index and HEAD when the action starts.
+  Changed additions require a refresh and retry. Additions replacing HEAD
+  directories remain eligible. Stage refuses directory replacements of files,
+  but permits exact stage-zero index gitlinks and ordinary indexed files beneath
+  a former HEAD gitlink.
+- Conflict Discard restores HEAD in both the index and working tree. If HEAD
+  lacks the path, Discard removes it. The confirmation names this scope.
 - Tracked-file Discard checks every restore target, including rename sources
   and destinations. For Git, every proper leading path component is checked
   asynchronously: a .git entry (file, directory, or link), or a gitlink in the
@@ -566,6 +575,10 @@ Behavior:
   buffers reload from disk. Unsaved buffer edits keep Neovim's normal protection.
 - Discarding a deleted SVN directory restores its descendants recursively. The
   confirmation names that scope. Unsaved descendant buffers block the action.
+  Recorded restore directories and their parents are checked with lstat, without
+  following links. Symlink and junction directory obstructions are refused.
+  Missing directories can still be restored. These checks share the mutation
+  deadline and cannot prevent concurrent filesystem replacements.
   Discarding directory property changes leaves child edits intact.
 - Tag checkout and branch creation use the selected full ref, including tags
   whose names start with a dash or match a local branch.

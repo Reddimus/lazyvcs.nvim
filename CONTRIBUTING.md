@@ -222,7 +222,15 @@ the GitHub release.
   disables submodule recursion. Windows links also require an asynchronous
   PowerShell LinkType check to exclude junctions; pass the path through the
   child's environment. SVN revalidates its recorded node kind before choosing
-  file or directory scope.
+  file or directory scope. Recursive SVN Discard enumerates recorded directories
+  and checks them and their parents with asynchronous lstat, parents first.
+  Links are refused before any child path is checked. Missing directories remain
+  restorable. Addition removals require an exact stage-zero index entry and
+  either an absent HEAD path or a HEAD tree replaced by that entry. Rename
+  Discard refuses untracked or ignored source files. Stage accepts directory
+  targets only for exact stage-zero index gitlinks. Its ancestor checks inspect
+  the working tree and index, allowing ordinary files beneath a former HEAD
+  gitlink.
 - `compare.lua` owns review tabs, source-control navigation, and read-only
   previews. Its `set_panes()` transition installs both panes before publishing
   their slots and defers results while the picker router owns a borrowed buffer.

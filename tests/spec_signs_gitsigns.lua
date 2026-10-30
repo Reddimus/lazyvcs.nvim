@@ -412,6 +412,10 @@ return function(ctx)
 						path = f.file,
 						extra = { repo_root = f.root, relpath = "sample.txt", section = "unstaged", status = " M" },
 					})
+					-- Stage runs an asynchronous obstruction preflight before spawning.
+					vim.wait(1000, function()
+						return exit ~= nil
+					end, 5)
 					assert(exit, "stage process did not start")
 					vim.cmd("LazyVCS hunk revert")
 					-- Backend discovery can outlast a fixed wait; a refresh before the revert holds would cancel it.
@@ -761,6 +765,10 @@ return function(ctx)
 							status = " M",
 						},
 					})
+					-- Stage runs an asynchronous obstruction preflight before spawning.
+					vim.wait(1000, function()
+						return exit ~= nil
+					end, 5)
 					assert(exit, "stage process did not start")
 					vim.cmd("LazyVCS hunk revert")
 					vim.wait(30)

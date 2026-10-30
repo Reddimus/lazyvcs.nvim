@@ -207,6 +207,167 @@ return function(ctx)
 
 	return {
 		{
+			"test_source_control_incomplete_discovery_keeps_repositories_and_saved_visibility",
+			function()
+				require("lazyvcs").setup({
+					source_control = { scan_depth = 2, remote_refresh = "manual", width = 160, show_clean = true },
+				})
+				local workspace = helpers.tempdir()
+				local denied = workspace .. "/denied"
+				local hidden = denied .. "/hidden"
+				for _, root in ipairs({ workspace .. "/first", workspace .. "/second", hidden }) do
+					vim.fn.mkdir(root, "p")
+					helpers.exec({ "git", "init" }, root)
+				end
+				vim.fn.mkdir(workspace .. "/other-denied", "p")
+				local native = require("lazyvcs.source_control.native")
+				require("lazyvcs").source_control_open({ path = workspace })
+				local state = wait_for_discovery(assert(native._state()))
+				state.lazyvcs_repo_visibility_overrides[hidden] = false
+				local scan = vim.uv.fs_scandir
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.uv.fs_scandir = function(path, cb)
+					if path == denied or path == workspace .. "/other-denied" then
+						vim.schedule(function()
+							cb("EACCES: permission denied", nil)
+						end)
+						return {}
+					end
+					return scan(path, cb)
+				end
+				local ok, err = xpcall(function()
+					local function check()
+						wait_for_discovery(state)
+						assert(#state.lazyvcs_repo_specs == 2, "unreadable sibling hid readable repositories")
+						assert(not state.lazyvcs_discovery_error, "unreadable sibling became a hard error")
+						assert(#state.lazyvcs_discovery_incomplete == 2, "missing scan problems")
+						assert(state.lazyvcs_repo_visibility_overrides[hidden] == false, "lost saved visibility")
+						local text = table.concat(vim.api.nvim_buf_get_lines(state.bufnr, 0, -1, false), "\n")
+						assert(text:find("Repositories (2)", 1, true), text)
+						assert(text:find("first", 1, true) and text:find("second", 1, true), text)
+						local _, count = text:gsub("Could not scan 2 directories", "")
+						assert(count == 1, "expected one incomplete discovery notice:\n" .. text)
+						local notice = assert(state.lazyvcs_line_nodes[2])
+						assert(notice.extra.discovery_incomplete and notice.type == "message")
+						assert(notice.name:find(denied .. ": EACCES", 1, true), notice.name)
+						for _, repo in ipairs(state.lazyvcs_repo_specs) do
+							assert(state.lazyvcs_repo_visibility[repo.root], "readable repository changes were hidden")
+						end
+					end
+					native.refresh(false)
+					check()
+					native.close()
+					require("lazyvcs").source_control_open({ path = workspace })
+					state = assert(native._state())
+					check()
+				end, debug.traceback)
+				vim.uv.fs_scandir = scan
+				assert(ok, err)
+				native.refresh(false)
+				wait_for_discovery(state)
+				assert(not state.lazyvcs_discovery_incomplete, "successful refresh retained incomplete notice")
+				assert(#state.lazyvcs_repo_specs == 3)
+				assert(state.lazyvcs_repo_visibility_overrides[hidden] == false)
+			end,
+		},
+		{
+			"test_source_control_discovery_reports_partial_results_and_root_errors",
+			function()
+				local workspace = helpers.tempdir()
+				local denied = workspace .. "/denied"
+				local repo = workspace .. "/repo"
+				vim.fn.mkdir(denied, "p")
+				vim.fn.mkdir(repo .. "/.git", "p")
+				local scan = vim.uv.fs_scandir
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.uv.fs_scandir = function(path, cb)
+					if path == denied then
+						vim.schedule(function()
+							cb("EACCES: permission denied", nil)
+						end)
+						return {}
+					end
+					return scan(path, cb)
+				end
+				local ok, err = xpcall(function()
+					local model = require("lazyvcs.source_control.model")
+					local function discover(root)
+						local done, result
+						model.discover_async(root, 1, function(repos, failure, problems)
+							result = { repos = repos, failure = failure, problems = problems }
+							done = true
+						end, { entry_budget = 1 })
+						wait_for(function()
+							return done
+						end, "discovery did not finish")
+						return result
+					end
+					local partial = discover(workspace)
+					assert(partial.repos and #partial.repos == 1, "partial results were discarded")
+					assert(partial.repos[1].root == repo and not partial.failure)
+					assert(partial.problems.incomplete[1] == denied .. ": EACCES: permission denied")
+					local failed = discover(denied)
+					assert(not failed.repos and not failed.problems, "root failure returned partial success")
+					assert(failed.failure:find("Cannot scan " .. denied .. ": EACCES", 1, true))
+				end, debug.traceback)
+				vim.uv.fs_scandir = scan
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_source_control_failed_discovery_preserves_saved_visibility",
+			function()
+				require("lazyvcs").setup({ source_control = { scan_depth = 2, remote_refresh = "manual" } })
+				local workspace = helpers.tempdir()
+				local parent = workspace .. "/nested"
+				local root = parent .. "/repo"
+				vim.fn.mkdir(root, "p")
+				helpers.exec({ "git", "init" }, root)
+				local native = require("lazyvcs.source_control.native")
+				require("lazyvcs").source_control_open({ path = workspace })
+				local state = wait_for_discovery(assert(native._state()))
+				state.lazyvcs_repo_visibility_overrides[root] = false
+				local scan = vim.uv.fs_scandir
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.uv.fs_scandir = function(path, cb)
+					if path == workspace then
+						vim.schedule(function()
+							cb("EACCES: permission denied", nil)
+						end)
+						return {}
+					end
+					return scan(path, cb)
+				end
+				local ok, err = xpcall(function()
+					native.refresh(false)
+					wait_for_discovery(state)
+					assert(state.lazyvcs_discovery_error, "failed scan reported success")
+					assert(
+						state.lazyvcs_repo_visibility_overrides[root] == false,
+						"failed scan erased saved visibility"
+					)
+					native.close()
+					require("lazyvcs").source_control_open({ path = workspace })
+					state = wait_for_discovery(assert(native._state()))
+					assert(state.lazyvcs_repo_visibility_overrides[root] == false, "close persisted lost visibility")
+				end, debug.traceback)
+				vim.uv.fs_scandir = scan
+				assert(ok, err)
+				native.refresh(false)
+				wait_for_discovery(state)
+				assert(not state.lazyvcs_discovery_error)
+				assert(state.lazyvcs_repo_visibility_overrides[root] == false)
+				native.close()
+				vim.fn.delete(parent, "rf")
+				require("lazyvcs").source_control_open({ path = workspace })
+				state = wait_for_discovery(assert(native._state()))
+				assert(
+					state.lazyvcs_repo_visibility_overrides[root] == nil,
+					"successful scan did not prune removed repo"
+				)
+			end,
+		},
+		{
 			"test_source_control_native_open_never_discovers_synchronously",
 			test_source_control_native_open_never_discovers_synchronously,
 		},

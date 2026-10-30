@@ -240,12 +240,15 @@ end
 
 ---Incremental, cancellable repository discovery. Directory entries are consumed
 ---in bounded batches so large workspaces yield back to Neovim between scans.
+---Root scan failures return nil, error. Other scan failures return repositories,
+---nil, { incomplete = { "<path>: <error>", ... } }.
 function M.discover_async(root, max_depth, on_done, opts)
 	opts = opts or {}
 	root = canonical_root(root)
 	max_depth = math.max(0, max_depth or 0)
-	local task = Task.new(on_done)
+	local task = Task.new(util.safe_callback(on_done))
 	local repos = {}
+	local incomplete = {}
 	local seen = {}
 	local stack = {
 		{ root = root, depth = 0, entered = false },
@@ -255,7 +258,11 @@ function M.discover_async(root, max_depth, on_done, opts)
 	local function finish()
 		task:add(require("lazyvcs.backends").resolve_async(root, function(backend, enclosing)
 			if task:is_active() then
-				task:finish(merge_enclosing(root, repos, enclosing, backend and backend.name))
+				task:finish(
+					merge_enclosing(root, repos, enclosing, backend and backend.name),
+					nil,
+					#incomplete > 0 and { incomplete = incomplete } or nil
+				)
 			end
 		end, { timeout_ms = opts.timeout_ms }))
 	end
@@ -276,15 +283,24 @@ function M.discover_async(root, max_depth, on_done, opts)
 				else
 					seen[frame.root] = true
 					frame.children = {}
-					uv.fs_scandir(frame.root, function(_, scanner)
+					uv.fs_scandir(frame.root, function(err, scanner)
 						vim.schedule(function()
 							if not task:is_active() then
 								return
 							end
-							frame.scanner = scanner
-							if not scanner then
+							if err or not scanner then
+								local message = frame.root .. ": " .. tostring(err or "missing scanner")
+								message = message:gsub("[\r\n]+", " ")
+								if frame.depth == 0 then
+									task:finish(nil, "Cannot scan " .. message)
+									return
+								end
+								incomplete[#incomplete + 1] = message
 								table.remove(stack)
+								step()
+								return
 							end
+							frame.scanner = scanner
 							step()
 						end)
 					end)
@@ -1591,7 +1607,7 @@ local function normalize_visibility_state(state, repos, _source_opts)
 
 	state.lazyvcs_repo_visibility_overrides = state.lazyvcs_repo_visibility_overrides or {}
 	for root, _ in pairs(vim.deepcopy(state.lazyvcs_repo_visibility_overrides)) do
-		if not available[root] then
+		if not available[root] and not state.lazyvcs_discovery_incomplete then
 			state.lazyvcs_repo_visibility_overrides[root] = nil
 		end
 	end
@@ -1772,9 +1788,8 @@ function M.collect(state, opts)
 	source_opts.changes_sort = state.lazyvcs_changes_sort
 
 	ordered_repositories(loaded, source_opts.repositories_sort)
-	-- Do not normalize visibility against an empty loading list; that would erase restored
-	-- layout and persist the loss.
-	if state.lazyvcs_discovering then
+	-- Only complete discovery can establish that a saved repository was removed.
+	if state.lazyvcs_discovering or state.lazyvcs_discovery_error then
 		-- `normalize_visibility_state` owns initialising these; keep them
 		-- defined so the render below never indexes a nil table.
 		state.lazyvcs_repo_visibility = state.lazyvcs_repo_visibility or {}
@@ -1822,6 +1837,20 @@ function M.collect(state, opts)
 				error = true,
 				discovery_error = true,
 			},
+		}
+	end
+	local incomplete = state.lazyvcs_discovery_incomplete
+	if incomplete and #incomplete > 0 then
+		children[#children + 1] = {
+			id = root .. "::discovery_incomplete",
+			type = "message",
+			name = string.format(
+				"Could not scan %d %s: %s",
+				#incomplete,
+				#incomplete == 1 and "directory" or "directories",
+				incomplete[1]
+			),
+			extra = { discovery_incomplete = true },
 		}
 	end
 	if #repo_specs > 1 or source_opts.always_show_repositories then

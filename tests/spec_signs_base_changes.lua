@@ -161,6 +161,10 @@ return function(ctx)
 				local ok, err = pcall(function()
 					local state, node = sidebar(f)
 					ops.stage_file(state, node)
+					-- Stage runs an asynchronous obstruction preflight before spawning.
+					vim.wait(1000, function()
+						return exit ~= nil
+					end, 5)
 					assert(exit, "mutation did not start")
 					assert(not s.signs.current_state(buf).loaded, "mutation start left base available")
 					local raw = { code = 130, stdout = "", stderr = "Cancelled", cancelled = true }
@@ -190,9 +194,13 @@ return function(ctx)
 						return held ~= nil
 					end, "explicit load did not start", 15000)
 					state, node = sidebar(f)
+					exit = nil
 					ops.stage_file(state, node)
 					backends.load_base_async = load
-					assert(exit)(nil, "Cancelled", raw)
+					vim.wait(1000, function()
+						return exit ~= nil
+					end, 5)
+					assert(exit, "second mutation did not start")(nil, "Cancelled", raw)
 					s.wait(function()
 						return s.api.nvim_get_current_win() ~= source
 					end, "disabled-sign command lost its pending load at mutation", 15000)
