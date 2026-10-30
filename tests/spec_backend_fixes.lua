@@ -360,7 +360,7 @@ return function(ctx)
 				local canonical, calls = util.canonical_path, 0
 				---@diagnostic disable-next-line: duplicate-set-field
 				util.canonical_path = function(path)
-					if path:find("/unloaded-", 1, true) then
+					if path and path:find("/unloaded-", 1, true) then
 						calls = calls + 1
 					end
 					return canonical(path)
