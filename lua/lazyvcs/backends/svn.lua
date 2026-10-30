@@ -586,7 +586,7 @@ end
 
 function M.changed_files_async(path, on_done, opts)
 	opts = opts or {}
-	local task = Task.new(on_done)
+	local task = require("lazyvcs.backends.comparison").task(on_done)
 	task:add(M.probe_async(path, function(info, err)
 		if not task:is_active() then
 			return
@@ -601,7 +601,28 @@ function M.changed_files_async(path, on_done, opts)
 			if not lines then
 				return task:finish(nil, status_err)
 			end
-			task:finish(M.parse_status(lines, info.root))
+			require("lazyvcs.backends.svn_untracked").expand(
+				task,
+				{ root = info.root, vcs = "svn" },
+				svn_xml.parse_status(lines),
+				function(paths, expand_err)
+					if not paths then
+						return task:finish(nil, expand_err)
+					end
+					local items = vim.tbl_filter(function(item)
+						return item.status ~= "?"
+					end, M.parse_status(lines, info.root))
+					for _, relpath in ipairs(paths) do
+						items[#items + 1] = {
+							status = "?",
+							label = status_label("?"),
+							path = relpath,
+							absolute_path = util.normalize_literal_path(info.root .. "/" .. relpath),
+						}
+					end
+					task:finish(items)
+				end
+			)
 		end))
 	end, opts))
 	return task
@@ -734,26 +755,18 @@ function M.load_diff_target_async(target, on_done, opts)
 		return task
 	end
 
-	local sides = {}
-	for _, key in ipairs({ "left", "right", "property_patch" }) do
-		if
-			comparison[key]
-			and (not comparison.property_only or (comparison[key].source or {}).kind == "svn_property_patch")
-		then
-			sides[#sides + 1] = comparison[key]
-		end
-	end
-
-	local needs_remote_url = false
-	for _, side in ipairs(sides) do
-		local source = side.source or {}
-		if source.remote then
-			needs_remote_url = true
-			break
-		end
-	end
+	local needs_remote_url = comparison.section == "remote"
 
 	local function load_sides(entry_url)
+		local sides = {}
+		for _, key in ipairs({ "left", "right", "property_patch" }) do
+			if
+				comparison[key]
+				and (not comparison.property_only or (comparison[key].source or {}).kind == "svn_property_patch")
+			then
+				sides[#sides + 1] = comparison[key]
+			end
+		end
 		local pending = 0
 		local failed = false
 		local function complete()
@@ -789,6 +802,17 @@ function M.load_diff_target_async(target, on_done, opts)
 			local source = side.source or {}
 			if source.kind == "empty" then
 				side.lines = {}
+			elseif source.kind == "worktree" and not comparison.editable_side then
+				pending = pending + 1
+				require("lazyvcs.backends.comparison").read_file(task, source.path, function(raw, err)
+					pending = pending - 1
+					if not raw then
+						failed = true
+						return task:finish(nil, err)
+					end
+					side.lines = util.split_lines(raw)
+					complete()
+				end)
 			elseif source.kind == "svn_object" or source.kind == "svn_property_patch" then
 				pending = pending + 1
 				local command_path = source.path
@@ -797,7 +821,7 @@ function M.load_diff_target_async(target, on_done, opts)
 				end
 				local args
 				if source.kind == "svn_property_patch" then
-					args = { "svn", "diff", "--properties-only" }
+					args = { "svn", "diff", "--properties-only", "--depth", "empty" }
 					if source.remote then
 						local base_revision = source.base_revision or comparison.base_revision
 						if not base_revision or base_revision == "" then
@@ -810,7 +834,7 @@ function M.load_diff_target_async(target, on_done, opts)
 					end
 					vim.list_extend(args, { "--", source.remote and literal_target(command_path) or command_path })
 				else
-					args = { "svn", "cat", "-r", source.revision, literal_target(command_path) }
+					args = { "svn", "cat", "-r", source.revision, literal_target(command_path, source.peg_revision) }
 				end
 				local raw_side = comparison.editable_side == "right"
 					and side == comparison.left
@@ -858,8 +882,104 @@ function M.load_diff_target_async(target, on_done, opts)
 		complete()
 	end
 
-	if not needs_remote_url then
-		load_sides(nil)
+	local function classify_sides(entry_url)
+		if comparison.property_only then
+			return load_sides(entry_url)
+		end
+		local keys, cursor, kinds = { "left", "right" }, 0, {}
+		local base_source
+		local next_side
+		next_side = function()
+			if not task:is_active() then
+				return
+			end
+			cursor = cursor + 1
+			local key = keys[cursor]
+			if not key then
+				local directory = kinds.left == "dir" or kinds.right == "dir"
+				if directory then
+					local text_side = kinds.left == "file" or kinds.right == "file"
+					comparison.editable_side = nil
+					if not text_side then
+						comparison.property_only = true
+						comparison.property_patch = {
+							label = needs_remote_url and "REMOTE PROPERTIES" or "LOCAL PROPERTIES",
+							source = {
+								kind = "svn_property_patch",
+								path = comparison.path,
+								remote = needs_remote_url,
+								base_revision = comparison.base_revision,
+							},
+							modifiable = false,
+						}
+					else
+						if kinds.left == "file" and base_source then
+							comparison.left.source = base_source
+						end
+						for _, name in ipairs(keys) do
+							if kinds[name] == "dir" then
+								comparison[name] = empty_side(comparison[name].label .. " (DIRECTORY)")
+							end
+						end
+					end
+				end
+				return load_sides(entry_url)
+			end
+			local side = comparison[key]
+			local source = side.source or {}
+			if source.kind == "empty" then
+				return next_side()
+			end
+			if source.kind == "worktree" then
+				return task:add(entry.classify_async(source.path, function(kind, err)
+					if not kind then
+						return task:finish(nil, err)
+					end
+					kinds[key] = kind == "directory" and "dir" or kind == "missing" and "missing" or "file"
+					next_side()
+				end))
+			end
+			if
+				key == "left"
+				and not source.remote
+				and comparison.wc_item == "replaced"
+				and comparison.base_revision
+				and entry_url
+			then
+				base_source = vim.tbl_extend("force", source, {
+					path = entry_url,
+					revision = tostring(comparison.base_revision),
+					peg_revision = tostring(comparison.base_revision),
+				})
+				source = base_source
+			end
+			local path = source.remote and entry_url or source.path
+			task:add(
+				process.bytes(
+					{ "svn", "info", "--xml", "-r", source.revision, literal_target(path, source.peg_revision) },
+					{
+						cwd = comparison.root,
+						timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+					},
+					function(raw, err)
+						local info = raw and svn_xml.parse_info(raw)
+						if not info then
+							if comparison.wc_item == "replaced" and is_added_base_error(err) then
+								return next_side()
+							end
+							return task:finish(nil, err or "Unable to determine SVN entry kind")
+						end
+						kinds[key] = info.kind
+						next_side()
+					end
+				)
+			)
+		end
+		next_side()
+	end
+
+	if not needs_remote_url and not (comparison.wc_item == "replaced" and comparison.base_revision) then
+		classify_sides(nil)
 		return task
 	end
 	local deadline = vim.uv.now() + (opts.timeout_ms or ASYNC_TIMEOUT_MS)
@@ -889,7 +1009,7 @@ function M.load_diff_target_async(target, on_done, opts)
 				return task:finish(nil, "Unable to parse SVN entry URL")
 			end
 			comparison.base_revision = comparison.base_revision or info.revision
-			load_sides(require("lazyvcs.backends.svn_url").append_path(info.url, suffix))
+			classify_sides(require("lazyvcs.backends.svn_url").append_path(info.url, suffix))
 		end))
 	end
 	resolve_url(comparison.path, "")

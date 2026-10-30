@@ -25,7 +25,10 @@ local function get_root(path)
 	if not git_available() then
 		return nil, "git executable not found"
 	end
-	local cwd = util.dir_of(path)
+	local cwd, cwd_err = util.existing_directory(path)
+	if not cwd then
+		return nil, cwd_err
+	end
 	local result, err = util.system({ "git", "rev-parse", "--show-toplevel" }, { cwd = cwd, text = false })
 	if not result then
 		return nil, err
@@ -110,7 +113,18 @@ function M.probe_async(path, on_done, opts)
 		end)
 		return task
 	end
-	local cwd = util.dir_of(path)
+	local cwd, cwd_err
+	if opts.root then
+		cwd = opts.root
+	else
+		cwd, cwd_err = util.existing_directory(path)
+	end
+	if not cwd then
+		vim.schedule(util.safe_callback(function()
+			task:finish(nil, cwd_err)
+		end))
+		return task
+	end
 	task:add(process.root({ "git", "rev-parse", "--show-toplevel" }, {
 		cwd = cwd,
 		root = opts.root,
@@ -355,7 +369,18 @@ local function load_payload_async(path, on_done, opts, base_only)
 		return task
 	end
 
-	local cwd = util.dir_of(path)
+	local cwd, cwd_err
+	if opts.root then
+		cwd = opts.root
+	else
+		cwd, cwd_err = util.existing_directory(path)
+	end
+	if not cwd then
+		vim.schedule(util.safe_callback(function()
+			task:finish(nil, cwd_err)
+		end))
+		return task
+	end
 	task:add(process.root({ "git", "rev-parse", "--show-toplevel" }, {
 		cwd = cwd,
 		root = opts.root,
@@ -658,6 +683,23 @@ function M.load_diff_target_async(target, on_done, opts)
 		end
 	end
 
+	local function snapshot_side(side, bytes)
+		if #bytes > 1024 * 1024 then
+			return nil, "File exceeds the 1 MiB preview limit"
+		end
+		-- Object snapshots keep CRLF and BOM bytes as content, as line-only previews did.
+		side.bytes, side.lines = bytes, util.split_lines(bytes)
+		side.document = {
+			lines = side.lines,
+			eol = bytes:sub(-1) == "\n",
+			empty = bytes == "",
+			encoding = "utf-8",
+			bom = false,
+			profile_key = "git-object",
+		}
+		return true
+	end
+
 	local pending = 0
 	local failed = false
 	local function complete()
@@ -690,6 +732,9 @@ function M.load_diff_target_async(target, on_done, opts)
 		local source = side.source or {}
 		if source.kind == "empty" then
 			side.lines = {}
+			if not comparison.editable_side then
+				snapshot_side(side, "")
+			end
 		elseif source.kind == "git_submodule_patch" then
 			pending = pending + 1
 			local args = { "git", "diff", "--no-ext-diff", "--no-color", "--submodule=short", "--full-index" }
@@ -737,7 +782,7 @@ function M.load_diff_target_async(target, on_done, opts)
 							or err:match("does not exist %(neither")
 						)
 					then
-						side.lines = {}
+						snapshot_side(side, "")
 						return complete()
 					end
 					failed = true
@@ -745,8 +790,14 @@ function M.load_diff_target_async(target, on_done, opts)
 				end
 				if raw_side then
 					side.bytes, side.lines = lines, nil
-				else
+				elseif comparison.editable_side then
 					side.lines = util.split_lines(lines)
+				else
+					local decoded, decode_err = snapshot_side(side, lines)
+					if not decoded then
+						failed = true
+						return task:finish(nil, decode_err)
+					end
 				end
 				complete()
 			end))

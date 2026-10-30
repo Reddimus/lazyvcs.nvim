@@ -816,6 +816,34 @@ function M.dir_of(path)
 	return vim.fs.dirname(path)
 end
 
+---Find a command directory for an entry whose parent directories may be deleted.
+function M.existing_directory(path)
+	local cwd = M.dir_of(path)
+	while cwd do
+		local stat, err, code = vim.uv.fs_stat(cwd)
+		if stat then
+			if stat.type ~= "directory" then
+				return nil, "Not a directory: " .. cwd
+			end
+			return M.normalize_literal_path(cwd)
+		end
+		-- Only absent entries permit ascent. A dangling link still owns its path.
+		if code ~= "ENOENT" then
+			return nil, err
+		end
+		local entry, entry_err, entry_code = vim.uv.fs_lstat(cwd)
+		if entry or entry_code ~= "ENOENT" then
+			return nil, entry_err or err
+		end
+		local parent = vim.fs.dirname(cwd)
+		if parent == cwd then
+			break
+		end
+		cwd = parent
+	end
+	return nil, "No existing directory for " .. path
+end
+
 ---Normalize filesystem data literally. Join repository entries to their root first.
 ---Unlike user-input expansion, this also preserves a leading tilde in a filename.
 ---@param path string

@@ -27,6 +27,29 @@ local function parse(raw, sections)
 	end
 end
 
+-- Ordinary and inherited properties share XML attributes and value encoding.
+local function property_values(raw)
+	local values = {}
+	for tag, attrs, content in raw:gmatch("<([%w_]+)%s+([^>]+)>([^<]*)</[%w_]+>") do
+		local attribute = xml.attributes(attrs)
+		if (tag == "property" or tag == "inherited_property") and attribute.name == "svn:global-ignores" then
+			if attribute.encoding == "base64" then
+				local ok, decoded = pcall(vim.base64.decode, (content:gsub("%s", "")))
+				if not ok then
+					return nil, "Malformed base64 SVN ignore property"
+				end
+				content = decoded
+			elseif attribute.encoding then
+				return nil, "Unsupported SVN ignore property encoding: " .. attribute.encoding
+			else
+				content = xml.decode(content)
+			end
+			values[#values + 1] = content
+		end
+	end
+	return values
+end
+
 function M.load(task, repo, callback, switched)
 	local sections = { miscellany = {} }
 	local sources
@@ -43,8 +66,9 @@ function M.load(task, repo, callback, switched)
 	local cursor = 0
 	local function finish()
 		local value = sections.miscellany["global-ignores"] or defaults
+		local changed
 		for _ = 1, 16 do
-			local changed = false
+			changed = false
 			value = value:gsub("%%%((.-)%)s", function(key)
 				local replacement = sections.miscellany[key:lower()] or (sections.default or {})[key:lower()]
 				if replacement then
@@ -56,7 +80,7 @@ function M.load(task, repo, callback, switched)
 				break
 			end
 		end
-		if value:find("%%%(.-%)s") then
+		if changed then
 			return callback(nil, "Cannot resolve SVN ignore configuration interpolation")
 		end
 		common.command(task, repo, {
@@ -81,13 +105,16 @@ function M.load(task, repo, callback, switched)
 			end
 			for attrs, body in raw:gmatch("<target%s+([^>]+)>(.-)</target>") do
 				local path = xml.attributes(attrs).path
-				local content = body:match('<property%s+name="svn:global%-ignores"[^>]*>(.-)</property>')
-					or body:match('<inherited_property%s+name="svn:global%-ignores"[^>]*>(.-)</inherited_property>')
-				if path and content then
+				local values, decode_err = property_values(body)
+				if not values then
+					return callback(nil, decode_err)
+				end
+				if path and #values > 0 then
+					local content = table.concat(values, "\n")
 					if path:match("^%a[%w+.-]*://") then
-						global[#global + 1] = xml.decode(content)
+						global[#global + 1] = content
 					else
-						inherited[local_path(path)] = xml.decode(content)
+						inherited[local_path(path)] = content
 					end
 				end
 			end
@@ -95,7 +122,6 @@ function M.load(task, repo, callback, switched)
 				local cache = {}
 				local function matches(text, name, property)
 					for pattern in text:gmatch(property and "[^\r\n]+" or "%S+") do
-						pattern = util.trim(pattern)
 						local compiled = cache[pattern]
 						if not compiled then
 							compiled = glob.compile(pattern)
@@ -158,14 +184,9 @@ function M.load(task, repo, callback, switched)
 					if not props then
 						return callback(nil, props_err)
 					end
-					local values = {}
-					for content in
-						props:gmatch('<inherited_property%s+name="svn:global%-ignores"[^>]*>(.-)</inherited_property>')
-					do
-						values[#values + 1] = xml.decode(content)
-					end
-					for content in props:gmatch('<property%s+name="svn:global%-ignores"[^>]*>(.-)</property>') do
-						values[#values + 1] = xml.decode(content)
+					local values, decode_err = property_values(props)
+					if not values then
+						return callback(nil, decode_err)
 					end
 					inherited[path] = table.concat(values, "\n")
 					boundaries_at[path] = true

@@ -237,103 +237,33 @@ function M.list(snapshot, include_untracked, callback)
 		if not include_untracked then
 			return finish()
 		end
-		command(task, snapshot, { "status", "--xml", snapshot.root .. "@" }, function(status, status_err)
-			if not status then
-				return task:finish(nil, status_err)
-			end
-			local pending, switched = {}, {}
-			for _, entry in ipairs(xml.parse_status(status)) do
-				if entry.switched then
-					switched[#switched + 1] = entry.path
+		command(
+			task,
+			snapshot,
+			{ "status", "--xml", "--ignore-externals", snapshot.root .. "@" },
+			function(status, status_err)
+				if not status then
+					return task:finish(nil, status_err)
 				end
-				if entry.wc_item == "unversioned" then
-					pending[#pending + 1] = entry.path
-				end
-			end
-			local cursor, scanned = 0, 0
-			local ignored
-			local function visit()
-				cursor = cursor + 1
-				local path = pending[cursor]
-				if not path then
-					return finish()
-				end
-				vim.uv.fs_lstat(path, function(stat_err, stat)
-					schedule(task, function()
-						if not task:is_active() then
-							return
+				require("lazyvcs.backends.svn_untracked").expand(
+					task,
+					snapshot,
+					xml.parse_status(status),
+					function(paths, expand_err)
+						if not paths then
+							return task:finish(nil, expand_err)
 						end
-						if stat_err then
-							if tostring(stat_err):match("ENOENT") then
-								visit()
-								return
+						for _, relpath in ipairs(paths) do
+							if not seen[relpath] then
+								items[#items + 1] = { relpath = relpath, status = "?", untracked = true }
+								seen[relpath] = true
 							end
-							task:finish(nil, stat_err)
-							return
 						end
-						if stat.type == "directory" then
-							vim.uv.fs_scandir(path, function(scan_err, handle)
-								local consume
-								consume = function()
-									if not task:is_active() then
-										return
-									end
-									if not handle then
-										if tostring(scan_err):match("ENOENT") then
-											visit()
-											return
-										end
-										task:finish(nil, scan_err)
-										return
-									end
-									for _ = 1, 128 do
-										local name = vim.uv.fs_scandir_next(handle)
-										if not name then
-											visit()
-											return
-										end
-										scanned = scanned + 1
-										if
-											name ~= ".svn"
-											and name ~= ".git"
-											and not ignored(path .. "/" .. name, name)
-										then
-											pending[#pending + 1] = path .. "/" .. name
-										end
-										if #pending > 10000 or scanned > 100000 then
-											task:finish(
-												nil,
-												"Untracked discovery exceeded its path limit; exclude untracked files or narrow the working copy"
-											)
-											return
-										end
-									end
-									schedule(task, consume)
-								end
-								schedule(task, consume)
-							end)
-							return
-						end
-						local relpath = path:sub(#snapshot.root + 2)
-						if not seen[relpath] then
-							items[#items + 1] = { relpath = relpath, status = "?", untracked = true }
-							seen[relpath] = true
-						end
-						visit()
-					end)
-				end)
+						finish()
+					end
+				)
 			end
-			if #pending == 0 then
-				return finish()
-			end
-			require("lazyvcs.backends.svn_ignore").load(task, snapshot, function(predicate, ignore_err)
-				if not predicate then
-					return task:finish(nil, ignore_err)
-				end
-				ignored = predicate
-				visit()
-			end, switched)
-		end)
+		)
 	end)
 	return task
 end
