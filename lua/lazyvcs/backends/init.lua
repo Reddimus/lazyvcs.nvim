@@ -34,6 +34,7 @@ end
 local NEGATIVE_TTL_MS = 5000
 
 function M.invalidate(path)
+	util.invalidate_git_entries()
 	if path then
 		local key = util.dir_of(path)
 		probe_cache[key], checked_at[key] = nil, nil

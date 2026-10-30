@@ -217,6 +217,75 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_source_control_failure_hint_opens_actions_under_direct_sync",
+			function()
+				local f = h.make_git_fixture()
+				h.exec({ "git", "add", "sample.txt" }, f.root)
+				local options = require("lazyvcs.config").get().source_control
+				options.sync_button_behavior, options.confirm_mutations = "direct", false
+				local s = open(f.root)
+				s.lazyvcs_commit_drafts[f.root] = "Rejected by hook"
+				local util, ops = require("lazyvcs.util"), require("lazyvcs.source_control.ops")
+				local picker, session = require("lazyvcs.picker"), require("lazyvcs.state")
+				local start, notify, select = util.system_start, vim.notify, picker.select
+				local notice, offered, mutated
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.system_start = function(args, opts, done)
+					if args[1] == "git" and vim.tbl_contains(args, "commit") then
+						done(nil, "hook rejected the commit", { code = 1, stderr = "hook rejected the commit" })
+						return {}
+					end
+					if args[1] == "git" then
+						for _, word in ipairs({ "pull", "push", "fetch", "update" }) do
+							mutated = mutated or vim.tbl_contains(args, word)
+						end
+					end
+					return start(args, opts, done)
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.notify = function(message)
+					notice = message
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				picker.select = function(items, _, done)
+					for _, item in ipairs(items) do
+						offered = offered or item.action == "show_error"
+					end
+					done(nil)
+				end
+				local ok, err = xpcall(function()
+					ops.commit_repo(s, { path = f.root })
+					ctx.wait_for(function()
+						return notice ~= nil
+					end, "commit did not fail", 15000)
+					local lhs = notice:match("; (%S+): Show Last Error$")
+					assert(lhs, "failure notice omits the Show Last Error key: " .. notice)
+					select_node(s, function(n)
+						return n.type == "repo" or n.type == "repo_changes"
+					end)
+					key(s.bufnr, lhs)
+					vim.wait(50, function()
+						return false
+					end)
+					assert(offered, "hinted key did not open repository actions with Show Last Error")
+					assert(not mutated, "hinted key started Sync under direct sync_button_behavior")
+					local job = session.get_repo_job(f.root)
+					assert(job and job.error == "hook rejected the commit", "hinted key replaced the stored error")
+					local readme, paragraph = table.concat(vim.fn.readfile("README.md"), "\n") .. "\n\n", nil
+					for block in readme:gmatch("(.-)\n\n") do
+						paragraph = block:find("Show Last Error", 1, true) and block or paragraph
+					end
+					assert(
+						paragraph and paragraph:find("`.`", 1, true) and not paragraph:find("`s`", 1, true),
+						"README must send users to ., because s synchronizes under direct sync_button_behavior"
+					)
+				end, debug.traceback)
+				util.system_start, vim.notify, picker.select = start, notify, select
+				session.clear_repo_job(f.root)
+				assert(ok, err)
+			end,
+		},
+		{
 			"test_source_control_branch_picker_fzf_fallback_matches_help",
 			function()
 				local f = h.make_git_fixture()

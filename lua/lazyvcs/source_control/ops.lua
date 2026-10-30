@@ -321,7 +321,8 @@ local function finish_repo_job(state, repo, spec, result, err, raw)
 			timed_out = raw and raw.timed_out == true or false,
 		})
 		repository_changed(state, repo.root, false)
-		local suffix = "; s: Show Last Error"
+		-- `.` opens repository actions in every sync_button_behavior; `s` may run Sync.
+		local suffix = "; .: Show Last Error"
 		local width = math.max(1, vim.o.columns - 1)
 		local summary = vim.fn.strtrans((tostring(err):gsub("[\r\n]+", " ")))
 		util.notify(

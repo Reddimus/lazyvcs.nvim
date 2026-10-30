@@ -169,11 +169,8 @@ return function(ctx)
 				local saved_config = vim.deepcopy(config.get())
 				local open, unlink, lstat, notify, start =
 					confirm.open, vim.uv.fs_unlink, vim.uv.fs_lstat, util.notify, util.system_start
-				local notices = {}
 				---@diagnostic disable-next-line: duplicate-set-field
-				util.notify = function(message)
-					notices[#notices + 1] = message
-				end
+				util.notify = function() end
 				local ok, err = xpcall(function()
 					require("lazyvcs").setup({
 						use_gitsigns = false,
@@ -224,6 +221,14 @@ return function(ctx)
 							release({ code = 0, stdout = "", stderr = "" })
 						end
 						finished(f)
+						local job = session.get_repo_job(f.root)
+						-- Unlink reports the platform error; the modified phase stops at the buffer guard.
+						if phase ~= "modified" and phase ~= "unlink" then
+							assert(
+								job and job.status == "error" and tostring(job.error):find("director"),
+								phase .. ": directory refusal was not stored: " .. tostring(job and job.error)
+							)
+						end
 						assert(
 							vim.uv.fs_stat(f.path .. "/child"),
 							phase .. ": discard deleted replacement directory descendants"
@@ -240,7 +245,6 @@ return function(ctx)
 						require("lazyvcs.config").get().source_control.confirm_mutations = false
 						h.cleanup()
 					end
-					assert(table.concat(notices, " "):find("director"), "directory refusal was not reported")
 					for _, mode in ipairs({
 						"file",
 						"nested_file",
@@ -351,6 +355,44 @@ return function(ctx)
 				end, debug.traceback)
 				confirm.open, vim.uv.fs_unlink, vim.uv.fs_lstat, util.notify, util.system_start =
 					open, unlink, lstat, notify, start
+				config.setup(saved_config)
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_source_control_failure_notice_keeps_refusal_reason_within_width",
+			function()
+				local config = require("lazyvcs.config")
+				local saved_config, columns, notify = vim.deepcopy(config.get()), vim.o.columns, util.notify
+				local notices = {}
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.notify = function(message)
+					notices[#notices + 1] = message
+				end
+				local ok, err = xpcall(function()
+					require("lazyvcs").setup({
+						use_gitsigns = false,
+						signs = { enabled = false },
+						source_control = { confirm_mutations = false },
+					})
+					vim.o.columns = 80
+					local f = fixture()
+					replace(f)
+					ops.revert_file(f.state, f.node)
+					finished(f)
+					local job = assert(session.get_repo_job(f.root), "refusal did not store an error")
+					local failures = vim.tbl_filter(function(message)
+						return message:find("Show Last Error", 1, true) ~= nil
+					end, notices)
+					assert(#failures == 1, "expected one failure notice: " .. table.concat(notices, " | "))
+					local notice = failures[1]
+					assert(vim.fn.strdisplaywidth(notice) <= vim.o.columns - 1, "failure notice wraps: " .. notice)
+					assert(notice:find("director", 1, true), "notice lost the refusal reason: " .. notice)
+					assert(notice:find("; .: Show Last Error", 1, true), "notice omits the actions hint: " .. notice)
+					assert(job.error:find("files or symlinks", 1, true), "stored error lost detail: " .. job.error)
+					h.cleanup()
+				end, debug.traceback)
+				vim.o.columns, util.notify = columns, notify
 				config.setup(saved_config)
 				assert(ok, err)
 			end,

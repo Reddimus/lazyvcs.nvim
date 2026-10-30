@@ -66,9 +66,9 @@ and this project adheres to
 - Keep remote branch names stable when a tag has the same name.
 - Keep Git discovery, reads, and mutations in the selected repository when
   inherited settings select another index or object directory. Preserve paired
-  `GIT_DIR` and `GIT_WORK_TREE` only for commands within that work tree,
-  supporting bare dotfiles repositories, and read the environment safely in
-  libuv callbacks.
+  `GIT_DIR` and `GIT_WORK_TREE` only for commands within that work tree and
+  outside repositories nested in it, supporting bare dotfiles repositories, and
+  read the environment safely in libuv callbacks.
 - Clarify that `s` follows the Sync setting, while `.` always opens repository
   actions, and that Git whole-file revert preserves staged changes.
 - Keep popup replacement windows open when confirmation or commit input cancels.
@@ -77,8 +77,9 @@ and this project adheres to
   refreshes.
 - Preserve the selected repository during incomplete discovery and keep a
   selector available after hiding the only repository.
-- Bound repository failure notifications and provide full diagnostics through
-  Show Last Error in the repository menu.
+- Bound repository failure notifications, keep the untracked Discard refusal
+  reason visible, and point to `.` for Show Last Error, which shows full
+  diagnostics.
 - Collect SVN AI context with the internal diff tool and check provider
   availability before requesting consent.
 - Stop cancelled CopilotChat requests from starting more transports.

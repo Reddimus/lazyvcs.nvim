@@ -30,10 +30,15 @@ the right. Git compares against the index. SVN uses BASE with
 base. See |lazyvcs-inline-signs| for Git attribute handling.
 
 Git subprocesses always strip GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY,
-GIT_ALTERNATE_OBJECT_DIRECTORIES, GIT_NAMESPACE, GIT_PREFIX, GIT_SHALLOW_FILE,
-GIT_GRAFT_FILE, GIT_COMMON_DIR, and GIT_IMPLICIT_WORK_TREE; they keep GIT_DIR and
-GIT_WORK_TREE only when both are set and the command has a working directory
-inside that canonical work tree, with case-insensitive comparison on Windows.
+GIT_ALTERNATE_OBJECT_DIRECTORIES, GIT_COMMON_DIR, GIT_NAMESPACE, GIT_PREFIX,
+GIT_SHALLOW_FILE, GIT_GRAFT_FILE, and GIT_IMPLICIT_WORK_TREE. They keep
+GIT_DIR and GIT_WORK_TREE only when both are set and not empty, the command
+has a working directory inside that canonical work tree (case-insensitive on
+Windows), and no directory from the working directory up to, but not
+including, the work tree root contains a .git file or directory. A bare
+dotfiles repository therefore works in its work tree, while a repository
+nested inside it uses its own .git. The .git check is cached per directory for
+up to five seconds, and repository redetection clears the cache.
 Authentication and ordinary Git configuration remain inherited, and Neovim's
 environment is unchanged.
 

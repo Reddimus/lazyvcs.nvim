@@ -160,6 +160,137 @@ return function(ctx)
 			end),
 		},
 		{
+			"test_core_git_dotfiles_environment_nested_repository",
+			guarded(function()
+				local f = dotfiles_fixture()
+				local nested = f.root .. "/projects/nested"
+				vim.fn.mkdir(nested .. "/src", "p")
+				h.exec({ "git", "init" }, nested)
+				h.exec({ "git", "config", "user.name", "lazyvcs-test" }, nested)
+				h.exec({ "git", "config", "user.email", "lazyvcs@example.com" }, nested)
+				local nested_file = nested .. "/src/nested.txt"
+				h.write_file(nested_file, "nested\n")
+				h.exec({ "git", "add", "src/nested.txt" }, nested)
+				h.exec({ "git", "commit", "-m", "nested" }, nested)
+				h.write_file(nested_file, "nested change\n")
+				with_environment({ GIT_DIR = f.git_dir, GIT_WORK_TREE = f.root }, function()
+					local git = require("lazyvcs.backends.git")
+					local function changes(path)
+						local done, items, failure
+						git.changed_files_async(path, function(value, e)
+							done, items, failure = true, value, e
+						end)
+						wait(function()
+							return done
+						end, "status did not settle", 15000)
+						assert(items, failure)
+						local statuses = {}
+						for _, item in ipairs(items) do
+							statuses[item.path] = item.status
+						end
+						return statuses
+					end
+					local root, err = git.root(nested_file)
+					assert(root == nested, "nested repository resolved to " .. tostring(root or err))
+					local nested_changes = changes(nested_file)
+					assert(nested_changes["src/nested.txt"] == "M", "nested status did not use the nested repository")
+					assert(not nested_changes["sample.txt"], "nested status listed dotfiles changes")
+					local statuses = {}
+					for _, item in ipairs(assert(git.changed_files(nested))) do
+						statuses[item.path] = item.status
+					end
+					assert(statuses["src/nested.txt"] == "M", "synchronous nested status used another repository")
+					for _, path in ipairs({ f.root .. "/sample.txt", f.file }) do
+						root, err = git.root(path)
+						assert(root == f.root, "dotfiles file resolved to " .. tostring(root or err))
+					end
+					local dotfiles_changes = changes(f.root .. "/sample.txt")
+					assert(dotfiles_changes["sample.txt"] == "M", "dotfiles status lost the dotfiles repository")
+					assert(
+						not dotfiles_changes["projects/nested/src/nested.txt"],
+						"dotfiles status entered the nested repository"
+					)
+				end)
+			end),
+		},
+		{
+			"test_core_git_work_tree_nested_entry_cache",
+			guarded(function()
+				local f = dotfiles_fixture()
+				local nested = f.root .. "/config/nested"
+				local marker, deep = nested .. "/.git", nested .. "/deep"
+				vim.fn.mkdir(deep, "p")
+				-- A .git file, as used by linked worktrees and submodules, also marks a repository.
+				h.write_file(marker, "gitdir: " .. f.parent .. "/absent\n")
+				local fs_stat, now = vim.uv.fs_stat, vim.uv.now
+				local stats, clock, kept = {}, now(), nil
+				local function checked(suffix)
+					local total = 0
+					for path, count in pairs(stats) do
+						if path:lower():sub(-#suffix) == suffix:lower() then
+							total = total + count
+						end
+					end
+					return total
+				end
+				vim.system = function(_, opts)
+					local env = opts.env
+					if vim.islist(env) then
+						env = {}
+						for _, entry in ipairs(opts.env) do
+							local key, value = entry:match("^([^=]+)=(.*)$")
+							env[key] = value
+						end
+					end
+					kept = env.GIT_DIR ~= nil and env.GIT_WORK_TREE ~= nil
+					return {
+						wait = function()
+							return { code = 0, stdout = "", stderr = "" }
+						end,
+					}
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.uv.fs_stat = function(path, ...)
+					if type(path) == "string" and path:sub(-5) == "/.git" then
+						stats[path] = (stats[path] or 0) + 1
+					end
+					return fs_stat(path, ...)
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.uv.now = function()
+					return clock
+				end
+				local ok, err = xpcall(function()
+					with_environment({ GIT_DIR = f.git_dir, GIT_WORK_TREE = f.root }, function()
+						local function probe(cwd)
+							kept = nil
+							util.system_result({ "git", "status" }, { cwd = cwd })
+							return kept
+						end
+						assert(probe(deep) == false, "a closer .git file kept the inherited repository")
+						assert(checked("/nested/deep/.git") == 1 and checked("/config/nested/.git") == 1)
+						assert(
+							probe(f.root .. "/config") == true,
+							"dotfiles subdirectory lost the inherited repository"
+						)
+						assert(probe(f.root) == true, "dotfiles root lost the inherited repository")
+						assert(checked("/home/.git") == 0, "walk checked the work tree root")
+						assert(probe(deep) == false)
+						assert(checked("/nested/deep/.git") == 1 and checked("/config/nested/.git") == 1, "no cache")
+						assert(vim.uv.fs_unlink(marker))
+						assert(probe(deep) == false, "cached entry expired early")
+						clock = clock + 5000
+						assert(probe(deep) == true, "removed nested repository stayed cached")
+						h.write_file(marker, "gitdir: " .. f.parent .. "/absent\n")
+						require("lazyvcs.backends").invalidate()
+						assert(probe(deep) == false, "backend invalidation kept a stale entry")
+					end)
+				end, debug.traceback)
+				vim.uv.fs_stat, vim.uv.now = fs_stat, now
+				assert(ok, err)
+			end),
+		},
+		{
 			"test_core_git_dotfiles_environment_unrelated_repository",
 			guarded(function()
 				local f = dotfiles_fixture()

@@ -512,7 +512,7 @@ function M.start(repo, args, opts, guards, on_exit)
 		local function file_type(stat)
 			if not stat or (stat.type ~= "file" and stat.type ~= "link") then
 				reject(
-					"Untracked Discard only deletes files or symlinks; directories and other file types are refused."
+					"Untracked Discard refuses directories and other non-file types; it deletes only files or symlinks."
 				)
 				return false
 			end

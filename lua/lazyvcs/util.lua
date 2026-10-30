@@ -99,6 +99,51 @@ local function relative_normalized_path(root, path, ignorecase)
 	return nil
 end
 
+-- Cache .git presence per directory. Entries expire like negative backend
+-- resolutions, so a new or removed nested repository is seen without a restart.
+local GIT_ENTRY_TTL_MS = 5000
+local GIT_ENTRY_LIMIT = 512
+local git_entries, git_entry_count = {}, 0
+
+local function has_git_entry(directory)
+	local now = vim.uv.now()
+	local cached = git_entries[directory]
+	if cached and now - cached.at < GIT_ENTRY_TTL_MS then
+		return cached.found
+	end
+	if not cached then
+		if git_entry_count >= GIT_ENTRY_LIMIT then
+			git_entries, git_entry_count = {}, 0
+		end
+		git_entry_count = git_entry_count + 1
+	end
+	local stat = vim.uv.fs_stat(directory .. "/.git")
+	local found = stat ~= nil and (stat.type == "directory" or stat.type == "file")
+	git_entries[directory] = { found = found, at = now }
+	return found
+end
+
+---Forget cached .git entries used to scope inherited GIT_DIR and GIT_WORK_TREE.
+function M.invalidate_git_entries()
+	git_entries, git_entry_count = {}, 0
+end
+
+-- A .git file or directory between cwd and the work tree root marks a nested
+-- repository. The work tree root itself is not checked.
+local function inside_nested_repository(root, relative)
+	if relative == "." then
+		return false
+	end
+	local parts = vim.split(relative, "/", { plain = true })
+	local base = root:sub(-1) == "/" and root or (root .. "/")
+	for count = #parts, 1, -1 do
+		if has_git_entry(base .. table.concat(parts, "/", 1, count)) then
+			return true
+		end
+	end
+	return false
+end
+
 local git_work_tree_cache = {}
 local function uses_git_work_tree(environment, cwd)
 	local git_dir, work_tree
@@ -116,18 +161,20 @@ local function uses_git_work_tree(environment, cwd)
 			git_work_tree_cache.canonical = M.canonical_path(work_tree)
 		end
 	end
-	if not git_work_tree_cache.canonical or not cwd or cwd == "" then
+	local root = git_work_tree_cache.canonical
+	if not root or not cwd or cwd == "" then
 		return false
 	end
-	return relative_normalized_path(git_work_tree_cache.canonical, M.canonical_path(cwd), vim.fn.has("win32") == 1)
-		~= nil
+	local relative = relative_normalized_path(root, M.canonical_path(cwd), vim.fn.has("win32") == 1)
+	return relative ~= nil and not inside_nested_repository(root, relative)
 end
 
 local function command_options(args, opts)
 	opts = vim.tbl_extend("force", {}, opts or {})
 	if args[1] == "git" then
-		-- Preserve a dotfiles repository only within its explicit work tree.
-		-- Snapshot via libuv because commands can start in fast-event callbacks.
+		-- Preserve a dotfiles repository only within its explicit work tree and
+		-- outside nested repositories. Snapshot via libuv because commands can
+		-- start in fast-event callbacks.
 		local environment = vim.tbl_extend(
 			"force",
 			opts.clear_env and {} or vim.uv.os_environ(),
