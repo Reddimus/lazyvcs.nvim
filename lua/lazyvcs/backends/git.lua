@@ -104,6 +104,33 @@ function M.probe(path)
 	return { root = root }
 end
 
+local function discover_root_async(path, opts, callback)
+	local task = Task.new(callback)
+	local function probe(cwd, cwd_err)
+		if not task:is_active() then
+			return
+		end
+		if not cwd then
+			return task:finish(nil, cwd_err)
+		end
+		task:add(process.root({ "git", "rev-parse", "--show-toplevel" }, {
+			cwd = cwd,
+			root = opts.root,
+			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+		}, function(root, err)
+			task:finish(root, err)
+		end))
+	end
+	if opts.root then
+		vim.schedule(util.safe_callback(function()
+			probe(opts.root)
+		end))
+	else
+		task:add(util.existing_directory_async(path, probe))
+	end
+	return task
+end
+
 function M.probe_async(path, on_done, opts)
 	opts = opts or {}
 	local task = Task.new(on_done)
@@ -113,27 +140,10 @@ function M.probe_async(path, on_done, opts)
 		end)
 		return task
 	end
-	local cwd, cwd_err
-	if opts.root then
-		cwd = opts.root
-	else
-		cwd, cwd_err = util.existing_directory(path)
-	end
-	if not cwd then
-		vim.schedule(util.safe_callback(function()
-			task:finish(nil, cwd_err)
-		end))
-		return task
-	end
-	task:add(process.root({ "git", "rev-parse", "--show-toplevel" }, {
-		cwd = cwd,
-		root = opts.root,
-		timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-	}, function(result, err)
-		if not result then
+	task:add(discover_root_async(path, opts, function(root, err)
+		if not root then
 			return task:finish(nil, err)
 		end
-		local root = result
 		if root == "" then
 			return task:finish(nil, "Git returned an empty working-tree root")
 		end
@@ -369,23 +379,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 		return task
 	end
 
-	local cwd, cwd_err
-	if opts.root then
-		cwd = opts.root
-	else
-		cwd, cwd_err = util.existing_directory(path)
-	end
-	if not cwd then
-		vim.schedule(util.safe_callback(function()
-			task:finish(nil, cwd_err)
-		end))
-		return task
-	end
-	task:add(process.root({ "git", "rev-parse", "--show-toplevel" }, {
-		cwd = cwd,
-		root = opts.root,
-		timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-	}, function(result, err)
+	task:add(discover_root_async(path, opts, function(result, err)
 		if not task:is_active() then
 			return
 		end

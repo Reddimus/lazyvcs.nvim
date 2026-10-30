@@ -954,26 +954,28 @@ function M.load_diff_target_async(target, on_done, opts)
 				source = base_source
 			end
 			local path = source.remote and entry_url or source.path
-			task:add(
-				process.bytes(
-					{ "svn", "info", "--xml", "-r", source.revision, literal_target(path, source.peg_revision) },
-					{
-						cwd = comparison.root,
-						timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-					},
-					function(raw, err)
-						local info = raw and svn_xml.parse_info(raw)
-						if not info then
-							if comparison.wc_item == "replaced" and is_added_base_error(err) then
-								return next_side()
-							end
-							return task:finish(nil, err or "Unable to determine SVN entry kind")
-						end
-						kinds[key] = info.kind
-						next_side()
+			local args = { "svn", "info", "--xml" }
+			-- A revision makes info contact the server, even for BASE. Ordinary
+			-- local sides use the kind retained in working-copy metadata.
+			local historical = source.remote or source == base_source or source.revision ~= "BASE"
+			if historical then
+				vim.list_extend(args, { "-r", source.revision })
+			end
+			args[#args + 1] = literal_target(path, historical and source.peg_revision or nil)
+			task:add(process.bytes(args, {
+				cwd = comparison.root,
+				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+			}, function(raw, err)
+				local info = raw and svn_xml.parse_info(raw)
+				if not info then
+					if comparison.wc_item == "replaced" and is_added_base_error(err) then
+						return next_side()
 					end
-				)
-			)
+					return task:finish(nil, err or "Unable to determine SVN entry kind")
+				end
+				kinds[key] = info.kind
+				next_side()
+			end))
 		end
 		next_side()
 	end

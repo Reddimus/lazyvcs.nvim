@@ -72,6 +72,176 @@ return function(ctx)
 
 	return {
 		{
+			"test_svn_local_previews_open_without_repository_access",
+			function()
+				local f = h.make_svn_fixture()
+				h.exec({ "svn", "mkdir", "properties", "removed-dir" }, f.root)
+				h.exec({ "svn", "propset", "custom", "old directory value", "removed-dir" }, f.root)
+				for _, name in ipairs({ "deleted.txt", "missing.txt" }) do
+					h.write_file(f.root .. "/" .. name, "pristine " .. name)
+					h.exec({ "svn", "add", name }, f.root)
+				end
+				h.exec({ "svn", "commit", "-m", "offline preview bases" }, f.root)
+				h.write_file(f.file, "local edit")
+				h.exec({ "svn", "delete", "deleted.txt", "removed-dir" }, f.root)
+				vim.fn.delete(f.root .. "/missing.txt")
+				h.write_file(f.root .. "/added.txt", "local addition")
+				h.exec({ "svn", "add", "added.txt" }, f.root)
+				h.write_file(f.root .. "/untracked.txt", "local untracked")
+				h.exec({ "svn", "propset", "custom", "local directory value", "properties" }, f.root)
+				h.exec({ "svn", "mkdir", "newdir" }, f.root)
+				h.exec({ "svn", "propset", "custom", "added directory value", "newdir" }, f.root)
+				local targets = {}
+				for _, name in ipairs({
+					"sample.txt",
+					"deleted.txt",
+					"missing.txt",
+					"added.txt",
+					"untracked.txt",
+					"properties",
+					"removed-dir",
+					"newdir",
+				}) do
+					targets[#targets + 1] = svn_target(f, name, name == "untracked.txt" and "untracked" or "changes")
+				end
+				-- The checkout retains its original file:// URL, which no longer exists.
+				assert(vim.uv.fs_rename(f.repo, h.tempdir() .. "/offline-repo"))
+				assert(not vim.uv.fs_stat(f.repo))
+				local actions = require("lazyvcs.actions")
+				for _, target in ipairs(targets) do
+					local value = await(function(done)
+						backends.load_diff_target_async(target, done)
+					end)
+					local session = assert(actions.open_target(value))
+					assert(vim.api.nvim_win_is_valid(session.editable_win), "local preview did not open")
+					if target.relpath == "sample.txt" then
+						assert(vim.api.nvim_buf_get_lines(session.base_bufnr, 0, -1, false)[2] == "changed")
+						assert(vim.api.nvim_buf_get_lines(session.editable_bufnr, 0, -1, false)[1] == "local edit")
+					elseif target.relpath == "deleted.txt" or target.relpath == "missing.txt" then
+						assert(value.left.lines[1] == "pristine " .. target.relpath)
+					elseif
+						target.relpath == "properties"
+						or target.relpath == "removed-dir"
+						or target.relpath == "newdir"
+					then
+						assert(value.property_only and #value.property_patch.lines > 0)
+					end
+					actions.close(session)
+				end
+			end,
+		},
+		{
+			"test_live_diff_git_async_ancestor_discovery_never_walks_synchronously",
+			function()
+				local f = h.make_git_fixture()
+				local path = f.root .. "/gone/deep/more/file.txt"
+				local git, process = require("lazyvcs.backends.git"), require("lazyvcs.backends.process")
+				local uv = vim.uv
+				local stat, lstat, root = uv.fs_stat, uv.fs_lstat, process.root
+				local walking, sync_calls, async_calls = false, 0, 0
+				for name, original in pairs({ fs_stat = stat, fs_lstat = lstat }) do
+					uv[name] = function(candidate, cb)
+						if walking then
+							if cb then
+								async_calls = async_calls + 1
+							else
+								sync_calls = sync_calls + 1
+							end
+						end
+						return original(candidate, cb)
+					end
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				process.root = function(...)
+					walking = false
+					return root(...)
+				end
+				local ok, err = pcall(function()
+					for _, start in ipairs({ git.probe_async, git.load_async, git.load_base_async }) do
+						walking = true
+						local value = await(function(done)
+							start(path, done)
+						end)
+						assert(value.root == f.root)
+					end
+					assert(sync_calls == 0, "async discovery made " .. sync_calls .. " synchronous filesystem calls")
+					assert(async_calls >= 12, "missing ancestors were not discovered asynchronously")
+				end)
+				uv.fs_stat, uv.fs_lstat, process.root = stat, lstat, root
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_live_diff_git_async_ancestor_discovery_cancellation",
+			function()
+				local f = h.make_git_fixture()
+				local path = f.root .. "/gone/deep/file.txt"
+				local git, process = require("lazyvcs.backends.git"), require("lazyvcs.backends.process")
+				local uv = vim.uv
+				local stat, lstat, root = uv.fs_stat, uv.fs_lstat, process.root
+				local ok, err = pcall(function()
+					for _, held in ipairs({ "fs_stat", "fs_lstat" }) do
+						local pending, calls, published, spawned = nil, 0, false, false
+						for name, original in pairs({ fs_stat = stat, fs_lstat = lstat }) do
+							uv[name] = function(candidate, cb)
+								calls = calls + 1
+								if name == held and cb then
+									pending = cb
+									return
+								end
+								return original(candidate, cb)
+							end
+						end
+						---@diagnostic disable-next-line: duplicate-set-field
+						process.root = function(...)
+							spawned = true
+							return root(...)
+						end
+						local task = git.probe_async(path, function()
+							published = true
+						end)
+						ctx.wait_for(function()
+							return pending
+						end, "async ancestor request was not issued")
+						task:kill()
+						local before = calls
+						assert(pending)("ENOENT: missing path")
+						vim.wait(50, function()
+							return false
+						end)
+						assert(calls == before and not spawned and not published, "cancelled discovery continued")
+					end
+				end)
+				uv.fs_stat, uv.fs_lstat, process.root = stat, lstat, root
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_core_completion_abbreviated_commands_keep_argument_context",
+			function()
+				local dir = h.tempdir()
+				vim.fn.mkdir(dir .. "/open space")
+				local escape = require("lazyvcs.command_path").escape
+				for _, command in ipairs({ "L", "Lazy", "LazyV", "LazyVC", "LazyVCS" }) do
+					for _, prefix in ipairs({ "", "silent ", "vertical silent ", "1,2", "'L ", "'L,'M " }) do
+						local line = prefix .. command
+						assert(
+							completion(line .. " blame sp<Tab>") == line .. " blame split",
+							"abbreviated blame: " .. line
+						)
+						assert(
+							completion(line .. " sidebar op<Tab>") == line .. " sidebar open",
+							"abbreviated sidebar: " .. line
+						)
+						assert(
+							completion(line .. " sidebar " .. dir .. "/op<Tab>")
+								== line .. " sidebar " .. escape(dir .. "/open space/")
+						)
+					end
+				end
+			end,
+		},
+		{
 			"test_core_completion_sidebar_shorthand_directories",
 			function()
 				local dir = h.tempdir()
@@ -304,25 +474,31 @@ return function(ctx)
 			"test_svn_ignore_property_preserves_pattern_whitespace",
 			function()
 				local f = h.make_svn_fixture()
-				h.exec(
-					{ "svn", "propset", "svn:global-ignores", " leading\ntrailing \n\ttab\nordinary*\n", "." },
-					f.root
-				)
+				h.exec({
+					"svn",
+					"propset",
+					"svn:global-ignores",
+					" leading\nmiddle space\ntrailing \n\ttab\nordinary*\n",
+					".",
+				}, f.root)
 				vim.fn.mkdir(f.root .. "/new")
-				for _, name in ipairs({ " leading", "leading", "trailing ", "trailing", "\ttab", "tab", "ordinary.txt" }) do
+				for _, name in ipairs({
+					" leading",
+					"leading",
+					"middle space",
+					"middlespace",
+					"trailing",
+					"tab",
+					"ordinary.txt",
+				}) do
 					h.write_file(f.root .. "/new/" .. name, "new")
 				end
 				local found = paths(list(f))
 				assert(
-					found["new/leading"] and found["new/trailing"] and found["new/tab"],
+					found["new/leading"] and found["new/middlespace"] and found["new/trailing"] and found["new/tab"],
 					"significant whitespace hid visible files"
 				)
-				assert(
-					not found["new/ leading"]
-						and not found["new/trailing "]
-						and not found["new/\ttab"]
-						and not found["new/ordinary.txt"]
-				)
+				assert(not found["new/ leading"] and not found["new/middle space"] and not found["new/ordinary.txt"])
 			end,
 		},
 		{
@@ -369,9 +545,19 @@ return function(ctx)
 				for _, name in ipairs({ "%(missing)s", "hidden.known", "visible.txt" }) do
 					h.write_file(f.root .. "/new/" .. name, "new")
 				end
+				local normalize = require("lazyvcs.util").normalize_literal_path
+				local config_paths = {}
+				for _, path in ipairs({
+					"/etc/subversion/config",
+					vim.fn.expand("~/.subversion/config"),
+					(vim.env.PROGRAMDATA or "C:/ProgramData") .. "/Subversion/config",
+					(vim.env.APPDATA or vim.fn.expand("~")) .. "/Subversion/config",
+				}) do
+					config_paths[normalize(path):lower()] = true
+				end
 				---@diagnostic disable-next-line: duplicate-set-field
 				uv.fs_realpath = function(path, cb)
-					if cb and (path == "/etc/subversion/config" or path == vim.fn.expand("~/.subversion/config")) then
+					if cb and config_paths[normalize(path):lower()] then
 						return realpath(config_dir .. "/config", cb)
 					end
 					return realpath(path, cb)
@@ -460,17 +646,42 @@ return function(ctx)
 				local util = require("lazyvcs.util")
 				local path = f.root .. "/blocked/deep/file.txt"
 				h.write_file(f.root .. "/blocked", "file obstruction")
-				local cwd, err = util.existing_directory(path)
-				assert(not cwd and err and err:find("ENOTDIR", 1, true), "discovery skipped non-directory obstruction")
-				if vim.fn.has("win32") ~= 1 then
-					vim.fn.delete(f.root .. "/blocked")
-					assert(vim.uv.fs_symlink(f.root .. "/absent", f.root .. "/blocked"))
-					cwd, err = util.existing_directory(path)
-					assert(
-						not cwd and err and err:find("ENOENT", 1, true),
-						"discovery skipped dangling directory symlink"
-					)
+				local function rejected(cwd, err)
+					-- Windows can report ENOENT for blocked descendants, then find
+					-- the obstructing file itself. The error spelling is platform-specific.
+					assert(not cwd and err, "discovery skipped non-directory obstruction")
 				end
+				rejected(util.existing_directory(path))
+				local done
+				util.existing_directory_async(path, function(cwd, err)
+					rejected(cwd, err)
+					done = true
+				end)
+				ctx.wait_for(function()
+					return done
+				end, "async obstruction check")
+			end,
+		},
+		{
+			"test_live_diff_git_discovery_rejects_dangling_symlink_ancestors",
+			function()
+				local f = h.make_git_fixture()
+				local linked, link_err = vim.uv.fs_symlink(f.root .. "/absent", f.root .. "/blocked", { dir = true })
+				if not linked then
+					error({ lazyvcs_skip = "Directory symlinks unavailable: " .. tostring(link_err) })
+				end
+				local util = require("lazyvcs.util")
+				local path = f.root .. "/blocked/deep/file.txt"
+				local cwd, err = util.existing_directory(path)
+				assert(not cwd and err, "discovery skipped dangling directory symlink")
+				local done
+				util.existing_directory_async(path, function(dir, failure)
+					assert(not dir and failure, "async discovery skipped dangling directory symlink")
+					done = true
+				end)
+				ctx.wait_for(function()
+					return done
+				end, "async symlink obstruction check")
 			end,
 		},
 		{
@@ -508,24 +719,12 @@ return function(ctx)
 			end,
 		},
 		{
-			"test_svn_untracked_traversal_cancellation_and_symlinks",
+			"test_svn_untracked_traversal_cancellation",
 			function()
 				local f = h.make_svn_fixture()
 				vim.fn.mkdir(f.root .. "/new/deep", "p")
 				h.write_file(f.root .. "/new/deep/file.txt", "new")
-				if vim.fn.has("win32") ~= 1 then
-					assert(vim.uv.fs_symlink(f.root .. "/new", f.root .. "/new/deep/loop"))
-					local found = paths(
-						await(function(done)
-							backends.changed_files_async(f.root, done)
-						end),
-						"path"
-					)
-					assert(
-						found["new/deep/loop"] and not found["new/deep/loop/deep/file.txt"],
-						"traversal followed directory symlink"
-					)
-				end
+
 				local common = require("lazyvcs.backends.comparison")
 				local called = false
 				local task = common.task()
@@ -539,6 +738,28 @@ return function(ctx)
 					return false
 				end)
 				assert(not called, "cancelled traversal published a result")
+			end,
+		},
+		{
+			"test_svn_untracked_traversal_does_not_follow_symlinks",
+			function()
+				local f = h.make_svn_fixture()
+				vim.fn.mkdir(f.root .. "/new/deep", "p")
+				h.write_file(f.root .. "/new/deep/file.txt", "new")
+				local linked, link_err = vim.uv.fs_symlink(f.root .. "/new", f.root .. "/new/deep/loop", { dir = true })
+				if not linked then
+					error({ lazyvcs_skip = "Directory symlinks unavailable: " .. tostring(link_err) })
+				end
+				local found = paths(
+					await(function(done)
+						backends.changed_files_async(f.root, done)
+					end),
+					"path"
+				)
+				assert(
+					found["new/deep/loop"] and not found["new/deep/loop/deep/file.txt"],
+					"traversal followed directory symlink"
+				)
 			end,
 		},
 		{

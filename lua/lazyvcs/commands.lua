@@ -341,7 +341,14 @@ local function complete(arg_lead, cmd_line, cursor_pos)
 	end
 	cmd_line = cmd_line:sub(1, cursor_pos)
 	-- Modifiers and ranges precede the user command, outside its arguments.
-	local _, command_end = cmd_line:find("%f[%a]LazyVCS%f[%A]")
+	local command_end
+	for start, command, after in cmd_line:gmatch("()%f[%a](L%a*)()%f[%A]") do
+		local previous = cmd_line:sub(start - 1, start - 1)
+		if previous ~= "'" and previous ~= "`" and vim.startswith("LazyVCS", command) then
+			command_end = after - 1
+			break
+		end
+	end
 	cmd_line = command_end and cmd_line:sub(command_end + 1) or ""
 	local typed = vim.split(vim.trim(cmd_line), "%s+", { trimempty = true })
 	-- A trailing space means the user is starting a new token.

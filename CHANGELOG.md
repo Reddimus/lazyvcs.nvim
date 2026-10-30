@@ -21,9 +21,10 @@ and this project adheres to
 - Restore inherited highlight namespaces, keep private overlays out of global
   defaults, and retain semantic suppression after theme changes on Neovim 0.11.
 - Preserve syntax colors for self-links in custom highlight namespaces.
-- Show staged final-newline changes in Git previews and hunk navigation, including
-  after refresh. Mark snapshot text that has no final newline.
-- Find Git repositories for deleted files whose parent directories are also gone.
+- Show staged final-newline changes in Git previews and hunk navigation,
+  including after refresh. Mark snapshot text that has no final newline.
+- Find Git repositories for deleted files whose parent directories are also
+  gone.
 - Show staged final-newline changes in Git previews and hunk navigation,
   including after refresh. Mark snapshot text that has no final newline.
 - Find Git repositories for deleted files whose parent directories are also
