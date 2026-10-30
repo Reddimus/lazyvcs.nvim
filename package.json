@@ -9,8 +9,8 @@
     "audit": "npm audit --include=dev --audit-level=high"
   },
   "devDependencies": {
-    "markdownlint": "0.41.1",
-    "prettier": "3.9.9"
+    "markdownlint": "0.42.0",
+    "prettier": "3.9.10"
   },
   "overrides": {
     "katex": "0.18.2"
