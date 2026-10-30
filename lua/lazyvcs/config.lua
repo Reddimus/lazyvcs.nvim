@@ -53,7 +53,7 @@ local defaults = {
 		format = "{author}, {date} - {revision_label}",
 		max_width = 80,
 		split_min_width = 20,
-		split_max_width = 34,
+		split_max_width = 37,
 	},
 	source_control = {
 		enabled = true,

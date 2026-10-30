@@ -369,7 +369,7 @@ local function test_config_normalization()
 	eq(opts.blame.uncommitted_text, "Uncommitted line")
 	eq(opts.blame.max_width, 80)
 	eq(opts.blame.split_min_width, 20)
-	eq(opts.blame.split_max_width, 34)
+	eq(opts.blame.split_max_width, 37)
 
 	local ok, err = pcall(config.setup, {
 		base_window = {
@@ -7166,6 +7166,7 @@ local cases = {
 
 -- Put new cases in sibling spec modules; this chunk is at LuaJIT's 200-local limit.
 vim.list_extend(cases, require("spec_backends_a2")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_blame_signs_a2")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_highlight_regressions")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(
 	cases,

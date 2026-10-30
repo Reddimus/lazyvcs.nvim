@@ -479,13 +479,16 @@ New or changed lines remain uncommitted after saving; unchanged lines keep their
 history.
 
 Inline blame refreshes after a buffer is unloaded and reopened or reread with
-:edit!. Cursor movement reuses cached attribution between changes.
+:edit!. Cursor movement reuses cached attribution between changes. LazyVCS
+commits and history changes refresh active inline blame and blame splits after
+settlement.
 
 The blame split reloads from unsaved buffer contents after edits. Reloads use
 blame.delay_ms and discard results from earlier edits or format changes. The split
 aligns its initial viewport and subsequent reloads with the source. While it is
 open, the source window has wrapping and folding disabled. Blank virtual rows in
-the blame pane mirror source virtual lines, including diagnostic display changes.
+the blame pane mirror source virtual lines and native diff filler, including
+diagnostic display changes. Hidden tabs reconcile padding when shown again.
 Closing the split restores the source's previous window-local wrap, foldenable,
 scrollbind, and cursorbind values, preserving fold definitions.
 Ordinary source splits inherit this restoration. Later user overrides and
@@ -823,7 +826,7 @@ block with lua/lazyvcs/config.lua.
         format = "{author}, {date} - {revision_label}",
         max_width = 80,
         split_min_width = 20,
-        split_max_width = 34,
+        split_max_width = 37,
       },
       source_control = {
         enabled = true,
@@ -998,7 +1001,9 @@ Git/SVN blame options:
     blame.split_min_width
                        Minimum full-file blame split width.
     blame.split_max_width
-                       Maximum full-file blame split width.
+                       Maximum full-file blame split width. Git rows reserve space
+                       for dates and shorten author names. Very narrow splits
+                       also shorten revision labels.
 
 Terminal Neovim cannot apply true per-text opacity. lazyvcs uses muted,
 theme-aware Comment highlights for blame text. Inline blame stays quiet during

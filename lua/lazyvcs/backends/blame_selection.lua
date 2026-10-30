@@ -42,14 +42,17 @@ function M.load(target, contents, callback, capture)
 			}))
 		elseif snapshot.vcs == "git" then
 			contents = target.bytes or contents
-			local document = target.text
-			local snapshot_lines, lines_err
-			if document then
-				snapshot_lines = document.lines
-			else
-				snapshot_lines, lines_err = comparison.lines(contents)
+			local document, lines_err = target.text, nil
+			if not document and type(contents) ~= "string" then
+				lines_err = "File contents unavailable"
+			elseif not document then
+				document, lines_err = require("lazyvcs.compare_text").decode_preview(
+					contents,
+					comparison.decode_options(target.path),
+					format.decode_limit()
+				)
 			end
-			if not snapshot_lines then
+			if not document then
 				vim.schedule(function()
 					task:finish(nil, lines_err)
 				end)
@@ -58,10 +61,10 @@ function M.load(target, contents, callback, capture)
 			-- Keep decoded rows for line-model and clean-filter validation.
 			local opts = {
 				profile = {
-					fileencoding = document and document.encoding or "utf-8",
+					fileencoding = document.encoding,
 					fileformat = contents:find("\r", 1, true) and not contents:find("\n", 1, true) and "mac" or "unix",
 				},
-				text = document or { lines = snapshot_lines },
+				text = document,
 				line_start = target.first,
 				line_end = target.last,
 			}
@@ -111,7 +114,7 @@ function M.load(target, contents, callback, capture)
 								if not selected then
 									return task:finish(nil, format_err or err)
 								end
-								snapshot_lines = cleaned
+								document = vim.tbl_extend("force", document, { lines = cleaned })
 								policy.validated = true
 								historical(relpath, retry)
 							end
@@ -119,14 +122,14 @@ function M.load(target, contents, callback, capture)
 					)
 				end
 				task:add(
-					process.lines(
+					process.bytes(
 						{ "git", "show", revision .. ":" .. relpath },
 						{ cwd = root },
-						function(base_lines, err)
+						function(base_bytes, err)
 							if not task:is_active() then
 								return
 							end
-							if not base_lines then
+							if not base_bytes then
 								if
 									type(err) == "string"
 									and (
@@ -141,16 +144,33 @@ function M.load(target, contents, callback, capture)
 								end
 								return task:finish(nil, err)
 							end
+							local text = require("lazyvcs.compare_text")
+							local decode_opts = comparison.decode_options(target.path)
+							-- Historical blobs may use a different encoding from the saved buffer.
+							-- Prefer their BOM or UTF-8 before the buffer's fallback hint.
+							if decode_opts.hint then
+								decode_opts.fileencodings = "ucs-bom,utf-8,"
+									.. decode_opts.hint.fileencoding
+									.. ","
+									.. decode_opts.fileencodings
+								decode_opts.hint = nil
+							end
+							decode_opts.encoding = policy and policy.base_encoding
+							local base_document, decode_err =
+								text.decode_preview(base_bytes, decode_opts, format.decode_limit())
+							if not base_document then
+								return task:finish(nil, decode_err)
+							end
+							local base_opts = {
+								profile = { fileencoding = base_document.encoding, fileformat = "dos" },
+								text = base_document,
+							}
 							local indices = {}
-							for i = 1, #base_lines do
+							for i = 1, #base_document.lines do
 								indices[i] = i
 							end
-							local mapped = require("lazyvcs.backends.blame_mapping").map(
-								indices,
-								base_lines,
-								snapshot_lines,
-								false
-							)
+							local mapped =
+								require("lazyvcs.backends.blame_mapping").map(indices, base_document, document, false)
 							local ranges, wanted, entries = {}, {}, {}
 							for number = target.first, target.last do
 								local old = mapped[number]
@@ -177,7 +197,7 @@ function M.load(target, contents, callback, capture)
 								local args = { "git", "blame", "--encoding=UTF-8", "--line-porcelain" }
 								-- Bound argv size on Windows when deletions split the selected history.
 								local ending = math.min(#ranges, next_range + 127)
-								if full_file then
+								if full_file or format.full_file(base_opts) then
 									next_range = #ranges + 1
 								else
 									for i = next_range, ending do
@@ -193,10 +213,7 @@ function M.load(target, contents, callback, capture)
 									if not raw then
 										return task:finish(nil, blame_err)
 									end
-									local validated, format_err = format.select(raw, {
-										profile = opts.profile,
-										text = { lines = base_lines },
-									})
+									local validated, format_err = format.select(raw, base_opts)
 									if not validated then
 										return task:finish(nil, format_err)
 									end

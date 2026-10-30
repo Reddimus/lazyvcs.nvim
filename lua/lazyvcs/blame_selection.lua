@@ -164,7 +164,7 @@ function M.open(first, last)
 		height = math.max(1, math.min(last - first + 4, vim.o.lines - 5)),
 	})
 	util.unbind_window(request.win)
-	util.set_win_options(request.win, { wrap = false, cursorline = true })
+	util.set_win_options(request.win, { wrap = false, cursorline = true, foldenable = false })
 	util.set_win_option(
 		request.win,
 		"winbar",

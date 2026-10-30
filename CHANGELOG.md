@@ -48,6 +48,17 @@ and this project adheres to
   after inserting or deleting lines in editable Compare.
 - Avoid accumulating jump tracking resources when repeatedly opening and closing
   Compare tabs.
+- Refresh inline blame and blame splits after LazyVCS commits and history
+  changes.
+- Preserve encoded text and final-newline attribution in saved Git blame on
+  older Git versions.
+- Align blame splits with native diff filler and skip hidden blame tabs during
+  redraws.
+- Keep dates visible in Git blame splits by shortening long author names.
+- Restore the original final newline when reverting large-file hunks, and use
+  the gitsigns fallback when only the index base exceeds the native size limit.
+- Resume native signs when corrected decoding options make the base readable.
+- Keep diff previews and selected-line blame reports open without folded rows.
 - Refuse SVN directory Discard when a restored directory or its parent is a
   symlink or junction, protecting files outside the working copy.
 - Protect untracked and ignored files at a staged rename's old path from

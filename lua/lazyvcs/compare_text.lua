@@ -150,10 +150,10 @@ end
 ---@param bytes string
 ---@param profile LazyVcsDecodeProfile
 ---@param limit_bytes integer
----@return LazyVcsText? text, string? err
+---@return LazyVcsText? text, string? err, string? rejection
 function M.decode(bytes, profile, limit_bytes)
 	if #bytes > limit_bytes then
-		return nil, "Raw text exceeds the editable content limit"
+		return nil, "Raw text exceeds the editable content limit", "too_large"
 	end
 	if profile.binary then
 		return nil, "Binary buffers do not support editable hunks"
@@ -205,7 +205,7 @@ function M.decode(bytes, profile, limit_bytes)
 		return nil, "VCS base encoding cannot be converted without loss"
 	end
 	if #decoded > limit_bytes then
-		return nil, "Decoded text exceeds the editable content limit"
+		return nil, "Decoded text exceeds the editable content limit", "too_large"
 	end
 	if decoded:find("\0", 1, true) then
 		return nil, "Binary VCS bases do not support editable hunks"
