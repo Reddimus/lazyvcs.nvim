@@ -228,6 +228,12 @@ local function release_pane_buffer(s, win, next_buf)
 			s.pane_state[win] = nil
 			if not buffers.is_managed(buf) then
 				worktree.reset_pane(win)
+				if s.worktree and s.worktree.buf == buf and not s.worktree.retained then
+					-- Review views and native jump entries already hold the departure
+					-- position. Do not leave it as the native default for a private
+					-- real buffer that an explicit picker/:edit may open next.
+					vim.api.nvim_win_set_cursor(win, { 1, 0 })
+				end
 			end
 		end
 	end

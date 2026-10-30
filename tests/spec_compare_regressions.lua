@@ -137,6 +137,69 @@ return function(ctx)
 		compare.close(s)
 		assert(not api.nvim_buf_is_loaded(second), "private jump target survived Compare close")
 	end)
+	add("test_compare_editable_file_cycle_native_forward_jumplist", function()
+		local f = h.make_git_transfer_fixture()
+		local s = open(f)
+		api.nvim_set_current_win(s.rightwin)
+		keys("]b")
+		ready(s)
+		local second = s.right
+		api.nvim_win_set_cursor(s.rightwin, { 5, 1 })
+		keys("<C-O>")
+		ctx.wait_for(function()
+			return s.shown_item.relpath == "alpha.txt" and not s.preview_job
+		end, "native backward jump did not restore the comparison pair", 15000)
+		keys("<C-I>")
+		ctx.wait_for(function()
+			return s.shown_item.relpath == "beta.txt" and s.mode == "text" and not s.preview_job
+		end, "native forward jump did not restore the comparison pair", 15000)
+		assert(api.nvim_get_current_win() == s.rightwin and s.right == second)
+		assert(vim.deep_equal(api.nvim_win_get_cursor(s.rightwin), { 5, 1 }))
+	end)
+	for _, route in ipairs({ "edit", "buffer", "set_buf" }) do
+		for _, search in ipairs({ false, true }) do
+			add(
+				"test_compare_picker_reviewed_file_" .. route .. (search and "_search_position" or "_editor_cursor"),
+				function()
+					local f = h.make_git_transfer_fixture()
+					local s = open(f)
+					api.nvim_set_current_win(s.rightwin)
+					local first = s.right
+					api.nvim_win_set_cursor(s.rightwin, { 3, 2 })
+					keys("]b")
+					ready(s)
+					local review = s.right
+					local review_position = api.nvim_win_get_cursor(s.rightwin)
+					-- Pickers replace the focused pane before the router restores
+					-- Compare and opens the selection in the original editor.
+					if route == "edit" then
+						vim.cmd.edit(vim.fn.fnameescape(f.file1))
+					elseif route == "buffer" then
+						-- Snacks lists its selection and uses :buffer, then sets the
+						-- requested grep position after the buffer switch returns.
+						vim.bo[first].buflisted = true
+						vim.cmd.buffer(first)
+					else
+						api.nvim_win_set_buf(s.rightwin, first)
+					end
+					local expected = search and { 4, 1 } or { 1, 0 }
+					if search then
+						api.nvim_win_set_cursor(s.rightwin, expected)
+					end
+					ctx.wait_for(function()
+						return api.nvim_get_current_win() == s.origin_edit_win and api.nvim_buf_get_name(0) == f.file1
+					end, "picker did not open the reviewed file in the editor", 15000)
+					assert(
+						vim.deep_equal(api.nvim_win_get_cursor(0), expected),
+						"picker cursor changed: " .. vim.inspect(api.nvim_win_get_cursor(0))
+					)
+					assert(s.shown_item.relpath == "beta.txt" and s.right == review)
+					assert(api.nvim_win_get_buf(s.rightwin) == review)
+					assert(vim.deep_equal(api.nvim_win_get_cursor(s.rightwin), review_position))
+				end
+			)
+		end
+	end
 	add("test_compare_reacquired_worktree_keeps_live_updates_after_clearjumps", function()
 		local f = h.make_git_transfer_fixture()
 		local s = open(f)
