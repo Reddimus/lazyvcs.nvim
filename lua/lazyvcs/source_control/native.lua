@@ -610,11 +610,18 @@ local function resume_details(state)
 end
 
 invalidate_hydration = function(state, repo_root, reason, defer_cancel)
-	if reason == "source restarted" or reason == "source refreshed" then
-		state.lazyvcs_refresh_view = { saved = capture_view(state), expected = capture_view(state) }
-		state.lazyvcs_cancelled_summaries = {}
-		if reason == "source restarted" then
+	if reason == "source restarted" or reason == "source refreshed" or reason == "repository refreshed" then
+		local current = capture_view(state)
+		local pending = state.lazyvcs_refresh_view
+		local saved = pending and vim.deep_equal(current, pending.expected) and pending.saved or current
+		state.lazyvcs_refresh_view = { saved = saved, expected = current }
+		if reason == "repository refreshed" then
+			remember_details(state, repo_root)
+		elseif reason == "source restarted" then
 			remember_details(state)
+		end
+		if reason ~= "repository refreshed" then
+			state.lazyvcs_cancelled_summaries = {}
 		end
 	else
 		state.lazyvcs_refresh_view = nil

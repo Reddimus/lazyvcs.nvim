@@ -73,6 +73,9 @@ to mutation confirmation. `.` always opens repository actions. `c` commits, `b`
 switches branches or SVN targets, `R` refreshes, `?` shows help, and `q` closes
 it.
 
+After a failed repository action, open the repository menu with `s` or `.` and
+choose **Show Last Error** to read the complete diagnostics.
+
 ## Compare a branch
 
 Run `:LazyVCS compare` and choose a Git branch/commit or SVN `URL@revision`. The

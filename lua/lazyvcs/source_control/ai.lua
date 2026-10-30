@@ -239,7 +239,7 @@ end
 local function svn_context(request, repo_root, callback)
 	local timeout = config.get().source_control.background.status_timeout_ms
 	local commands = {
-		{ args = { "svn", "diff", repo_root }, cwd = repo_root, timeout = timeout },
+		{ args = { "svn", "diff", "--internal-diff", repo_root }, cwd = repo_root, timeout = timeout },
 		{ args = { "svn", "status", util.svn_target(repo_root) }, cwd = repo_root, timeout = timeout },
 	}
 	local context = config.get().ai.commit_message.context
@@ -469,6 +469,10 @@ function M.generate(repo, callback, opts)
 	local providers = configured_providers()
 	if #providers == 0 then
 		return nil, "No AI commit-message provider is configured"
+	end
+
+	if not M.available() then
+		return nil, "No AI commit-message provider is available; install or configure ai.commit_message.provider"
 	end
 
 	local request = new_request(callback, opts.on_cancel)

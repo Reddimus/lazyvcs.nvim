@@ -387,7 +387,8 @@ buffer-local and fixed; `config.keymaps` does not reach them.
     e            edit commit message, or toggle auto-fit width
     b            switch Git branch/tag or SVN target
     s            invoke Sync according to sync_button_behavior
-    .            always open repo actions
+    .            always open repo actions (Show Last Error opens full
+                 diagnostics)
     c            commit repo
     gm           generate commit message
     ga           stage Git file
@@ -399,8 +400,9 @@ buffer-local and fixed; `config.keymaps` does not reach them.
     ?            show sidebar help
 
 With snacks.nvim installed, b opens a VS Code-style Git branch picker with
-commands pinned first, current branch marked, and no numeric prefixes. Without
-Snacks, lazyvcs falls back to the built-in vim.ui.select.
+commands pinned first, current branch marked, and no numeric prefixes.
+Picker fallback order is Snacks, fzf-lua, then vim.ui.select, when the required
+picker APIs are available.
 
 ==============================================================================
 INLINE SIGNS                                           *lazyvcs-inline-signs*
@@ -746,7 +748,7 @@ Optional integrations are detected at runtime:
     gitsigns.nvim     Git signs, navigation, previews, and validated live resets
     snacks.nvim       Action picker, VS Code-style Git branch picker,
                       and SVN file pickers
-    fzf-lua           SVN file picker fallback
+    fzf-lua           SVN file, branch/tag, and action picker fallback
     CopilotChat.nvim  Commit-message generation with `gm`
     Claude CLI        Commit-message generation with `gm`
     Codex CLI         Commit-message generation with `gm`

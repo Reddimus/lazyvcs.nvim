@@ -1640,7 +1640,10 @@ local function normalize_visibility_state(state, repos, _source_opts)
 	end
 	state.lazyvcs_repo_visibility = {}
 
-	if state.lazyvcs_focused_repo and not available[state.lazyvcs_focused_repo] then
+	local missing_focus = state.lazyvcs_focused_repo
+		and not available[state.lazyvcs_focused_repo]
+		and state.lazyvcs_discovery_incomplete
+	if state.lazyvcs_focused_repo and not available[state.lazyvcs_focused_repo] and not missing_focus then
 		state.lazyvcs_focused_repo = nil
 	end
 
@@ -1668,7 +1671,9 @@ local function normalize_visibility_state(state, repos, _source_opts)
 			end
 			focused = focused or first_interesting_repo(repos, state.lazyvcs_show_clean)
 		end
-		state.lazyvcs_focused_repo = focused
+		if not missing_focus then
+			state.lazyvcs_focused_repo = focused
+		end
 		if focused then
 			state.lazyvcs_repo_visibility[focused] = true
 		end
@@ -1684,7 +1689,10 @@ local function normalize_visibility_state(state, repos, _source_opts)
 		end
 	end
 
-	if not state.lazyvcs_focused_repo or not state.lazyvcs_repo_visibility[state.lazyvcs_focused_repo] then
+	if
+		not missing_focus
+		and (not state.lazyvcs_focused_repo or not state.lazyvcs_repo_visibility[state.lazyvcs_focused_repo])
+	then
 		state.lazyvcs_focused_repo = nil
 		for _, repo in ipairs(repos) do
 			if state.lazyvcs_repo_visibility[repo.root] then
@@ -1884,7 +1892,11 @@ function M.collect(state, opts)
 			extra = { discovery_incomplete = true },
 		}
 	end
-	if #repo_specs > 1 or source_opts.always_show_repositories then
+	if
+		#repo_specs > 1
+		or source_opts.always_show_repositories
+		or (#repo_specs == 1 and state.lazyvcs_repo_visibility_overrides[repo_specs[1].root] == false)
+	then
 		children[#children + 1] = {
 			id = root .. "::repositories",
 			type = "view_section",

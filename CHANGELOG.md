@@ -71,6 +71,18 @@ and this project adheres to
   libuv callbacks.
 - Clarify that `s` follows the Sync setting, while `.` always opens repository
   actions, and that Git whole-file revert preserves staged changes.
+- Keep popup replacement windows open when confirmation or commit input cancels.
+- Show complete destructive prompts in scrollable confirmation content.
+- Preserve selected files and loaded changes across repeated and repository-menu
+  refreshes.
+- Preserve the selected repository during incomplete discovery and keep a
+  selector available after hiding the only repository.
+- Bound repository failure notifications and provide full diagnostics through
+  Show Last Error in the repository menu.
+- Collect SVN AI context with the internal diff tool and check provider
+  availability before requesting consent.
+- Stop cancelled CopilotChat requests from starting more transports.
+- Document the fzf-lua fallback for branch and action pickers.
 - Refuse SVN directory Discard when a restored directory or its parent is a
   symlink or junction, protecting files outside the working copy.
 - Protect untracked and ignored files at a staged rename's old path from

@@ -62,8 +62,8 @@ return function(ctx)
 		owner = assert(require("lazyvcs.buffer_ops").revert_buffer())
 		done(true)
 		local popup = api.nvim_get_current_win()
-		local title = api.nvim_win_get_config(popup).title
-		assert(vim.inspect(title):find(f.file1, 1, true), "discard prompt must identify the exact target")
+		local prompt = table.concat(api.nvim_buf_get_lines(api.nvim_win_get_buf(popup), 0, -1, false), "")
+		assert(prompt:find(f.file1, 1, true), "discard prompt must identify the exact target")
 		local accept = vim.fn.maparg("1", "n", false, true).callback
 		api.nvim_win_set_buf(original, vim.fn.bufnr(f.file2))
 		accept()

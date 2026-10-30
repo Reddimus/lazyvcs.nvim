@@ -40,7 +40,10 @@ function M.new(opts)
 	end
 
 	function owner:is_live()
-		return not self.closed and util.buf_is_valid(self.bufnr) and util.win_is_valid(self.winid)
+		return not self.closed
+			and util.buf_is_valid(self.bufnr)
+			and util.win_is_valid(self.winid)
+			and vim.api.nvim_win_get_buf(self.winid) == self.bufnr
 	end
 
 	function owner:finish(value, restore_focus)
@@ -49,6 +52,11 @@ function M.new(opts)
 		end
 		if restore_focus == nil then
 			restore_focus = vim.api.nvim_get_current_win() == self.winid
+		end
+		local window_live = util.win_is_valid(self.winid)
+		local owns_window = window_live and vim.api.nvim_win_get_buf(self.winid) == self.bufnr
+		if window_live and not owns_window then
+			restore_focus = false
 		end
 		self.closed = true
 		if type(self.before_finish) == "function" then
@@ -61,7 +69,7 @@ function M.new(opts)
 			pcall(vim.api.nvim_del_augroup_by_id, self.augroup)
 			self.augroup = nil
 		end
-		if util.win_is_valid(self.winid) then
+		if owns_window then
 			if vim.api.nvim_get_current_win() == self.winid then
 				pcall(function()
 					vim.cmd("stopinsert")

@@ -223,9 +223,9 @@ local function navigate_if_visible(state)
 	end
 end
 
-local function invalidate_repo(state, repo_root, remote_refresh)
+local function invalidate_repo(state, repo_root, remote_refresh, reason)
 	state.lazyvcs_repo_cache = state.lazyvcs_repo_cache or {}
-	invalidate_hydration(state, repo_root, "repository invalidated")
+	invalidate_hydration(state, repo_root, reason or "repository invalidated")
 	state.lazyvcs_repo_cache[repo_root] = nil
 	state.lazyvcs_loading_details = state.lazyvcs_loading_details or {}
 	state.lazyvcs_loading_details[repo_root] = nil
@@ -244,7 +244,7 @@ end
 
 local function refresh_repo(state, repo_root, remote_refresh)
 	require("lazyvcs.backends").resolve_async(repo_root, function() end, { force_resolve = true })
-	invalidate_repo(state, repo_root, remote_refresh)
+	invalidate_repo(state, repo_root, remote_refresh, "repository refreshed")
 	navigate_if_visible(state)
 end
 
@@ -321,7 +321,13 @@ local function finish_repo_job(state, repo, spec, result, err, raw)
 			timed_out = raw and raw.timed_out == true or false,
 		})
 		repository_changed(state, repo.root, false)
-		util.notify(tostring(err):gsub("[\r\n]+", " "), vim.log.levels.ERROR)
+		local suffix = "; s: Show Last Error"
+		local width = math.max(1, vim.o.columns - 1)
+		local summary = vim.fn.strtrans((tostring(err):gsub("[\r\n]+", " ")))
+		util.notify(
+			util.truncate_display(util.truncate_display(summary, math.max(0, width - #suffix)) .. suffix, width),
+			vim.log.levels.ERROR
+		)
 		return
 	end
 
@@ -1510,6 +1516,11 @@ local function repo_actions(repo)
 		{ label = "Refresh", action = "refresh" },
 	}
 
+	local job = current_repo_job(repo.root)
+	if job and job.status == "error" and job.error then
+		actions[#actions + 1] = { label = "Show Last Error", action = "show_error" }
+	end
+
 	if repo.vcs == "git" then
 		actions[#actions + 1] = { label = "Sync Changes", action = "sync" }
 		actions[#actions + 1] = { label = "Checkout Branch or Tag...", action = "switch" }
@@ -1609,6 +1620,16 @@ function M.cancel_repo(state, node)
 end
 
 local function execute_repo_action(state, repo, action, node)
+	if action == "show_error" then
+		local job = current_repo_job(repo.root)
+		if job and job.error then
+			return util.show_text(
+				"LazyVCS: Last Error",
+				vim.split(tostring(job.error):gsub("\n$", ""), "\n", { plain = true })
+			)
+		end
+		return
+	end
 	if action == "compare" then
 		if window_exists(state) then
 			vim.api.nvim_set_current_win(state.winid)

@@ -78,6 +78,90 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_source_control_ai_unavailable_skips_consent_and_context",
+			guarded(function()
+				setup()
+				require("lazyvcs.config").get().ai.commit_message.confirm_privacy = true
+				ai._test_set_executable_checker(function()
+					return false
+				end)
+				local select = vim.ui.select
+				local prompts, commands, failure = 0, 0, nil
+				---@diagnostic disable-next-line: duplicate-set-field
+				vim.ui.select = function(_, _, done)
+					prompts = prompts + 1
+					done("Send diff to configured AI provider")
+				end
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.system_start = function(_, _, done)
+					commands = commands + 1
+					done({ code = 0, stdout = "change" })
+					return {}
+				end
+				local ok, err = xpcall(function()
+					local _, start_err = ai.generate({ root = h.tempdir(), vcs = "git" }, function(_, value)
+						failure = value
+					end)
+					failure = failure or start_err
+					assert(
+						prompts == 0 and commands == 0,
+						"unavailable provider requested consent or collected context"
+					)
+					assert(failure and failure:find("provider", 1, true), "missing actionable provider error")
+				end, debug.traceback)
+				vim.ui.select = select
+				assert(ok, err)
+			end),
+		},
+		{
+			"test_svn_ai_context_ignores_external_diff",
+			guarded(function()
+				local f = h.make_svn_fixture()
+				local dir = h.tempdir()
+				local marker = dir .. "/invoked"
+				local windows = vim.fn.has("win32") == 1
+				local helper = dir .. (windows and "/diff.cmd" or "/diff.sh")
+				h.write_file(
+					helper,
+					windows and ('@echo off\r\necho invoked > "' .. marker .. '"\r\nexit /b 0\r\n')
+						or ("#!/bin/sh\nprintf invoked > '" .. marker .. "'\nexit 0\n")
+				)
+				if not windows then
+					assert(vim.uv.fs_chmod(helper, 448))
+				end
+				h.write_file(dir .. "/config", "[helpers]\ndiff-cmd = " .. helper .. "\n")
+				local start = util.system_start
+				local prompt
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.system_start = function(args, opts, done)
+					if args[1] == "svn" then
+						args = vim.list_extend(vim.deepcopy(args), { "--config-dir", dir })
+						return start(args, opts, done)
+					end
+					prompt = opts.stdin
+					done({ code = 0, stdout = "Summarize changes" })
+					return {}
+				end
+				for _, context in ipairs({ "staged_first", "all", "status" }) do
+					setup(context)
+					local completed, failure
+					ai.generate({ root = f.root, vcs = "svn" }, function(_, err)
+						failure = err
+						completed = true
+					end)
+					wait(function()
+						return completed
+					end, "SVN AI context did not finish", 15000)
+					assert(not failure, failure)
+					assert(not vim.uv.fs_stat(marker), "AI context invoked external diff helper")
+					assert(
+						prompt:find(context == "status" and "sample.txt" or "+changed", 1, true),
+						"provider did not receive changed lines"
+					)
+				end
+			end),
+		},
+		{
 			"test_ai_codex_approval_option_is_global",
 			guarded(function()
 				setup()

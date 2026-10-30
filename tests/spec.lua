@@ -1058,6 +1058,8 @@ local function test_source_control_confirm_popup_key_paths()
 			choice = result
 		end)
 		eq(vim.api.nvim_buf_get_lines(handle.bufnr, 0, -1, false), {
+			"Sync example?",
+			"",
 			"1. Confirm",
 			"2. Confirm and do not ask again this session",
 			"3. Cancel",
@@ -5948,7 +5950,8 @@ local function test_source_control_git_publish_requires_unambiguous_remote()
 	local job = assert(session_state.get_repo_job(repo_root))
 	eq(job.status, "error")
 	assert(job.error:match("multiple Git remotes and no origin remote"), job.error)
-	assert(notifications[1]:match("multiple Git remotes and no origin remote"), notifications[1])
+	assert(notifications[1]:match("Cannot publish") and notifications[1]:match("Show Last Error"), notifications[1])
+	assert(vim.fn.strdisplaywidth(notifications[1]) < vim.o.columns, "failure summary exceeds one screen row")
 
 	util.system_start = previous_system_start
 	util.notify = previous_notify
