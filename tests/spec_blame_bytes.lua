@@ -321,63 +321,93 @@ return function(ctx)
 		{
 			"test_blame_saved_snapshot_preserves_original_bytes",
 			function()
-				for _, format in ipairs({ formats[4], formats[1] }) do
-					local f = fixture(format)
-					local head = vim.trim(t.h.exec({ "git", "rev-parse", "HEAD" }, f.root))
-					local snapshot = { vcs = "git", root = f.root, revision = head, head = head, base = "HEAD" }
-					local item = { relpath = "sample.txt", status = "M" }
-					local result
-					require("lazyvcs.backends.compare_git").preview(snapshot, item, function(value)
-						result = value
-					end)
-					t.wait(function()
-						return result
-					end, "snapshot did not load", 15000)
-					local target = {
-						snapshot = snapshot,
-						item = item,
-						path = f.file,
-						side = "saved",
-						first = 1,
-						last = 3,
-						bytes = result.right_bytes,
-					}
-					local done, entries, err
-					require("lazyvcs.backends.blame_selection").load(
-						target,
-						require("lazyvcs.util").join_lines(result.right),
-						function(value, why)
-							entries, err, done = value, why, true
+				local process = require("lazyvcs.backends.process")
+				local run = process.lines
+				for _, legacy in ipairs({ false, true }) do
+					-- Force the pre-2.41 rejection, but run every fallback command with real Git.
+					t.patch(package.loaded, "lazyvcs.backends.blame_selection", nil)
+					local rejected, historical = 0, 0
+					t.patch(process, "lines", function(args, opts, callback)
+						if args[2] == "blame" and vim.tbl_contains(args, "--contents") and legacy then
+							rejected = rejected + 1
+							vim.schedule(function()
+								callback(nil, "cannot use --contents with final commit object name")
+							end)
+							return { kill = function() end }
 						end
-					)
-					t.wait(function()
-						return done
-					end, "snapshot blame did not load", 15000)
-					assert(entries, err)
-					committed(entries, format[1] .. " saved snapshot")
-					write(f.file, (format[2]:gsub("second", "saved edit")))
-					local compare = require("lazyvcs.compare")
-					local session = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
-					t.cleanups[#t.cleanups + 1] = function()
+						if args[2] == "show" then
+							historical = historical + 1
+						end
+						return run(args, opts, callback)
+					end)
+					for _, format in ipairs(formats) do
+						local f = fixture(format)
+						local head = vim.trim(t.h.exec({ "git", "rev-parse", "HEAD" }, f.root))
+						local snapshot = { vcs = "git", root = f.root, revision = head, head = head, base = "HEAD" }
+						local item = { relpath = "sample.txt", status = "M" }
+						local result
+						require("lazyvcs.backends.compare_git").preview(snapshot, item, function(value)
+							result = value
+						end)
+						t.wait(function()
+							return result
+						end, "snapshot did not load", 15000)
+						local target = {
+							snapshot = snapshot,
+							item = item,
+							path = f.file,
+							side = "saved",
+							first = 1,
+							last = 3,
+							bytes = result.right_bytes,
+						}
+						local done, entries, err
+						require("lazyvcs.backends.blame_selection").load(
+							target,
+							require("lazyvcs.util").join_lines(result.right),
+							function(value, why)
+								entries, err, done = value, why, true
+							end
+						)
+						t.wait(function()
+							return done
+						end, "snapshot blame did not load", 15000)
+						assert(entries, err)
+						committed(entries, format[1] .. " saved snapshot")
+						write(f.file, (format[2]:gsub("second", "saved edit")))
+						local compare = require("lazyvcs.compare")
+						local session = assert(compare.open({ editable = false, path = f.root, base = "HEAD" }))
+						t.cleanups[#t.cleanups + 1] = function()
+							compare.close(session)
+						end
+						t.wait(function()
+							return session.preview_result
+						end, "Compare pane did not load", 15000)
+						write(f.file, "later disk contents\n")
+						api.nvim_set_current_win(session.rightwin)
+						local request = assert(require("lazyvcs.blame_selection").open(1, 3))
+						t.wait(function()
+							return request.entries
+						end, "Compare selection did not load", 15000)
+						assert(
+							not request.entries[1].uncommitted
+								and request.entries[2].uncommitted
+								and not request.entries[3].uncommitted,
+							format[1]
+								.. ": Compare blame lost its captured file bytes (legacy="
+								.. tostring(legacy)
+								.. ")"
+						)
+						api.nvim_win_close(request.win, true)
 						compare.close(session)
 					end
-					t.wait(function()
-						return session.preview_result
-					end, "Compare pane did not load", 15000)
-					write(f.file, "later disk contents\n")
-					api.nvim_set_current_win(session.rightwin)
-					local request = assert(require("lazyvcs.blame_selection").open(1, 3))
-					t.wait(function()
-						return request.entries
-					end, "Compare selection did not load", 15000)
-					assert(
-						not request.entries[1].uncommitted
-							and request.entries[2].uncommitted
-							and not request.entries[3].uncommitted,
-						"Compare blame lost its captured file bytes"
-					)
-					api.nvim_win_close(request.win, true)
-					compare.close(session)
+					if legacy then
+						assert(
+							rejected >= 1 and historical == 2 * #formats,
+							"legacy mapping was not exercised for every format: "
+								.. vim.inspect({ rejected, historical })
+						)
+					end
 				end
 			end,
 		},

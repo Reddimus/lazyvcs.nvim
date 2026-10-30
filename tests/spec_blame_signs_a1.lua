@@ -122,20 +122,42 @@ return function(ctx)
 		{
 			"test_blame_git_saved_preview_uses_decoded_utf16",
 			function()
-				local f, buf = t.open(false)
-				t.h.write_file(f.root .. "/.gitattributes", "sample.txt working-tree-encoding=UTF-16\n")
-				vim.bo[buf].fileencoding, vim.bo[buf].bomb = "utf-16le", true
-				api.nvim_buf_set_lines(buf, 0, -1, false, { "one", "two", "three" })
-				vim.cmd("silent write")
-				t.h.exec({ "git", "add", "." }, f.root)
-				t.h.exec({ "git", "commit", "-m", "UTF16" }, f.root)
-				api.nvim_buf_set_lines(buf, 1, 2, false, { "changed" })
-				vim.cmd("silent write")
-				local entries, err = selection(snapshot(f, buf, false, "saved"))
-				assert(
-					entries and not entries[1].uncommitted and entries[2].uncommitted and not entries[3].uncommitted,
-					"decoded saved preview failed: " .. tostring(err)
-				)
+				local process = require("lazyvcs.backends.process")
+				local run = process.lines
+				for _, legacy in ipairs({ false, true }) do
+					t.patch(package.loaded, "lazyvcs.backends.blame_selection", nil)
+					t.patch(process, "lines", function(args, opts, callback)
+						if args[2] == "blame" and vim.tbl_contains(args, "--contents") and legacy then
+							vim.schedule(function()
+								callback(nil, "cannot use --contents with final commit object name")
+							end)
+							return { kill = function() end }
+						end
+						return run(args, opts, callback)
+					end)
+					for _, encoding in ipairs({ { "utf-16le", "UTF-16", true }, { "latin1", "ISO-8859-1", false } }) do
+						local f, buf = t.open(false)
+						t.h.write_file(
+							f.root .. "/.gitattributes",
+							"sample.txt working-tree-encoding=" .. encoding[2] .. "\n"
+						)
+						vim.bo[buf].fileencoding, vim.bo[buf].bomb = encoding[1], encoding[3]
+						api.nvim_buf_set_lines(buf, 0, -1, false, { "café", "two", "three" })
+						vim.cmd("silent write")
+						t.h.exec({ "git", "add", "." }, f.root)
+						t.h.exec({ "git", "commit", "-m", "encoded" }, f.root)
+						api.nvim_buf_set_lines(buf, 1, 2, false, { "changed" })
+						vim.cmd("silent write")
+						local entries, err = selection(snapshot(f, buf, false, "saved"))
+						assert(
+							entries
+								and not entries[1].uncommitted
+								and entries[2].uncommitted
+								and not entries[3].uncommitted,
+							"decoded saved preview failed: " .. tostring(err)
+						)
+					end
+				end
 			end,
 		},
 		{
