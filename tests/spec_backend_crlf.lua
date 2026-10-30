@@ -264,6 +264,9 @@ return function(ctx)
 			"test_core_git_compare_lf_summary",
 			function()
 				with_output(function(args)
+					if vim.tbl_contains(args, "ls-files") then
+						return ""
+					end
 					assert(vim.tbl_contains(args, "--summary"))
 					return " mode change 100644 => 100755 sample.txt\n\n"
 				end, function()

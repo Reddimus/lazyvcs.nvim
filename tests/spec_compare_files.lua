@@ -258,14 +258,13 @@ return function(ctx)
 			for _, opts in ipairs({ { keymaps = { next_file = "]x", prev_file = false } }, { session_keymaps = false } }) do
 				api.setup(opts)
 				local _, s = fixture("git")
-				for _, buf in ipairs({ s.sidebar, s.left, s.right }) do
-					vim.api.nvim_buf_call(buf, function()
-						assert(vim.fn.maparg("]b", "n", false, true).buffer ~= 1)
-						assert(vim.fn.maparg("[b", "n", false, true).buffer ~= 1)
-						if opts.keymaps then
-							assert(vim.fn.maparg("]x", "n") ~= "")
-						end
-					end)
+				for _, win in ipairs({ s.sidewin, s.leftwin, s.rightwin }) do
+					vim.api.nvim_set_current_win(win)
+					assert(vim.fn.maparg("]b", "n", false, true).buffer ~= 1)
+					assert(vim.fn.maparg("[b", "n", false, true).buffer ~= 1)
+					if opts.keymaps then
+						assert(vim.fn.maparg("]x", "n") ~= "")
+					end
 				end
 				if opts.keymaps then
 					keys("]x")

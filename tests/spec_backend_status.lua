@@ -143,6 +143,9 @@ return function(ctx)
 									comparison, failure = value, why
 								end
 							)
+							ctx.wait_for(function()
+								return comparison ~= nil or failure ~= nil
+							end, "Windows comparison paths did not settle")
 							assert(comparison and #comparison == 1 and comparison[1].relpath == "sub/File.txt", failure)
 						end
 					end

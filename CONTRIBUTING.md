@@ -147,10 +147,11 @@ the GitHub release.
   invalidate decoded bases. Compare previews reuse the decoder with independent
   source profiles and retain original bytes for blame. Preview uses only the
   encoding hint from an exactly matching loaded buffer, with 'fileencodings'
-  fallback when decoding fails. Both Compare sides normalize CRLF to LF
-  regardless of editor fileformat options; lone CR characters remain content.
-  Staged Git snapshots retain CRLF differences and final-newline state for hunk
-  review. Both profile identities participate in snapshot reuse and
+  fallback when decoding fails. Snapshot sides normalize CRLF to LF regardless
+  of editor fileformat options; lone CR characters remain content. Editable
+  Compare decodes the base in its own encoding with the real buffer's newline
+  format. Staged Git snapshots retain CRLF differences and final-newline state
+  for hunk review. Both profile identities participate in snapshot reuse and
   review-position invalidation. Revalidate entry eligibility and the captured
   context before native replacement.
 - `backends/svn_properties.lua` loads shallow properties for directory discovery
@@ -380,35 +381,39 @@ the GitHub release.
 - New regression cases belong in sibling `tests/spec_*.lua` modules. The main
   spec is near LuaJIT's local-variable limit.
 
-Comparison discovery parses bounded command output in O(output bytes), sorts
-paths in O(files log files), and loads only the selected file content. SVN
-existing-directory property candidates add two serial, cancellable shallow
-property commands per candidate. Discovery therefore also costs O(inspected
-property bytes), with one pair of maps retained at a time. Equal maps suppress a
-candidate only after both reads succeed. Each Git text preview adds at most two
-cancellable `git check-attr` processes for `working-tree-encoding`, submitted in
-parallel. Empty sides skip their attribute read: added or untracked bases and
-deleted saved sides require none. Metadata previews skip both reads. A failed
-`check-attr --source` falls back to 'fileencodings' detection for the blob.
-`util.system_start` forces `LC_ALL=C` for Git children; `jobs.command` uses that
-launcher. The attribute fallback does not depend on the error text. Preview
-reads are bounded to 1 MiB. Untracked SVN directory traversal does not follow
-symlinks. Git rename detection has a limit of 1000 candidates. Repository
-resolution uses at most 512 cached directories and shares concurrent probes for
-one directory. Positive resolutions do not expire on cursor paths. Explicit
-refresh forces discovery. BufEnter and BufWritePost revalidate asynchronously at
-most once per directory every five seconds. Failed repository reads invalidate
-ownership and retry once, excluding cancellation, timeouts, and output limits.
-Root command output loses exactly one record terminator; supplied root hints
-retain every pathname byte. SVN ignore patterns are compiled once per discovery
-and matched in O(pattern tokens times filename bytes) with bounded row storage.
-Git retained-file reconciliation batches at most 128 paths and 24 KB of argument
-budget per command, preserving per-path clean filters. Wrapped alignment takes
-O(log hunks + visible units) time and O(visible units) space. The scheduler uses
-a priority heap with O(log queued) enqueue/dequeue and a 4096-job limit per
-queue. Editor commands have separate queues with two Git workers and one SVN
-worker, so background operations cannot consume their capacity. Sidebar
-cancellation leaves editor requests running.
+Comparison discovery parses bounded command output in O(output bytes) and sorts
+paths in O(files log files). Text content loads on selection, except for bounded
+SVN net-clean checks. Ordinary SVN discovery checks at most 128 modified regular
+files, with an 8 MiB raw-content budget and a 30-second command deadline. Failed
+or skipped checks retain their rows. Equal content also requires equal shallow
+property maps, each limited to 1 MiB. SVN existing-directory property candidates
+add two serial, cancellable shallow property commands per candidate. Discovery
+therefore also costs O(inspected property bytes), with one pair of maps retained
+at a time. Equal maps suppress a candidate only after both reads succeed. Each
+Git text preview adds at most two cancellable `git check-attr` processes for
+`working-tree-encoding`, submitted in parallel. Empty sides skip their attribute
+read: added or untracked bases and deleted saved sides require none. Metadata
+previews skip both reads. A failed `check-attr --source` falls back to
+'fileencodings' detection for the blob. `util.system_start` forces `LC_ALL=C`
+for Git children; `jobs.command` uses that launcher. The attribute fallback does
+not depend on the error text. Preview reads are bounded to 1 MiB. Untracked SVN
+directory traversal does not follow symlinks. Git rename detection has a limit
+of 1000 candidates. Repository resolution uses at most 512 cached directories
+and shares concurrent probes for one directory. Positive resolutions do not
+expire on cursor paths. Explicit refresh forces discovery. BufEnter and
+BufWritePost revalidate asynchronously at most once per directory every five
+seconds. Failed repository reads invalidate ownership and retry once, excluding
+cancellation, timeouts, and output limits. Root command output loses exactly one
+record terminator; supplied root hints retain every pathname byte. SVN ignore
+patterns are compiled once per discovery and matched in O(pattern tokens times
+filename bytes) with bounded row storage. Git retained-file reconciliation
+batches at most 128 paths and 24 KB of argument budget per command, preserving
+per-path clean filters. Wrapped alignment takes O(log hunks + visible units)
+time and O(visible units) space. The scheduler uses a priority heap with O(log
+queued) enqueue/dequeue and a 4096-job limit per queue. Editor commands have
+separate queues with two Git workers and one SVN worker, so background
+operations cannot consume their capacity. Sidebar cancellation leaves editor
+requests running.
 
 Use disposable repositories for mutation tests. For live terminal validation,
 exercise keyboard and mouse actions in both vanilla Neovim and AstroNvim; verify

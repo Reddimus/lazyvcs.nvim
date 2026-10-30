@@ -9,6 +9,68 @@ local function escape(value)
 	return (value:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;"))
 end
 
+-- A summary can retain a committed change that WORKING has exactly undone.
+-- Failed, unsupported, or oversized checks must keep the candidate.
+function M.file_equal(task, snapshot, item, command, done, budget)
+	local target = util.normalize_literal_path(snapshot.root .. "/" .. item.relpath)
+	vim.uv.fs_lstat(target, function(err, stat)
+		vim.schedule(util.safe_callback(function()
+			if not task:is_active() then
+				return
+			end
+			if err or not stat or stat.type ~= "file" or stat.size > common.max_file_bytes then
+				return done(false)
+			end
+			local limit = common.max_file_bytes
+			if budget then
+				if budget.paths == 0 or budget.bytes <= stat.size then
+					return done(false)
+				end
+				budget.paths = budget.paths - 1
+				limit = math.min(limit, budget.bytes - stat.size)
+			end
+			local url = require("lazyvcs.backends.svn_url").append_path(snapshot.url, item.relpath)
+			command(
+				task,
+				snapshot,
+				{ "cat", "-r", snapshot.revision, url .. "@" .. snapshot.revision },
+				function(base, _err, raw)
+					if budget then
+						budget.bytes = budget.bytes - (base and #base or raw and raw.stdout and #raw.stdout or limit)
+					end
+					if not base or #base > limit then
+						return done(false)
+					end
+					common.read_file(task, target, function(current)
+						if budget then
+							budget.bytes = budget.bytes - (current and #current or stat.size)
+						end
+						if current ~= base or (budget and budget.bytes < 0) then
+							return done(false)
+						end
+						require("lazyvcs.backends.svn_properties").load_directory_maps(
+							task,
+							snapshot,
+							item,
+							function(before, after)
+								done(
+									before ~= nil
+										and after ~= nil
+										and not before["svn:special"]
+										and not after["svn:special"]
+										and vim.deep_equal(before, after)
+								)
+							end,
+							budget and budget.deadline
+						)
+					end)
+				end,
+				{ output_limit_bytes = 2 * limit }
+			)
+		end))
+	end)
+end
+
 function M.load(task, snapshot, command, done, local_path)
 	task:set_deadline(30000, "SVN replacement comparison timed out; narrow the comparison")
 	local deadline = vim.uv.hrtime() / 1e6 + 30000
@@ -183,36 +245,20 @@ function M.load(task, snapshot, command, done, local_path)
 								then
 									return retain()
 								end
-								-- SVN's summary can retain a BASE edit which WORKING undid.
-								request(
-									{ "cat", "-r", snapshot.revision, url .. "@" .. snapshot.revision },
-									function(base)
-										if not base then
-											return retain()
-										end
-										common.read_file(task, target, function(current)
-											if current ~= base then
-												return retain()
-											end
-											require("lazyvcs.backends.svn_properties").load_directory_maps(
-												task,
-												snapshot,
-												{ relpath = path, status = "M" },
-												function(before_props, after_props)
-													if
-														before_props
-														and after_props
-														and vim.deep_equal(before_props, after_props)
-													then
-														rows[path] = ""
-														return visit()
-													end
-													retain()
-												end
-											)
-										end)
+								M.file_equal(
+									task,
+									snapshot,
+									{ relpath = path, status = "M" },
+									function(_, _, args, cb, opts)
+										request(args, cb, opts)
 									end,
-									{ output_limit_bytes = common.max_file_bytes }
+									function(equal)
+										if equal then
+											rows[path] = ""
+											return visit()
+										end
+										retain()
+									end
 								)
 							end)
 						end

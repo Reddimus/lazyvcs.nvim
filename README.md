@@ -107,14 +107,17 @@ listed without a text preview. SVN properties remain available through metadata.
 Snapshots decode each source to UTF-8 for display, including Git
 `working-tree-encoding` files, while blame retains the original bytes. Display
 normalizes CRLF to LF on both sides and preserves lone CR characters as content.
+Editable Compare instead reads the base with the real buffer's newline format.
 Hunk navigation from metadata loads the text before jumping.
 
 Files load on demand; Compare does not fill your ordinary buffer list. Editing a
-file adds it to that list. Controls apply only while a Compare pane has focus.
-Compare keeps up to 32 cached snapshots, plus current, visible, or pending
-files. Eviction drops snapshot marks and jumps; review positions remain
-remembered. Set `compare.max_cached_files = 0` for an unlimited cache. Customize
-or disable pane shortcuts with
+file adds it to that list. Native jumps can also list their destination.
+Controls apply only while a Compare pane has focus. Compare keeps up to 32
+cached snapshots, plus current, visible, or pending files. Eviction drops
+snapshot marks and jumps; review positions remain remembered. Private working
+buffers used by pane jump history stay loaded until their jump entries expire or
+Compare closes. Set `compare.max_cached_files = 0` for an unlimited cache.
+Customize or disable pane shortcuts with
 `compare.keymaps = { files = "<leader>vf", edit = "<leader>ve", help = "<leader>v?" }`;
 use `false` to disable a key.
 

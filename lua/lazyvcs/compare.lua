@@ -74,18 +74,8 @@ local function restore(win, saved)
 		end)
 	end
 end
-local function bind(s, buf)
+local function bind(_s, buf)
 	buffers.context(buf)
-	if buffers.is_managed(buf) then
-		for _, mapping in ipairs(s.keymaps and s.keymaps[buf] or s.pane_mappings or {}) do
-			compat.keymap_set("n", mapping.key, mapping.callback, {
-				buffer = buf,
-				nowait = mapping.nowait,
-				silent = true,
-				desc = mapping.desc,
-			})
-		end
-	end
 	require("lazyvcs.window_controls").sync()
 end
 local function preview_options(s, win)
@@ -238,6 +228,12 @@ local function release_pane_buffer(s, win, next_buf)
 			s.pane_state[win] = nil
 			if not buffers.is_managed(buf) then
 				worktree.reset_pane(win)
+				if s.worktree and s.worktree.buf == buf and not s.worktree.retained then
+					-- Review views and native jump entries already hold the departure
+					-- position. Do not leave it as the native default for a private
+					-- real buffer that an explicit picker/:edit may open next.
+					vim.api.nvim_win_set_cursor(win, { 1, 0 })
+				end
 			end
 		end
 	end
@@ -392,15 +388,15 @@ local function set_panes(s, next_display)
 			and result
 			and not (item.kind == "dir" or item.property_only or result.right_label == "SUBMODULE / DIRECTORY")
 		then
-			local pair = buffers.store(s, item, result.disk_result or result)
-			left, right = pair.left, pair.right
 			next_worktree = worktree.acquire(s, item, result, function(kind, record)
 				worktree_event(s, kind, record)
 			end)
 			acquired_worktree = next_worktree
 			if next_worktree then
-				right = next_worktree.buf
+				result = assert(worktree.result(next_worktree, result))
 			end
+			local pair = buffers.store(s, item, next_worktree and result or result.disk_result or result)
+			left, right = pair.left, next_worktree and next_worktree.buf or pair.right
 		end
 		for _, slot in ipairs({ { s.leftwin, left }, { s.rightwin, right } }) do
 			release_pane_buffer(s, slot[1], slot[2])
@@ -419,11 +415,13 @@ local function set_panes(s, next_display)
 		if next_worktree then
 			local current = worktree.capture(next_worktree)
 			if current then
-				result = vim.tbl_extend(
-					"force",
-					result,
-					{ right = current.lines, right_document = current, disk_result = result.disk_result or result }
-				)
+				result = assert(worktree.result(next_worktree, result, current))
+				local pair = buffers.store(s, item, result)
+				if left ~= pair.left then
+					left = pair.left
+					show_slot(s, s.leftwin, left)
+					check()
+				end
 				d.right_label = (vim.bo[right].modified and "WORKTREE (unsaved)" or "WORKTREE") .. " | " .. item.relpath
 			end
 		end
@@ -448,7 +446,14 @@ local function set_panes(s, next_display)
 		end
 		check()
 		s.display = d
-		if d.load_navigation then
+		local documents = result and { result.left_document, result.right_document }
+		local changed_documents = d.mode == "text"
+			and s.navigation
+			and not vim.deep_equal(s.navigation.documents, documents)
+		if d.load_navigation or changed_documents then
+			if changed_documents and s.file_views then
+				s.file_views[item.relpath] = nil
+			end
 			navigation.load(s, result, item)
 			local remembered = s.file_views and s.file_views[item.relpath]
 			if
@@ -481,6 +486,7 @@ local function set_panes(s, next_display)
 		end
 		view.marker(s)
 		buffers.trim(s)
+		worktree.trim_jumps(s)
 	end)
 	if not ok then
 		local rolled_back = pcall(function()
@@ -690,11 +696,13 @@ local function update_worktree(s, record)
 	if not current then
 		return worktree_event(s, "deleted", record)
 	end
-	local result = vim.tbl_extend("force", s.preview_result, {
-		right = current.lines,
-		right_document = current,
-		disk_result = s.preview_result.disk_result or s.preview_result,
-	})
+	local result = assert(worktree.result(record, s.preview_result, current))
+	if result.profile_key ~= s.preview_result.profile_key then
+		if set_panes(s, result_display(s, result, s.shown_item, "text")) ~= "installed" then
+			return
+		end
+		result = s.preview_result
+	end
 	s.preview_result = result
 	-- Clear stale navigation immediately. A single worker coalesces subsequent
 	-- edits, so neither VCS subprocesses nor histogram diff block each keystroke.
@@ -946,6 +954,9 @@ function M.refresh(s, context_checked)
 				if s.explicit_untracked ~= nil then
 					other.include_untracked = s.explicit_untracked
 				end
+				if s.explicit_editable ~= nil then
+					other.editable = s.explicit_editable
+				end
 				other.choose_base_requested = s.choose_base_requested
 				M.close(s, false)
 				vim.api.nvim_set_current_tabpage(other.tab)
@@ -1128,7 +1139,17 @@ function M.navigate_file(direction, count)
 	if item == s.shown_item and vim.api.nvim_get_current_win() ~= s.sidewin and (s.preview_result or s.preview_job) then
 		return true
 	end
-	if s.mode == "text" and buffers.resource(vim.api.nvim_get_current_buf()) then
+	if
+		s.mode == "text"
+		and (
+			buffers.resource(vim.api.nvim_get_current_buf())
+			or (
+				s.worktree
+				and vim.api.nvim_get_current_win() == s.rightwin
+				and vim.api.nvim_get_current_buf() == s.worktree.buf
+			)
+		)
+	then
 		vim.cmd("normal! m'")
 	end
 	if sidebar_shown(s) then
@@ -1282,6 +1303,7 @@ function M.close(s, return_focus)
 		end
 	end
 	worktree.release(s, s.worktree)
+	worktree.trim_jumps(s, true)
 	s.worktree = nil
 	buffers.close(s)
 	if vim.api.nvim_buf_is_valid(s.sidebar) then
@@ -1561,7 +1583,19 @@ local function construct_session(s)
 	s.keymaps, s.pane_mappings = {}, {}
 	local sidebar_mappings, opts = {}, config.get()
 	for _, action in ipairs(catalog) do
-		local callback = s.actions[action.name]
+		local callback = function()
+			local win, buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+			if
+				not s.closed
+				and (
+					(win == s.sidewin and buf == s.sidebar)
+					or (win == s.leftwin and buf == s.left)
+					or (win == s.rightwin and buf == s.right)
+				)
+			then
+				s.actions[action.name]()
+			end
+		end
 		if action.key then
 			sidebar_mappings[#sidebar_mappings + 1] =
 				{ key = action.key, callback = callback, nowait = true, desc = "lazyvcs " .. action.description }
@@ -1598,7 +1632,7 @@ local function construct_session(s)
 	end
 	s.keymaps[s.sidebar], s.keymaps[s.left], s.keymaps[s.right] = sidebar_mappings, s.pane_mappings, s.pane_mappings
 	require("lazyvcs.window_controls").register(s, function(win, buf)
-		if not s.closed and not buffers.is_managed(buf) then
+		if not s.closed then
 			if win == s.sidewin and buf == s.sidebar then
 				return sidebar_mappings
 			end
@@ -1730,6 +1764,14 @@ local function construct_session(s)
 				owner.select_snapshot(resource, position)
 			end
 		end,
+		jump = function(buf, position)
+			local name = util.buf_path(buf)
+			local path = name and util.relative_literal_path(s.root, name)
+			if path and s.rows_cache and s.rows_cache.by_path[path] then
+				s.select_snapshot({ pair = { path = path }, side = "saved" }, position)
+				return true
+			end
+		end,
 		edit = function(buf, position)
 			edit_buffer(s, buf, position)
 		end,
@@ -1844,6 +1886,7 @@ local function open_session(opts, origin)
 		row_by_path = {},
 		mode = "message",
 		editable = opts.editable,
+		explicit_editable = opts.editable,
 		pane_epoch = 0,
 		manual_width = math.min(38, math.max(20, math.floor(vim.o.columns / 4))),
 	})
@@ -1878,6 +1921,7 @@ local function open_session(opts, origin)
 		pcall(highlighting.release, win)
 	end
 	worktree.release(s, s.worktree)
+	worktree.trim_jumps(s, true)
 	buffers.abort(s)
 	if valid(s.origin_win) then
 		pcall(vim.api.nvim_set_current_win, s.origin_win)

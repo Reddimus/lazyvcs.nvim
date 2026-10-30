@@ -331,16 +331,7 @@ local function load_saved_side(task, snapshot, item, done)
 					end
 					return done(nil, nil, blob_err)
 				end
-				index_entry(task, snapshot, item.relpath, function(current, current_err)
-					if not current or not vim.deep_equal(current, entry) then
-						return done(
-							nil,
-							nil,
-							current_err or "Index changed during preview; use :LazyVCS compare refresh"
-						)
-					end
-					done(blob, entry)
-				end)
+				done(blob, entry)
 			end, { output_limit_bytes = 2 * common.max_file_bytes })
 		end)
 	end)
@@ -354,7 +345,16 @@ function M.preview(snapshot, item, callback, opts)
 		loaded = { text = not (opts and opts.mode == "metadata"), metadata = true },
 	}
 	local function finish()
-		local args = { "diff", "--no-ext-diff", "--no-textconv", "--summary", snapshot.revision, "--", item.relpath }
+		local args = {
+			"diff",
+			"--no-color",
+			"--no-ext-diff",
+			"--no-textconv",
+			"--summary",
+			snapshot.revision,
+			"--",
+			item.relpath,
+		}
 		if item.old_path then
 			args[#args + 1] = item.old_path
 		end
@@ -365,7 +365,15 @@ function M.preview(snapshot, item, callback, opts)
 			if raw ~= "" then
 				result.details = util.split_lines(raw)
 			end
-			task:finish(result)
+			if not result.right_source then
+				return task:finish(result)
+			end
+			index_entry(task, snapshot, item.relpath, function(current, current_err)
+				if not current or not vim.deep_equal(current, result.right_source) then
+					return task:finish(nil, current_err or "Index changed during preview; use :LazyVCS compare refresh")
+				end
+				task:finish(result)
+			end)
 		end)
 	end
 	if opts and opts.mode == "metadata" then
@@ -375,22 +383,36 @@ function M.preview(snapshot, item, callback, opts)
 	local stat = vim.uv.fs_lstat(snapshot.root .. "/" .. item.relpath)
 	result.right_kind = stat and (stat.type == "file" and "regular" or stat.type == "link" and "symlink" or stat.type)
 		or "missing"
-	if stat and stat.type == "directory" then
-		command(
-			task,
-			snapshot,
-			{ "diff", "--no-ext-diff", "--no-textconv", "--submodule=log", snapshot.revision, "--", item.relpath },
-			function(raw, err)
-				if not raw then
-					return task:finish(nil, err)
-				end
-				result.left = {}
-				result.right = raw ~= "" and util.split_lines(raw)
-					or { "Nested repository; open its sidebar to inspect internal changes" }
-				result.right_label = "SUBMODULE / DIRECTORY"
-				task:finish(result)
+	local function submodule()
+		local args = {
+			"diff",
+			"--no-color",
+			"--no-ext-diff",
+			"--no-textconv",
+			"--submodule=log",
+			snapshot.revision,
+			"--",
+			item.relpath,
+		}
+		if item.old_path then
+			args[#args + 1] = item.old_path
+		end
+		command(task, snapshot, args, function(raw, err, output)
+			if (output and output.stdout_truncated) or (raw and #raw > common.max_file_bytes) then
+				return task:finish(nil, "Submodule log exceeds the 1 MiB preview limit")
 			end
-		)
+			if not raw then
+				return task:finish(nil, err)
+			end
+			result.left = {}
+			result.right = raw ~= "" and util.split_lines(raw)
+				or { "Nested repository; open its sidebar to inspect internal changes" }
+			result.right_label = "SUBMODULE / DIRECTORY"
+			task:finish(result)
+		end, { output_limit_bytes = 2 * common.max_file_bytes })
+	end
+	if stat and stat.type == "directory" then
+		submodule()
 		return task
 	end
 	local left_options = { fileencodings = vim.o.fileencodings }
@@ -442,9 +464,27 @@ function M.preview(snapshot, item, callback, opts)
 		end
 	end
 	local read_left = left
+	local function inspect_index()
+		-- Missing and replaced gitlinks need the same summary as live directories.
+		command(task, snapshot, { "ls-files", "--stage", "-z", "--", item.relpath }, function(index, err)
+			if not index then
+				return task:finish(nil, err)
+			end
+			for record in index:gmatch("([^%z]+)%z") do
+				local mode, path = record:match("^(%d+) %x+ %d\t(.*)$")
+				if path == item.relpath and mode == "160000" then
+					return submodule()
+				end
+			end
+			read_left()
+		end)
+	end
 	left = function()
-		if not (opts and opts.editable) or item.status == "A" or item.original_status == "A" or item.untracked then
+		if item.untracked then
 			return read_left()
+		end
+		if item.status == "A" or item.original_status == "A" then
+			return inspect_index()
 		end
 		command(
 			task,
@@ -454,11 +494,18 @@ function M.preview(snapshot, item, callback, opts)
 				if not raw then
 					return task:finish(nil, err)
 				end
-				local mode = raw:match("^(%d+) ")
-				result.left_kind = (mode == "100644" or mode == "100755") and "regular"
-					or mode == "120000" and "symlink"
-					or "other"
-				read_left()
+				for record in raw:gmatch("([^%z]+)%z") do
+					local mode, path = record:match("^(%d+) %S+ %x+\t(.*)$")
+					if path == (item.old_path or item.relpath) then
+						result.left_kind = (mode == "100644" or mode == "100755") and "regular"
+							or mode == "120000" and "symlink"
+							or "other"
+						if mode == "160000" then
+							return submodule()
+						end
+					end
+				end
+				inspect_index()
 			end
 		)
 	end

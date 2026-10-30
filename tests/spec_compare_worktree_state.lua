@@ -148,8 +148,10 @@ return function(ctx)
 				local edited = variant == "edited_copy"
 				assert(vim.bo[buf].buflisted == edited, "write to another file changed listing")
 				navigate(s, "next", "b.txt")
-				assert(api.nvim_buf_is_valid(buf) == edited, "write to another file changed retention")
+				assert(api.nvim_buf_is_valid(buf), "file cycling removed a jump target")
+				assert(vim.bo[buf].buflisted == edited, "file cycling changed listing")
 				compare.close(s)
+				assert(api.nvim_buf_is_valid(buf) == edited, "write to another file changed retention")
 				vim.fn.delete(copy)
 			end,
 		}
