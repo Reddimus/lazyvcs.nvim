@@ -62,6 +62,18 @@ and this project adheres to
   unreadable scan root still reports an error.
 - Report preference synchronization and close failures without replacing the
   previous preferences.
+- Treat externally terminated commands as failures so failed commits keep their
+  drafts and interrupted AI providers cannot return partial messages.
+- Keep Git features working when the editor inherits glob or case-insensitive
+  pathspec settings.
+- Detect CopilotChat installations on Neovim's runtimepath without loading them.
+- Include plain patches in AI commit context when Git uses an external diff
+  helper or forced colors.
+- Remove CopilotChat response-header files after cancelled or failed requests.
+- Verify and publish the same release commit, and reject a signed tag that
+  points to another commit.
+- Correct the security support table for 0.12.x and describe picker preview
+  cleanup accurately.
 
 ## [0.12.1] - 2026-10-23
 

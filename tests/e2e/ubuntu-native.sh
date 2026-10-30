@@ -86,7 +86,7 @@ printf 'changed from native e2e\n' >"${repo}/changed.txt"
 # "Discovering repositories..." and the rows arrive after it, so the buffer
 # has to be sampled once discovery has settled rather than immediately.
 nvim --headless \
-	"+lua require('lazyvcs').source_control_open({ path = '${workspace}' }); local state = require('lazyvcs.source_control.native')._state(); assert(state and vim.api.nvim_buf_is_valid(state.bufnr)); assert(vim.wait(60000, function() return state.lazyvcs_discovering ~= true and state.lazyvcs_repo_specs ~= nil end, 25), 'discovery did not finish'); local text = table.concat(vim.api.nvim_buf_get_lines(state.bufnr, 0, -1, false), '\n'); assert(text:match('integrated%-solutions'), text)" \
+	"+lua local ok, err = pcall(function() require('lazyvcs').source_control_open({ path = '${workspace}' }); local state = require('lazyvcs.source_control.native')._state(); assert(state and vim.api.nvim_buf_is_valid(state.bufnr)); assert(vim.wait(60000, function() return state.lazyvcs_discovering ~= true and state.lazyvcs_repo_specs ~= nil end, 25), 'discovery did not finish'); local text = table.concat(vim.api.nvim_buf_get_lines(state.bufnr, 0, -1, false), '\n'); assert(text:match('integrated%-solutions'), text) end); if not ok then print(err); vim.cmd('cquit 1') end" \
 	"+checkhealth lazyvcs" \
 	"+qa" >/artifacts/native-smoke.log 2>&1
 

@@ -6,8 +6,8 @@ Only the latest minor release receives security fixes.
 
 | Version | Supported |
 | ------- | --------- |
-| 0.11.x  | Yes       |
-| < 0.11  | No        |
+| 0.12.x  | Yes       |
+| < 0.12  | No        |
 
 ## Reporting a vulnerability
 

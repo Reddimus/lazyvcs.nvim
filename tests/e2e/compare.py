@@ -78,6 +78,29 @@ def snapshot():
     raise AssertionError(f"missing {path}")
 
 
+def check_invariants(vcs):
+    global sequence
+    sequence += 1
+    path = artifacts / f"compare-invariants-{sequence}.json"
+    path.unlink(missing_ok=True)
+    ex(
+        "lua local ok,value=pcall(function() "
+        "return {listed=fixture.listed==#vim.fn.getbufinfo({buflisted=1}),"
+        "diff=fixture.before==require('helpers').exec({" + json.dumps(vcs) + ",'diff'},fixture.root)} end); "
+        "vim.fn.writefile({vim.json.encode({ok=ok,value=value})}," + json.dumps(str(path)) + ")"
+    )
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline:
+        if path.exists() and path.stat().st_size:
+            result = json.loads(path.read_text())
+            assert result["ok"], f"Compare invariant query failed: {result}"
+            assert result["value"]["listed"], f"Compare listed-buffer invariant failed: {result}"
+            assert result["value"]["diff"], f"Compare repository-diff invariant failed: {result}"
+            return
+        pause(0.05)
+    raise AssertionError(f"missing Compare invariant response: {path}")
+
+
 def expect_focus(kind, line=None):
     state = snapshot()
     assert state[kind], state
@@ -207,8 +230,7 @@ with (artifacts / "compare-terminal.log").open("w") as transcript:
             assert expect_focus("saved", 8)["auto"]
             ex("LazyVCS compare width")
             assert not expect_focus("saved", 8)["auto"]
-            ex("lua assert(fixture.listed==#vim.fn.getbufinfo({buflisted=1}))")
-            ex("lua assert(fixture.before==require('helpers').exec({'" + vcs + "','diff'},fixture.root))")
+            check_invariants(vcs)
             if state["picker"]:
                 ex("lua vim.cmd('silent cd ' .. vim.fn.fnameescape(fixture.root))")
                 snapshot()
@@ -236,9 +258,11 @@ with (artifacts / "compare-terminal.log").open("w") as transcript:
             ex("lua require('helpers').cleanup()")
         ex("qa!")
         child.expect(pexpect.EOF)
+        child.close()
+        assert child.exitstatus == 0 and child.signalstatus is None, "Neovim terminal child failed"
     finally:
         if child.isalive():
             child.send("\x1b:qa!\r")
-            child.close(force=True)
+        child.close(force=True)
 
 print("Compare terminal E2E passed for Git and SVN")

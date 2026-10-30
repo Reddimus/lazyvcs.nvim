@@ -4,6 +4,12 @@ local temp_roots = {}
 -- Isolate fixture and plugin Git subprocesses from developer signing settings. Git 2.32+
 -- accepts config-file overrides; use an empty file for Windows portability.
 local function isolate_git_config()
+	-- Repository overrides can redirect fixture mutations outside their cwd.
+	for key in pairs(vim.fn.environ()) do
+		if vim.startswith(key, "GIT_") then
+			vim.env[key] = nil
+		end
+	end
 	local empty = vim.fs.normalize(vim.fn.tempname())
 	local handle = io.open(empty, "w")
 	if not handle then

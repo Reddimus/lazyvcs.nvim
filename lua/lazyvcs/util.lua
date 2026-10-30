@@ -87,12 +87,13 @@ end
 local function command_options(args, opts)
 	opts = vim.tbl_extend("force", {}, opts or {})
 	if args[1] == "git" then
-		opts.env = vim.tbl_extend(
-			"force",
-			{ GIT_TERMINAL_PROMPT = "0" },
-			opts.env or {},
-			{ GIT_LITERAL_PATHSPECS = "1", LC_ALL = "C" }
-		)
+		opts.env = vim.tbl_extend("force", { GIT_TERMINAL_PROMPT = "0" }, opts.env or {}, {
+			GIT_LITERAL_PATHSPECS = "1",
+			GIT_GLOB_PATHSPECS = "0",
+			GIT_NOGLOB_PATHSPECS = "0",
+			GIT_ICASE_PATHSPECS = "0",
+			LC_ALL = "C",
+		})
 	end
 	if args[1] == "svn" and not vim.tbl_contains(args, "--non-interactive") then
 		args = vim.list_extend({ "svn", "--non-interactive" }, vim.list_slice(args, 2))
@@ -210,6 +211,9 @@ function M.system_result(args, opts)
 end
 
 function M.system_error(result)
+	if result and (result.signal or 0) ~= 0 then
+		return string.format("Process terminated by signal %d", result.signal)
+	end
 	local stderr = M.trim(result and result.stderr)
 	local stdout = M.trim(result and result.stdout)
 	return stderr ~= "" and stderr or stdout
@@ -217,7 +221,7 @@ end
 
 function M.system(args, opts)
 	local result = M.system_result(args, opts)
-	if result.code ~= 0 then
+	if result.code ~= 0 or (result.signal or 0) ~= 0 then
 		return nil, M.system_error(result)
 	end
 	return result
@@ -739,7 +743,7 @@ function M.system_start(args, opts, on_exit)
 			complete(forced_result.result, forced_result.err, forced_result.raw)
 			return
 		end
-		if result.code ~= 0 then
+		if result.code ~= 0 or (result.signal or 0) ~= 0 then
 			complete(nil, M.system_error(bounded_raw), bounded_raw)
 			return
 		end

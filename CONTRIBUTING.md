@@ -28,7 +28,7 @@ lua-language-server --check=. --check_format=pretty --checklevel=Warning
 actionlint                                    # workflow lint
 zizmor --offline --format plain .github       # workflow security audit
 shellcheck tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
-bash -n tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
+for script in tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh; do bash -n "$script" || exit "$?"; done
 
 nvim --headless -u NONE -l tests/native_smoke.lua   # startup smoke
 nvim --headless -u NONE -l tests/run.lua            # spec suite
@@ -321,12 +321,13 @@ the GitHub release.
   cleanup. Logical stream success survives termination unless cancellation or
   timeout supersedes it. Curl receives direct signals and shares the runtime's
   editor-exit deadlines. `copilotchat_files.lua` adopts only temporary names
-  generated inside the synchronous leaf and passed as curl file options. It
-  captures file identity there and removes matching files asynchronously after
-  exit, or after a spawn failure. Temporary-name wrappers are restored before
-  the leaf returns. New transports are rejected during shutdown. Self-authored
-  offline fixtures model async leaves and run local children; no third-party
-  plugin source is included.
+  generated inside the synchronous leaf and passed as curl file options. It also
+  supplies a private header dump file for each scoped transport. It captures
+  file identity there and removes matching files asynchronously after exit, or
+  after a spawn failure. Temporary-name wrappers are restored before the leaf
+  returns. New transports are rejected during shutdown. Self-authored offline
+  fixtures model async leaves and run local children; no third-party plugin
+  source is included.
 - `blame_context.lua` captures source identity and changedtick for blame
   requests.
 - `blame_selection.lua` presents selected-line reports through a cancellable

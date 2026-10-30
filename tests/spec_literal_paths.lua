@@ -112,7 +112,29 @@ return function(ctx)
 			)
 		end
 	end
+	local function literal_scenarios(vcs)
+		if vcs == "svn" and (vim.fn.executable("svn") ~= 1 or vim.fn.executable("svnadmin") ~= 1) then
+			error({ lazyvcs_skip = "svn or svnadmin unavailable" }, 0)
+		end
+		require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
+		local previous, unset = vim.env.LAZYVCS_PATH_SEG, vim.env.LAZYVCS_UNSET_PATH
+		vim.env.LAZYVCS_PATH_SEG, vim.env.LAZYVCS_UNSET_PATH = "expanded", nil
+		local ok, err = pcall(function()
+			scenario(vcs, "checkout", "$LAZYVCS_PATH_SEG")
+			scenario(vcs, "$LAZYVCS_PATH_SEG", "$LAZYVCS_UNSET_PATH")
+		end)
+		vim.env.LAZYVCS_PATH_SEG, vim.env.LAZYVCS_UNSET_PATH = previous, unset
+		if not ok then
+			error(err, 0)
+		end
+	end
 	return {
+		{
+			"test_svn_source_control_literal_paths_open_selected_file",
+			function()
+				literal_scenarios("svn")
+			end,
+		},
 		{
 			"test_core_literal_path_helpers_in_fast_context",
 			function()
@@ -265,19 +287,7 @@ return function(ctx)
 		{
 			"test_source_control_literal_paths_open_selected_file",
 			function()
-				require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
-				local previous, unset = vim.env.LAZYVCS_PATH_SEG, vim.env.LAZYVCS_UNSET_PATH
-				vim.env.LAZYVCS_PATH_SEG, vim.env.LAZYVCS_UNSET_PATH = "expanded", nil
-				local ok, err = xpcall(function()
-					for _, vcs in ipairs({ "git", "svn" }) do
-						scenario(vcs, "checkout", "$LAZYVCS_PATH_SEG")
-						scenario(vcs, "$LAZYVCS_PATH_SEG", "$LAZYVCS_UNSET_PATH")
-					end
-				end, debug.traceback)
-				vim.env.LAZYVCS_PATH_SEG, vim.env.LAZYVCS_UNSET_PATH = previous, unset
-				if not ok then
-					error(err, 0)
-				end
+				literal_scenarios("git")
 				assert(util.normalize_literal_path("~literal/$LAZYVCS_PATH_SEG") == "~literal/$LAZYVCS_PATH_SEG")
 				assert(util.relative_literal_path("/repo", "/repo") == ".")
 				assert(util.relative_literal_path("/repo/", "/repo/sub/../file") == "file")

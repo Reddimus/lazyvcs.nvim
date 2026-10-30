@@ -173,7 +173,7 @@ if [ -n "${ASTRONVIM_COMMIT}" ]; then
 fi
 cp "${XDG_CONFIG_HOME}/nvim/lazy-lock.json" /artifacts/astronvim-lazy-lock.json
 run_logged plugin-registration timeout 180s nvim --headless "+Lazy! sync" \
-	"+lua local plugin = require('lazy.core.config').plugins['lazyvcs.nvim']; assert(plugin and plugin.dir == '/work/lazyvcs.nvim', 'lazyvcs.nvim is not registered from the mounted plugin path')" \
+	"+lua local ok, err = pcall(function() local plugin = require('lazy.core.config').plugins['lazyvcs.nvim']; assert(plugin and plugin.dir == '/work/lazyvcs.nvim', 'lazyvcs.nvim is not registered from the mounted plugin path') end); if not ok then print(err); vim.cmd('cquit 1') end" \
 	"+qa"
 run_logged checkhealth timeout 180s nvim --headless "+checkhealth lazyvcs" "+qa"
 run_logged compare-terminal timeout 180s python3 /work/lazyvcs.nvim/tests/e2e/compare.py /artifacts/compare

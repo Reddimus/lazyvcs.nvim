@@ -203,7 +203,7 @@ local function on_process_exit(job, result, err, raw)
 	if err and util.trim(tostring(err)) == "" then
 		err = nil
 	end
-	if not err and raw and raw.code and raw.code ~= 0 then
+	if not err and raw and ((raw.code and raw.code ~= 0) or (raw.signal or 0) ~= 0) then
 		err = util.system_error(raw)
 	end
 	if err then

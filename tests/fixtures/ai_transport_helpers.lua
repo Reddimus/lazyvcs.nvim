@@ -45,6 +45,7 @@ function M.transport(dir, child, async)
 			vim.schedule(function()
 				-- Match plenary curl's code-only success test, including signal exits.
 				if code == 0 then
+					os.remove(opts.dump)
 					if opts.stream then
 						opts.stream(nil, "Generated subject")
 					end
@@ -100,7 +101,10 @@ function M.transport(dir, child, async)
 	end
 	for _, name in ipairs({ "get", "post" }) do
 		curl[name] = function(url, opts)
-			return Job:new(url, opts)
+			local options = vim.tbl_extend("force", {}, opts)
+			options.dump = options.dump or (dir .. "/header-" .. (#jobs + 1))
+			vim.fn.writefile({ "HTTP/1.1 200 OK", "X-Fixture: offline", "" }, options.dump)
+			return Job:new(url, options)
 		end
 		chat_curl[name] = async.wrap(function(url, opts, done)
 			if opts.fail_leaf then
@@ -195,6 +199,7 @@ function M.with_transport(ctx, run)
 		return true
 	end, 10)
 	for _, item in ipairs(jobs) do
+		os.remove(item.job.options.dump)
 		if item.job.options.json_request and type(item.job.options.body) == "string" then
 			os.remove(item.job.options.body)
 		end

@@ -44,6 +44,7 @@ function M.new_scope()
 					pending_scope, pending_files = nil, nil
 					if files then
 						files:adopt(opts)
+						opts = vim.tbl_extend("force", {}, opts or {}, { dump = files:header() })
 					end
 					if scope and runtime.is_shutting_down() then
 						error("CopilotChat transport is shutting down", 0)

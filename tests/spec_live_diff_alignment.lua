@@ -58,6 +58,29 @@ return function(ctx)
 	end
 	local cases = {
 		{
+			"test_live_diff_alignment_rejects_invisible_samples",
+			function()
+				local passed = require("ui_helpers").run_case(
+					"live_diff",
+					"test_live_diff_align_puts_wrapped_lines_on_the_same_screen_row",
+					[[
+local align = require('lazyvcs.align')
+local apply = align.apply
+local ns = vim.api.nvim_create_namespace('broken_padding')
+align.apply = function(s)
+ local result = apply(s)
+ for _, buf in ipairs({s.base_bufnr, s.editable_bufnr}) do
+  local rows = {}; for _ = 1, 100 do rows[#rows+1] = {{'', 'NonText'}} end
+  vim.api.nvim_buf_set_extmark(buf, ns, 0, 0, {id=1,virt_lines=rows})
+ end
+ return result
+end
+]]
+				)
+				assert(not passed, "invisible alignment samples passed geometry check")
+			end,
+		},
+		{
 			"test_live_diff_nowrap_clears_alignment_padding",
 			function()
 				local s = open(true)

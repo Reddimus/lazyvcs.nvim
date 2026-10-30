@@ -232,8 +232,8 @@ options, and auto-view autocommands (|:loadview|) save that state. A session
 saved during Compare restores pane windows with 'foldmethod' diff. While
 Compare shows a file again after ]b or [b, a window in another tab that opens
 it without options of its own for it can start in diff mode with the pane's
-label. A picker preview that brings its own diff into a pane leaves that diff
-there when Compare takes the pane back; its winbar and bindings stay.
+label. When Compare takes a pane back from a picker preview, the preview's own
+diff ends in that pane. Its winbar and scroll and cursor bindings remain.
 Reloading keeps the real buffer; deleting it shows a fresh saved snapshot until
 you select it again.
 Positions last for this session, survive refreshes for the same pinned base,
