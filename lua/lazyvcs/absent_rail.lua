@@ -3,6 +3,60 @@ local util = require("lazyvcs.util")
 local api = vim.api
 local M = {}
 local busy = 0
+local windows, records = {}, {}
+
+local function restore(win, record)
+	for name, value in pairs(record.before) do
+		if util.get_win_option(win, name) == record.written[name] then
+			util.set_win_option(win, name, value)
+		end
+	end
+end
+
+local function strip_window(win)
+	local buf = api.nvim_win_get_buf(win)
+	if windows[win] and windows[win].buf == buf then
+		return
+	end
+	-- Newest writes take precedence; do not interpret a restored raw value as
+	-- another record's write during this cleanup.
+	local restored = {}
+	local saved = records[buf] or {}
+	for i = #saved, 1, -1 do
+		for name, value in pairs(saved[i].before) do
+			if not restored[name] and util.get_win_option(win, name) == saved[i].written[name] then
+				util.set_win_option(win, name, value)
+				restored[name] = true
+			end
+		end
+	end
+end
+
+local cleanup_group = api.nvim_create_augroup("LazyVCSAbsentRailCleanup", { clear = true })
+api.nvim_create_autocmd({ "BufWinEnter", "WinEnter", "WinNew" }, {
+	group = cleanup_group,
+	callback = util.safe_callback(function()
+		strip_window(api.nvim_get_current_win())
+	end),
+})
+api.nvim_create_autocmd("BufWipeout", {
+	group = cleanup_group,
+	callback = function(event)
+		records[event.buf] = nil
+		for win, record in pairs(windows) do
+			if record.buf == event.buf then
+				windows[win] = nil
+			end
+		end
+	end,
+})
+api.nvim_create_autocmd("WinClosed", {
+	group = cleanup_group,
+	callback = function(event)
+		windows[tonumber(event.match)] = nil
+	end,
+})
+
 local function pack(...)
 	return { n = select("#", ...), ... }
 end
@@ -59,13 +113,17 @@ end
 function M.release(s)
 	local r = s.rail
 	s.rail = nil
-	if not r or not api.nvim_win_is_valid(r.win) or api.nvim_win_get_buf(r.win) ~= r.buf then
+	if not r then
 		return
 	end
-	for name, value in pairs(r.before) do
-		if util.get_win_option(r.win, name) == r.written[name] then
-			util.set_win_option(r.win, name, value)
-		end
+	if windows[r.win] == r then
+		windows[r.win] = nil
+	end
+	if api.nvim_win_is_valid(r.win) and api.nvim_win_get_buf(r.win) == r.buf then
+		restore(r.win, r)
+	end
+	for _, win in ipairs(api.nvim_list_wins()) do
+		strip_window(win)
 	end
 end
 
@@ -82,6 +140,7 @@ function M.apply(s, win, stacked)
 	if r then
 		return
 	end
+	strip_window(win)
 	local values = {
 		number = false,
 		relativenumber = false,
@@ -96,6 +155,17 @@ function M.apply(s, win, stacked)
 		r.before[name] = util.get_win_option(win, name)
 		util.set_win_option(win, name, value)
 	end
+	windows[win] = r
+	records[r.buf] = records[r.buf] or {}
+	local saved = { before = r.before, written = r.written }
+	for index, record in ipairs(records[r.buf]) do
+		if vim.deep_equal(record, saved) then
+			table.remove(records[r.buf], index)
+			records[r.buf][#records[r.buf] + 1] = saved
+			return
+		end
+	end
+	records[r.buf][#records[r.buf] + 1] = saved
 end
 
 -- Sample WinEnter synchronously, then verify after temporary window calls and

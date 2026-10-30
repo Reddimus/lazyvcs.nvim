@@ -40,7 +40,8 @@ end
 -- Also used while projecting the pre-diff window into a saved session.
 function M.user_fillchars(win)
 	local value = local_filler(win)
-	local record = windows[win] and windows[win].filler or filler_records[api.nvim_win_get_buf(win)]
+	local records = filler_records[api.nvim_win_get_buf(win)]
+	local record = windows[win] and windows[win].filler or records and records[value]
 	return record and value == record.written and record.raw or value
 end
 
@@ -73,7 +74,8 @@ local function apply_filler(win, state, style)
 		util.set_win_option(win, "fillchars", value)
 	end
 	state.filler = { raw = raw, written = value }
-	filler_records[state.buf] = state.filler
+	filler_records[state.buf] = filler_records[state.buf] or {}
+	filler_records[state.buf][value] = state.filler
 end
 
 local function explicit(win)
@@ -125,6 +127,17 @@ local function write_mapping(win, value)
 	end
 end
 
+local function buffer_mappings(win, value)
+	local records = mapping_records[api.nvim_win_get_buf(win)] or {}
+	if records[value] then
+		return user_mappings(value, records[value])
+	end
+	for _, record in pairs(records) do
+		value = user_mappings(value, record)
+	end
+	return user_mappings(value)
+end
+
 local function strip_window(win)
 	if not windows[win] then
 		local raw = local_filler(win)
@@ -136,7 +149,7 @@ local function strip_window(win)
 		---@cast value string
 		if value:find(hidden, 1, true) or value:find(":LazyVcsDiff", 1, true) then
 			local native = api.nvim_get_hl_ns({ winid = win }) > 0 and not explicit(win)
-			local user = user_mappings(value, mapping_records[api.nvim_win_get_buf(win)])
+			local user = buffer_mappings(win, value)
 			write_mapping(win, user)
 			if native and user == "" and vim.version.ge(vim.version(), { 0, 11, 7 }) then
 				api.nvim_win_set_hl_ns(win, -1)
@@ -164,7 +177,12 @@ local function overlay(win, state)
 		entries[#entries + 1] = from .. ":" .. to
 	end
 	state.overlay = table.concat(entries, ",")
-	mapping_records[state.buf] = { overlay = state.overlay, user = state.user, diff_mappings = state.diff_mappings }
+	mapping_records[state.buf] = mapping_records[state.buf] or {}
+	mapping_records[state.buf][state.overlay] = {
+		overlay = state.overlay,
+		user = state.user,
+		diff_mappings = state.diff_mappings,
+	}
 	if current ~= state.overlay then
 		write_mapping(win, state.overlay)
 	end
@@ -186,7 +204,7 @@ end
 function M.user_winhighlight(win)
 	local value = util.get_win_option(win, "winhighlight")
 	---@cast value string
-	return user_mappings(value, windows[win] or mapping_records[api.nvim_win_get_buf(win)])
+	return windows[win] and user_mappings(value, windows[win]) or buffer_mappings(win, value)
 end
 
 local function semantic(name)
@@ -483,16 +501,6 @@ function M.release(win)
 		state.slot.busy = false
 	end
 	strip_unowned()
-	local retained = false
-	for other, owner in pairs(windows) do
-		if owner.buf == state.buf and api.nvim_win_is_valid(other) and api.nvim_win_get_buf(other) == state.buf then
-			retained = true
-			break
-		end
-	end
-	if not retained then
-		filler_records[state.buf], mapping_records[state.buf] = nil, nil
-	end
 	if not next(windows) and group then
 		api.nvim_del_augroup_by_id(group)
 		group = nil
@@ -508,8 +516,8 @@ local function protected(callback)
 	end
 end
 
--- Clean splits that inherit presentation while their buffer still has an owner.
--- The last release cleans visible copies before discarding its buffer records.
+-- A hidden buffer can restore owned values from Neovim's saved window options
+-- after the last view closes. Keep its cleanup records until BufWipeout.
 local cleanup_group = api.nvim_create_augroup("LazyVCSDiffHighlightCleanup", { clear = true })
 api.nvim_create_autocmd({ "BufWinEnter", "WinEnter", "WinNew" }, {
 	group = cleanup_group,

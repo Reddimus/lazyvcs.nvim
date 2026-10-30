@@ -473,22 +473,21 @@ return function(ctx)
 		end
 		close_live(s)
 	end)
-	add("core_diff_style_release_forgets_buffer_records", function()
+	add("core_diff_style_release_preserves_distinct_user_values", function()
 		setup()
 		local win = window()
 		guard.apply(win, "editor", "old")
-		local applied = raw(win)
 		vim.cmd.split()
 		local inherited = api.nvim_get_current_win()
 		guard.release(win)
 		assert(raw(inherited) == "", raw(inherited))
-		-- After the last owner releases the buffer these are deliberate user values.
-		vim.wo[win].fillchars = applied
-		vim.wo[win].winhighlight = "DiffDelete:LazyVcsDiffFiller,DiffAdd:LazyVcsDiffRemoved"
+		-- Values distinct from the recorded writes remain deliberate user values.
+		vim.wo[win].fillchars = "eob:?,diff:z"
+		vim.wo[win].winhighlight = "DiffDelete:WarningMsg,DiffAdd:ErrorMsg"
 		api.nvim_set_current_win(win)
 		api.nvim_exec_autocmds("BufWinEnter", { buffer = api.nvim_win_get_buf(win) })
-		assert(raw(win) == applied, raw(win))
-		assert(vim.wo[win].winhighlight == "DiffDelete:LazyVcsDiffFiller,DiffAdd:LazyVcsDiffRemoved")
+		assert(raw(win) == "eob:?,diff:z", raw(win))
+		assert(vim.wo[win].winhighlight == "DiffDelete:WarningMsg,DiffAdd:ErrorMsg")
 		vim.cmd.tabclose()
 	end)
 	return cases
