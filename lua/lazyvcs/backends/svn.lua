@@ -281,10 +281,6 @@ function M.load(path)
 	}
 end
 
-function M.revert_hunk()
-	return false
-end
-
 function M.root(path)
 	return get_root(path)
 end

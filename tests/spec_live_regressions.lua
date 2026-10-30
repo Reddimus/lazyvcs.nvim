@@ -185,7 +185,7 @@ return function(ctx)
 				ctx.wait_for(function()
 					return api.nvim_buf_get_lines(s.editable_bufnr, 1, 2, false)[1] == "two"
 				end, "revert did not use index")
-				assert(calls == (mode == "matching" and 1 or 0), "unsafe delegation: " .. calls)
+				assert(calls == 0, "live reset delegated cursor-based hunk selection: " .. calls)
 			end, debug.traceback)
 			package.loaded.gitsigns = old
 			package.loaded["gitsigns.cache"] = cache

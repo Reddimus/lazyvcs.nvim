@@ -162,4 +162,76 @@ end,10))
 	eq(child.lua_get("{session.editable_win,session.base_win,session.base_bufnr}"), ids)
 	bound()
 end
+T["wrapped insertion before line 1 scrolls without padding above it"] = function()
+	child.lua([[
+require('lazyvcs').setup({signs={enabled=false},blame={persist=false},base_window={width=.45,align_wrapped='auto'},debounce_ms=10})
+local h=require('helpers')
+local lines={};for i=1,60 do lines[i]='base '..i end
+h.write_file(fixture.file1,table.concat(lines,'\n')..'\n')
+h.exec({'git','add','alpha.txt'},fixture.root);h.exec({'git','commit','-m','top insertion'},fixture.root)
+vim.cmd('edit!')
+table.insert(lines,1,string.rep('x',400))
+vim.api.nvim_buf_set_lines(0,0,-1,false,lines)
+vim.opt.diffopt:append('followwrap')
+vim.wo.wrap=true
+vim.cmd('normal! gg')
+]])
+	open()
+	-- Keys reach the child as input, so wait for a command typed after them and
+	-- then for scheduled alignment.
+	local function settle(...)
+		child.lua("vim.g.lazyvcs_settled=false")
+		child.type_keys({ ... }, "<Cmd>let g:lazyvcs_settled=v:true<CR>")
+		child.lua([[
+assert(vim.wait(5000,function() return vim.g.lazyvcs_settled end,5))
+vim.wait(50)
+assert(vim.wait(5000,function() return not session.align_pending end,5))
+]])
+	end
+	local function toplines()
+		return child.lua_get([[{
+vim.api.nvim_win_call(session.base_win,vim.fn.winsaveview).topline,
+vim.api.nvim_win_call(session.editable_win,vim.fn.winsaveview).topline,
+}]])
+	end
+	-- Alignment marks never draw virtual lines above their line.
+	local function no_padding_above_first_line()
+		eq(
+			child.lua_get([[(function()
+local above=0
+for _,buf in ipairs({session.base_bufnr,session.editable_bufnr}) do
+ for _,mark in ipairs(vim.api.nvim_buf_get_extmarks(buf,require('lazyvcs.align').namespace(),0,-1,{details=true})) do
+  if mark[4].virt_lines_above then above=above+1 end
+ end
+end
+return above
+end)()]]),
+			0
+		)
+	end
+	settle("gg")
+	eq(child.lua_get("require('lazyvcs.align').is_active(session)"), true)
+	no_padding_above_first_line()
+	eq(
+		child.lua_get(
+			"vim.api.nvim_win_call(session.base_win,function() return {vim.fn.winsaveview().topfill,vim.fn.diff_filler(1)} end)"
+		),
+		{ 1, 1 }
+	)
+	settle("<C-w>h")
+	for _ = 1, 4 do
+		settle("<C-e>")
+	end
+	-- The first CTRL-E hides the filler row and the next three scroll lines.
+	eq(toplines(), { 4, 5 })
+	no_padding_above_first_line()
+	settle("<C-w>l", "gg")
+	eq(toplines(), { 1, 1 })
+	wheel("base_win")
+	settle()
+	local after = toplines()
+	eq(after[2], after[1] + 1)
+	no_padding_above_first_line()
+	bound()
+end
 return T

@@ -56,7 +56,12 @@ local function strip_window(win)
 		local value = util.get_win_option(win, "winhighlight")
 		---@cast value string
 		if value:find(hidden, 1, true) then
-			write_mapping(win, user_mappings(value))
+			local native = api.nvim_get_hl_ns({ winid = win }) > 0 and not explicit(win)
+			local user = user_mappings(value)
+			write_mapping(win, user)
+			if native and user == "" and vim.version.ge(vim.version(), { 0, 11, 7 }) then
+				api.nvim_win_set_hl_ns(win, -1)
+			end
 		end
 	end
 end
@@ -237,6 +242,12 @@ function M.refresh(win)
 	local global = api.nvim_get_hl(0, {})
 	local source = state.previous == -1 and api.nvim_get_hl_ns({}) or state.previous
 	local theme = source and source > 0 and api.nvim_get_hl(source, {}) or {}
+	if state.native and state.previous == -1 and source > 0 then
+		state.user = user_mappings(util.get_win_option(win, "winhighlight"), state)
+		write_mapping(win, state.user)
+		api.nvim_win_set_hl_ns(win, state.previous)
+		state.native, state.preserved = nil, true
+	end
 	if not state.native then
 		if requires_source_namespace(theme, global) then
 			if state.slot then

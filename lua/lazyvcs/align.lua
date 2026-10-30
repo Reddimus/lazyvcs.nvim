@@ -39,6 +39,8 @@ end
 ---@class lazyvcs.align.Unit
 ---@field base lazyvcs.align.Range|nil
 ---@field current lazyvcs.align.Range|nil
+---@field base_anchor integer|nil end of a changed block, or its empty-side anchor
+---@field current_anchor integer|nil
 
 ---Pair unchanged lines and changed blocks intersecting either viewport.
 ---Empty hunk sides anchor after their start line. Two binary searches and
@@ -98,6 +100,8 @@ function M.pair_units(hunks, base_count, current_count, base_stop, current_stop,
 				units[#units + 1] = {
 					position = b + c,
 					unit = {
+						base_anchor = hunk.base_start + math.max(hunk.base_count - 1, 0),
+						current_anchor = hunk.current_start + math.max(hunk.current_count - 1, 0),
 						base = hunk.base_count > 0 and { hunk.base_start, hunk.base_start + hunk.base_count - 1 }
 							or nil,
 						current = hunk.current_count > 0
@@ -156,6 +160,23 @@ end
 
 local function overlaps(range, first, last)
 	return range and range[1] <= last and range[2] >= first
+end
+
+-- diff_filler excludes virtual lines, so previous alignment passes cannot
+-- inflate these measurements. Filler after a changed block belongs to it.
+local function rendered_rows(win, range, anchor)
+	local rows = range and range_rows(win, range[1], range[2]) or 0
+	if anchor then
+		rows = rows
+			+ vim.api.nvim_win_call(win, function()
+				local filler = 0
+				for lnum = range and range[1] or anchor + 1, anchor + 1 do
+					filler = filler + vim.fn.diff_filler(lnum)
+				end
+				return filler
+			end)
+	end
+	return rows
 end
 
 ---@return boolean applied
@@ -217,24 +238,25 @@ function M.apply(session)
 	local plan = { [base_buf] = {}, [edit_buf] = {} }
 	for _, unit in ipairs(units) do
 		if overlaps(unit.base, base_first, base_last) or overlaps(unit.current, edit_first, edit_last) then
-			-- A one-sided unit is a pure insertion or deletion; Neovim's own diff
-			-- filler already reserves the opposite space, so padding it too would
-			-- double-count the gap.
 			local base_range, current_range = unit.base, unit.current
+			local base_anchor = unit.base_anchor or assert(base_range)[2]
+			local edit_anchor = unit.current_anchor or assert(current_range)[2]
+			-- A change before line 1 anchors at 0. Padding there would sit above
+			-- line 1 and stop the pane from scrolling, so native filler covers it.
 			if
-				base_range
-				and current_range
-				and base_range[2] - base_range[1] < 1000
-				and current_range[2] - current_range[1] < 1000
+				base_anchor > 0
+				and edit_anchor > 0
+				and (not base_range or base_range[2] - base_range[1] < 1000)
+				and (not current_range or current_range[2] - current_range[1] < 1000)
 			then
-				local base_height = range_rows(base_win, base_range[1], base_range[2])
-				local edit_height = range_rows(edit_win, current_range[1], current_range[2])
+				local base_height = rendered_rows(base_win, base_range, unit.base_anchor)
+				local edit_height = rendered_rows(edit_win, current_range, unit.current_anchor)
 				if math.abs(base_height - edit_height) > 1000 then
 					-- Keep native diff filler for unusually large wrapped blocks.
 				elseif base_height < edit_height then
-					plan[base_buf][base_range[2]] = edit_height - base_height
+					plan[base_buf][base_anchor] = (plan[base_buf][base_anchor] or 0) + edit_height - base_height
 				elseif edit_height < base_height then
-					plan[edit_buf][current_range[2]] = base_height - edit_height
+					plan[edit_buf][edit_anchor] = (plan[edit_buf][edit_anchor] or 0) + base_height - edit_height
 				end
 			end
 		end

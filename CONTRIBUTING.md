@@ -343,7 +343,9 @@ the GitHub release.
 - `blame_selection.lua` presents selected-line reports through a cancellable
   backend loader.
 - `actions.lua`, `layout.lua`, and `state.lua` own editable per-file diff
-  sessions.
+  sessions. Live hunk resets apply the captured, validated hunk directly.
+  Navigation reuses hunks only while the buffer text identity, path, and loaded
+  base match. Explicit refresh still reloads the base and updates the panes.
 - The optional Resession adapter uses save hooks and one projection token.
   Projection writes suppress autocmds and preserve close-time snapshots. Save
   hooks and extensions must finish synchronously so scheduled failure recovery

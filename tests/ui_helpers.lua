@@ -29,8 +29,15 @@ return {passed=not _G.LAZYVCS_TEST_FAILED, output=table.concat(messages, '\n')}
 			{ root, group, name, inject }
 		)
 	end)
-	vim.fn.jobstop(channel)
-	vim.fn.jobwait({ channel }, 5000)
+	-- Quit normally rather than with jobstop(). On Windows jobstop() terminates
+	-- every process whose recorded parent ID matches one in the child's tree,
+	-- and Windows reuses process IDs, so after a run of VCS commands it can end
+	-- processes this test does not own.
+	pcall(vim.rpcnotify, channel, "nvim_command", "qall!")
+	if vim.fn.jobwait({ channel }, 5000)[1] == -1 then
+		vim.fn.jobstop(channel)
+		vim.fn.jobwait({ channel }, 5000)
+	end
 	assert(ok, result)
 	assert(type(result) == "table", "UI child returned no test result")
 	return result.passed, result.output

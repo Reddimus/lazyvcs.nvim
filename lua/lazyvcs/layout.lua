@@ -751,7 +751,7 @@ end
 
 function M.close(session, opts)
 	opts = opts or {}
-	local base_survived = false
+	local base_survived, editable_restored = false, false
 	M.release_derived_diff(session)
 	highlighting.release(session.editable_win)
 	highlighting.release(session.base_win)
@@ -767,6 +767,7 @@ function M.close(session, opts)
 				restore_winbar(session.editable_win, session.editable_prev_winbar)
 			end
 			restore_window_options(session.editable_win, session.editable_window_options)
+			editable_restored = true
 		else
 			M.remember_departed(session)
 			undo_applied(session.editable_win, departed_buffers[session.editable_bufnr], true)
@@ -808,7 +809,7 @@ function M.close(session, opts)
 		end
 	end
 
-	if opts.reset_tab_diff then
+	if opts.reset_tab_diff and not editable_restored then
 		M.reset_tab_diff(session.editable_win)
 	end
 end
