@@ -88,9 +88,10 @@ and this project adheres to
   preferences in the user's state directory.
 - Preserve an existing diff and its window settings when a live diff closes
   after its base pane is replaced or moved to another tab.
-- Align wrapped insertions, deletions, and unequal replacements without counting
-  native diff filler twice. Remove shared alignment padding when another window
-  shows the file, and restore it when that window closes.
+- Align wrapped insertions and deletions below the first line, and unequal
+  replacements, without counting native diff filler twice. Remove shared
+  alignment padding when another window shows the file, and restore it when that
+  window closes.
 - Release scratch buffers when a read-only comparison fails to open over unsaved
   changes.
 - Update active diff colors when a theme changes its highlight namespace.

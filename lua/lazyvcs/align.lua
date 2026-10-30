@@ -179,40 +179,6 @@ local function rendered_rows(win, range, anchor)
 	return rows
 end
 
-local function restore_topfill(session)
-	for win, saved in pairs(session.align_topfill or {}) do
-		if util.win_is_valid(win) and vim.api.nvim_win_get_buf(win) == saved.buf then
-			vim.api.nvim_win_call(win, function()
-				local view = vim.fn.winsaveview()
-				if view.topline == 1 and view.topfill == saved.applied then
-					view.topfill = saved.previous
-					vim.fn.winrestview(view)
-				end
-			end)
-		end
-	end
-	session.align_topfill = nil
-end
-
-local function apply_topfill(session)
-	for _, win in ipairs({ session.base_win, session.editable_win }) do
-		local above = session.align_plan and session.align_plan[vim.api.nvim_win_get_buf(win)][0]
-		if above then
-			vim.api.nvim_win_call(win, function()
-				local view = vim.fn.winsaveview()
-				if view.topline == 1 then
-					local topfill = vim.fn.diff_filler(1) + above
-					session.align_topfill = session.align_topfill or {}
-					session.align_topfill[win] = session.align_topfill[win]
-						or { previous = view.topfill, applied = topfill, buf = vim.api.nvim_win_get_buf(win) }
-					view.topfill = topfill
-					vim.fn.winrestview(view)
-				end
-			end)
-		end
-	end
-end
-
 ---@return boolean applied
 function M.apply(session)
 	if not session or session.closing or session.phase ~= "active" then
@@ -273,14 +239,18 @@ function M.apply(session)
 	for _, unit in ipairs(units) do
 		if overlaps(unit.base, base_first, base_last) or overlaps(unit.current, edit_first, edit_last) then
 			local base_range, current_range = unit.base, unit.current
+			local base_anchor = unit.base_anchor or assert(base_range)[2]
+			local edit_anchor = unit.current_anchor or assert(current_range)[2]
+			-- A change before line 1 anchors at 0. Padding there would sit above
+			-- line 1 and stop the pane from scrolling, so native filler covers it.
 			if
-				(not base_range or base_range[2] - base_range[1] < 1000)
+				base_anchor > 0
+				and edit_anchor > 0
+				and (not base_range or base_range[2] - base_range[1] < 1000)
 				and (not current_range or current_range[2] - current_range[1] < 1000)
 			then
 				local base_height = rendered_rows(base_win, base_range, unit.base_anchor)
 				local edit_height = rendered_rows(edit_win, current_range, unit.current_anchor)
-				local base_anchor = unit.base_anchor or assert(base_range)[2]
-				local edit_anchor = unit.current_anchor or assert(current_range)[2]
 				if math.abs(base_height - edit_height) > 1000 then
 					-- Keep native diff filler for unusually large wrapped blocks.
 				elseif base_height < edit_height then
@@ -296,23 +266,20 @@ function M.apply(session)
 	-- identical plan on every scroll event would make `apply` always report a
 	-- change, and the caller re-syncs on change -- which would loop forever.
 	if vim.deep_equal(plan, session.align_plan) then
-		apply_topfill(session)
 		return false
 	end
 	session.align_plan = plan
-	restore_topfill(session)
 
 	for buf, rows in pairs(plan) do
 		vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
 		for lnum, deficit in pairs(rows) do
-			pcall(vim.api.nvim_buf_set_extmark, buf, ns, math.max(lnum - 1, 0), 0, {
+			pcall(vim.api.nvim_buf_set_extmark, buf, ns, lnum - 1, 0, {
 				virt_lines = blank_rows(deficit),
-				virt_lines_above = lnum == 0,
+				virt_lines_above = false,
 				right_gravity = false,
 			})
 		end
 	end
-	apply_topfill(session)
 
 	return true
 end
@@ -355,14 +322,6 @@ function M.schedule(session)
 			local focused = vim.api.nvim_get_current_win()
 			local source = (focused == session.base_win) and session.base_win or session.editable_win
 			pcall(layout.sync_scroll, session, source)
-			-- Native syncbind only knows buffer-line filler at the top of the file.
-			local top_ok, top_err = pcall(apply_topfill, session)
-			if not top_ok then
-				util.notify(
-					"lazyvcs: diff alignment failed: " .. tostring(top_err):gsub("%s+", " "),
-					vim.log.levels.DEBUG
-				)
-			end
 		end
 	end)
 end
@@ -387,7 +346,6 @@ function M.clear(session)
 	if not session then
 		return
 	end
-	restore_topfill(session)
 	-- Drop the plan too, or a session reopened on the same table would compare
 	-- equal to the stale plan and skip re-applying padding it no longer has.
 	session.align_plan = nil

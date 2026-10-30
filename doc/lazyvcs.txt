@@ -1318,9 +1318,10 @@ NOTES                                                           *lazyvcs-notes*
 
   'scrollbind' binds buffer lines. Different wrapped heights can leave matching
   lines on different screen rows. `base_window.align_wrapped = "auto"` pads
-  the shorter side with virtual rows. It aligns stationary panes, but is off
-  by default because native scroll binding cannot see the padding and may
-  drift while scrolling.
+  the shorter side with virtual rows. Wrapped changes before the first line
+  get no extra padding, so the panes line up once line 1 scrolls out of view.
+  It aligns stationary panes, but is off by default because native scroll
+  binding cannot see the padding and may drift while scrolling.
 
   Padding changes no text. It updates after wrapping-option changes and clears
   when both panes stop wrapping or the session closes. It is skipped when

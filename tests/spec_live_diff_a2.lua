@@ -148,7 +148,6 @@ return function(ctx)
 			plan = s.align_plan,
 			base = api.nvim_win_call(s.base_win, vim.fn.winsaveview),
 			current = api.nvim_win_call(s.editable_win, vim.fn.winsaveview),
-			topfill = s.align_topfill,
 		}))
 		assert(not align.apply(s), "alignment stacked padding on its second pass")
 	end
@@ -160,6 +159,11 @@ return function(ctx)
 			end
 			local ok, output = require("ui_helpers").run_case(svn and "svn" or "live_diff", prefix .. name)
 			assert(ok, output)
+			-- Report a skip inside the child, such as missing svnadmin, as a skip here.
+			local skipped = output:match("SKIP  ([^\n]+)")
+			if skipped then
+				error({ lazyvcs_skip = "UI child skipped " .. skipped })
+			end
 			return true
 		end
 		add(prefix .. "unequal_replacements", function()
@@ -189,8 +193,27 @@ return function(ctx)
 					local current = vim.deepcopy(base)
 					table.insert(current, at_start and 1 or 2, string.rep("x", 150))
 					local s = alignment(deletion and current or base, deletion and base or current, svn)
+					if at_start then
+						-- Padding above line 1 breaks scrolling, so only native filler
+						-- sits there and the panes line up once line 1 scrolls away.
+						assert(padding(s) == 0, "a change before line 1 was padded")
+						for _, win in ipairs({ s.base_win, s.editable_win }) do
+							api.nvim_win_call(win, function()
+								assert(
+									vim.fn.winsaveview().topfill <= vim.fn.diff_filler(1),
+									"topfill exceeds native filler above line 1"
+								)
+							end)
+						end
+						local wrapped = deletion and s.base_win or s.editable_win
+						api.nvim_win_call(wrapped, function()
+							vim.fn.winrestview({ lnum = 2, topline = 2, topfill = 0 })
+							vim.cmd("syncbind")
+						end)
+					else
+						assert(padding(s) > 0, "wrapped one-sided hunk has no padding")
+					end
 					aligned_tail(s)
-					assert(padding(s) > 0, "wrapped one-sided hunk has no padding")
 					h.cleanup()
 				end
 			end
