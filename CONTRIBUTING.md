@@ -147,12 +147,12 @@ the GitHub release.
   invalidate decoded bases. Compare previews reuse the decoder with independent
   source profiles and retain original bytes for blame. Preview uses only the
   encoding hint from an exactly matching loaded buffer, with 'fileencodings'
-  fallback when decoding fails. Both Compare sides normalize CRLF to LF regardless of
-  editor fileformat options; lone CR characters remain content. Staged Git
-  snapshots retain CRLF differences and final-newline state for hunk review. Both
-  profile identities participate in snapshot reuse and review-position invalidation.
-  Revalidate entry eligibility and the captured context before native
-  replacement.
+  fallback when decoding fails. Both Compare sides normalize CRLF to LF
+  regardless of editor fileformat options; lone CR characters remain content.
+  Staged Git snapshots retain CRLF differences and final-newline state for hunk
+  review. Both profile identities participate in snapshot reuse and
+  review-position invalidation. Revalidate entry eligibility and the captured
+  context before native replacement.
 - `backends/svn_properties.lua` loads shallow properties for directory discovery
   candidates and selected previews at the pinned revision and in the working
   copy. XML transport has an 8 MiB stdout limit, separate from each decoded
