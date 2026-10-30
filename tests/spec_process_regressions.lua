@@ -53,20 +53,26 @@ return function(ctx)
 				local f = dotfiles_fixture()
 				local raw_tree, cwd = f.root .. "/config/..", f.root .. "/config"
 				local canonical, has = util.canonical_path, vim.fn.has
-				local resolutions, child_env = {}, nil
+				local resolutions = {}
+				---@type table<string, string>[]
+				local child_envs = {}
+				---@diagnostic disable-next-line: duplicate-set-field
 				util.canonical_path = function(path)
-					resolutions[path] = (resolutions[path] or 0) + 1
+					if path then
+						resolutions[path] = (resolutions[path] or 0) + 1
+					end
 					return canonical(path)
 				end
 				vim.system = function(_, opts)
-					child_env = opts.env
-					if vim.islist(child_env) then
-						child_env = {}
+					local env = opts.env
+					if vim.islist(env) then
+						env = {}
 						for _, entry in ipairs(opts.env) do
 							local key, value = entry:match("^([^=]+)=(.*)$")
-							child_env[key] = value
+							env[key] = value
 						end
 					end
+					child_envs[#child_envs + 1] = env
 					return {
 						wait = function()
 							return { code = 0, stdout = "", stderr = "" }
@@ -76,9 +82,12 @@ return function(ctx)
 				local ok, err = xpcall(function()
 					with_environment({ GIT_DIR = f.git_dir, GIT_WORK_TREE = raw_tree }, function()
 						local function probe(opts, keep)
+							local started = #child_envs
 							util.system_result({ "git", "status" }, opts)
-							assert((child_env.GIT_DIR ~= nil) == keep, "incorrect GIT_DIR selection")
-							assert((child_env.GIT_WORK_TREE ~= nil) == keep, "incorrect GIT_WORK_TREE selection")
+							assert(#child_envs == started + 1, "git command did not start exactly once")
+							local env = child_envs[#child_envs]
+							assert((env.GIT_DIR ~= nil) == keep, "incorrect GIT_DIR selection")
+							assert((env.GIT_WORK_TREE ~= nil) == keep, "incorrect GIT_WORK_TREE selection")
 						end
 						probe({ cwd = cwd }, true)
 						probe({ cwd = cwd, env = { CUSTOM = "changed" } }, true)

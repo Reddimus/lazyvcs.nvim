@@ -198,42 +198,69 @@ T["native sidebar"]["confirmation popup supports numeric keys and restores focus
 	local workspace = make_workspace()
 	child.cmd("LazyVCS sidebar open " .. vim.fn.fnameescape(workspace))
 	wait_for_discovery()
-	local before = child.lua_get([[(function()
+	-- Open the popup from sidebar row 2. Moving the popup cursor to another
+	-- choice first shows that each numeric key ignores the cursor row.
+	local function open_popup(popup_row)
+		return child.lua_get(
+			[[(function(popup_row)
 local state = require("lazyvcs.source_control.native")._state()
 vim.api.nvim_set_current_win(state.winid)
 vim.api.nvim_win_set_cursor(state.winid, { 2, 0 })
-local result
+vim.g.lazyvcs_confirm_test_result = nil
 local handle = require("lazyvcs.source_control.confirm").open({
   prompt = "Sync example?",
 }, function(choice)
-  result = choice
   vim.g.lazyvcs_confirm_test_result = choice
 end)
+local initial_row = vim.api.nvim_win_get_cursor(handle.winid)[1]
+if popup_row > 0 then
+  vim.api.nvim_win_set_cursor(handle.winid, { popup_row, 0 })
+end
 return {
-  sidebar_win = state.winid,
   popup_win = handle.winid,
+  current_win = vim.api.nvim_get_current_win(),
+  initial_row = initial_row,
   popup_lines = vim.api.nvim_buf_get_lines(handle.bufnr, 0, -1, false),
 }
-end)()]])
-	eq(before.popup_lines, {
+end)(...)]],
+			{ popup_row or 0 }
+		)
+	end
+	local function press(key, popup)
+		child.type_keys(key)
+		return child.lua_get(
+			[[(function(popup_win)
+local state = require("lazyvcs.source_control.native")._state()
+return {
+  result = vim.g.lazyvcs_confirm_test_result,
+  popup_open = vim.api.nvim_win_is_valid(popup_win),
+  focus_restored = vim.api.nvim_get_current_win() == state.winid,
+  cursor = vim.api.nvim_win_get_cursor(state.winid),
+}
+end)(...)]],
+			{ popup.popup_win }
+		)
+	end
+
+	local popup = open_popup()
+	-- The prompt names the target above the choices, and the cursor starts on
+	-- the first choice.
+	eq(popup.popup_lines, {
+		"Sync example?",
+		"",
 		"1. Confirm",
 		"2. Confirm and do not ask again this session",
 		"3. Cancel",
 	})
+	eq(popup.current_win, popup.popup_win)
+	eq(popup.initial_row, 3)
+	eq(press("2", popup), { result = "confirm_session", popup_open = false, focus_restored = true, cursor = { 2, 0 } })
 
-	child.type_keys("2")
-	local after = child.lua_get([[(function()
-local state = require("lazyvcs.source_control.native")._state()
-return {
-  result = vim.g.lazyvcs_confirm_test_result,
-  current_win = vim.api.nvim_get_current_win(),
-  sidebar_win = state.winid,
-  cursor = vim.api.nvim_win_get_cursor(state.winid),
-}
-end)()]])
-	eq(after.result, "confirm_session")
-	eq(after.current_win, after.sidebar_win)
-	eq(after.cursor, { 2, 0 })
+	popup = open_popup(5)
+	eq(press("1", popup), { result = "confirm", popup_open = false, focus_restored = true, cursor = { 2, 0 } })
+
+	popup = open_popup(4)
+	eq(press("3", popup), { result = "cancel", popup_open = false, focus_restored = true, cursor = { 2, 0 } })
 end
 
 T["native sidebar"]["confirmation popup supports navigation and escape"] = function()
