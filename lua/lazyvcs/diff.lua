@@ -34,18 +34,18 @@ function M.decode_base(bufnr, payload, limit)
 	if not profile then
 		return nil, err
 	end
-	local document
+	local document, rejection
 	if payload.base_bytes ~= nil then
 		local decode_profile =
 			vim.tbl_extend("force", profile, { fileencoding = payload.base_encoding or profile.fileencoding })
-		document, err = text.decode(payload.base_bytes, decode_profile, limit)
+		document, err, rejection = text.decode(payload.base_bytes, decode_profile, limit)
 	else
 		local lines = payload.base_lines or {}
 		local size = 0
 		for _, line in ipairs(lines) do
 			size = size + #line + 1
 			if size > limit then
-				return nil, "Decoded base exceeds the editable content limit"
+				return nil, "Decoded base exceeds the editable content limit", "too_large"
 			end
 		end
 		document = {
@@ -60,7 +60,7 @@ function M.decode_base(bufnr, payload, limit)
 	if document then
 		payload.base_bytes = nil
 	end
-	return document, err
+	return document, err, rejection
 end
 
 ---@param base LazyVcsText

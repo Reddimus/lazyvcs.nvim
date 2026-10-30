@@ -25,6 +25,40 @@ and this project adheres to
   including after refresh. Mark snapshot text that has no final newline.
 - Find Git repositories for deleted files whose parent directories are also
   gone.
+- Recover Git base reads when a cached nested repository directory disappears.
+- Show final-newline changes in incoming SVN previews and hunk navigation.
+- Open SVN live diffs when a file's parent directories have been deleted.
+- Load SVN replacement files without depending on the diagnostic language, while
+  preserving readable bases for replacements with copy history.
+- Exclude SVN file externals from parent comparisons while keeping parent
+  deletions at the same path. Show versioned files and directories that are
+  missing from disk as missing rows with labeled previews.
+- Validate Leader and LocalLeader mappings using Neovim's native expansion.
+- Restore native gutter signs in other loaded buffers after repeated setup.
+- Describe gitsigns delegation and native fallback accurately in health output.
+- Complete current and parent directories in sidebar path arguments.
+- Restore the original Tree-sitter parser language after closing a Markdown live
+  diff.
+- Open editable Compare for Mac-format files containing embedded line feeds and
+  preserve those bytes when capturing buffer contents.
+- Keep native jump routing after Compare recovers a deleted working buffer.
+- Preserve opened diff folds when Compare switches between side-by-side and
+  stacked layouts.
+- Keep the cursor on the same line when returning to the editor immediately
+  after inserting or deleting lines in editable Compare.
+- Avoid accumulating jump tracking resources when repeatedly opening and closing
+  Compare tabs.
+- Refresh inline blame and blame splits after LazyVCS commits and history
+  changes.
+- Preserve encoded text and final-newline attribution in saved Git blame on
+  older Git versions.
+- Align blame splits with native diff filler and skip hidden blame tabs during
+  redraws.
+- Keep dates visible in Git blame splits by shortening long author names.
+- Restore the original final newline when reverting large-file hunks, and use
+  the gitsigns fallback when only the index base exceeds the native size limit.
+- Resume native signs when corrected decoding options make the base readable.
+- Keep diff previews and selected-line blame reports open without folded rows.
 - Show staged final-newline changes in Git previews and hunk navigation,
   including after refresh. Mark snapshot text that has no final newline.
 - Find Git repositories for deleted files whose parent directories are also

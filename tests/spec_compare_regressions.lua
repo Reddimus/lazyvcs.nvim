@@ -200,6 +200,148 @@ return function(ctx)
 			)
 		end
 	end
+	for _, close_pane in ipairs({ false, true }) do
+		add("test_compare_recovered_" .. (close_pane and "closed" or "retained") .. "_pane_native_jumps", function()
+			local f = h.make_git_transfer_fixture()
+			vim.cmd.edit(vim.fn.fnameescape(f.file1))
+			local s = open(f)
+			local function cycle()
+				api.nvim_set_current_win(s.rightwin)
+				api.nvim_win_set_cursor(s.rightwin, { 3, 2 })
+				vim.cmd("clearjumps")
+				keys("]b")
+				ready(s)
+				assert(s.shown_item.relpath == "beta.txt")
+				keys("<C-O>")
+				ctx.wait_for(function()
+					return s.shown_item.relpath == "alpha.txt" and not s.preview_job
+				end, "native jump did not restore the recovered comparison pair", 3000)
+				assert(api.nvim_get_current_win() == s.rightwin)
+				assert(vim.deep_equal(api.nvim_win_get_cursor(s.rightwin), { 3, 2 }))
+				keys("<C-I>")
+				ctx.wait_for(function()
+					return s.shown_item.relpath == "beta.txt" and not s.preview_job
+				end, "forward jump did not restore the comparison pair", 3000)
+				assert(api.nvim_get_current_win() == s.rightwin)
+				keys("[b")
+				ready(s)
+			end
+			cycle()
+			local original = s.right
+			if close_pane then
+				api.nvim_win_close(s.rightwin, true)
+			end
+			api.nvim_buf_delete(original, { force = true })
+			ctx.wait_for(function()
+				return not s.closed and s.preview_result and not s.worktree and s.right ~= original
+			end, "buffer deletion did not recover to a snapshot", 15000)
+			api.nvim_set_current_win(s.sidewin)
+			api.nvim_win_set_cursor(s.sidewin, { s.row_by_path["alpha.txt"], 0 })
+			keys("<CR>")
+			ready(s)
+			assert(s.worktree, "reselection did not reacquire the real buffer")
+			cycle()
+		end)
+	end
+	add("test_compare_layout_preserves_open_diff_folds", function()
+		local columns = vim.o.columns
+		local ok, err = xpcall(function()
+			vim.o.columns = 160
+			local f = h.make_git_fixture()
+			local lines = {}
+			for i = 1, 150 do
+				lines[i] = "line " .. i
+			end
+			h.write_file(f.file, table.concat(lines, "\n") .. "\n")
+			h.exec({ "git", "commit", "-am", "long base" }, f.root)
+			lines[20] = "changed twenty"
+			h.write_file(f.file, table.concat(lines, "\n") .. "\n")
+			local s = open(f)
+			assert(not s.stacked)
+			local levels = {}
+			for _, win in ipairs({ s.leftwin, s.rightwin }) do
+				api.nvim_win_call(win, function()
+					vim.cmd("normal! zR")
+					levels[win] = vim.wo.foldlevel
+					assert(vim.fn.foldclosed(60) == -1)
+				end)
+			end
+			for _, width in ipairs({ 80, 160 }) do
+				vim.o.columns = width
+				api.nvim_exec_autocmds("VimResized", {})
+				assert(s.stacked == (width == 80))
+				for _, win in ipairs({ s.leftwin, s.rightwin }) do
+					api.nvim_win_call(win, function()
+						assert(vim.wo.foldlevel == levels[win], "layout reset the pane's foldlevel")
+						assert(vim.fn.foldclosed(60) == -1, "layout collapsed opened diff context")
+					end)
+				end
+			end
+		end, debug.traceback)
+		vim.o.columns = columns
+		assert(ok, err)
+	end)
+	for _, operation in ipairs({ "insertion", "deletion" }) do
+		add(
+			operation == "insertion" and "test_compare_immediate_edit_keeps_native_cursor"
+				or "test_compare_immediate_edit_after_deletion_keeps_native_cursor",
+			function()
+				local f = fixture("git")
+				vim.cmd.edit(vim.fn.fnameescape(f.file))
+				local s = open(f)
+				local buf = s.right
+				api.nvim_set_current_win(s.rightwin)
+				-- One macro keeps the edit action ahead of the deferred preview capture.
+				keys((operation == "insertion" and "ggOinserted<Esc>" or "ggdd") .. "30G02l<leader>ve")
+				assert(api.nvim_get_current_win() == s.origin_win and api.nvim_get_current_buf() == buf)
+				assert(s.preview_result.right[30] == "line 30", "preview unexpectedly caught up before the action")
+				assert(
+					vim.deep_equal(api.nvim_win_get_cursor(s.origin_win), { 30, 2 }),
+					"edit projected a live cursor twice: " .. vim.inspect(api.nvim_win_get_cursor(s.origin_win))
+				)
+				assert(api.nvim_get_current_line() == (operation == "insertion" and "line 29" or "line 31"))
+			end
+		)
+	end
+	add("test_compare_jump_observer_namespaces_reuse_after_close", function()
+		local first = h.make_git_fixture()
+		local second = h.make_git_transfer_fixture()
+		local s = open(first)
+		local t = open(second)
+		local callbacks = vim.on_key()
+		assert(callbacks >= 2, "simultaneous sessions need separate observers")
+		local function count()
+			local total = 0
+			for name in pairs(api.nvim_get_namespaces()) do
+				if name:match("^lazyvcs_compare_jumps_") then
+					total = total + 1
+				end
+			end
+			return total
+		end
+		local peak = count()
+		compare.close(s)
+		assert(vim.on_key() == callbacks - 1, "closing one session removed another observer")
+		compare.close(s)
+		assert(vim.on_key() == callbacks - 1, "repeated close released an observer twice")
+		for _ = 1, 4 do
+			local next_session = open(first)
+			assert(vim.on_key() == callbacks, "reopened session replaced an active observer")
+			compare.close(next_session)
+		end
+		assert(count() == peak, "closed sessions accumulated jump-observer namespaces")
+		api.nvim_set_current_win(t.rightwin)
+		keys("]b")
+		ready(t)
+		assert(t.shown_item.relpath == "beta.txt")
+		keys("<C-O>")
+		ctx.wait_for(function()
+			return t.shown_item.relpath == "alpha.txt" and not t.preview_job
+		end, "namespace reuse broke the other session's jump routing", 3000)
+		assert(api.nvim_get_current_win() == t.rightwin)
+		compare.close(t)
+		assert(vim.on_key() == callbacks - 2, "closing all sessions leaked observers")
+	end)
 	add("test_compare_reacquired_worktree_keeps_live_updates_after_clearjumps", function()
 		local f = h.make_git_transfer_fixture()
 		local s = open(f)

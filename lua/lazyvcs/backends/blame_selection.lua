@@ -42,14 +42,17 @@ function M.load(target, contents, callback, capture)
 			}))
 		elseif snapshot.vcs == "git" then
 			contents = target.bytes or contents
-			local document = target.text
-			local snapshot_lines, lines_err
-			if document then
-				snapshot_lines = document.lines
-			else
-				snapshot_lines, lines_err = comparison.lines(contents)
+			local document, lines_err = target.text, nil
+			if not document and type(contents) ~= "string" then
+				lines_err = "File contents unavailable"
+			elseif not document then
+				document, lines_err = require("lazyvcs.compare_text").decode_preview(
+					contents,
+					comparison.decode_options(target.path),
+					format.decode_limit()
+				)
 			end
-			if not snapshot_lines then
+			if not document then
 				vim.schedule(function()
 					task:finish(nil, lines_err)
 				end)
@@ -58,10 +61,10 @@ function M.load(target, contents, callback, capture)
 			-- Keep decoded rows for line-model and clean-filter validation.
 			local opts = {
 				profile = {
-					fileencoding = document and document.encoding or "utf-8",
+					fileencoding = document.encoding,
 					fileformat = contents:find("\r", 1, true) and not contents:find("\n", 1, true) and "mac" or "unix",
 				},
-				text = document or { lines = snapshot_lines },
+				text = document,
 				line_start = target.first,
 				line_end = target.last,
 			}
@@ -79,16 +82,10 @@ function M.load(target, contents, callback, capture)
 				task:finish(entries)
 			end
 			local function historical(relpath, retry)
-				-- Before Git 2.41, --contents cannot accompany a revision. Its fallback
-				-- maps git-show bytes, so byte-compatible previews must use captured bytes
-				-- too (including encoding and BOM). Retain decoded rows when Git reencodes
-				-- the file, or full-file validation checks its line model or filter output.
-				if document and not full_file and policy.profile.fileencoding == opts.profile.fileencoding then
-					snapshot_lines, lines_err = comparison.lines(contents)
-					if not snapshot_lines then
-						return task:finish(nil, lines_err)
-					end
-				end
+				-- Before Git 2.41, --contents cannot accompany a revision. This fallback
+				-- decodes the committed blob and maps it against the decoded preview, so
+				-- encoding, BOM, CRLF and final-newline differences compare as text
+				-- instead of raw bytes.
 				if policy and policy.validate and not policy.validated then
 					return task:add(
 						process.lines(
@@ -111,7 +108,7 @@ function M.load(target, contents, callback, capture)
 								if not selected then
 									return task:finish(nil, format_err or err)
 								end
-								snapshot_lines = cleaned
+								document = vim.tbl_extend("force", document, { lines = cleaned })
 								policy.validated = true
 								historical(relpath, retry)
 							end
@@ -119,14 +116,14 @@ function M.load(target, contents, callback, capture)
 					)
 				end
 				task:add(
-					process.lines(
+					process.bytes(
 						{ "git", "show", revision .. ":" .. relpath },
 						{ cwd = root },
-						function(base_lines, err)
+						function(base_bytes, err)
 							if not task:is_active() then
 								return
 							end
-							if not base_lines then
+							if not base_bytes then
 								if
 									type(err) == "string"
 									and (
@@ -141,16 +138,70 @@ function M.load(target, contents, callback, capture)
 								end
 								return task:finish(nil, err)
 							end
-							local indices = {}
-							for i = 1, #base_lines do
-								indices[i] = i
+							local text = require("lazyvcs.compare_text")
+							local limit = format.decode_limit()
+							local function map(candidate)
+								local indices = {}
+								for i = 1, #candidate.lines do
+									indices[i] = i
+								end
+								return require("lazyvcs.backends.blame_mapping").map(
+									indices,
+									candidate,
+									document,
+									false
+								)
 							end
-							local mapped = require("lazyvcs.backends.blame_mapping").map(
-								indices,
-								base_lines,
-								snapshot_lines,
-								false
-							)
+							local function matched(lines)
+								local count = 0
+								for number = 1, #document.lines do
+									count = count + (lines[number] and 1 or 0)
+								end
+								return count
+							end
+							local function alternative()
+								local decode_opts = comparison.decode_options(target.path)
+								-- The file may have been saved in a new encoding. Prefer the blob's
+								-- BOM or UTF-8 before the buffer's fallback hint.
+								if decode_opts.hint then
+									decode_opts.fileencodings = "ucs-bom,utf-8,"
+										.. decode_opts.hint.fileencoding
+										.. ","
+										.. decode_opts.fileencodings
+									decode_opts.hint = nil
+								end
+								return text.decode_preview(base_bytes, decode_opts, limit)
+							end
+							local base_document, decode_err, mapped
+							if policy and policy.base_encoding then
+								base_document, decode_err =
+									text.decode_preview(base_bytes, { encoding = policy.base_encoding }, limit)
+							else
+								-- Read the blob in the saved encoding first, so bytes the user did not
+								-- change keep their meaning, such as UTF-8 opened with ++enc=latin1.
+								base_document = text.decode_preview(base_bytes, { encoding = document.encoding }, limit)
+								if not base_document then
+									base_document, decode_err = alternative()
+								elseif base_bytes ~= contents then
+									-- Keep the alternative only when it leaves more saved lines unchanged.
+									local other = alternative()
+									if other and not vim.deep_equal(other.lines, base_document.lines) then
+										mapped = map(base_document)
+										local other_mapped = map(other)
+										if matched(other_mapped) > matched(mapped) then
+											base_document, mapped = other, other_mapped
+										end
+									end
+								end
+							end
+							if not base_document then
+								return task:finish(nil, decode_err)
+							end
+							mapped = mapped or map(base_document)
+							local base_opts = {
+								profile = { fileencoding = base_document.encoding, fileformat = "dos" },
+								text = base_document,
+							}
 							local ranges, wanted, entries = {}, {}, {}
 							for number = target.first, target.last do
 								local old = mapped[number]
@@ -177,7 +228,7 @@ function M.load(target, contents, callback, capture)
 								local args = { "git", "blame", "--encoding=UTF-8", "--line-porcelain" }
 								-- Bound argv size on Windows when deletions split the selected history.
 								local ending = math.min(#ranges, next_range + 127)
-								if full_file then
+								if full_file or format.full_file(base_opts) then
 									next_range = #ranges + 1
 								else
 									for i = next_range, ending do
@@ -193,10 +244,7 @@ function M.load(target, contents, callback, capture)
 									if not raw then
 										return task:finish(nil, blame_err)
 									end
-									local validated, format_err = format.select(raw, {
-										profile = opts.profile,
-										text = { lines = base_lines },
-									})
+									local validated, format_err = format.select(raw, base_opts)
 									if not validated then
 										return task:finish(nil, format_err)
 									end

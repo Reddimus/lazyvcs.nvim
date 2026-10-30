@@ -41,7 +41,63 @@ return function(ctx)
 			assert(ok, err)
 		end
 	end
-	return {
+	local cases = {}
+	for _, operation in ipairs({ "decode", "capture" }) do
+		cases[#cases + 1] = {
+			"test_core_compare_mac_embedded_lf_native_" .. operation,
+			guarded(function()
+				local text = require("lazyvcs.compare_text")
+				local path = h.tempdir() .. "/mac.txt"
+				for _, encoding in ipairs({ "utf-8", "latin1", "utf-16le" }) do
+					for _, eol in ipairs({ false, true }) do
+						local raw = "café\ninside\rold" .. (eol and "\r" or "")
+						if encoding ~= "utf-8" then
+							raw = assert(vim.iconv(raw, "utf-8", encoding))
+						end
+						write(path, raw)
+						vim.cmd("edit! ++ff=mac ++enc=" .. encoding .. " " .. vim.fn.fnameescape(path))
+						vim.bo.fixendofline = false
+						local native = api.nvim_buf_get_lines(0, 0, -1, false)
+						assert(vim.deep_equal(native, { "café\rinside", "old" }))
+						if operation == "decode" then
+							local doc = assert(text.decode(raw, assert(text.profile(0)), 1024))
+							assert(vim.deep_equal(doc.lines, native), "Mac decoding differs from native buffer lines")
+							assert(doc.eol == eol)
+						else
+							local capture = assert(text.capture_file(0, 1024))
+							assert(capture.bytes == raw, "Mac capture changed embedded LF bytes")
+							local saved = vim.deepcopy(capture.text)
+							assert(text.encode_file(capture.text, capture.profile, 1024) == raw)
+							assert(vim.deep_equal(capture.text, saved), "encoding mutated the captured document")
+							api.nvim_buf_set_lines(0, 1, 2, false, { "changed" })
+							capture = assert(text.capture_file(0, 1024))
+							vim.cmd.write()
+							assert(capture.bytes == bytes(path), "modified Mac capture differs from native write")
+						end
+					end
+				end
+			end),
+		}
+	end
+	cases[#cases + 1] = {
+		"test_core_compare_mac_embedded_lf_editable_preview",
+		guarded(function()
+			local f = h.make_git_fixture()
+			write(f.file, "first\ninside\rold\r")
+			h.exec({ "git", "commit", "-am", "Mac base" }, f.root)
+			write(f.file, "first\ninside\rchanged\r")
+			vim.cmd("edit ++ff=mac " .. vim.fn.fnameescape(f.file))
+			local buf = api.nvim_get_current_buf()
+			local s = assert(compare.open({ path = f.file, base = "HEAD" }))
+			ctx.wait_for(function()
+				return s.preview_result and s.mode == "text"
+			end, "Mac editable preview did not load", 3000)
+			assert(s.right == buf and s.worktree)
+			assert(vim.deep_equal(api.nvim_buf_get_lines(s.left, 0, -1, false), { "first\rinside", "old" }))
+			assert(#s.navigation.saved == 1 and s.navigation.saved[1].current_start == 2)
+		end),
+	}
+	vim.list_extend(cases, {
 		{
 			"test_core_compare_decodes_worktree_encoding_per_source",
 			guarded(function()
@@ -259,5 +315,6 @@ return function(ctx)
 				)
 			end),
 		},
-	}
+	})
+	return cases
 end

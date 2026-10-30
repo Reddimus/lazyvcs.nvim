@@ -19,6 +19,7 @@ function M.git_policy(opts, attributes)
 	return {
 		validate = filter ~= nil and filter ~= "unspecified" and filter ~= "unset",
 		ident = attributes.ident == "set",
+		base_encoding = encoding and encoding ~= "unspecified" and encoding ~= "unset" and "utf-8" or nil,
 		profile = {
 			fileencoding = encoding and encoding ~= "unspecified" and encoding ~= "unset" and "utf-8"
 				or opts.profile and opts.profile.fileencoding

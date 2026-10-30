@@ -264,7 +264,7 @@ local function read_async(method, path, on_done, opts, arguments)
 			local args = { path }
 			vim.list_extend(args, arguments or {})
 			args[#args + 1] = function(result, load_err, extra)
-				if not result and repository_failure(load_err, path) then
+				if not result and ((extra and extra.code == "stale_root") or repository_failure(load_err, path)) then
 					M.invalidate(path)
 					if not retry then
 						return attempt(true)

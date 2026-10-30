@@ -31,9 +31,18 @@ function M.root(args, opts, callback)
 		end)
 	end
 	local task = Task.new(callback)
-	vim.schedule(util.safe_callback(function()
-		task:finish(root)
-	end))
+	vim.uv.fs_stat(root, function(err, stat)
+		vim.schedule(util.safe_callback(function()
+			if not task:is_active() then
+				return
+			end
+			if not stat then
+				local missing = err and (err:match("^ENOENT:") or err:match("^ENOTDIR:"))
+				return task:finish(nil, err, missing and { code = "stale_root" } or nil)
+			end
+			task:finish(root)
+		end))
+	end)
 	return task
 end
 

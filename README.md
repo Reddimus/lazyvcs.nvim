@@ -81,7 +81,11 @@ Omitted sparse-checkout files use read-only index snapshots.
 Git compares the common ancestor with your saved working tree, including
 committed, staged, unstaged, and nonignored untracked changes. SVN compares the
 selected repository revision with the working copy. The file list reflects saved
-changes; save and refresh to discover new paths.
+changes; save and refresh to discover new paths. Parent comparisons exclude
+changes to SVN file externals. Versioned files and directories missing from disk
+appear as `!` rows, separate from scheduled deletions. File previews show a
+labeled empty side when the selected base contains the file. Directory rows show
+property previews.
 
 The comparison uses native Neovim buffers and windows. Press `Enter` or
 double-click a file in the list to focus its first hunk. `]v` and `[v` cycle
@@ -159,9 +163,10 @@ opts = { blame = { persist = false } }
 ```
 
 Defaults avoid remote refreshes unless requested. Git signs are delegated to
-`gitsigns.nvim` when installed. Optional pickers and commit-message providers
-are detected automatically. See `:help lazyvcs-configuration` for all options
-and `:help lazyvcs-defaults` for the complete default configuration.
+`gitsigns.nvim` when it reports hunks for the buffer. Unattached buffers use
+native signs. Optional pickers and commit-message providers are detected
+automatically. See `:help lazyvcs-configuration` for all options and
+`:help lazyvcs-defaults` for the complete default configuration.
 
 Commit messages use CopilotChat.nvim by default. Set
 `ai.commit_message.provider` to `"claude"`, `"codex"`, `"gemini"`, or

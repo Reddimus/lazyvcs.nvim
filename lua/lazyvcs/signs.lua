@@ -461,6 +461,7 @@ local function invalidate_base(bufnr, state, reason)
 	end
 	-- Base changes and gitsigns hand-offs retry a suspended base.
 	state.unavailable_reason = nil
+	state.failed_profile_key, state.unavailable_kind = nil, nil
 	state.generation = (state.generation or 0) + 1
 	state.base_generation = (state.base_generation or 0) + 1
 	local job = state.job
@@ -475,12 +476,13 @@ local function invalidate_base(bufnr, state, reason)
 	retire_signs(bufnr, state)
 end
 
-local function suspend_base(bufnr, state, reason)
+local function suspend_base(bufnr, state, reason, profile_key, rejection)
 	reason = reason or "VCS base is unavailable"
 	invalidate_base(bufnr, state)
 	state.computing = nil
 	state.decorated_hunks, state.decorated_enabled = nil, nil
 	state.unavailable_reason = reason
+	state.failed_profile_key, state.unavailable_kind = profile_key, rejection
 	notify_waiters(bufnr, state, { "load_waiters", "compute_waiters" }, nil, reason)
 end
 
@@ -707,12 +709,13 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 		live.root = result.root
 		live.relpath = result.relpath
 		live.base_label = result.base_label
-		local document, decode_err = diff.decode_base(bufnr, result, opts().max_file_bytes)
+		local document, decode_err, decode_rejection = diff.decode_base(bufnr, result, opts().max_file_bytes)
 		if not document then
-			suspend_base(bufnr, live, decode_err)
+			suspend_base(bufnr, live, decode_err, profile.key, decode_rejection)
 			return
 		end
 		live.unavailable_reason = nil
+		live.failed_profile_key, live.unavailable_kind = nil, nil
 		live.base_text, live.base_lines = document, document.lines
 		live.base_identity = result.base_identity
 		live.loaded = true
@@ -786,7 +789,7 @@ local function schedule(bufnr)
 	)
 end
 
-local function with_current_state(context, on_ready, asynchronous)
+local function with_current_state(context, on_ready, asynchronous, on_failure)
 	local bufnr = context.bufnr
 	local path = supported_buffer(bufnr)
 	local state = path and ensure_state(bufnr, path)
@@ -810,6 +813,9 @@ local function with_current_state(context, on_ready, asynchronous)
 			result = value
 		else
 			release()
+			if not loaded and on_failure and on_failure(state.unavailable_kind) then
+				return
+			end
 			if not loaded or err then
 				util.notify(err or "No VCS signs state for the current buffer", vim.log.levels.WARN)
 			end
@@ -1051,8 +1057,18 @@ local function revert_large_gitsigns_hunk(context)
 				end
 				local base_eol
 				local empty = context.text_identity.empty
+				-- A final empty physical row supplies a serialized newline without 'eol'.
+				local trailing_empty = not vim.bo[bufnr].endofline
+					and end_row == line_count - 1
+					and vim.api.nvim_buf_get_lines(bufnr, end_row, -1, false)[1] == ""
+				if trailing_empty and added.count > 0 then
+					end_row = line_count
+				end
 				if end_row == line_count or (empty and added.count == 0 and start_row == 0) then
-					if added.count > 0 and (added.no_nl_at_eof or false) ~= not vim.bo[bufnr].endofline then
+					if
+						added.count > 0
+						and (added.no_nl_at_eof or false) ~= not (vim.bo[bufnr].endofline or trailing_empty)
+					then
 						util.notify("Reported hunk EOF state changed; nothing was reverted", vim.log.levels.WARN)
 						return false
 					end
@@ -1208,7 +1224,12 @@ local function revert_hunk(context)
 			end
 		)
 	end
-	return with_current_state(context, ready, true)
+	return with_current_state(context, ready, true, function(rejection)
+		if rejection == "too_large" and gitsigns_api() then
+			return revert_large_gitsigns_hunk(context)
+		end
+		return false
+	end)
 end
 
 local function jump_to_hunk(context, direction)
@@ -1257,6 +1278,7 @@ local function show_preview(text)
 			title = " LazyVCS Diff ",
 		})
 		util.unbind_window(win)
+		util.set_win_option(win, "foldenable", false)
 		local close_preview = util.safe_callback(function()
 			if util.win_is_valid(win) then
 				vim.api.nvim_win_close(win, true)
@@ -1552,7 +1574,13 @@ function M.setup()
 		pattern = { "fileencoding", "fileformat", "bomb", "binary", "endofline", "fixendofline" },
 		callback = util.safe_callback(function()
 			local buf = vim.api.nvim_get_current_buf()
-			if opts().enabled and buffers[buf] and not buffers[buf].unavailable_reason then
+			local state = buffers[buf]
+			local profile = state and state.failed_profile_key and compare_text.profile(buf)
+			if
+				opts().enabled
+				and state
+				and (not state.unavailable_reason or (profile and profile.key ~= state.failed_profile_key))
+			then
 				schedule(buf)
 			end
 		end),
@@ -1565,8 +1593,16 @@ function M.setup()
 		end),
 	})
 
-	if opts().enabled and vim.api.nvim_get_current_buf() ~= 0 then
-		M.refresh(vim.api.nvim_get_current_buf(), true)
+	if opts().enabled then
+		local current = vim.api.nvim_get_current_buf()
+		if not vim.tbl_contains(attached, current) then
+			attached[#attached + 1] = current
+		end
+		for _, bufnr in ipairs(attached) do
+			if vim.api.nvim_buf_is_loaded(bufnr) then
+				M.refresh(bufnr, true)
+			end
+		end
 	end
 end
 

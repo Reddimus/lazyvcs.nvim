@@ -421,7 +421,7 @@ local function start_command(repo, kind, args, on_done, opts)
 		or opts.git_untracked_delete
 	then
 		process_start = function(command, process_opts, on_exit)
-			local signs, change
+			local signs, change, blame_change
 			local guards = vim.tbl_extend("force", {}, opts)
 			if base_mutation then
 				local paths
@@ -445,6 +445,15 @@ local function start_command(repo, kind, args, on_done, opts)
 						remote_snapshots.invalidate(repo.root)
 					end
 					change = signs.begin_base_change(repo.root, paths)
+					if
+						kind == "git_commit"
+						or kind == "svn_commit"
+						or kind == "git_merge"
+						or kind == "svn_update"
+						or kind == "switch_mutation"
+					then
+						blame_change = require("lazyvcs.blame").begin_history_change(repo.root)
+					end
 				end
 			end
 			local function settle_base()
@@ -455,6 +464,11 @@ local function start_command(repo, kind, args, on_done, opts)
 						remote_snapshots.invalidate(repo.root)
 					end
 					util.safe_callback(signs.finish_base_change)(settled)
+				end
+				if blame_change then
+					local settled = blame_change
+					blame_change = nil
+					util.safe_callback(require("lazyvcs.blame").finish_history_change)(settled)
 				end
 			end
 			local function settle(result, err, raw)

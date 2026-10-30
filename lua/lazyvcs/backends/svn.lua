@@ -39,7 +39,10 @@ local function get_root(path)
 	if not svn_available() then
 		return nil, "svn executable not found"
 	end
-	local cwd = util.dir_of(path)
+	local cwd, cwd_err = util.existing_directory(path)
+	if not cwd then
+		return nil, cwd_err
+	end
 	while cwd do
 		local result, err, raw = util.system(
 			{ "svn", "info", "--show-item", "wc-root", literal_target(cwd) },
@@ -56,10 +59,16 @@ local function get_root(path)
 	end
 end
 
-local function discover_root_async(cwd, opts, callback)
+local function discover_root_async(path, opts, callback)
 	local task = Task.new(callback)
 	local deadline = vim.uv.now() + (opts.timeout_ms or ASYNC_TIMEOUT_MS)
-	local function probe(dir)
+	local function probe(dir, dir_err)
+		if not task:is_active() then
+			return
+		end
+		if not dir then
+			return task:finish(nil, dir_err)
+		end
 		local remaining = deadline - vim.uv.now()
 		if remaining <= 0 then
 			return task:finish(nil, "SVN root discovery timed out")
@@ -79,23 +88,37 @@ local function discover_root_async(cwd, opts, callback)
 			task:finish(nil, err)
 		end))
 	end
-	probe(cwd)
+	if opts.root then
+		vim.schedule(util.safe_callback(function()
+			probe(opts.root)
+		end))
+	else
+		task:add(util.existing_directory_async(path, probe))
+	end
 	return task
 end
 
-local function is_versioned(path)
+local function is_versioned(path, root)
 	if not svn_available() then
 		return false
 	end
-	local _, err = util.system({ "svn", "info", literal_target(path) }, { cwd = util.dir_of(path) })
+	root = root or util.existing_directory(path)
+	if not root then
+		return false
+	end
+	local _, err = util.system({ "svn", "info", literal_target(path) }, { cwd = root })
 	return err == nil
 end
 
-local function status_code(path)
-	local lines, err = util.system_lines(
-		{ "svn", "status", "--depth", "empty", literal_target(path) },
-		{ cwd = util.dir_of(path) }
-	)
+local function status_code(path, root)
+	local cwd, cwd_err = root, nil
+	if not cwd then
+		cwd, cwd_err = util.existing_directory(path)
+	end
+	if not cwd then
+		return nil, cwd_err
+	end
+	local lines, err = util.system_lines({ "svn", "status", "--depth", "empty", literal_target(path) }, { cwd = cwd })
 	if not lines then
 		return nil, err
 	end
@@ -105,6 +128,10 @@ local function status_code(path)
 		end
 	end
 	return " "
+end
+
+local function no_pristine(info)
+	return info and info.schedule == "replace" and not info.copy_from_url
 end
 
 local function is_added_base_error(err)
@@ -131,12 +158,22 @@ local function load_base_bytes(path, root)
 	if not valid then
 		return nil, nil, eligibility_err
 	end
-	local code, status_err = status_code(path)
+	local code, status_err = status_code(path, root)
 	if not code then
 		return nil, nil, status_err
 	end
 	if code == "A" then
 		return "", "EMPTY"
+	end
+
+	if code == "R" then
+		local info, info_err = util.system({ "svn", "info", "--xml", literal_target(path) }, { cwd = root })
+		if not info then
+			return nil, nil, info_err
+		end
+		if no_pristine(svn_xml.parse_info(info.stdout)) then
+			return "", "EMPTY"
+		end
 	end
 
 	local props, props_err = util.system(
@@ -194,8 +231,7 @@ function M.probe_async(path, on_done, opts)
 		end)
 		return task
 	end
-	local cwd = util.dir_of(path)
-	task:add(discover_root_async(cwd, opts, function(result, err)
+	task:add(discover_root_async(path, opts, function(result, err)
 		if not result then
 			return task:finish(nil, err)
 		end
@@ -219,7 +255,7 @@ function M.load(path)
 		return nil, path_err
 	end
 
-	local tracked = is_versioned(path)
+	local tracked = is_versioned(path, root)
 	if not tracked then
 		return nil, "File is not tracked by SVN"
 	end
@@ -298,7 +334,7 @@ function M.load_base(path)
 		return nil, path_err
 	end
 
-	if not is_versioned(path) then
+	if not is_versioned(path, root) then
 		return nil, "File is not tracked by SVN"
 	end
 
@@ -325,7 +361,6 @@ local function load_payload_async(path, on_done, opts, base_only)
 		return task
 	end
 
-	local cwd = util.dir_of(path)
 	local function payload(root, relpath, tracked, base_label, base_bytes)
 		local value = {
 			root = root,
@@ -342,7 +377,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 		return value
 	end
 
-	task:add(discover_root_async(cwd, opts, function(result, err)
+	task:add(discover_root_async(path, opts, function(result, err)
 		if not task:is_active() then
 			return
 		end
@@ -359,10 +394,10 @@ local function load_payload_async(path, on_done, opts, base_only)
 			if not valid then
 				return task:finish(nil, eligibility_err, rejection)
 			end
-			task:add(process.start({ "svn", "info", literal_target(path) }, {
-				cwd = cwd,
+			task:add(process.start({ "svn", "info", "--xml", literal_target(path) }, {
+				cwd = root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-			}, function(_, tracked_err, tracked_raw)
+			}, function(info, tracked_err, tracked_raw)
 				if not task:is_active() then
 					return
 				end
@@ -375,7 +410,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 				task:add(
 					process.lines(
 						{ "svn", "status", "--depth", "empty", literal_target(path) },
-						{ cwd = cwd, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
+						{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
 						function(status_lines, status_err)
 							if not task:is_active() then
 								return
@@ -392,7 +427,7 @@ local function load_payload_async(path, on_done, opts, base_only)
 								end
 							end
 
-							if code == "A" then
+							if code == "A" or (code == "R" and no_pristine(svn_xml.parse_info(info.stdout))) then
 								return task:finish(payload(root, relpath, true, "EMPTY", ""))
 							end
 
@@ -757,6 +792,23 @@ function M.load_diff_target_async(target, on_done, opts)
 
 	local needs_remote_url = comparison.section == "remote"
 
+	local function snapshot_side(side, bytes)
+		if #bytes > 1024 * 1024 then
+			return nil, "File exceeds the 1 MiB preview limit"
+		end
+		-- Retain the existing object line model, including CRLF and BOM bytes.
+		side.bytes, side.lines = bytes, util.split_lines(bytes)
+		side.document = {
+			lines = side.lines,
+			eol = bytes:sub(-1) == "\n",
+			empty = bytes == "",
+			encoding = "utf-8",
+			bom = false,
+			profile_key = "svn-object",
+		}
+		return true
+	end
+
 	local function load_sides(entry_url)
 		local sides = {}
 		for _, key in ipairs({ "left", "right", "property_patch" }) do
@@ -801,7 +853,7 @@ function M.load_diff_target_async(target, on_done, opts)
 		for _, side in ipairs(sides) do
 			local source = side.source or {}
 			if source.kind == "empty" then
-				side.lines = {}
+				snapshot_side(side, "")
 			elseif source.kind == "worktree" and not comparison.editable_side then
 				pending = pending + 1
 				require("lazyvcs.backends.comparison").read_file(task, source.path, function(raw, err)
@@ -810,7 +862,11 @@ function M.load_diff_target_async(target, on_done, opts)
 						failed = true
 						return task:finish(nil, err)
 					end
-					side.lines = util.split_lines(raw)
+					local decoded, decode_err = snapshot_side(side, raw)
+					if not decoded then
+						failed = true
+						return task:finish(nil, decode_err)
+					end
 					complete()
 				end)
 			elseif source.kind == "svn_object" or source.kind == "svn_property_patch" then
@@ -864,7 +920,7 @@ function M.load_diff_target_async(target, on_done, opts)
 							and type(err) == "string"
 							and (err:match("E160013") or err:match("W160013") or is_added_base_error(err))
 						then
-							side.lines = {}
+							snapshot_side(side, "")
 							return complete()
 						end
 						failed = true
@@ -873,7 +929,15 @@ function M.load_diff_target_async(target, on_done, opts)
 					if raw_side then
 						side.bytes, side.lines = lines, nil
 					else
-						side.lines = type(lines) == "string" and util.split_lines(lines) or lines
+						if source.kind == "svn_object" then
+							local decoded, decode_err = snapshot_side(side, lines)
+							if not decoded then
+								failed = true
+								return task:finish(nil, decode_err)
+							end
+						else
+							side.lines = lines
+						end
 					end
 					complete()
 				end))
@@ -973,7 +1037,12 @@ function M.load_diff_target_async(target, on_done, opts)
 					end
 					return task:finish(nil, err or "Unable to determine SVN entry kind")
 				end
-				kinds[key] = info.kind
+				if key == "left" and not historical and no_pristine(info) then
+					comparison.left = empty_side()
+					comparison.title = "EMPTY ↔ " .. comparison.right.label
+				else
+					kinds[key] = info.kind
+				end
 				next_side()
 			end))
 		end
@@ -1055,7 +1124,7 @@ function M.blame_lines_async(path, on_done, opts)
 
 	local cwd = util.dir_of(path)
 	local task = Task.new(on_done)
-	task:add(discover_root_async(cwd, opts, function(result, err)
+	task:add(discover_root_async(path, opts, function(result, err)
 		if not task:is_active() then
 			return
 		end

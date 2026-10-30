@@ -60,11 +60,7 @@ function M.complete(lead)
 	if not scan then
 		return candidates
 	end
-	while true do
-		local name, kind = vim.uv.fs_scandir_next(scan)
-		if not name then
-			break
-		end
+	local function candidate_entry(name, kind)
 		local folded_name, folded_prefix = name, prefix
 		if vim.o.fileignorecase or vim.o.wildignorecase then
 			folded_name, folded_prefix = vim.fn.tolower(name), vim.fn.tolower(prefix)
@@ -79,6 +75,17 @@ function M.complete(lead)
 				candidates[#candidates + 1] = M.escape(candidate .. "/")
 			end
 		end
+	end
+	if prefix:sub(1, 1) == "." then
+		candidate_entry(".", "directory")
+		candidate_entry("..", "directory")
+	end
+	while true do
+		local name, kind = vim.uv.fs_scandir_next(scan)
+		if not name then
+			break
+		end
+		candidate_entry(name, kind)
 	end
 	table.sort(candidates)
 	return candidates

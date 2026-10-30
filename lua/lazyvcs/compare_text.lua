@@ -150,10 +150,10 @@ end
 ---@param bytes string
 ---@param profile LazyVcsDecodeProfile
 ---@param limit_bytes integer
----@return LazyVcsText? text, string? err
+---@return LazyVcsText? text, string? err, string? rejection
 function M.decode(bytes, profile, limit_bytes)
 	if #bytes > limit_bytes then
-		return nil, "Raw text exceeds the editable content limit"
+		return nil, "Raw text exceeds the editable content limit", "too_large"
 	end
 	if profile.binary then
 		return nil, "Binary buffers do not support editable hunks"
@@ -205,7 +205,7 @@ function M.decode(bytes, profile, limit_bytes)
 		return nil, "VCS base encoding cannot be converted without loss"
 	end
 	if #decoded > limit_bytes then
-		return nil, "Decoded text exceeds the editable content limit"
+		return nil, "Decoded text exceeds the editable content limit", "too_large"
 	end
 	if decoded:find("\0", 1, true) then
 		return nil, "Binary VCS bases do not support editable hunks"
@@ -218,6 +218,11 @@ function M.decode(bytes, profile, limit_bytes)
 	local lines = empty and {} or vim.split(decoded, separator, { plain = true })
 	if eol then
 		table.remove(lines)
+	end
+	if profile.fileformat == "mac" then
+		for i, line in ipairs(lines) do
+			lines[i] = line:gsub("\n", "\r")
+		end
 	end
 	return { lines = lines, eol = eol, empty = empty, encoding = source, bom = bom, profile_key = profile.key }
 end
@@ -385,7 +390,14 @@ function M.encode_file(text, profile, limit_bytes)
 		return nil, "Binary buffers do not support file-byte capture"
 	end
 	local separator = profile.fileformat == "dos" and "\r\n" or profile.fileformat == "mac" and "\r" or "\n"
-	local decoded = text.empty and "" or table.concat(text.lines, separator) .. (text.eol and separator or "")
+	local lines = text.lines
+	if profile.fileformat == "mac" then
+		lines = {}
+		for i, line in ipairs(text.lines) do
+			lines[i] = line:gsub("\r", "\n")
+		end
+	end
+	local decoded = text.empty and "" or table.concat(lines, separator) .. (text.eol and separator or "")
 	if not M.valid_utf8(decoded) or decoded:find("\0", 1, true) then
 		return nil, "Buffer contains unsupported text"
 	end

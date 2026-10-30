@@ -218,7 +218,7 @@ function M.load_directory_maps(task, snapshot, item, done, deadline)
 			done(before, after)
 		end)
 	end
-	if item.status == "A" then
+	if item.status == "A" or item.base_absent then
 		working({})
 	else
 		read(url, snapshot.revision, function(before, err)

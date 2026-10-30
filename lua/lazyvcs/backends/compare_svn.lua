@@ -127,6 +127,53 @@ local function load_property_patch(task, snapshot, item, done)
 	end, { output_limit_bytes = 2 * common.max_file_bytes })
 end
 
+-- SVN status omits node kinds, and a missing node cannot be inspected on disk.
+-- Ask svn info for each topmost missing path; depth infinity covers its children.
+local function missing_kinds(task, snapshot, paths, callback)
+	local util = require("lazyvcs.util")
+	local root, targets = local_path(snapshot.root), {}
+	for path in pairs(paths) do
+		local parent, topmost = path, true
+		while topmost do
+			parent = parent:match("^(.+)/[^/]+$")
+			if not parent then
+				break
+			end
+			topmost = not paths[parent]
+		end
+		if topmost then
+			targets[#targets + 1] = path
+		end
+	end
+	table.sort(targets)
+	local kinds, index = {}, 1
+	local function batch()
+		if index > #targets then
+			return callback(kinds)
+		end
+		-- Bound each command line for Windows.
+		local args, length = { "info", "--xml", "--depth", "infinity", "--" }, 0
+		while index <= #targets and length < 8192 do
+			local target = snapshot.root .. "/" .. targets[index] .. "@"
+			args[#args + 1], length, index = target, length + #target + 1, index + 1
+		end
+		command(task, snapshot, args, function(raw, err)
+			if not raw then
+				return callback(nil, err)
+			end
+			for _, entry in ipairs(xml.parse_info_entries(raw)) do
+				local path = local_path(entry.path)
+				local relpath = common.relative(path) and path or util.relative_literal_path(root, path)
+				if relpath then
+					kinds[relpath] = entry.kind
+				end
+			end
+			batch()
+		end, { output_limit_bytes = 16 * common.max_file_bytes })
+	end
+	batch()
+end
+
 function M.list(snapshot, include_untracked, callback)
 	local task = common.task(callback)
 	local root = local_path(snapshot.root)
@@ -150,7 +197,7 @@ function M.list(snapshot, include_untracked, callback)
 		if not raw then
 			return task:finish(nil, err)
 		end
-		local items, seen = {}, {}
+		local items, seen, missing = {}, {}, {}
 		for attributes, value in raw:gmatch("<path%s+([^>]+)>(.-)</path>") do
 			local attrs = xml.attributes(attributes)
 			local path = xml.decode(value)
@@ -200,6 +247,14 @@ function M.list(snapshot, include_untracked, callback)
 				else
 					paths[item.relpath] = item
 					merged[#merged + 1] = item
+				end
+			end
+			-- Relabel after pairing, so a missing kind change keeps one row.
+			for _, item in ipairs(merged) do
+				if missing[item.relpath] then
+					-- An added row has no base side to read.
+					item.base_absent = item.status == "A" or nil
+					item.status = "!"
 				end
 			end
 			local cursor, retained = 0, {}
@@ -259,9 +314,6 @@ function M.list(snapshot, include_untracked, callback)
 			end
 			reconcile()
 		end
-		if not include_untracked then
-			return finish()
-		end
 		command(
 			task,
 			snapshot,
@@ -270,23 +322,74 @@ function M.list(snapshot, include_untracked, callback)
 				if not status then
 					return task:finish(nil, status_err)
 				end
-				require("lazyvcs.backends.svn_untracked").expand(
-					task,
-					snapshot,
-					xml.parse_status(status),
-					function(paths, expand_err)
-						if not paths then
-							return task:finish(nil, expand_err)
-						end
-						for _, relpath in ipairs(paths) do
-							if not seen[relpath] then
-								items[#items + 1] = { relpath = relpath, status = "?", untracked = true }
-								seen[relpath] = true
-							end
-						end
-						finish()
+				local entries, externals = xml.parse_status(status), {}
+				local util = require("lazyvcs.util")
+				for _, entry in ipairs(entries) do
+					local path = local_path(entry.path)
+					local relpath = common.relative(path) and path or util.relative_literal_path(root, path)
+					if not relpath or not common.relative(relpath) then
+						return task:finish(nil, "SVN returned a status path outside the comparison")
 					end
-				)
+					if entry.file_external then
+						externals[relpath] = true
+					elseif entry.wc_item == "missing" then
+						missing[relpath] = true
+					end
+				end
+				local retained, unseen = {}, {}
+				for _, item in ipairs(items) do
+					-- The pinned parent may delete a path now owned by an external.
+					if not externals[item.relpath] or item.status == "D" then
+						retained[#retained + 1] = item
+					end
+				end
+				items = retained
+				for relpath in pairs(missing) do
+					if not seen[relpath] then
+						unseen[relpath] = true
+					end
+				end
+				local function untracked()
+					if not include_untracked then
+						return finish()
+					end
+					require("lazyvcs.backends.svn_untracked").expand(
+						task,
+						snapshot,
+						entries,
+						function(paths, expand_err)
+							if not paths then
+								return task:finish(nil, expand_err)
+							end
+							for _, relpath in ipairs(paths) do
+								if not seen[relpath] then
+									items[#items + 1] = { relpath = relpath, status = "?", untracked = true }
+									seen[relpath] = true
+								end
+							end
+							finish()
+						end
+					)
+				end
+				if next(unseen) == nil then
+					return untracked()
+				end
+				missing_kinds(task, snapshot, unseen, function(kinds, kind_err)
+					if not kinds then
+						return task:finish(nil, kind_err)
+					end
+					for relpath in pairs(unseen) do
+						local kind = kinds[relpath]
+						if not kind then
+							return task:finish(nil, "SVN returned no node kind for a missing path")
+						end
+						-- Directories take the property path, like other SVN directory rows.
+						items[#items + 1] =
+							{ relpath = relpath, status = "!", kind = kind, property_only = kind == "dir" }
+						seen[relpath] = true
+					end
+					untracked()
+				end)
 			end
 		)
 	end)
@@ -302,6 +405,10 @@ function M.preview(snapshot, item, callback, opts)
 		right_label = "SAVED WORKTREE",
 		loaded = { text = not (opts and opts.mode == "metadata"), metadata = true },
 	}
+	if item.status == "!" then
+		result.right_label = "MISSING FROM WORKTREE"
+		result.details = { "Versioned path is missing from disk; no SVN deletion is scheduled." }
+	end
 	if item.property_check_error then
 		result.details = { "Property validation failed: " .. tostring(item.property_check_error):gsub("%s+", " ") }
 	end
@@ -351,7 +458,7 @@ function M.preview(snapshot, item, callback, opts)
 			result.right = { "Directory: " .. vim.fn.strtrans(item.relpath) }
 			return finish()
 		end
-		if item.status == "D" then
+		if item.status == "D" or item.status == "!" then
 			common.decode_side(result, "right", "", { encoding = "utf-8" })
 			return finish()
 		end
@@ -373,7 +480,7 @@ function M.preview(snapshot, item, callback, opts)
 	if item.kind_before == "dir" then
 		result.left = { "Directory: " .. vim.fn.strtrans(item.relpath) }
 		right()
-	elseif item.status == "A" or item.untracked then
+	elseif item.status == "A" or item.untracked or item.base_absent then
 		result.left_kind = "missing"
 		common.decode_side(result, "left", "", { encoding = "utf-8" })
 		right()

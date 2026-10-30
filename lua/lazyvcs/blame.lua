@@ -15,6 +15,7 @@ local blame_views = {}
 local inline_views = {}
 local line_log_views = {}
 local inline_enabled = false
+local history_changes = {}
 local STORE_KEY = "blame_inline_enabled"
 
 local apply_win_options = util.set_win_options
@@ -54,6 +55,20 @@ local function supported_blame_buffer(bufnr)
 	end
 	local backend = backend_for_path(path)
 	return path, backend
+end
+
+local function belongs_to_root(path, root)
+	local _, cached_root = backends.resolve_cached(path)
+	return cached_root and cached_root == root or not cached_root and util.relative_literal_path(root, path) ~= nil
+end
+
+local function history_changing(path)
+	for root in pairs(history_changes) do
+		if belongs_to_root(path, root) then
+			return true
+		end
+	end
+	return false
 end
 
 local function close_blame(source_bufnr, expected, deferred)
@@ -248,7 +263,7 @@ end
 
 local function load_inline(bufnr, path, backend)
 	local view = inline_views[bufnr]
-	if not view or view.loading or not backend then
+	if not view or view.loading or not backend or history_changing(path) then
 		return
 	end
 
@@ -363,6 +378,9 @@ local function update_inline(bufnr)
 	local current_win = vim.api.nvim_get_current_win()
 	if vim.api.nvim_win_get_buf(current_win) == bufnr then
 		view.origin_win = current_win
+	end
+	if history_changing(path) then
+		return
 	end
 	if not backend then
 		if view.resolving then
@@ -541,7 +559,7 @@ end
 
 local padding_ns_id = vim.api.nvim_create_namespace("lazyvcs_blame_padding")
 
-local function virtual_rows(source_bufnr)
+local function virtual_rows(source_bufnr, source_win)
 	local rows = {}
 	for _, mark in
 		ipairs(vim.api.nvim_buf_get_extmarks(source_bufnr, -1, 0, -1, { details = true, type = "virt_lines" }))
@@ -550,6 +568,17 @@ local function virtual_rows(source_bufnr)
 		if details and not details.invalid and details.virt_lines and #details.virt_lines > 0 then
 			rows[#rows + 1] = { row = mark[2], count = #details.virt_lines, above = details.virt_lines_above or false }
 		end
+	end
+	if vim.wo[source_win].diff then
+		vim.api.nvim_win_call(source_win, function()
+			local count = vim.api.nvim_buf_line_count(source_bufnr)
+			for line = vim.fn.line("w0"), math.min(count + 1, vim.fn.line("w$") + 1) do
+				local filler = vim.fn.diff_filler(line)
+				if filler > 0 then
+					rows[#rows + 1] = { row = math.min(line, count) - 1, count = filler, above = line <= count }
+				end
+			end
+		end)
 	end
 	return rows
 end
@@ -577,7 +606,7 @@ end
 
 local function align_split_view(view)
 	local source, blame = view.source_winid, view.winid
-	pad_split(view, virtual_rows(vim.api.nvim_win_get_buf(source)))
+	pad_split(view, virtual_rows(vim.api.nvim_win_get_buf(source), source))
 	source_options.apply(view.source_lease, { scrollbind = false, cursorbind = false })
 	apply_win_options(blame, { scrollbind = false, cursorbind = false })
 	local saved = vim.api.nvim_win_call(source, vim.fn.winsaveview)
@@ -606,6 +635,7 @@ local function schedule_split_alignment(source_bufnr, view)
 		if
 			blame_views[source_bufnr] == view
 			and source_present(source_bufnr, view.source_winid)
+			and vim.api.nvim_win_get_tabpage(view.source_winid) == vim.api.nvim_get_current_tabpage()
 			and util.win_is_valid(view.winid)
 			and vim.api.nvim_win_get_buf(view.winid) == view.bufnr
 		then
@@ -623,10 +653,11 @@ vim.api.nvim_set_decoration_provider(padding_ns_id, {
 		for source_bufnr, view in pairs(blame_views) do
 			if
 				source_present(source_bufnr, view.source_winid)
+				and vim.api.nvim_win_get_tabpage(view.source_winid) == vim.api.nvim_get_current_tabpage()
 				and util.win_is_valid(view.winid)
 				and vim.api.nvim_win_get_buf(view.winid) == view.bufnr
 			then
-				if not vim.deep_equal(view.virtual_rows, virtual_rows(source_bufnr)) then
+				if not vim.deep_equal(view.virtual_rows, virtual_rows(source_bufnr, view.source_winid)) then
 					schedule_split_alignment(source_bufnr, view)
 				end
 			end
@@ -713,6 +744,10 @@ function M.blame_split()
 			view.timer:stop()
 			view.timer:close()
 		end
+		if history_changing(path) then
+			view.timer = nil
+			return
+		end
 		view.timer = vim.defer_fn(
 			safe(function()
 				view.timer = nil
@@ -739,7 +774,28 @@ function M.blame_split()
 		pcall(vim.api.nvim_win_set_cursor, to, { math.min(line, max_line), 0 })
 		syncing = false
 	end)
-	local function render(lines)
+	local function render(lines, entries)
+		local blame_opts, width = config.get().blame, 0
+		for _, line in ipairs(lines) do
+			width = math.max(width, vim.fn.strdisplaywidth(line))
+		end
+		local max_width = math.min(blame_opts.split_max_width, math.max(blame_opts.split_min_width, vim.o.columns - 10))
+		width = view.winid and vim.api.nvim_win_get_width(view.winid)
+			or math.min(math.max(width + 2, blame_opts.split_min_width), max_width)
+		for i, entry in ipairs(entries) do
+			if entry.backend == "git" and not entry.uncommitted then
+				local revision, date = entry.revision, entry.date
+				local budget = width - vim.fn.strdisplaywidth(revision .. "  " .. date)
+				if budget >= 0 then
+					local author = util.truncate_display(entry.author, budget)
+					local padding = math.max(0, math.min(15, budget) - vim.fn.strdisplaywidth(author))
+					lines[i] = revision .. " " .. string.rep(" ", padding) .. author .. " " .. date
+				else
+					revision = util.truncate_display(revision, width - vim.fn.strdisplaywidth(" " .. date))
+					lines[i] = (revision ~= "" and revision .. " " or "") .. util.truncate_display(date, width)
+				end
+			end
+		end
 		if view.winid then
 			vim.bo[view.bufnr].modifiable = true
 			vim.api.nvim_buf_set_lines(view.bufnr, 0, -1, false, lines)
@@ -758,12 +814,6 @@ function M.blame_split()
 		vim.bo[view.bufnr].swapfile = false
 		vim.bo[view.bufnr].modifiable = false
 		highlight_blame(view.bufnr, lines)
-		local blame_opts, width = config.get().blame, 0
-		for _, line in ipairs(lines) do
-			width = math.max(width, vim.fn.strdisplaywidth(line))
-		end
-		local max_width = math.min(blame_opts.split_max_width, math.max(blame_opts.split_min_width, vim.o.columns - 10))
-		width = math.min(math.max(width + 2, blame_opts.split_min_width), max_width)
 		local callback_win = vim.api.nvim_get_current_win()
 		vim.api.nvim_win_call(source_win, function()
 			vim.cmd("leftabove " .. width .. "vsplit")
@@ -847,10 +897,13 @@ function M.blame_split()
 				{ buffer = view.bufnr, silent = true, nowait = true, desc = "Close VCS blame" }
 			)
 		end
+		if vim.api.nvim_win_get_width(view.winid) ~= width then
+			return render(lines, entries)
+		end
 		align_split_view(view)
 	end
 	reload = safe(function()
-		if blame_views[source_bufnr] ~= view then
+		if blame_views[source_bufnr] ~= view or history_changing(path) then
 			return
 		end
 		local captured = context.capture(source_bufnr, source_win)
@@ -904,7 +957,7 @@ function M.blame_split()
 						notify("No blame information available", vim.log.levels.WARN)
 						return
 					end
-					render(lines)
+					render(lines, backend.parse_blame_entries(raw))
 					if not valid() then
 						debounce()
 					end
@@ -919,6 +972,7 @@ function M.blame_split()
 			view.handle = backends.resolve_async(captured.name, safe(resolved))
 		end
 	end)
+	view.reload = reload
 	reload()
 	return true
 end
@@ -1088,6 +1142,55 @@ end
 
 function M.refresh(bufnr)
 	invalidate_inline(bufnr or vim.api.nvim_get_current_buf())
+end
+
+function M.begin_history_change(root)
+	root = util.normalize_literal_path(root)
+	history_changes[root] = (history_changes[root] or 0) + 1
+	for buf, view in pairs(inline_views) do
+		if belongs_to_root(view.path, root) then
+			invalidate_inline(buf)
+		end
+	end
+	for buf, view in pairs(blame_views) do
+		local path = util.buf_path(buf)
+		if path and belongs_to_root(path, root) then
+			view.generation = view.generation + 1
+			if view.handle then
+				pcall(view.handle.kill, view.handle, 15)
+				view.handle = nil
+			end
+			if view.timer then
+				view.timer:stop()
+				view.timer:close()
+				view.timer = nil
+			end
+		end
+	end
+	return { root = root }
+end
+
+function M.finish_history_change(change)
+	if change.finished then
+		return
+	end
+	change.finished = true
+	local root = change.root
+	history_changes[root] = history_changes[root] > 1 and history_changes[root] - 1 or nil
+	if history_changes[root] then
+		return
+	end
+	for buf, view in pairs(inline_views) do
+		if belongs_to_root(view.path, root) then
+			invalidate_inline(buf)
+		end
+	end
+	for buf, view in pairs(blame_views) do
+		local path = util.buf_path(buf)
+		if path and belongs_to_root(path, root) then
+			view.reload()
+		end
+	end
 end
 
 local function shown_in_window(bufnr)
