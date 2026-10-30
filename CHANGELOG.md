@@ -48,16 +48,18 @@ and this project adheres to
   symlink or junction, protecting files outside the working copy.
 - Protect untracked and ignored files at a staged rename's old path from
   Discard. The confirmation now names both rename paths.
-- Refuse Unstage and Discard of staged additions that changed before the
-  action started, preserving newly committed files.
-- Refuse Stage when a file became a directory, while allowing tracked submodules.
+- Refuse Unstage and Discard of staged additions that changed before the action
+  started, preserving newly committed files.
+- Refuse Stage when a file became a directory, while allowing tracked
+  submodules.
 - Resolve Git conflicts with Discard by restoring HEAD in the index and working
-  tree, or removing the file when HEAD deleted it. The confirmation names this scope.
+  tree, or removing the file when HEAD deleted it. The confirmation names this
+  scope.
 - Publish Git branches even when a tag has the same name.
-- Skip unreadable subdirectories during repository discovery, keep the repositories
-  found, and show one notice for skipped directories. Preserve saved repository
-  visibility until discovery completes without errors. An unreadable scan root
-  still reports an error.
+- Skip unreadable subdirectories during repository discovery, keep the
+  repositories found, and show one notice for skipped directories. Preserve
+  saved repository visibility until discovery completes without errors. An
+  unreadable scan root still reports an error.
 - Report preference synchronization and close failures without replacing the
   previous preferences.
 
