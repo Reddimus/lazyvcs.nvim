@@ -1989,7 +1989,7 @@ local function fake_hydration_state(native, repos)
 	return state
 end
 
-local function test_source_control_hydration_cancel_one_of_two_repositories_requeues_without_stranding()
+local function test_source_control_hydration_cancel_one_of_two_repositories_stays_cancelled_without_stranding()
 	require("lazyvcs").setup({
 		source_control = {
 			background = {
@@ -2016,7 +2016,7 @@ local function test_source_control_hydration_cancel_one_of_two_repositories_requ
 			return { path = repo_a.root }
 		end
 		ops.cancel_repo(state)
-		eq(#processes[repo_a.root], 2, "the invalidated repository should start a fresh hydration")
+		eq(#processes[repo_a.root], 1, "the cancelled repository must not restart hydration")
 		eq(#processes[repo_b.root], 1, "the other repository must keep its original hydration")
 		eq(processes[repo_a.root][1].signals, { 15 })
 		eq(processes[repo_b.root][1].signals, {}, "cancelling repo A must not signal repo B")
@@ -2025,12 +2025,10 @@ local function test_source_control_hydration_cancel_one_of_two_repositories_requ
 		processes[repo_b.root][1]:exit()
 		assert(state.lazyvcs_repo_cache[repo_b.root].summary_loaded, "repo B should finish normally")
 		processes[repo_a.root][1]:exit({ code = 143, signal = 15, stdout = "", stderr = "" })
-		assert(
-			state.lazyvcs_repo_cache[repo_a.root].loading_summary,
-			"repo A's stale exit must not clear its replacement loading state"
-		)
-		processes[repo_a.root][2]:exit()
-		assert(state.lazyvcs_repo_cache[repo_a.root].summary_loaded, "repo A replacement should finish")
+		assert(not state.lazyvcs_repo_cache[repo_a.root].loading_summary, "repo A must remain stopped")
+		assert(not state.lazyvcs_repo_cache[repo_a.root].summary_loaded, "repo A's stale exit must not load status")
+		native._test_start_summary_hydration(state, false)
+		eq(#processes[repo_a.root], 1, "navigation must not retry repo A")
 		eq(state.lazyvcs_hydration_pending, 0)
 		eq(state.lazyvcs_hydration_active, false)
 	end)
@@ -2063,7 +2061,7 @@ local function test_source_control_hydration_cancel_isolated_between_sidebar_own
 		native._test_start_summary_hydration(second, false)
 		eq(#processes[repo.root], 2)
 		ops.cancel_repo(first)
-		eq(#processes[repo.root], 3, "only the cancelled owner should enqueue a replacement")
+		eq(#processes[repo.root], 2, "the cancelled owner must not enqueue a replacement")
 		eq(processes[repo.root][1].signals, { 15 })
 		eq(processes[repo.root][2].signals, {}, "the second sidebar owner's child must not be signalled")
 		assert(second.lazyvcs_repo_cache[repo.root].loading_summary)
@@ -2072,8 +2070,11 @@ local function test_source_control_hydration_cancel_isolated_between_sidebar_own
 		assert(second.lazyvcs_repo_cache[repo.root].summary_loaded)
 		eq(second.lazyvcs_hydration_pending, 0)
 		processes[repo.root][1]:exit({ code = 143, signal = 15, stdout = "", stderr = "" })
-		processes[repo.root][3]:exit()
-		assert(first.lazyvcs_repo_cache[repo.root].summary_loaded)
+		assert(not first.lazyvcs_repo_cache[repo.root].summary_loaded, "stale owner result was accepted")
+		native._test_start_summary_hydration(first, false)
+		eq(#processes[repo.root], 2, "the first owner must stay cancelled")
+		eq(first.lazyvcs_hydration_pending, 0)
+		eq(first.lazyvcs_hydration_active, false)
 	end)
 end
 
@@ -6970,8 +6971,8 @@ local cases = {
 		test_source_control_details_cancel_isolated_between_sidebar_owners,
 	},
 	{
-		"test_source_control_hydration_cancel_one_of_two_repositories_requeues_without_stranding",
-		test_source_control_hydration_cancel_one_of_two_repositories_requeues_without_stranding,
+		"test_source_control_hydration_cancel_one_of_two_repositories_stays_cancelled_without_stranding",
+		test_source_control_hydration_cancel_one_of_two_repositories_stays_cancelled_without_stranding,
 	},
 	{
 		"test_source_control_hydration_cancel_isolated_between_sidebar_owners",
@@ -7213,6 +7214,7 @@ vim.list_extend(cases, require("spec_source_control_reload")({ helpers = helpers
 vim.list_extend(cases, require("spec_source_control_coherence")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_source_control_refresh")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_source_control_sidebar")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_source_control_ui")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_persistence")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_signs_performance")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_signs_attributes")({ helpers = helpers, wait_for = wait_for }))

@@ -1550,12 +1550,33 @@ local function make_repo_change_children(repo, source_opts, state)
 		}
 	end
 
+	local status_error = repo.detail_error or repo.error
+	if status_error then
+		local loading = repo.loading_summary or repo.loading_details
+		children[#children + 1] = {
+			id = repo.root .. "::status_error",
+			type = "message",
+			name = loading and "Loading repository status..."
+				or ("Status failed: " .. tostring(status_error):gsub("[\r\n]+", " ") .. " (press <CR> to retry)"),
+			extra = {
+				repo_root = repo.root,
+				error = true,
+				action = not loading and "retry_repo" or nil,
+				disabled = disabled,
+			},
+		}
+		if not repo.details_loaded or #repo.sections == 0 then
+			return children
+		end
+	end
+
 	if repo.details_loaded then
 		if #repo.sections == 0 then
 			children[#children + 1] = {
 				id = repo.root .. "::clean",
 				type = "message",
-				name = "No changes",
+				name = (repo.loading_summary or repo.loading_details) and "Loading repository status..."
+					or "No changes",
 				extra = {
 					repo_root = repo.root,
 					disabled = disabled,
@@ -1576,7 +1597,13 @@ local function make_repo_change_children(repo, source_opts, state)
 		message = primary.label
 	elseif repo.loading_details then
 		message = "Loading changes..."
-	elseif not repo.summary_loaded then
+	elseif
+		state.lazyvcs_cancelled_summaries
+		and state.lazyvcs_cancelled_summaries[repo.root]
+		and not repo.summary_loaded
+	then
+		message = "Status cancelled; press R to retry"
+	elseif repo.loading_summary or not repo.summary_loaded then
 		message = "Loading repository status..."
 	elseif repo.counts.local_changes == 0 and repo.counts.remote == 0 then
 		message = "Working tree clean"
@@ -1759,7 +1786,9 @@ function M.collect(state, opts)
 	local loaded = {}
 	for _, spec in ipairs(repo_specs) do
 		local status = present_status(repo_cache[spec.root] or placeholder_status(spec))
-		if status.loading_summary and status.summary_loaded then
+		if (state.lazyvcs_cancelled_summaries or {})[spec.root] and not status.summary_loaded then
+			status.sync = sync_badge("Cancelled", "cancelled", "Comment")
+		elseif status.loading_summary and status.summary_loaded then
 			status.refreshing_summary = true
 		elseif
 			status.loading_summary and not (status.vcs == "svn" and (status.remote_snapshot or status.remote_unknown))
@@ -1818,7 +1847,9 @@ function M.collect(state, opts)
 		change_nodes[#change_nodes + 1] = {
 			id = root .. "::changes::empty",
 			type = "message",
-			name = state.lazyvcs_discovering and "Discovering repositories..." or "No repositories selected",
+			name = state.lazyvcs_discovering and "Discovering repositories..."
+				or state.lazyvcs_discovery_cancelled and "Discovery cancelled; press R to retry"
+				or "No repositories selected",
 			extra = { discovering = state.lazyvcs_discovering == true },
 		}
 	end

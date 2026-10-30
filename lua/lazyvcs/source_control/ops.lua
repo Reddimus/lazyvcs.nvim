@@ -1434,6 +1434,23 @@ function M.toggle_repo_visibility(state, node)
 	navigate(state)
 end
 
+function M.collapse_repo(state, node)
+	local repo = current_repo(state, node)
+	if repo and repo_changes_expanded(state, node, repo) then
+		return set_repo_changes_expanded(state, repo, false)
+	end
+end
+
+function M.retry_repo(state, node)
+	local repo = current_repo(state, node)
+	if not repo then
+		return
+	end
+	state.lazyvcs_restore_details = state.lazyvcs_restore_details or {}
+	state.lazyvcs_restore_details[repo.root] = true
+	refresh_repo(state, repo.root, false)
+end
+
 function M.open_repo(state, node, _toggle_node)
 	local repo = current_repo(state, node)
 	if not repo then
@@ -1554,7 +1571,11 @@ function M.cancel_repo(state, node)
 	end
 	local count = hydration_count + M.cancel(repo.root, { owner = state })
 	count = count + M.cancel(repo.root, { owner = repo.root })
-	navigate_if_visible(state)
+	if state.lazyvcs_repaint then
+		state.lazyvcs_repaint(state)
+	else
+		navigate_if_visible(state)
+	end
 	util.notify(
 		count == 1 and ("Cancelled the active operation for " .. repo.name)
 			or string.format("Cancelled %d operations for %s", count, repo.name),
