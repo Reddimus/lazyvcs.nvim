@@ -42,21 +42,26 @@ function M.load(target, contents, callback, capture)
 			}))
 		elseif snapshot.vcs == "git" then
 			contents = target.bytes or contents
-			local snapshot_lines, lines_err = comparison.lines(contents)
+			local document = target.text
+			local snapshot_lines, lines_err
+			if document then
+				snapshot_lines = document.lines
+			else
+				snapshot_lines, lines_err = comparison.lines(contents)
+			end
 			if not snapshot_lines then
 				vim.schedule(function()
 					task:finish(nil, lines_err)
 				end)
 				return
 			end
-			-- Compare preserves raw bytes and displays LF-delimited lines. CR-only
-			-- snapshots still need full-file validation; binary previews are rejected above.
+			-- Use decoded preview rows for correspondence, retaining raw bytes for Git.
 			local opts = {
 				profile = {
-					fileencoding = "utf-8",
+					fileencoding = document and document.encoding or "utf-8",
 					fileformat = contents:find("\r", 1, true) and not contents:find("\n", 1, true) and "mac" or "unix",
 				},
-				text = { lines = snapshot_lines },
+				text = document or { lines = snapshot_lines },
 				line_start = target.first,
 				line_end = target.last,
 			}
@@ -266,7 +271,29 @@ function M.load(target, contents, callback, capture)
 				"-r",
 				snapshot.revision,
 				url .. "@" .. snapshot.revision,
-			}, { cwd = root }, finish))
+			}, { cwd = root }, function(raw, err)
+				if raw then
+					local document = target.text
+					if not document then
+						document, err = require("lazyvcs.compare_text").decode_preview(
+							target.bytes or contents,
+							comparison.decode_options(target.path),
+							comparison.max_file_bytes
+						)
+					end
+					if not document then
+						return finish(nil, err)
+					end
+					local valid, why = format.svn_document(document, raw, "dos")
+					if not valid then
+						return finish(
+							nil,
+							why or err or "Unsupported blame line format: SVN and the preview use different lines"
+						)
+					end
+				end
+				finish(raw, err)
+			end))
 		else
 			task:add(backend.blame_lines_async(target.path, finish, {
 				root = root,

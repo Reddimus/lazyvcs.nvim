@@ -539,8 +539,45 @@ local function source_present(bufnr, winid)
 		and vim.api.nvim_win_get_buf(winid) == bufnr
 end
 
+local padding_ns_id = vim.api.nvim_create_namespace("lazyvcs_blame_padding")
+
+local function virtual_rows(source_bufnr)
+	local rows = {}
+	for _, mark in
+		ipairs(vim.api.nvim_buf_get_extmarks(source_bufnr, -1, 0, -1, { details = true, type = "virt_lines" }))
+	do
+		local details = mark[4]
+		if details and details.virt_lines and #details.virt_lines > 0 then
+			rows[#rows + 1] = { row = mark[2], count = #details.virt_lines, above = details.virt_lines_above or false }
+		end
+	end
+	return rows
+end
+
+local function pad_split(view, rows)
+	if vim.deep_equal(view.virtual_rows, rows) then
+		return
+	end
+	view.virtual_rows = rows
+	vim.api.nvim_buf_clear_namespace(view.bufnr, padding_ns_id, 0, -1)
+	local count = vim.api.nvim_buf_line_count(view.bufnr)
+	for _, item in ipairs(rows) do
+		if item.row < count then
+			local padding = {}
+			for _ = 1, item.count do
+				padding[#padding + 1] = { { "", "Normal" } }
+			end
+			vim.api.nvim_buf_set_extmark(view.bufnr, padding_ns_id, item.row, 0, {
+				virt_lines = padding,
+				virt_lines_above = item.above,
+			})
+		end
+	end
+end
+
 local function align_split_view(view)
 	local source, blame = view.source_winid, view.winid
+	pad_split(view, virtual_rows(vim.api.nvim_win_get_buf(source)))
 	source_options.apply(view.source_lease, { scrollbind = false, cursorbind = false })
 	apply_win_options(blame, { scrollbind = false, cursorbind = false })
 	local saved = vim.api.nvim_win_call(source, vim.fn.winsaveview)
@@ -550,7 +587,7 @@ local function align_split_view(view)
 			lnum = math.min(saved.lnum, count),
 			col = 0,
 			topline = math.min(saved.topline, count),
-			topfill = 0,
+			topfill = saved.topfill,
 			leftcol = 0,
 			skipcol = 0,
 		})
@@ -558,6 +595,44 @@ local function align_split_view(view)
 	source_options.apply(view.source_lease, { scrollbind = true, cursorbind = true })
 	apply_win_options(blame, { scrollbind = true, cursorbind = true })
 end
+
+local function schedule_split_alignment(source_bufnr, view)
+	if view.padding_pending then
+		return
+	end
+	view.padding_pending = true
+	vim.schedule(protect(function()
+		view.padding_pending = nil
+		if
+			blame_views[source_bufnr] == view
+			and source_present(source_bufnr, view.source_winid)
+			and util.win_is_valid(view.winid)
+			and vim.api.nvim_win_get_buf(view.winid) == view.bufnr
+		then
+			align_split_view(view)
+		end
+	end, function()
+		close_blame(source_bufnr, view)
+	end))
+end
+
+-- Rendered extmarks reflect diagnostic configuration and cursor-dependent rows.
+-- Observe redraws rather than only DiagnosticChanged, which misses both cases.
+vim.api.nvim_set_decoration_provider(padding_ns_id, {
+	on_start = protect(function()
+		for source_bufnr, view in pairs(blame_views) do
+			if
+				source_present(source_bufnr, view.source_winid)
+				and util.win_is_valid(view.winid)
+				and vim.api.nvim_win_get_buf(view.winid) == view.bufnr
+			then
+				if not vim.deep_equal(view.virtual_rows, virtual_rows(source_bufnr)) then
+					schedule_split_alignment(source_bufnr, view)
+				end
+			end
+		end
+	end),
+})
 
 local function observe_source(view, bufnr, close, changed)
 	vim.api.nvim_create_autocmd({ "BufUnload", "BufDelete", "BufWipeout" }, {
@@ -670,6 +745,7 @@ function M.blame_split()
 			vim.api.nvim_buf_set_lines(view.bufnr, 0, -1, false, lines)
 			vim.bo[view.bufnr].modifiable = false
 			vim.api.nvim_buf_clear_namespace(view.bufnr, split_ns_id, 0, -1)
+			view.virtual_rows = nil
 			highlight_blame(view.bufnr, lines)
 			align_split_view(view)
 			return
@@ -738,6 +814,13 @@ function M.blame_split()
 			buffer = view.bufnr,
 			callback = safe(function()
 				sync_cursor(view.winid, source_win)
+			end),
+		})
+		vim.api.nvim_create_autocmd({ "WinScrolled", "WinResized" }, {
+			group = view.augroup,
+			pattern = { tostring(source_win), tostring(view.winid) },
+			callback = safe(function()
+				schedule_split_alignment(source_bufnr, view)
 			end),
 		})
 		vim.api.nvim_create_autocmd("WinClosed", {

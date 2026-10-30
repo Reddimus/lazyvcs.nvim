@@ -1104,73 +1104,75 @@ function M.blame_lines_async(path, on_done, opts)
 									end
 									return task:finish(nil, blame_err)
 								end
-								task:add(
-									((opts.profile or opts.preview) and process.bytes or process.lines)(
-										{ "svn", "cat", "-r", "BASE", literal_target(path) },
-										{
-											cwd = root,
-											timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-										},
-										function(base, base_err)
-											if not base then
-												return task:finish(nil, base_err)
-											end
-											if opts.preview then
-												local common = require("lazyvcs.backends.comparison")
-												local options = common.decode_options(path)
-												options.hint = nil
-												local document, decode_err =
-													require("lazyvcs.compare_text").decode_preview(
-														base,
-														options,
-														common.max_file_bytes
-													)
-												if not document then
-													return task:finish(
-														nil,
-														"SVN BASE for blame: " .. tostring(decode_err)
-													)
-												end
-												if #document.lines ~= #lines then
-													return task:finish(
-														nil,
-														"Unsupported blame line format: SVN and the preview use different lines"
-													)
-												end
-												base = document.lines
-											elseif opts.profile then
-												local format = require("lazyvcs.backends.blame_format")
-												local decoded, decode_err =
-													format.svn_base(base, opts.profile, lines, format.decode_limit())
-												if not decoded then
-													return task:finish(nil, decode_err)
-												end
-												base = decoded.lines
-											end
-											local ok, current =
-												true,
-												opts.text and opts.text.lines or opts.contents and util.split_lines(
-													opts.contents
-												)
-											if not current then
-												ok, current = pcall(vim.fn.readfile, path)
-											end
-											if not ok then
-												return task:finish(nil, tostring(current))
-											end
-											task:finish(
-												require("lazyvcs.backends.blame_mapping").map(
-													lines,
-													base,
-													current,
-													"     - - -"
-												),
-												nil,
-												root
+								task:add(process.bytes({ "svn", "cat", "-r", "BASE", literal_target(path) }, {
+									cwd = root,
+									timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
+								}, function(base, base_err)
+									if not base then
+										return task:finish(nil, base_err)
+									end
+									local format = require("lazyvcs.backends.blame_format")
+									local common = require("lazyvcs.backends.comparison")
+									local function decode(bytes)
+										if opts.profile then
+											return require("lazyvcs.compare_text").decode(
+												bytes,
+												opts.profile,
+												format.decode_limit()
 											)
 										end
+										local options = common.decode_options(path)
+										options.hint = nil
+										return require("lazyvcs.compare_text").decode_preview(
+											bytes,
+											options,
+											format.decode_limit()
+										)
+									end
+									local document, decode_err = decode(base)
+									if not document then
+										return task:finish(
+											nil,
+											opts.preview and "SVN BASE for blame: " .. tostring(decode_err)
+												or decode_err
+										)
+									end
+									local valid, format_err = format.svn_document(
+										document,
+										lines,
+										opts.profile and opts.profile.fileformat or "dos"
 									)
-								)
+									if not valid then
+										return task:finish(nil, format_err)
+									end
+									local current = opts.text
+									if not current or current.eol == nil then
+										local bytes = opts.contents or current and util.join_lines(current.lines)
+										if not bytes then
+											local ok, rows = pcall(vim.fn.readfile, path, "b")
+											if not ok then
+												return task:finish(nil, tostring(rows))
+											end
+											bytes = table.concat(rows, "\n")
+										elseif type(bytes) == "table" then
+											bytes = util.join_lines(bytes)
+										end
+										current, decode_err = decode(bytes)
+										if not current then
+											return task:finish(nil, decode_err)
+										end
+									end
+									task:finish(
+										require("lazyvcs.backends.blame_mapping").map(
+											lines,
+											document,
+											current,
+											"     - - -"
+										),
+										nil,
+										root
+									)
+								end))
 							end
 						)
 					)

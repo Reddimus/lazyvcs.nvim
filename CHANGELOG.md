@@ -82,6 +82,18 @@ and this project adheres to
 - Let `h` collapse repository rows and clarify the documented `l` toggle.
 - Preserve the active tab and cursor when a background popup closes.
 - Stop cancelled sidebar status reads and repository discovery until you retry.
+- Reject incompatible SVN BASE preview blame and keep final-newline edits
+  uncommitted in SVN blame, including saved Compare previews.
+- Use decoded text for Git blame in encoded saved Compare previews.
+- Show line-history commits after Git renames and display their author names and
+  messages as UTF-8.
+- Keep blame splits aligned when diagnostic virtual lines change.
+- Revert final-newline changes that leave an empty buffer row with
+  `nofixendofline`.
+- Keep pending hunk commands through base mutations and replacement-base loads.
+- Render and remove native signs in batches so large changes allow input and
+  redraw between batches.
+- Report failed file-picker buffer switches without a callback traceback.
 
 ## [0.12.1] - 2026-10-23
 

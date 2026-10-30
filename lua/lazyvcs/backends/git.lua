@@ -1272,10 +1272,16 @@ function M.revision_log(path, revision)
 	if not relpath then
 		return nil, path_err
 	end
-	local lines, log_err = util.system_lines(
-		{ "git", "show", "--no-ext-diff", "--no-color", "--stat", "--format=medium", tostring(revision), "--", relpath },
-		{ cwd = root }
-	)
+	local lines, log_err = util.system_lines({
+		"git",
+		"show",
+		"--no-ext-diff",
+		"--no-color",
+		"--stat",
+		"--format=medium",
+		"--encoding=UTF-8",
+		tostring(revision),
+	}, { cwd = root })
 	if not lines then
 		return nil, log_err
 	end
@@ -1303,9 +1309,8 @@ function M.revision_log_async(path, revision, on_done, opts)
 			"--no-color",
 			"--stat",
 			"--format=medium",
+			"--encoding=UTF-8",
 			tostring(revision),
-			"--",
-			relpath,
 		}, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
