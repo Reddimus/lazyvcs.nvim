@@ -28,6 +28,7 @@ if not vim.env.LAZYVCS_TEST_GROUP or vim.env.LAZYVCS_TEST_GROUP == "" then
 	end
 	for _, group in ipairs(groups) do
 		print(string.format("\n===== lazyvcs test group: %s =====", group))
+		-- Hosted macOS SVN fixtures exceed ten minutes even on healthy main runs.
 		local captured, captured_error = {}, {}
 		local result = vim.system({
 			vim.v.progpath,
@@ -50,7 +51,7 @@ if not vim.env.LAZYVCS_TEST_GROUP or vim.env.LAZYVCS_TEST_GROUP == "" then
 			env = {
 				LAZYVCS_TEST_GROUP = group,
 			},
-		}):wait(600000)
+		}):wait(vim.fn.has("macunix") == 1 and 1200000 or 600000)
 		local output = table.concat(captured) .. table.concat(captured_error)
 		if
 			result.code ~= 0
