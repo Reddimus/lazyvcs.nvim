@@ -7,15 +7,15 @@ local M = {}
 function M.new(changes)
 	local requests = {}
 	local gate = {}
-	local function identity(path, entry)
+	local function identity(path, entry, ignorecase)
 		local canonical = entry and util.canonical_entry_path(path) or util.canonical_path(path)
-		return vim.o.fileignorecase and canonical:lower() or canonical
+		return ignorecase and canonical:lower() or canonical
 	end
 	local function matches(change, request)
-		local path = identity(request.path, true)
-		return (not request.root or identity(request.root) == change.root)
+		local path = identity(request.path, true, change.ignorecase)
+		return (not request.root or identity(request.root, false, change.ignorecase) == change.root)
 			and (not change.paths or change.paths[path])
-			and util.relative_literal_path(change.root, path) ~= nil
+			and util.relative_literal_path(change.root, path, change.ignorecase) ~= nil
 	end
 	local function active_change(request)
 		for change in pairs(changes) do

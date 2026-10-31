@@ -1171,19 +1171,19 @@ function M.normalize_literal_path(path)
 end
 
 ---Lexical membership only: no environment expansion, realpath, or per-file I/O.
----Use Neovim's filename case convention for display and buffer matching.
+---Default to Neovim's filename case convention; callers may capture a policy.
 ---@param root string
 ---@param path string
+---@param ignorecase? boolean
 ---@return string? relative
-function M.relative_literal_path(root, path)
+function M.relative_literal_path(root, path, ignorecase)
 	if root == "" or path == "" then
 		return nil
 	end
-	return relative_normalized_path(
-		M.normalize_literal_path(root),
-		M.normalize_literal_path(path),
-		vim.o.fileignorecase
-	)
+	if ignorecase == nil then
+		ignorecase = vim.o.fileignorecase
+	end
+	return relative_normalized_path(M.normalize_literal_path(root), M.normalize_literal_path(path), ignorecase)
 end
 
 ---@param path string

@@ -468,18 +468,18 @@ local function ensure_state(bufnr, path)
 	return state
 end
 
-local function path_identity(path, entry)
+local function path_identity(path, entry, ignorecase)
 	local canonical = entry and util.canonical_entry_path(path) or util.canonical_path(path)
-	return vim.o.fileignorecase and canonical:lower() or canonical
+	return ignorecase and canonical:lower() or canonical
 end
 
 local function matches_change(change, state)
 	local _, cached_root = backends.resolve_cached(state.path)
 	local root = state.root or cached_root
-	local path = path_identity(state.path, true)
+	local path = path_identity(state.path, true, change.ignorecase)
 	return (
-		root and path_identity(root) == change.root
-		or (not root and util.relative_literal_path(change.root, path) ~= nil)
+		root and path_identity(root, false, change.ignorecase) == change.root
+		or (not root and util.relative_literal_path(change.root, path, change.ignorecase) ~= nil)
 	) and (not change.paths or change.paths[path] == true)
 end
 
@@ -561,11 +561,12 @@ delegate_to_gitsigns = function(bufnr, state, on_ready)
 end
 
 function M.begin_base_change(root, paths)
-	local change = { root = path_identity(root) }
+	local change = { ignorecase = vim.o.fileignorecase }
+	change.root = path_identity(root, false, change.ignorecase)
 	if paths then
 		change.paths = {}
 		for _, path in ipairs(paths) do
-			change.paths[path_identity(path, true)] = true
+			change.paths[path_identity(path, true, change.ignorecase)] = true
 		end
 	end
 	base_changes[change] = true

@@ -544,23 +544,24 @@ refresh = function(bufnr, reuse)
 	layout.refresh(session)
 end
 
-local function path_identity(path, entry)
+local function path_identity(path, entry, ignorecase)
 	local canonical = entry and util.canonical_entry_path(path) or util.canonical_path(path)
-	return vim.o.fileignorecase and canonical:lower() or canonical
+	return ignorecase and canonical:lower() or canonical
 end
 
 local function change_matches(change, session)
 	return not session.readonly_comparison
-		and path_identity(session.root) == change.root
-		and (not change.paths or change.paths[path_identity(session.source_path, true)])
+		and path_identity(session.root, false, change.ignorecase) == change.root
+		and (not change.paths or change.paths[path_identity(session.source_path, true, change.ignorecase)])
 end
 
 function M.begin_base_change(root, paths)
-	local change = { root = path_identity(root) }
+	local change = { ignorecase = vim.o.fileignorecase }
+	change.root = path_identity(root, false, change.ignorecase)
 	if paths then
 		change.paths = {}
 		for _, path in ipairs(paths) do
-			change.paths[path_identity(path, true)] = true
+			change.paths[path_identity(path, true, change.ignorecase)] = true
 		end
 	end
 	base_changes[change] = true
