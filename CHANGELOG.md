@@ -10,13 +10,14 @@ and this project adheres to
 
 ### Fixed
 
+- Reject AI generation keys that overwrite commit submission or cancellation.
 - Revert and navigate the hunk under the invoking cursor in splits of a live
   diff.
 - Keep a completed base refresh when returning from a pending live-diff
   transfer.
 - Mirror wrapping options in the base pane after switching live-diff files.
-- Revert Git live hunks against the displayed index. Delegate to gitsigns only
-  when its index base and complete hunk match the validated comparison.
+- Revert Git live hunks natively against the validated displayed index,
+  including when gitsigns is installed.
 - Attach Resession save hooks when a live diff opens with any plugin loader.
 - Restore inherited highlight namespaces, keep private overlays out of global
   defaults, and retain semantic suppression after theme changes on Neovim 0.11.
@@ -118,10 +119,6 @@ and this project adheres to
   unreadable scan root still reports an error.
 - Report preference synchronization and close failures without replacing the
   previous preferences.
-- Show staged final-newline changes in Git previews and hunk navigation,
-  including after refresh. Mark snapshot text that has no final newline.
-- Find Git repositories for deleted files whose parent directories are also
-  gone.
 - Open SVN directory rows as shallow property previews, including local and
   incoming additions. Keep file contents visible in file and directory
   replacements.
@@ -137,24 +134,6 @@ and this project adheres to
   names.
 - Escape control characters in repository paths shown by the job profile.
 - Reject duplicate mappings that spell the same less-than key as `<lt>` and `<`.
-- Refuse SVN directory Discard when a restored directory or its parent is a
-  symlink or junction, protecting files outside the working copy.
-- Protect untracked and ignored files at a staged rename's old path from
-  Discard. The confirmation now names both rename paths.
-- Refuse Unstage and Discard of staged additions that changed before the action
-  started, preserving newly committed files.
-- Refuse Stage when a file became a directory, while allowing tracked
-  submodules.
-- Resolve Git conflicts with Discard by restoring HEAD in the index and working
-  tree, or removing the file when HEAD deleted it. The confirmation names this
-  scope.
-- Publish Git branches even when a tag has the same name.
-- Skip unreadable subdirectories during repository discovery, keep the
-  repositories found, and show one notice for skipped directories. Preserve
-  saved repository visibility until discovery completes without errors. An
-  unreadable scan root still reports an error.
-- Report preference synchronization and close failures without replacing the
-  previous preferences.
 - Treat externally terminated commands as failures so failed commits keep their
   drafts and interrupted AI providers cannot return partial messages.
 - Keep Git features working when the editor inherits glob or case-insensitive
@@ -198,23 +177,6 @@ and this project adheres to
   MiB preview limit. Reject sparse previews if the index changes during loading.
 - Show removed SVN file properties and omit canceled file changes when bounded
   content and property checks confirm they match the selected revision.
-- Revert and navigate the hunk under the invoking cursor in splits of a live
-  diff.
-- Keep a completed base refresh when returning from a pending live-diff
-  transfer.
-- Mirror wrapping options in the base pane after switching live-diff files.
-- Attach Resession save hooks when a live diff opens with any plugin loader.
-- Restore inherited highlight namespaces, keep private overlays out of global
-  defaults, and retain semantic suppression after theme changes on Neovim 0.11.
-- Preserve syntax colors for self-links in custom highlight namespaces.
-- Preserve pasted commit message bodies when saving and reopening sidebar
-  drafts.
-- Keep confirmation choices visible when the editor uses closed folds.
-- Keep the selected file after a sidebar refresh unless you move during loading.
-- Show failed status reads with a retry action instead of a clean working tree.
-- Let `h` collapse repository rows and clarify the documented `l` toggle.
-- Preserve the active tab and cursor when a background popup closes.
-- Stop cancelled sidebar status reads and repository discovery until you retry.
 
 ## [0.12.1] - 2026-10-23
 

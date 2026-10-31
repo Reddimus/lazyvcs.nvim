@@ -3,6 +3,11 @@
 local config = require("lazyvcs.config")
 
 local M = {}
+local initialized = false
+
+function M.is_initialized()
+	return initialized
+end
 
 local function source_control_enabled()
 	if config.get().source_control.enabled then
@@ -20,6 +25,7 @@ function M.setup(opts)
 	require("lazyvcs.signs").setup()
 	require("lazyvcs.blame").setup()
 	require("lazyvcs.integrations.resession").setup()
+	initialized = true
 	return resolved
 end
 

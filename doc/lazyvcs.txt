@@ -26,8 +26,9 @@ lazyvcs.nvim provides native VCS workflows:
 
 The live diff shows the read-only base on the left and your editable file on
 the right. Git compares against the index. SVN uses BASE with
-`svn cat -r BASE path`. Git untracked files and SVN added files use an empty
-base. See |lazyvcs-inline-signs| for Git attribute handling.
+`svn cat -r BASE path`. Nonignored Git untracked files and SVN additions
+without history use an empty base. Copied and moved SVN files retain their
+BASE history. See |lazyvcs-inline-signs| for Git attribute handling.
 
 Git subprocesses always strip GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY,
 GIT_ALTERNATE_OBJECT_DIRECTORIES, GIT_COMMON_DIR, GIT_NAMESPACE, GIT_PREFIX,
@@ -341,13 +342,15 @@ Suggested global mappings, as in the |lazyvcs-configuration| install spec:
     ]v           next hunk
     [v           previous hunk
 
-Live diff buffer-local mappings:
+Live diff buffer-local mappings (hunk keys apply in the editable pane):
 
     q            close the live diff session (keymaps.close)
     <leader>q    close from the left/base diff window
     <leader>vr   revert current hunk
     ]v           next hunk
     [v           previous hunk
+
+From the base pane, use :LazyVCS hunk next/prev/revert or global mappings.
 
 The left/base pane always maps <leader>q as a close alias, in addition to
 keymaps.close, because that pane is read-only. It is not configurable;
@@ -751,8 +754,8 @@ Optional integrations are detected at runtime:
 
     gitsigns.nvim     Git signs, navigation, and previews
     snacks.nvim       Action picker, VS Code-style Git branch picker,
-                      and SVN file pickers
-    fzf-lua           SVN file, branch/tag, and action picker fallback
+                      and Git/SVN file pickers
+    fzf-lua           Git/SVN file, branch/tag, and action picker fallback
     CopilotChat.nvim  Commit-message generation with `gm`
     Claude CLI        Commit-message generation with `gm`
     Codex CLI         Commit-message generation with `gm`
@@ -762,15 +765,17 @@ Optional integrations are detected at runtime:
 |:checkhealth| `lazyvcs` reports `vanilla` mode when built-in fallbacks are
 active and `enhanced` mode when one or more optional integrations are present.
 
-To install all enhanced integrations, remove optional=true and add them as
-lazy.nvim dependencies:
+To install all enhanced integrations, add them as lazy.nvim dependencies:
 
 >lua
   dependencies = {
     "lewis6991/gitsigns.nvim",
     "folke/snacks.nvim",
     "ibhagwan/fzf-lua",
-    "CopilotC-Nvim/CopilotChat.nvim",
+    {
+      "CopilotC-Nvim/CopilotChat.nvim",
+      dependencies = { "nvim-lua/plenary.nvim" },
+    },
   }
 <
 
@@ -1027,15 +1032,16 @@ Git/SVN blame options:
 
 Terminal Neovim cannot apply true per-text opacity. lazyvcs uses muted,
 theme-aware Comment highlights for blame text. Inline blame stays quiet during
-fast loads, shows `Blame loading...` only for slow SVN calls, and labels local
-SVN rows as `Uncommitted line` instead of displaying raw `- - -` placeholders.
+fast loads, shows blame.loading_text for slow Git or SVN calls, and labels
+local/uncommitted rows with blame.uncommitted_text. Git untracked files have
+no blame history and show no inline annotation.
 SVN attribution preserves full author names, including spaces. Git blame metadata
 is UTF-8 even when i18n.logOutputEncoding requests another encoding.
 
 Source-control options:
 
     enabled            Enable the source-control sidebar.
-    ui                 `auto` or `native`.
+    ui                 `auto` or `native`; both use the native sidebar.
     scan_depth         Nested repo discovery depth.
     width              Initial sidebar width, enforced beside fixed splits.
     auto_expand_width  Start sidebar in auto-fit mode.
@@ -1107,6 +1113,8 @@ close, so reads need no tree walk. taskkill requires a live direct process and
 falls back to direct termination. Descendants whose parent has already exited
 may survive for commands without an owned job. Explicit editor Git restore and
 SVN revert cancellation use mutation scope and terminate owned descendants.
+Forced cancellation can leave Git locks. LazyVCS reports a detected index.lock
+path and never deletes it automatically.
 
 Neovim exit discards queued work, including mutations that have not started.
 Running repository mutations (commit, update, merge, switch, stage, unstage,
@@ -1279,7 +1287,8 @@ NOTES                                                           *lazyvcs-notes*
   transfer their live diff when you switch to another supported file.
 - Git compares live diff buffers against the index.
 - SVN compares live diff buffers against working-copy BASE.
-- Git untracked files and SVN added files show an empty base.
+- Nonignored Git untracked files and SVN additions without history show an
+  empty base. Copied and moved SVN files retain their BASE history.
 - Native hunks compare decoded UTF-8 buffer text with the Git index or SVN BASE,
   preserving CRLF, BOMs, supported file encodings, empty files, and final-newline
   changes. Raw and decoded live-diff content is limited to 1 MiB per side; signs
@@ -1329,5 +1338,10 @@ NOTES                                                           *lazyvcs-notes*
 
 - Inline blame is one global toggle; with `blame.persist` it is saved to
   `stdpath('state')/lazyvcs/state.json` and restored on the next launch.
+
+Compare and session saves: AstroNvim may skip autosaving a Compare tab because
+its panes include scratch buffers. Explicit Resession saves while Compare is
+open can omit borrowed files or retain Compare window options. Close Compare
+before saving a session; live-diff save integration does not cover Compare.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

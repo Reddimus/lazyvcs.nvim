@@ -18,6 +18,7 @@ end
 
 function M.files()
 	local path = current_path()
+	local target = require("lazyvcs.editor_target").capture(vim.api.nvim_get_current_win())
 	return backends.changed_files_async(path, function(items, err)
 		if not items then
 			return util.notify(err or "Unable to list changed files", vim.log.levels.WARN)
@@ -40,7 +41,16 @@ function M.files()
 				if not item then
 					return
 				end
-				vim.cmd.edit(vim.fn.fnameescape(item.absolute_path))
+				local editor_target = require("lazyvcs.editor_target")
+				if not editor_target.valid(target) then
+					return util.notify("File destination changed; select the file again", vim.log.levels.WARN)
+				end
+				if target.fallback then
+					vim.cmd.tabedit(vim.fn.fnameescape(item.absolute_path))
+				else
+					vim.api.nvim_set_current_win(target.winid)
+					vim.cmd.edit(vim.fn.fnameescape(item.absolute_path))
+				end
 			end)
 		)
 	end)
