@@ -7265,6 +7265,7 @@ vim.list_extend(cases, require("spec_patch_svn_descendant")({ helpers = helpers,
 vim.list_extend(cases, require("spec_patch_reload_owners")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_patch_reuse_lifetime")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_patch_setup_lifetime")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_cancel_ownership")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(
 	cases,
 	require("spec_discovery")({

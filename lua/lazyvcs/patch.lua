@@ -249,9 +249,18 @@ local function fill(view, text, loading, content)
 			and api.nvim_buf_is_valid(view.buf)
 	end
 	local function unchanged()
-		return owned()
-			and api.nvim_buf_get_name(view.buf) == expected_name
-			and api.nvim_buf_get_changedtick(view.buf) == expected_tick
+		if not owned() then
+			return false
+		end
+		if
+			api.nvim_buf_get_name(view.buf) ~= expected_name
+			or api.nvim_buf_get_changedtick(view.buf) ~= expected_tick
+		then
+			-- Kept user data no longer belongs to a retry of this patch path.
+			views[view.path] = nil
+			return false
+		end
+		return true
 	end
 	local function current()
 		if not owned() then
@@ -282,6 +291,9 @@ local function fill(view, text, loading, content)
 				then
 					view.winbars[win] = title
 					util.set_win_option(win, "winbar", title)
+					if not unchanged() then
+						return false
+					end
 				end
 			end
 		end
