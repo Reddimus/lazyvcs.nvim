@@ -1705,6 +1705,8 @@ reload_session = function(session)
 			result.base_bytes = result.left.bytes
 				or (result.left.source and result.left.source.kind == "empty" and "" or nil)
 			if live.readonly_comparison and util.buf_is_valid(live.editable_bufnr) then
+				local rail = require("lazyvcs.absent_rail")
+				live.rail_text = rail.text_lines(result.left.lines or {}) and rail.text_lines(result.right.lines or {})
 				vim.bo[live.editable_bufnr].modifiable = true
 				vim.bo[live.editable_bufnr].readonly = false
 				vim.api.nvim_buf_set_lines(live.editable_bufnr, 0, -1, false, result.right.lines or {})

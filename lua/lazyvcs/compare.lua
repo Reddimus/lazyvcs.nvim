@@ -196,6 +196,7 @@ resize = rail.guard(function(s, manual_event)
 		and s.preview_result
 		and s.preview_result.left_document
 		and s.preview_result.right_document
+		and not (s.worktree and s.worktree.capture_error)
 		and s.shown_item
 		and not s.shown_item.property_only
 		and s.shown_item.kind ~= "dir"
@@ -808,12 +809,17 @@ local function update_worktree(s, record)
 			"WORKTREE (unsaved) | " .. s.shown_item.relpath .. " | hunks unavailable: " .. (why or "unsupported text")
 		):gsub("%%", "%%%%")
 		set_label(s.rightwin, s.right_label, s.right)
-		if record.capture_error ~= why then
-			record.capture_error = why
-			util.notify(why or "Working buffer hunks are unavailable", vim.log.levels.WARN)
+		local capture_error = why or "Working buffer hunks are unavailable"
+		if record.capture_error ~= capture_error then
+			record.capture_error = capture_error
+			util.notify(capture_error, vim.log.levels.WARN)
+		end
+		if s.rail then
+			resize(s)
 		end
 		return
 	end
+	local recovered = record.capture_error ~= nil
 	record.capture_error = nil
 	local result = assert(worktree.result(record, s.preview_result, current))
 	if result.profile_key ~= s.preview_result.profile_key then
@@ -861,6 +867,9 @@ local function update_worktree(s, record)
 		current
 	)
 	labels(s, left_label, right_label)
+	if recovered then
+		resize(s)
+	end
 end
 
 local function refresh_worktree_list(s, record)
