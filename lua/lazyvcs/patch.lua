@@ -357,6 +357,16 @@ local function clear_departed_winbars(view)
 	end))
 end
 
+-- Native splits copy a published title without an entry in the per-window map.
+-- Keep the last settled and in-progress publication only for this view's lifetime.
+local function owned_winbar(view, win)
+	if not api.nvim_win_is_valid(win) or api.nvim_win_get_buf(win) ~= view.buf then
+		return false
+	end
+	local title = util.get_win_option(win, "winbar")
+	return title == view.winbars[win] or title == view.published_title or title == view.publishing_title
+end
+
 local function fill(view, text, loading, content)
 	local generation, task = view.generation, view.task
 	local writable = false
@@ -393,17 +403,16 @@ local function fill(view, text, loading, content)
 				if not unchanged() then
 					return false
 				end
-				if
-					api.nvim_win_is_valid(win)
-					and api.nvim_win_get_buf(win) == view.buf
-					and util.get_win_option(win, "winbar") == view.winbars[win]
-				then
+				if owned_winbar(view, win) then
 					view.winbars[win] = title
 					util.set_win_option(win, "winbar", title)
 					if not unchanged() then
 						return false
 					end
 				end
+			end
+			if unchanged() then
+				view.published_title, view.publishing_title = title, nil
 			end
 		end
 		return false
@@ -441,6 +450,7 @@ local function fill(view, text, loading, content)
 		title = "PATCH | No changes under " .. view.path
 	end
 	title = (title .. " | q close  R reload  Y copy  <CR> file  ]v/[v hunk"):gsub("%%", "%%%%")
+	view.publishing_title = title
 	for _, win in ipairs(vim.fn.win_findbuf(view.buf)) do
 		-- A title callback can retire this render or close another captured window.
 		if not current() then
@@ -451,7 +461,11 @@ local function fill(view, text, loading, content)
 			util.set_win_option(win, "winbar", title)
 		end
 	end
-	return current()
+	if not current() then
+		return false
+	end
+	view.published_title, view.publishing_title = title, nil
+	return true
 end
 
 local function collect(path, opts, done)
@@ -644,17 +658,16 @@ local function cancel_loading(view, task, generation, name, tick)
 		if not current() then
 			return
 		end
-		if
-			api.nvim_win_is_valid(win)
-			and api.nvim_win_get_buf(win) == buf
-			and util.get_win_option(win, "winbar") == view.winbars[win]
-		then
+		if owned_winbar(view, win) then
 			view.winbars[win] = title
 			util.set_win_option(win, "winbar", title)
 			if not current() then
 				return
 			end
 		end
+	end
+	if current() then
+		view.published_title, view.publishing_title = title, nil
 	end
 end
 
