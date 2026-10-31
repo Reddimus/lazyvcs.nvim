@@ -3,8 +3,10 @@ local M = {}
 local defaults = {
 	debounce_ms = 120,
 	diff_highlighting = "syntax",
+	diff_style = { enabled = true, filler = "auto", removed = true },
 	base_window = {
 		width = 0.5,
+		collapse_absent = true,
 		-- Keep the two panes' cursors on corresponding lines. `:diffthis` already
 		-- sets 'cursorbind'; lazyvcs re-asserts it so a later ftplugin or
 		-- colorscheme cannot silently unbind the pair.
@@ -19,6 +21,7 @@ local defaults = {
 	session_keymaps = true,
 	compare = {
 		editable = true,
+		collapse_absent = true,
 		max_cached_files = 32,
 		keymaps = { files = "<leader>vf", edit = "<leader>ve", help = "<leader>v?" },
 	},
@@ -147,6 +150,15 @@ local function normalize_width(width)
 end
 
 local function normalize(opts)
+	vim.validate("diff_style", opts.diff_style, "table")
+	vim.validate("diff_style.enabled", opts.diff_style.enabled, "boolean")
+	vim.validate("diff_style.removed", opts.diff_style.removed, "boolean")
+	local filler = opts.diff_style.filler
+	if
+		type(filler) ~= "string" or (filler ~= "auto" and (filler:find("[%c]") or vim.fn.strdisplaywidth(filler) ~= 1))
+	then
+		error('lazyvcs diff_style.filler must be "auto" or a single display cell')
+	end
 	if opts.diff_highlighting ~= "syntax" and opts.diff_highlighting ~= "editor" then
 		error('lazyvcs diff_highlighting must be "syntax" or "editor"')
 	end
@@ -156,6 +168,7 @@ local function normalize(opts)
 	vim.validate("keymaps", opts.keymaps, "table")
 	vim.validate("compare", opts.compare, "table")
 	vim.validate("compare.editable", opts.compare.editable, "boolean")
+	vim.validate("compare.collapse_absent", opts.compare.collapse_absent, "boolean")
 	vim.validate("compare.keymaps", opts.compare.keymaps, "table")
 	finite_number("compare.max_cached_files", opts.compare.max_cached_files)
 	if
@@ -165,6 +178,7 @@ local function normalize(opts)
 		error("lazyvcs compare.max_cached_files must be a nonnegative integer")
 	end
 	vim.validate("base_window", opts.base_window, "table")
+	vim.validate("base_window.collapse_absent", opts.base_window.collapse_absent, "boolean")
 	vim.validate("source_control", opts.source_control, "table")
 	vim.validate("signs", opts.signs, "table")
 	vim.validate("blame", opts.blame, "table")

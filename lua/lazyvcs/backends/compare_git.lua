@@ -340,6 +340,7 @@ end
 function M.preview(snapshot, item, callback, opts)
 	local task = common.task(callback)
 	local result = {
+		presence = require("lazyvcs.diff_labels").snapshot(item),
 		left_label = snapshot.base .. " @ " .. snapshot.revision:sub(1, 12),
 		right_label = "SAVED WORKTREE",
 		loaded = { text = not (opts and opts.mode == "metadata"), metadata = true },
@@ -445,7 +446,7 @@ function M.preview(snapshot, item, callback, opts)
 		end)
 	end
 	local function left()
-		if item.status == "A" or item.original_status == "A" or item.untracked then
+		if result.presence.left == "absent" then
 			result.left_kind = "missing"
 			common.decode_side(result, "left", "", { encoding = "utf-8" })
 			right()
@@ -544,7 +545,7 @@ function M.preview(snapshot, item, callback, opts)
 			done(attrs)
 		end)
 	end
-	local empty_left = item.status == "A" or item.original_status == "A" or item.untracked
+	local empty_left = result.presence.left == "absent"
 	local empty_right = item.status == "D"
 	local pending = (empty_left and 0 or 1) + (empty_right and 0 or 1)
 	local function ready()

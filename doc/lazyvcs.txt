@@ -877,8 +877,14 @@ block with lua/lazyvcs/config.lua.
     require("lazyvcs").setup({
       debounce_ms = 120,
       diff_highlighting = "syntax",
+      diff_style = {
+        enabled = true,
+        filler = "auto",
+        removed = true,
+      },
       base_window = {
         width = 0.5,
+        collapse_absent = true,
         cursor_sync = true,
         align_wrapped = "off",
       },
@@ -887,6 +893,7 @@ block with lua/lazyvcs/config.lua.
       session_keymaps = true,
       compare = {
         editable = true,
+        collapse_absent = true,
         max_cached_files = 32,
         keymaps = { files = "<leader>vf", edit = "<leader>ve", help = "<leader>v?" },
       },
@@ -978,12 +985,19 @@ Main options:
     use_gitsigns       Delegate Git signs, navigation, and large-file previews.
                        Live hunk resets use native buffer replacement.
     set_winbar         Set simple winbar labels during live diff.
+    diff_style         Diff presentation; see |lazyvcs-diff-style|.
+                       enabled: use subdued filler and directional colors.
+                       filler: "auto" or a string of display width one.
+                       removed: color old-side-only lines as removed.
     session_keymaps    Add buffer-local live diff and Compare navigation mappings.
     base_window.width  Left/base diff window width. Values <= 1 are a ratio
                        of the combined pane width; values > 1 are columns.
                        Column counts round down after classification.
                        Reapplied on resize. Each pane keeps at least 30 columns
                        when space permits. Sidebars are excluded.
+    base_window.collapse_absent
+                       Shrink a confirmed absent side to a narrow rail.
+                       Default true. See |lazyvcs-absent-rail|.
     base_window.cursor_sync
                        Keep both diff cursors on corresponding lines.
                        Default true.
@@ -1011,6 +1025,10 @@ Compare pane shortcuts:
 
     compare.editable   Edit real working files in the right pane. Default true.
                        false keeps both panes as saved-content snapshots.
+
+    compare.collapse_absent
+                       Shrink a confirmed absent side to a narrow rail.
+                       Default true. See |lazyvcs-absent-rail|.
 
     compare.keymaps.files  Focus the file list. Default "<leader>vf".
     compare.keymaps.edit   Edit at the review position. Default "<leader>ve".
@@ -1053,6 +1071,69 @@ link chain. Neovim's public API cannot distinguish ordinary and global-only
 links. Links to unmodified targets or identical definitions keep the pooled path.
 Source-preserving windows retain semantic overlays and their 'winhighlight'.
 Use diff_highlighting = "editor" to retain semantic colors in every diff window.
+
+ABSENT FILE RAIL                                         *lazyvcs-absent-rail*
+
+Compare and live diff shrink a confirmed absent side to a narrow rail after
+loading a text comparison. Both windows remain in native diff mode. Added files
+use a left rail; deleted files use a right rail. Unknown presence, loading,
+errors, metadata, properties, binary files, and oversized previews do not
+collapse. The current pane never collapses.
+
+The rail has max(3, 'winminwidth') columns, or max(1, 'winminheight') text rows
+in stacked Compare. It hides number, sign, fold, and status columns. Layouts
+that cannot gain space retain the normal split. The present pane's label
+explains the absence, while the rail keeps its short label.
+
+Focus the rail with the mouse or a window movement such as CTRL-W h to expand
+it. Compare restores equal panes; live diff restores base_window.width. It
+stays expanded across refresh and resize for that file and base. Showing
+another file or changing the base resets the choice. Picker previews and
+internal window calls do not expand it. Compare's e and :LazyVCS compare width
+continue to size the file list.
+
+Set compare.collapse_absent = false or base_window.collapse_absent = false to
+keep normal pane sizes with hatched filler. Rail options are restored on
+expansion and close. Session saves project the original window options.
+
+DIFF STYLE                                              *lazyvcs-diff-style*
+
+Compare and live diff mark empty regions with a faint diagonal hatch (╱).
+These are alignment filler rows, not deleted text. LazyVcsDiffFiller defaults
+to NonText and inherits the window background. Old-side-only lines use
+LazyVcsDiffRemoved, which copies the theme's DiffDelete colors. New-side-only
+lines keep DiffAdd. DiffChange and DiffText keep their theme colors. User-defined
+highlight groups and explicit DiffAdd/DiffDelete winhighlight mappings win.
+Blame splits are unaffected.
+
+Live window mappings use private LazyVcsOverlayFiller/Removed aliases. Customize
+colors through LazyVcsDiffFiller/Removed. The two aliases, LazyVcsSemanticHidden,
+and pairs LazyVcsDiffOwner:LazyVcsDiffOwner<digits> are reserved for cleanup;
+other mappings, including mappings to the public groups, remain user options.
+
+Set diff_style = { enabled = false } to keep native diff colors and filler.
+Set filler = "/" for a plain hatch, or removed = false to keep native DiffAdd
+on both sides. The default filler = "auto" respects an existing diff: entry in
+the effective 'fillchars'. All changes are window-local and restored when
+the pane releases them; changes you make while a view is open are preserved.
+For copied diff windows, apply custom options on WinEnter or with vim.schedule
+from WinNew. Earlier non-nested WinNew callbacks can run before cleanup of copied
+options and suppress the option events needed to preserve equal-value changes.
+Your 'diffopt' is respected, including a value without filler or with linematch.
+If 'ambiwidth' is double when a view opens, the hatch falls back to /.
+Changing 'ambiwidth' to double after opening may raise E835. Choose filler = "/"
+before opening to avoid that error.
+
+Labels distinguish confirmed absence from empty content. An added file shows
+"No file at <base>" on the old side and "Added (no file at <base>)" on the new
+side. A deletion shows "Deleted from worktree" on the old side and "No file in
+worktree" on the new side. A confirmed Git intent-to-add shows "Intent to add
+(no staged content)". Present zero-byte files append " | Empty", including
+empty additions. Unknown presence keeps the existing labels. Compare retains
+its path labels and WORKTREE (unsaved) indicator. Live Git compares against the
+index, so staged additions have a present base while untracked files do not.
+Sidebar staged snapshots compare HEAD with INDEX; their absence labels name
+those endpoints, independently of files retained in the worktree.
 Reused namespaces and ColorScheme refreshes replace copied default definitions
 with the current theme colors, preserving the source definitions.
 The internal overlay is bounded to 4096 entries and 256 KiB, plus your mappings.

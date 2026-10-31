@@ -3,6 +3,7 @@ local aerial = require("lazyvcs.integrations.aerial")
 local editor = require("lazyvcs.integrations.editor")
 local highlighting = require("lazyvcs.highlighting")
 local fold_state = require("lazyvcs.fold_state")
+local rail = require("lazyvcs.absent_rail")
 
 local M = {}
 local departed_buffers = {}
@@ -48,8 +49,12 @@ local function resolve_base_buffer_name(session)
 	end
 end
 
-local function resolve_base_width(session)
+function M.resolve_base_width(session)
 	local total = vim.api.nvim_win_get_width(session.editable_win) + vim.api.nvim_win_get_width(session.base_win)
+	if session.rail then
+		local size = math.max(3, vim.o.winminwidth)
+		return session.rail.win == session.base_win and size or total - size
+	end
 	local width = session.opts.base_window.width
 	local requested = math.floor(width <= 1 and total * width or width)
 	local minimum = math.min(30, math.floor(total / 2))
@@ -67,19 +72,34 @@ local function set_window_labels(session)
 		return
 	end
 
+	local left_label = (session.left_label or session.base_label):lower()
+	local right_label = (session.right_label or session.base_label):lower()
+	local left_document = session.base_text or { empty = #session.base_lines == 0 }
+	local right_document
+	if session.presence and util.buf_is_valid(session.editable_bufnr) then
+		right_document = { empty = require("lazyvcs.compare_text").is_empty(session.editable_bufnr) }
+	end
+	left_label, right_label = require("lazyvcs.diff_labels").labels(
+		left_label,
+		right_label,
+		session.backend == "git" and "INDEX" or "BASE",
+		session.presence,
+		left_document,
+		right_document
+	)
 	if util.win_is_valid(session.editable_win) and not session.paused then
 		session.editable_prev_winbar = session.editable_prev_winbar
 			or util.get_win_option(session.editable_win, "winbar")
-		local right_label = session.right_label or session.base_label
 		local right_role = session.readonly_comparison and "right" or "editable"
-		session.editable_label = string.format(" lazyvcs %s %s [%s]", session.backend, right_label:lower(), right_role)
+		session.editable_label =
+			string.format(" lazyvcs %s %s [%s]", session.backend, right_label:lower():gsub("%%", "%%%%"), right_role)
 		util.set_win_option(session.editable_win, "winbar", session.editable_label)
 	end
 
 	if util.win_is_valid(session.base_win) then
 		session.base_prev_winbar = session.base_prev_winbar or util.get_win_option(session.base_win, "winbar")
-		local left_label = session.left_label or session.base_label
-		session.base_label_winbar = string.format(" lazyvcs %s %s [left]", session.backend, left_label:lower())
+		session.base_label_winbar =
+			string.format(" lazyvcs %s %s [left]", session.backend, left_label:lower():gsub("%%", "%%%%"))
 		util.set_win_option(session.base_win, "winbar", session.base_label_winbar)
 	end
 end
@@ -132,6 +152,10 @@ local function restore_window_option(winid, name, value)
 end
 
 local tracked_window_options = {
+	"winfixwidth",
+	"winfixheight",
+	"signcolumn",
+	"statuscolumn",
 	"number",
 	"relativenumber",
 	"cursorline",
@@ -151,12 +175,16 @@ local function capture_window_options(winid)
 	return util.capture_win_options(winid, tracked_window_options)
 end
 
-local function restore_window_options(winid, values)
+local rail_only_options = { winfixwidth = true, winfixheight = true, signcolumn = true, statuscolumn = true }
+
+local function restore_window_options(winid, values, preserve_rail_preferences)
 	if not util.win_is_valid(winid) or not values then
 		return
 	end
 	for _, name in ipairs(tracked_window_options) do
-		restore_window_option(winid, name, values[name])
+		if not (preserve_rail_preferences and rail_only_options[name]) then
+			restore_window_option(winid, name, values[name])
+		end
 	end
 end
 
@@ -349,15 +377,21 @@ function M.prepare_sessions_save(sessions, transaction)
 					folds = fold_state.capture(win),
 				}
 				transaction.windows[win] = record
-				local token = by_buffer[buf]
+				local token = by_window[win] or by_buffer[buf]
 				if
 					token
 					and tab == token.session.tabpage
-					and (win == token.win or (diff and not (token.session.preexisting_diff_windows or {})[win]))
+					and (
+						win == token.win
+						or win == token.base_win
+						or (diff and not (token.session.preexisting_diff_windows or {})[win])
+					)
 				then
 					record.token = token
 					record.options = capture_window_options(win)
 					record.winbar = util.get_win_option(win, "winbar")
+					record.fillchars = vim.api.nvim_get_option_value("fillchars", { win = win, scope = "local" })
+					record.projected_fillchars = highlighting.user_fillchars(win)
 					local user = highlighting.user_winhighlight(win)
 					local live = util.get_win_option(win, "winhighlight")
 					if user ~= live then
@@ -375,17 +409,23 @@ function M.prepare_sessions_save(sessions, transaction)
 	for _, token in ipairs(transaction.sessions) do
 		local session = token.session
 		for win, record in pairs(token.windows) do
-			for name, value in pairs(session.editable_window_options) do
+			local base = win == token.base_win
+			local original = base and session.base_window_options or session.editable_window_options
+			local applied = base and session.base_applied_options or session.editable_applied_options
+			local uncollapsed = rail.user_options(session, win, record.options)
+			for name, value in pairs(original) do
 				-- Reassigning an unchanged foldmethod recomputes non-diff folds.
-				if
-					record.options[name] == session.editable_applied_options[name]
-					and util.get_win_option(win, name) ~= value
-				then
+				if uncollapsed[name] == (applied or {})[name] and util.get_win_option(win, name) ~= value then
 					util.set_win_option_noautocmd(win, name, value)
 				end
 			end
-			if session.editable_label and record.winbar == session.editable_label then
-				util.set_win_option_noautocmd(win, "winbar", session.editable_prev_winbar)
+			local label = base and session.base_label_winbar or session.editable_label
+			local previous = base and session.base_prev_winbar or session.editable_prev_winbar
+			if label and record.winbar == label then
+				util.set_win_option_noautocmd(win, "winbar", previous)
+			end
+			if record.fillchars ~= record.projected_fillchars then
+				util.set_win_option_noautocmd(win, "fillchars", record.projected_fillchars)
 			end
 			if record.winhighlight ~= nil then
 				util.set_win_option_noautocmd(win, "winhighlight", record.projected)
@@ -418,6 +458,12 @@ function M.finish_sessions_save(transaction)
 							end
 						end
 						restore(util.set_win_option_noautocmd, win, "winbar", record.winbar)
+						if
+							vim.api.nvim_get_option_value("fillchars", { win = win, scope = "local" })
+							== record.projected_fillchars
+						then
+							restore(util.set_win_option_noautocmd, win, "fillchars", record.fillchars)
+						end
 						restore(function()
 							if
 								record.winhighlight ~= nil
@@ -489,10 +535,21 @@ function M.bind_pair(session, source_win)
 	end
 	for _, win in ipairs({ session.editable_win, session.base_win }) do
 		apply_diff(win)
-		highlighting.apply(win, session.opts.diff_highlighting)
+		highlighting.apply(
+			win,
+			session.opts.diff_highlighting,
+			win == session.base_win and "old" or "new",
+			session.opts.diff_style
+		)
 		util.set_win_options(win, { scrollbind = true, cursorbind = session.opts.base_window.cursor_sync })
 	end
-	session.editable_applied_options = capture_window_options(session.editable_win)
+	session.editable_applied_options =
+		rail.user_options(session, session.editable_win, capture_window_options(session.editable_win))
+	session.base_applied_options =
+		rail.user_options(session, session.base_win, capture_window_options(session.base_win))
+	vim.schedule(util.safe_callback(function()
+		M.rebalance(session)
+	end))
 	if source_win ~= session.editable_win and source_win ~= session.base_win then
 		source_win = session.editable_win
 	end
@@ -503,9 +560,23 @@ function M.bind_pair(session, source_win)
 	return true
 end
 
--- Presentation has no repository identity. Detach native diff before replacing
--- the departed file's base so a new editor never displays an unrelated old base.
+-- Loading and unsupported displays need room for their messages.
+function M.clear_rail(session)
+	local previous = session.rail
+	rail.release(session)
+	if
+		previous
+		and same_tab(session.editable_win, session.base_win)
+		and vim.api.nvim_win_get_position(session.editable_win)[1] == vim.api.nvim_win_get_position(session.base_win)[1]
+		and vim.api.nvim_win_get_height(session.editable_win) == vim.api.nvim_win_get_height(session.base_win)
+	then
+		pcall(vim.api.nvim_win_set_width, session.base_win, M.resolve_base_width(session))
+	end
+end
+
+-- Detach native diff before replacing a departed file's base.
 function M.present(session, lines, filetype)
+	M.clear_rail(session)
 	M.reset_tab_diff(session.editable_win)
 	M.reset_tab_diff(session.base_win)
 	highlighting.release(session.editable_win)
@@ -525,6 +596,7 @@ function M.present(session, lines, filetype)
 end
 
 function M.rebind(old, replacement)
+	rail.release(old)
 	for _, key in ipairs({
 		"editable_win",
 		"base_win",
@@ -633,9 +705,22 @@ function M.open(session)
 
 	session.tabpage = vim.api.nvim_win_get_tabpage(editable_win)
 	session.phase = "active"
-	pcall(vim.api.nvim_win_set_width, session.base_win, resolve_base_width(session))
+	pcall(vim.api.nvim_win_set_width, session.base_win, M.resolve_base_width(session))
 	M.bind_pair(session, editable_win)
 	set_window_labels(session)
+	-- A read-only deletion opens an empty right snapshot. Place focus on its
+	-- present base before the scheduled initial rail installation.
+	if
+		session.opts.base_window.collapse_absent
+		and session.presence
+		and session.presence.right == "absent"
+		and session.presence.left == "present"
+		and (session.readonly_comparison and session.rail_text or not session.readonly_comparison and session.base_text)
+		and not (session.comparison and session.comparison.property_only)
+		and vim.api.nvim_get_current_win() == editable_win
+	then
+		vim.api.nvim_set_current_win(session.base_win)
+	end
 end
 
 function M.rebalance(session)
@@ -654,6 +739,7 @@ function M.rebalance(session)
 		or math.abs(ep[2] - bp[2])
 			~= vim.api.nvim_win_get_width(ep[2] < bp[2] and session.editable_win or session.base_win) + 1
 	then
+		rail.release(session)
 		return false
 	end
 	local editable_width = vim.api.nvim_win_get_width(session.editable_win)
@@ -667,10 +753,44 @@ function M.rebalance(session)
 	require("lazyvcs.align").schedule(session)
 
 	local total_width = editable_width + base_width
-	local target_base = resolve_base_width(session)
+	rail.identity(
+		session,
+		table.concat({
+			session.source_path or session.relpath,
+			session.base_label or "",
+			vim.inspect(session.base_identity or {}),
+		}, "\0")
+	)
+	local absent
+	if
+		session.opts.base_window.collapse_absent
+		and (session.readonly_comparison and session.rail_text or not session.readonly_comparison and session.base_text)
+		and not (session.comparison and (session.comparison.property_only or session.comparison.kind == "git_submodule"))
+		and not session.paused
+		and not session.capture_error
+		and not session.base_invalid
+		and not session.rail_expanded
+		and session.presence
+	then
+		if session.presence.left == "absent" and session.presence.right == "present" then
+			absent = "left"
+		elseif session.presence.right == "absent" and session.presence.left == "present" then
+			absent = "right"
+		end
+	end
+	local _, _, collapsed = require("lazyvcs.compare_view").pane_sizes(total_width, false, absent, vim.o.winminwidth)
+	---@type integer?
+	local candidate = collapsed == "left" and session.base_win or collapsed == "right" and session.editable_win or nil
+	-- A current rail is being visited by an internal call or awaits its guarded
+	-- focus handler. A newly focused pane must never be collapsed.
+	if not session.rail and candidate == vim.api.nvim_get_current_win() then
+		candidate = nil
+	end
+	rail.apply(session, candidate, false)
+	local target_base = M.resolve_base_width(session)
 	local target_editable = math.max(total_width - target_base, 1)
 
-	if math.abs(editable_width - target_editable) <= 1 and math.abs(base_width - target_base) <= 1 then
+	if editable_width == target_editable and base_width == target_base then
 		return false
 	end
 
@@ -750,6 +870,9 @@ function M.refresh(session)
 			end
 		end
 	end
+	vim.schedule(util.safe_callback(function()
+		M.rebalance(session)
+	end))
 	set_window_labels(session)
 	if util.win_is_valid(session.editable_win) then
 		vim.api.nvim_win_call(session.editable_win, function()
@@ -760,6 +883,7 @@ function M.refresh(session)
 end
 
 function M.close(session, opts)
+	rail.release(session)
 	opts = opts or {}
 	local base_survived, editable_restored = false, false
 	M.release_derived_diff(session)
@@ -776,7 +900,8 @@ function M.close(session, opts)
 			if session.opts.set_winbar then
 				restore_winbar(session.editable_win, session.editable_prev_winbar)
 			end
-			restore_window_options(session.editable_win, session.editable_window_options)
+			-- Only the rail owns these fields; release already restored its latest preferences.
+			restore_window_options(session.editable_win, session.editable_window_options, true)
 			editable_restored = true
 		else
 			M.remember_departed(session)
@@ -812,7 +937,7 @@ function M.close(session, opts)
 	end
 
 	if base_survived and util.win_is_valid(session.base_win) then
-		restore_window_options(session.base_win, session.base_window_options)
+		restore_window_options(session.base_win, session.base_window_options, true)
 		util.set_win_option(session.base_win, "winfixwidth", session.base_prev_winfixwidth or false)
 		if session.opts.set_winbar then
 			restore_winbar(session.base_win, session.base_prev_winbar)
@@ -822,6 +947,30 @@ function M.close(session, opts)
 	if opts.reset_tab_diff and not editable_restored then
 		M.reset_tab_diff(session.editable_win)
 	end
+end
+
+function M.rail_focus(session)
+	rail.focus(session, function()
+		return not valid_pair(session) or session.phase ~= "active"
+	end, function()
+		M.rebalance(session)
+	end)
+end
+
+-- These operations can move focus while installing or maintaining a pair.
+for _, name in ipairs({
+	"open",
+	"rebind",
+	"present",
+	"clear_rail",
+	"bind_pair",
+	"rebalance",
+	"refresh",
+	"close",
+	"prepare_sessions_save",
+	"finish_sessions_save",
+}) do
+	M[name] = rail.guard(M[name])
 end
 
 return M

@@ -193,6 +193,20 @@ function M.layout(columns, manual, auto, content, constraints)
 	return math.max(minimum, math.min(width, available)), stacked
 end
 
+-- Sizes exclude separators, winbars and statuslines. A rail must gain space.
+function M.pane_sizes(total, stacked, absent, minimum)
+	local left = math.max(1, math.floor(total / 2))
+	local right = math.max(1, total - left)
+	local size = math.max(stacked and 1 or 3, minimum)
+	if absent and size < math.min(left, right) then
+		if absent == "left" then
+			return size, total - size, absent
+		end
+		return total - size, size, absent
+	end
+	return left, right
+end
+
 M.highlights()
 vim.api.nvim_create_autocmd("ColorScheme", {
 	group = vim.api.nvim_create_augroup("lazyvcs_compare_highlights", { clear = true }),

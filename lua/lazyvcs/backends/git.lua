@@ -192,12 +192,34 @@ end
 ---@param payload table
 ---@return table
 local function finalize_payload(payload)
+	payload.presence = payload.presence
+		or {
+			left = payload.base_identity.untracked and "absent" or "present",
+			right = "present",
+		}
 	payload.base_identity.content = vim.fn.sha256(vim.base64.encode(payload.base_bytes))
 	payload.base_identity.base_encoding = payload.base_encoding
 	return payload
 end
 
-local function finish_index_payload(task, root, relpath, payload, opts, oid)
+local function finish_index_payload(task, root, relpath, payload, opts, oid, presence_checked)
+	-- Status can hide ITA entries. Inspect the index without trusting worktree flags.
+	if not presence_checked and payload.base_bytes == "" then
+		task:add(
+			require("lazyvcs.backends.git_index").intent_to_add_async(root, relpath, process.start, function(intent)
+				if not task:is_active() then
+					return
+				end
+				payload.presence = {
+					left = intent == nil and "unknown" or intent and "absent" or "present",
+					right = "present",
+					intent_to_add = intent == true or nil,
+				}
+				finish_index_payload(task, root, relpath, payload, opts, oid, true)
+			end, opts)
+		)
+		return
+	end
 	task:add(
 		process.bytes(
 			{ "git", "check-attr", "-z", "working-tree-encoding", "ident", "filter", "--", relpath },
@@ -533,7 +555,11 @@ local function conflict_base_async(path, root, relpath, callback, opts)
 					end
 					local identity = { root = root, relpath = relpath, index_stages = records }
 					if not ours then
-						return task:finish(finalize_payload({ base_bytes = "", base_identity = identity }))
+						return task:finish(finalize_payload({
+							base_bytes = "",
+							base_identity = identity,
+							presence = { left = "absent", right = "present" },
+						}))
 					end
 					task:add(process.bytes({ "git", "show", ours }, { cwd = root }, function(bytes, show_err)
 						if bytes == nil then
@@ -621,6 +647,7 @@ function M.resolve_diff_target(target)
 		relpath = relpath,
 		path = path,
 		section = section,
+		renamed_from = target.renamed_from,
 		change_kind = change_kind,
 		status = status,
 	}
@@ -650,21 +677,16 @@ function M.resolve_diff_target(target)
 	elseif section == "staged" then
 		comparison.kind = "git_staged"
 		local old_path = target.renamed_from or relpath
-		if change_kind == "added" or status:sub(1, 1) == "A" then
-			comparison.left = empty_side()
-		else
-			comparison.left = git_side("HEAD", "HEAD:" .. old_path, false)
-		end
-		if change_kind == "deleted" or status:sub(1, 1) == "D" then
-			comparison.right = empty_side()
-		else
-			comparison.right = git_side("INDEX", ":0:" .. relpath, false)
-		end
+		comparison.presence = { left = "unknown", right = "unknown", base = "HEAD", right_base = "INDEX" }
+		comparison.left = git_side("HEAD", "HEAD:" .. old_path, false)
+		comparison.right = git_side("INDEX", ":0:" .. relpath, false)
 	elseif section == "changes" then
 		comparison.kind = "git_unstaged"
+		comparison.presence = { left = "present", right = "unknown" }
 		comparison.left = git_side("INDEX", ":0:" .. relpath, false)
 		if change_kind == "deleted" or status:sub(2, 2) == "D" then
 			comparison.right = empty_side()
+			comparison.presence.right = "absent"
 		else
 			comparison.right = worktree_side(path)
 			comparison.editable_side = "right"
@@ -692,6 +714,34 @@ function M.load_diff_target_async(target, on_done, opts)
 		vim.schedule(function()
 			task:finish(nil, resolve_err)
 		end)
+		return task
+	end
+
+	if comparison.kind == "git_staged" and not comparison._staged_entries then
+		require("lazyvcs.backends.git_staged").prepare(
+			task,
+			comparison,
+			opts.timeout_ms or ASYNC_TIMEOUT_MS,
+			function(entries, err)
+				if not entries then
+					return task:finish(nil, err)
+				end
+				comparison._staged_entries = true
+				comparison.presence = { base = "HEAD", right_base = "INDEX" }
+				for _, key in ipairs({ "left", "right" }) do
+					local item = entries[key]
+					comparison.presence[key] = item and "present" or "absent"
+					comparison[key] = item and git_side(key == "left" and "HEAD" or "INDEX", item.object, false)
+						or empty_side()
+					comparison[key].label = key == "left" and "HEAD" or "INDEX"
+					comparison[key].snapshot_oid = item and item.oid or nil
+				end
+				comparison.title = "HEAD ↔ INDEX"
+				task:add(M.load_diff_target_async(comparison, function(value, why)
+					task:finish(value, why)
+				end, opts))
+			end
+		)
 		return task
 	end
 
@@ -863,6 +913,7 @@ function M.load_diff_target_async(target, on_done, opts)
 		if failed or pending ~= 0 or not task:is_active() then
 			return
 		end
+		comparison._staged_entries = nil
 		if comparison.editable_side == "right" then
 			pending = 1
 			local function loaded(payload, err)
@@ -870,6 +921,7 @@ function M.load_diff_target_async(target, on_done, opts)
 					return task:finish(nil, err)
 				end
 				comparison.base_identity = payload.base_identity
+				comparison.presence = payload.presence
 				comparison.left.base_encoding = payload.base_encoding
 				comparison.left.bytes, comparison.left.lines = payload.base_bytes, nil
 				task:finish(comparison)
@@ -881,6 +933,29 @@ function M.load_diff_target_async(target, on_done, opts)
 					M.load_base_async(comparison.path, loaded, { root = comparison.root, timeout_ms = opts.timeout_ms })
 				)
 			end
+		elseif
+			comparison.kind == "git_staged"
+			and comparison.right.bytes == ""
+			and comparison.presence.right == "present"
+		then
+			pending = 1
+			task:add(
+				require("lazyvcs.backends.git_index").intent_to_add_async(
+					comparison.root,
+					comparison.relpath,
+					util.system_start,
+					function(intent, err)
+						if intent == nil then
+							return task:finish(nil, err)
+						end
+						if intent then
+							comparison.presence.right = "absent"
+						end
+						task:finish(comparison)
+					end,
+					opts
+				)
+			)
 		else
 			task:finish(comparison)
 		end
@@ -925,7 +1000,7 @@ function M.load_diff_target_async(target, on_done, opts)
 		then
 			pending = pending + 1
 			local loader = process.bytes
-			task:add(loader({ "git", "show", "--no-ext-diff", source.object }, {
+			task:add(loader({ "git", "show", "--no-ext-diff", side.snapshot_oid or source.object }, {
 				cwd = comparison.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 			}, function(lines, err, raw)

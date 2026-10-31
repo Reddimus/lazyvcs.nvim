@@ -7357,6 +7357,43 @@ vim.list_extend(cases, require("spec_blame_lifecycle")({ helpers = helpers, wait
 vim.list_extend(cases, require("spec_blame_history")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_metadata")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_highlighting_defaults")())
+vim.list_extend(cases, require("spec_palette_source_case")())
+vim.list_extend(cases, require("spec_diff_style")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))
+vim.list_extend(cases, require("spec_live_close_options")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(
+	cases,
+	require("spec_diff_style_ita")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
+)
+vim.list_extend(cases, require("spec_diff_style_owner")({ helpers = helpers }))
+vim.list_extend(
+	cases,
+	require("spec_diff_style_palette")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
+)
+vim.list_extend(
+	cases,
+	require("spec_diff_style_intent")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
+)
+vim.list_extend(cases, require("spec_diff_style_svn_target")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_diff_style_staged")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_diff_style_staged_replacements")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_diff_style_eligibility")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_diff_style_shared_recovery")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_diff_style_reacquire")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_diff_style_presence_edges")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_diff_style_resume")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_absent_rail_reentry")())
+vim.list_extend(cases, require("spec_absent_rail_initial")())
+vim.list_extend(cases, require("spec_absent_rail_resume")())
+vim.list_extend(cases, require("spec_absent_rail_resume_copy")())
+vim.list_extend(cases, require("spec_diff_style_resume_intent")())
+vim.list_extend(
+	cases,
+	require("spec_absent_rail_ownership")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
+)
+vim.list_extend(
+	cases,
+	require("spec_diff_style_saved")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
+)
 vim.list_extend(cases, require("spec_highlighting")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_bytes")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_reload")({ helpers = helpers, wait_for = wait_for }))
@@ -7451,6 +7488,8 @@ vim.list_extend(cases, require("spec_source_control_a3_followup")({ helpers = he
 vim.list_extend(cases, require("spec_source_control_staged_intent")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_source_control_a3_v3")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_absent_rail")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,

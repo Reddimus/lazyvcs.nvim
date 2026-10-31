@@ -1261,6 +1261,7 @@ end
 
 local function finish_incomplete(repo, opts, run_command, on_done, scope, output, version)
 	local previous = opts.previous or {}
+	---@type lazyvcs.RepositoryStatus
 	local status =
 		M.make_error(repo, previous, "Status incomplete: output exceeded 32 MiB; cached rows and counts may be stale")
 	status.incomplete, status.counts_complete = true, false

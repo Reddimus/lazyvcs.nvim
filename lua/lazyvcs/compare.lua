@@ -10,6 +10,7 @@ local config = require("lazyvcs.config")
 local buffers = require("lazyvcs.compare_buffers")
 local catalog = require("lazyvcs.compare_actions")
 local worktree = require("lazyvcs.compare_worktree")
+local rail = require("lazyvcs.absent_rail")
 local worktree_event
 local M = {}
 local sessions = {}
@@ -17,7 +18,7 @@ local write, display = view.write, view.display
 
 local function protected(callback)
 	return function(...)
-		local ok, err = pcall(callback, ...)
+		local ok, err = pcall(rail.internal, callback, ...)
 		if not ok then
 			util.notify("Comparison: " .. tostring(err):gsub("%s+", " "), vim.log.levels.ERROR)
 		end
@@ -82,11 +83,14 @@ local function bind(_s, buf)
 	require("lazyvcs.window_controls").sync()
 end
 local function preview_options(s, win)
+	if s.rail and s.rail.win == win then
+		rail.release(s)
+	end
 	-- The buffer this pane holds Compare state for; only that one is reset.
 	s.pane_state = s.pane_state or {}
 	s.pane_state[win] = vim.api.nvim_win_get_buf(win)
 	if s.mode == "text" then
-		highlighting.apply(win, require("lazyvcs.config").get().diff_highlighting)
+		highlighting.apply(win, config.get().diff_highlighting, win == s.leftwin and "old" or "new")
 	else
 		highlighting.release(win)
 	end
@@ -122,7 +126,8 @@ end
 local function layout_constraints()
 	return { min_width = vim.o.winminwidth, min_height = vim.o.winminheight, height = vim.o.lines - vim.o.cmdheight - 3 }
 end
-local function resize(s, manual_event)
+local resize
+resize = rail.guard(function(s, manual_event)
 	if not alive(s) or vim.api.nvim_get_current_tabpage() ~= s.tab or s.resizing then
 		return
 	end
@@ -164,8 +169,14 @@ local function resize(s, manual_event)
 	local focused = vim.api.nvim_get_current_win()
 	local left_view, right_view = capture(s.leftwin), capture(s.rightwin)
 	local side_view = capture(s.sidewin)
+	local bindings = {}
+	for _, win in ipairs({ s.leftwin, s.rightwin }) do
+		bindings[win] = util.capture_win_options(win, { "scrollbind", "cursorbind" })
+		util.set_win_options(win, { scrollbind = false, cursorbind = false })
+	end
 	local right_focused = focused == s.rightwin
 	if stacked ~= s.stacked then
+		rail.release(s)
 		-- Move the existing windows so their native jump histories survive.
 		vim.api.nvim_win_call(s.rightwin, function()
 			vim.cmd(stacked and "wincmd J" or "wincmd L")
@@ -178,21 +189,57 @@ local function resize(s, manual_event)
 		preview_options(s, s.rightwin)
 	end
 	vim.api.nvim_win_set_width(s.sidewin, width)
-	if stacked then
-		vim.api.nvim_win_set_height(s.leftwin, math.max(1, math.floor((vim.o.lines - 5) / 2)))
-	else
-		vim.api.nvim_win_set_width(s.leftwin, math.max(1, math.floor((vim.o.columns - width - 2) / 2)))
+	local absent
+	if
+		s.mode == "text"
+		and s.presence
+		and s.preview_result
+		and s.preview_result.left_document
+		and s.preview_result.right_document
+		and not (s.worktree and s.capture_failed_record == s.worktree)
+		and s.shown_item
+		and not s.shown_item.property_only
+		and s.shown_item.kind ~= "dir"
+		and s.shown_item.kind_before ~= "dir"
+		and config.get().compare.collapse_absent
+		and not s.rail_expanded
+		and not s.transitioning
+		and (not s.router or not s.router.busy())
+	then
+		if s.presence.left == "absent" and s.presence.right == "present" then
+			absent = "left"
+		elseif s.presence.right == "absent" and s.presence.left == "present" then
+			absent = "right"
+		end
+	end
+	local candidate = absent == "left" and s.leftwin or absent == "right" and s.rightwin
+	if candidate == focused and not s.rail then
+		absent = nil
+	end
+	local total = stacked and (vim.fn.getwininfo(s.leftwin)[1].height + vim.fn.getwininfo(s.rightwin)[1].height)
+		or (vim.api.nvim_win_get_width(s.leftwin) + vim.api.nvim_win_get_width(s.rightwin))
+	local left_size, _, collapsed =
+		view.pane_sizes(total, stacked, absent, stacked and vim.o.winminheight or vim.o.winminwidth)
+	rail.apply(s, collapsed and candidate, stacked)
+	local setter = stacked and vim.api.nvim_win_set_height or vim.api.nvim_win_set_width
+	local sized_win = collapsed and candidate or s.leftwin
+	local size = collapsed == "right" and total - left_size or left_size
+	if (stacked and vim.fn.getwininfo(sized_win)[1].height or vim.api.nvim_win_get_width(sized_win)) ~= size then
+		setter(sized_win, size + (stacked and vim.fn.getwininfo(sized_win)[1].winbar or 0))
 	end
 	s.applied_width = vim.api.nvim_win_get_width(s.sidewin)
 	s.resizing = false
 	restore(s.leftwin, left_view)
 	restore(s.rightwin, right_view)
 	restore(s.sidewin, side_view)
+	for win, values in pairs(bindings) do
+		util.set_win_options(win, values)
+	end
 	if right_focused then
 		vim.api.nvim_set_current_win(s.rightwin)
 	end
 	view.hints(s)
-end
+end)
 local function message(s, text)
 	if not alive(s) then
 		return
@@ -236,6 +283,10 @@ local function release_pane_buffer(s, win, next_buf)
 		local buf = vim.api.nvim_win_get_buf(win)
 		if buf ~= next_buf and s.pane_state and s.pane_state[win] == buf then
 			s.pane_state[win] = nil
+			if s.rail and s.rail.win == win then
+				rail.release(s)
+			end
+			highlighting.release(win)
 			if not buffers.is_managed(buf) then
 				worktree.reset_pane(win)
 				if s.worktree and s.worktree.buf == buf and not s.worktree.retained then
@@ -305,7 +356,8 @@ local function pane_request(s, value)
 	return value
 end
 
-local function set_panes(s, next_display)
+local set_panes
+set_panes = rail.guard(function(s, next_display)
 	if
 		not panes_usable(s, next_display.pane_epoch)
 		or next_display.generation ~= s.generation
@@ -317,11 +369,13 @@ local function set_panes(s, next_display)
 		s.deferred_display = next_display
 		return "deferred"
 	end
+	rail.release(s)
 	local before = {
 		left = s.left,
 		right = s.right,
 		mode = s.mode,
 		result = s.preview_result,
+		presence = s.presence,
 		item = s.shown_item,
 		stamp = s.preview_stamp,
 		text_views = s.text_views,
@@ -332,6 +386,7 @@ local function set_panes(s, next_display)
 		right_label = s.right_label,
 		views = { capture(s.leftwin), capture(s.rightwin) },
 		worktree = s.worktree,
+		capture_failed_record = s.capture_failed_record,
 	}
 	local borrowed = {}
 	for _, win in ipairs({ s.leftwin, s.rightwin }) do
@@ -387,6 +442,9 @@ local function set_panes(s, next_display)
 			text_views = { capture(s.leftwin), capture(s.rightwin) }
 		end
 		for _, win in ipairs({ s.leftwin, s.rightwin }) do
+			if s.rail and s.rail.win == win then
+				rail.release(s)
+			end
 			highlighting.release(win)
 			if owns_shown(s, win) then
 				util.diff_off(win)
@@ -437,6 +495,7 @@ local function set_panes(s, next_display)
 		if next_worktree then
 			local current = worktree.capture(next_worktree)
 			if current then
+				s.capture_failed_record = nil
 				result = assert(worktree.result(next_worktree, result, current))
 				local pair = buffers.store(s, item, result)
 				if left ~= pair.left then
@@ -449,8 +508,26 @@ local function set_panes(s, next_display)
 		end
 		s.left, s.right, s.mode = left, right, d.mode
 		s.preview_result, s.shown_item, s.preview_stamp, s.text_views = result, item, d.stamp, text_views
+		s.presence = d.mode == "text" and result and result.presence or nil
+		if item then
+			rail.identity(
+				s,
+				table.concat({ s.base or "", s.snapshot and s.snapshot.revision or "", item.relpath }, "\0")
+			)
+		end
 		if not d.keep_labels then
-			labels(s, d.left_label or "", d.right_label or "")
+			local left_label, right_label = d.left_label or "", d.right_label or ""
+			if d.mode == "text" and result then
+				left_label, right_label = require("lazyvcs.diff_labels").labels(
+					left_label,
+					right_label,
+					result.left_label,
+					s.presence,
+					result.left_document,
+					result.right_document
+				)
+			end
+			labels(s, left_label, right_label)
 		end
 		preview_options(s, s.leftwin)
 		preview_options(s, s.rightwin)
@@ -533,8 +610,10 @@ local function set_panes(s, next_display)
 				vim.bo[buf].filetype = value.ft
 			end
 			s.worktree = before.worktree
+			s.capture_failed_record = before.capture_failed_record
 			s.left, s.right, s.mode = before.left, before.right, before.mode
 			s.preview_result, s.shown_item, s.preview_stamp = before.result, before.item, before.stamp
+			s.presence = before.presence
 			s.text_views, s.display = before.text_views, before.display
 			s.navigation, s.navigation_intent = before.navigation, before.intent
 			s.left_label, s.right_label = before.left_label, before.right_label
@@ -547,7 +626,7 @@ local function set_panes(s, next_display)
 		end)
 		if not rolled_back then
 			invalidate_panes(s)
-			s.preview_result, s.mode = nil, "message"
+			s.preview_result, s.mode, s.presence = nil, "message", nil
 			schedule(function()
 				local closed, close_err = pcall(M.close, s)
 				if not closed then
@@ -593,8 +672,13 @@ local function set_panes(s, next_display)
 			end
 		end)
 	end
+	schedule(function()
+		if alive(s) then
+			resize(s)
+		end
+	end)
 	return "installed"
-end
+end)
 
 local function failure(s, err)
 	navigation.cancel(s)
@@ -728,12 +812,20 @@ local function update_worktree(s, record)
 			"WORKTREE (unsaved) | " .. s.shown_item.relpath .. " | hunks unavailable: " .. (why or "unsupported text")
 		):gsub("%%", "%%%%")
 		set_label(s.rightwin, s.right_label, s.right)
-		if record.capture_error ~= why then
-			record.capture_error = why
-			util.notify(why or "Working buffer hunks are unavailable", vim.log.levels.WARN)
+		-- Shared buffers notify several views; each view owns its recovery state.
+		s.capture_failed_record = record
+		local capture_error = why or "Working buffer hunks are unavailable"
+		if record.capture_error ~= capture_error then
+			record.capture_error = capture_error
+			util.notify(capture_error, vim.log.levels.WARN)
+		end
+		if s.rail then
+			resize(s)
 		end
 		return
 	end
+	local recovered = s.capture_failed_record == record
+	s.capture_failed_record = nil
 	record.capture_error = nil
 	local result = assert(worktree.result(record, s.preview_result, current))
 	if result.profile_key ~= s.preview_result.profile_key then
@@ -772,11 +864,18 @@ local function update_worktree(s, record)
 		navigation.load(s, result, item, hunks)
 		s.navigation.reviewed = reviewed == true
 	end)
-	labels(
-		s,
+	local left_label, right_label = require("lazyvcs.diff_labels").labels(
 		result.left_label .. " | " .. (s.shown_item.old_path or s.shown_item.relpath),
-		(vim.bo[record.buf].modified and "WORKTREE (unsaved)" or "WORKTREE") .. " | " .. s.shown_item.relpath
+		(vim.bo[record.buf].modified and "WORKTREE (unsaved)" or "WORKTREE") .. " | " .. s.shown_item.relpath,
+		result.left_label,
+		s.presence,
+		result.left_document,
+		current
 	)
+	labels(s, left_label, right_label)
+	if recovered then
+		resize(s)
+	end
 end
 
 local function refresh_worktree_list(s, record)
@@ -1295,6 +1394,7 @@ function M.close(s, return_focus)
 	if not s or s.closed then
 		return
 	end
+	rail.release(s)
 	s.closed = true
 	require("lazyvcs.window_controls").unregister(s)
 	invalidate_panes(s)
@@ -1826,6 +1926,20 @@ local function construct_session(s)
 		end)
 	end
 	s.augroup = vim.api.nvim_create_augroup("lazyvcs_compare_" .. s.tab, { clear = true })
+	vim.api.nvim_create_autocmd("WinEnter", {
+		group = s.augroup,
+		callback = util.safe_callback(function()
+			rail.focus(s, function()
+				return not alive(s)
+					or s.transitioning
+					or s.resizing
+					or (s.swapping or 0) > 0
+					or (s.router and s.router.busy())
+			end, function()
+				resize(s)
+			end)
+		end),
+	})
 	s.router = require("lazyvcs.compare_open").setup(s, {
 		remember = navigation.remember,
 		restore = function(win, views)
@@ -1838,6 +1952,8 @@ local function construct_session(s)
 		-- A slot got its own buffer back from a picker without a routing restore.
 		-- Its window record holds the labels from before the picker opened.
 		relabel = function()
+			preview_options(s, s.leftwin)
+			preview_options(s, s.rightwin)
 			set_label(s.leftwin, s.left_label, s.left)
 			set_label(s.rightwin, s.right_label, s.right)
 			view.labels(s)
