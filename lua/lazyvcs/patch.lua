@@ -240,8 +240,7 @@ end
 local function fill(view, text, loading, content)
 	local generation, task = view.generation, view.task
 	local writable = false
-	local expected_tick = api.nvim_buf_get_changedtick(view.buf)
-	local expected_name = api.nvim_buf_get_name(view.buf)
+	local expected_tick, expected_name
 	local function owned()
 		return view.generation == generation
 			and view.task == task
@@ -302,6 +301,8 @@ local function fill(view, text, loading, content)
 	if not current() then
 		return
 	end
+	expected_tick = api.nvim_buf_get_changedtick(view.buf)
+	expected_name = api.nvim_buf_get_name(view.buf)
 	writable = true
 	vim.bo[view.buf].modifiable = true
 	if not current() then
