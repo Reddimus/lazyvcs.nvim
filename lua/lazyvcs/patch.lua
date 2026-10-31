@@ -504,6 +504,67 @@ local function position(view)
 		or nil
 end
 
+local function cancel_loading(view, task, generation, name, tick)
+	local buf = view.buf
+	local function owned()
+		return views[view.path] == view
+			and view.task == task
+			and view.generation == generation
+			and task.cancelled
+			and api.nvim_buf_is_valid(buf)
+	end
+	local function current()
+		if not owned() then
+			return false
+		end
+		if api.nvim_buf_get_name(buf) ~= name or api.nvim_buf_get_changedtick(buf) ~= tick then
+			views[view.path] = nil
+			view.text, view.index = nil, nil
+			return false
+		end
+		return true
+	end
+	if not current() then
+		return
+	end
+	view.text, view.index = nil, nil
+	vim.bo[buf].modifiable = true
+	if not current() then
+		return
+	end
+	local body = { "Patch request cancelled.", "Press R to reload." }
+	api.nvim_buf_set_lines(buf, 0, -1, false, body)
+	if owned() and vim.deep_equal(api.nvim_buf_get_lines(buf, 0, -1, false), body) then
+		tick = api.nvim_buf_get_changedtick(buf)
+	end
+	if not current() then
+		return
+	end
+	for _, option in ipairs({ "modified", "modifiable" }) do
+		vim.bo[buf][option] = false
+		if not current() then
+			return
+		end
+	end
+	local title = ("PATCH | " .. view.path .. " | CANCELLED | R reload  q close"):gsub("%%", "%%%%")
+	for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+		if not current() then
+			return
+		end
+		if
+			api.nvim_win_is_valid(win)
+			and api.nvim_win_get_buf(win) == buf
+			and util.get_win_option(win, "winbar") == view.winbars[win]
+		then
+			view.winbars[win] = title
+			util.set_win_option(win, "winbar", title)
+			if not current() then
+				return
+			end
+		end
+	end
+end
+
 local function rerun(view)
 	local previous, previous_generation, buf = view.task, view.generation, view.buf
 	local function current()
@@ -551,6 +612,16 @@ local function rerun(view)
 		task:cancel()
 		return task
 	end
+	local loading, loading_name, loading_tick = true, api.nvim_buf_get_name(buf), api.nvim_buf_get_changedtick(buf)
+	task:on_cancel(function()
+		-- R cancels synchronously before installing its new generation. Defer UI
+		-- writes so that the old cancellation cannot look like retained user data.
+		vim.schedule(util.safe_callback(function()
+			if loading then
+				cancel_loading(view, task, generation, loading_name, loading_tick)
+			end
+		end))
+	end)
 	task:add(collect(
 		view.path,
 		view.opts,
@@ -560,6 +631,8 @@ local function rerun(view)
 				-- A timer yields to input and rendering between indexing batches.
 				vim.defer_fn(guard(view, generation, step), 1)
 			end, function(index, content, closest)
+				-- fill owns cancellation inside its observable write boundaries.
+				loading = false
 				view.text, view.index = text, index
 				if not fill(view, err or text, false, not err and content or nil) then
 					return
