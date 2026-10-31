@@ -1407,7 +1407,6 @@ function M.revert_file(state, node)
 						or nil,
 					git_conflict = repo.vcs == "git" and section == "merge" and relpath or nil,
 					git_rename_source = #relpaths > 1 and relpaths[2] or nil,
-					git_intent_guard = repo.vcs == "git" and action == "discard_unstaged" and relpath or nil,
 					git_head_restore = repo.vcs == "git"
 							and action == "discard_staged"
 							and status:sub(1, 1) ~= "A"

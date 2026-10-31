@@ -566,29 +566,59 @@ function M.start(repo, args, opts, guards, on_exit)
 		end, true)
 	end
 
+	local intent_paths
+	if repo.vcs == "git" and guards.tracked_discard then
+		intent_paths = {}
+		for _, target in ipairs(guards.tracked_discard) do
+			intent_paths[#intent_paths + 1] = target.relpath
+		end
+	elseif guards.git_intent_guard then
+		-- Preserve the direct single-path guard used by lower-level callers.
+		intent_paths = { guards.git_intent_guard }
+	end
 	local function git_preflight()
-		if guards.git_intent_guard then
-			local path = guards.git_intent_guard
+		if intent_paths then
 			local index = require("lazyvcs.backends.git_index")
-			local commands, budget = index.intent_commands(path), index.intent_output_limit(path)
-			return spawn(commands[1], function(visible)
-				if visible.stdout_truncated or visible.stderr_truncated then
-					return reject("Cannot verify complete Git index intent; refusing Discard.")
+			local cursor = 0
+			local function check_next()
+				cursor = cursor + 1
+				local path = intent_paths[cursor]
+				if not path then
+					intent_paths = nil
+					return git_preflight()
 				end
-				spawn(commands[2], function(invisible)
-					if invisible.stdout_truncated or invisible.stderr_truncated then
+				local commands, budget = index.intent_commands(path), index.intent_output_limit(path)
+				for _, command in ipairs(commands) do
+					-- A file replacing a HEAD directory also deletes its old children.
+					-- Exclude those D records from both views, retaining an exact file
+					-- record: ITA is visible as A/M/T and invisible as absent/deleted.
+					for position, argument in ipairs(command) do
+						if argument == "--" then
+							table.insert(command, position, "--diff-filter=d")
+							break
+						end
+					end
+				end
+				return spawn(commands[1], function(visible)
+					if visible.stdout_truncated or visible.stderr_truncated then
 						return reject("Cannot verify complete Git index intent; refusing Discard.")
 					end
-					local intent, err = index.parse_intent(visible.stdout, invisible.stdout, path)
-					if intent ~= false then
-						return reject(
-							err
-								or "Discard refuses intent-to-add content not stored in Git; unstage or delete it explicitly."
-						)
-					end
-					mutate()
+					spawn(commands[2], function(invisible)
+						if invisible.stdout_truncated or invisible.stderr_truncated then
+							return reject("Cannot verify complete Git index intent; refusing Discard.")
+						end
+						local intent, err = index.parse_intent(visible.stdout, invisible.stdout, path)
+						if intent ~= false then
+							return reject(
+								err
+									or "Discard refuses intent-to-add content not stored in Git; unstage or delete it explicitly."
+							)
+						end
+						check_next()
+					end, nil, nil, nil, budget)
 				end, nil, nil, nil, budget)
-			end, nil, nil, nil, budget)
+			end
+			return check_next()
 		elseif guards.git_head_restore then
 			local command = {
 				"git",

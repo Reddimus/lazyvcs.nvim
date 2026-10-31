@@ -7443,6 +7443,7 @@ vim.list_extend(cases, require("spec_snapshot_boundaries_a3")({ helpers = helper
 vim.list_extend(cases, require("spec_source_control_a3")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_source_control_a3_followup")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_source_control_staged_intent")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_source_control_a3_v3")({ helpers = helpers, wait_for = wait_for }))
 
