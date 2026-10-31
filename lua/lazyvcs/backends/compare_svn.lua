@@ -421,6 +421,9 @@ function M.preview(snapshot, item, callback, opts)
 		right_label = "SAVED WORKTREE",
 		loaded = { text = not (opts and opts.mode == "metadata"), metadata = true },
 	}
+	if item.status == "D" or item.status == "!" then
+		result.presence.right = "unknown"
+	end
 	if item.status == "!" then
 		result.right_label = item.obstructed and "OBSTRUCTED WORKTREE" or "MISSING FROM WORKTREE"
 		result.details = {
@@ -484,8 +487,18 @@ function M.preview(snapshot, item, callback, opts)
 			return finish()
 		end
 		if item.status == "D" or item.status == "!" then
-			common.decode_side(result, "right", "", { encoding = "utf-8" })
-			return finish()
+			-- These logical snapshots remain empty, including --keep-local. Only
+			-- an actual missing entry proves the worktree absence used by labels.
+			vim.uv.fs_lstat(path, function(err, stat)
+				schedule(task, function()
+					if not stat and err and tostring(err):match("^ENOENT[: ]") then
+						result.presence.right = "absent"
+					end
+					common.decode_side(result, "right", "", { encoding = "utf-8" })
+					finish()
+				end)
+			end)
+			return
 		end
 		common.read_file(task, path, function(data, err, kind)
 			if not data then

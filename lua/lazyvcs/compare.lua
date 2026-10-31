@@ -205,9 +205,9 @@ resize = rail.guard(function(s, manual_event)
 		and not s.transitioning
 		and (not s.router or not s.router.busy())
 	then
-		if s.presence.left == "absent" then
+		if s.presence.left == "absent" and s.presence.right == "present" then
 			absent = "left"
-		elseif s.presence.right == "absent" then
+		elseif s.presence.right == "absent" and s.presence.left == "present" then
 			absent = "right"
 		end
 	end

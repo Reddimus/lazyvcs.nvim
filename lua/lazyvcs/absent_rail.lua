@@ -3,13 +3,39 @@ local util = require("lazyvcs.util")
 local api = vim.api
 local M = {}
 local busy = 0
-local windows, records = {}, {}
+local windows, slots = {}, {}
+local writing = 0
 
-local function restore(win, record)
+local function write(win, name, value)
+	writing = writing + 1
+	local ok, err = pcall(util.set_win_option, win, name, value)
+	writing = writing - 1
+	if not ok then
+		error(err)
+	end
+end
+
+local function restore(win, record, preserve)
 	for name, value in pairs(record.before) do
-		if util.get_win_option(win, name) == record.written[name] then
-			util.set_win_option(win, name, value)
+		if name ~= preserve and util.get_win_option(win, name) == record.written[name] then
+			write(win, name, value)
 		end
+	end
+end
+
+local function copied_record(win, token)
+	token = token or util.get_win_option(win, "statuscolumn")
+	---@cast token string
+	local id = token:match("^%%#LazyVcsRailOwner(%d+)#%%%*$")
+	local r = id and slots[tonumber(id)]
+	if
+		r
+		and r.token == token
+		and windows[r.win] == r
+		and r.session.rail == r
+		and api.nvim_win_get_buf(win) == r.buf
+	then
+		return r
 	end
 end
 
@@ -18,17 +44,23 @@ local function strip_window(win)
 	if windows[win] and windows[win].buf == buf then
 		return
 	end
-	-- Newest writes take precedence; do not interpret a restored raw value as
-	-- another record's write during this cleanup.
-	local restored = {}
-	local saved = records[buf] or {}
-	for i = #saved, 1, -1 do
-		for name, value in pairs(saved[i].before) do
-			if not restored[name] and util.get_win_option(win, name) == saved[i].written[name] then
-				util.set_win_option(win, name, value)
-				restored[name] = true
-			end
+	local r = copied_record(win)
+	if r then
+		restore(win, r)
+	end
+end
+
+local function resume(r)
+	if
+		windows[r.win] == r
+		and api.nvim_win_is_valid(r.win)
+		and api.nvim_win_get_buf(r.win) == r.buf
+		and r.suspended
+	then
+		for name, value in pairs(r.written) do
+			write(r.win, name, value)
 		end
+		r.suspended = nil
 	end
 end
 
@@ -36,25 +68,90 @@ local cleanup_group = api.nvim_create_augroup("LazyVCSAbsentRailCleanup", { clea
 api.nvim_create_autocmd({ "BufWinEnter", "WinEnter", "WinNew" }, {
 	group = cleanup_group,
 	callback = util.safe_callback(function()
-		strip_window(api.nvim_get_current_win())
+		local win = api.nvim_get_current_win()
+		strip_window(win)
+		local r = windows[win]
+		if r then
+			resume(r)
+		end
+	end),
+})
+api.nvim_create_autocmd("BufLeave", {
+	group = cleanup_group,
+	callback = util.safe_callback(function(event)
+		local r = windows[api.nvim_get_current_win()]
+		if r and r.buf == event.buf then
+			-- Restore before Neovim caches this window's per-buffer options. A
+			-- zero-width statuscolumn token also follows no-focus native clones.
+			restore(r.win, r)
+			r.suspended = true
+			if not r.pending then
+				r.pending = true
+				vim.schedule(util.safe_callback(function()
+					r.pending = nil
+					resume(r)
+				end))
+			end
+		end
+	end),
+})
+api.nvim_create_autocmd("WinLeave", {
+	group = cleanup_group,
+	callback = util.safe_callback(function()
+		local r = windows[api.nvim_get_current_win()]
+		if r then
+			resume(r)
+		end
+	end),
+})
+api.nvim_create_autocmd("OptionSet", {
+	group = cleanup_group,
+	pattern = { "number", "relativenumber", "signcolumn", "foldcolumn", "statuscolumn", "winfixwidth", "winfixheight" },
+	callback = util.safe_callback(function(event)
+		if writing > 0 or vim.v.option_command == "setglobal" then
+			return
+		end
+		local win = api.nvim_get_current_win()
+		local r = windows[win]
+		if r and api.nvim_win_get_buf(win) == r.buf and r.written[event.match] ~= nil then
+			-- An equal write still expresses user intent. Keep the latest preference
+			-- underneath the collapsed presentation, including raw statuscolumn.
+			r.before[event.match] = util.get_win_option(win, event.match)
+			if not r.suspended then
+				write(win, event.match, r.written[event.match])
+			end
+		elseif not r or api.nvim_win_get_buf(win) ~= r.buf then
+			-- A user WinNew hook may run before our clone cleanup. Preserve this
+			-- edit while removing the remaining copied presentation immediately.
+			local copied = copied_record(win, event.match == "statuscolumn" and vim.v.option_old or nil)
+			if copied then
+				restore(win, copied, event.match)
+			end
+		end
 	end),
 })
 api.nvim_create_autocmd("BufWipeout", {
 	group = cleanup_group,
-	callback = function(event)
-		records[event.buf] = nil
-		for win, record in pairs(windows) do
+	callback = util.safe_callback(function(event)
+		local release = {}
+		for _, record in pairs(windows) do
 			if record.buf == event.buf then
-				windows[win] = nil
+				release[#release + 1] = record.session
 			end
 		end
-	end,
+		for _, s in ipairs(release) do
+			M.release(s)
+		end
+	end),
 })
 api.nvim_create_autocmd("WinClosed", {
 	group = cleanup_group,
-	callback = function(event)
-		windows[tonumber(event.match)] = nil
-	end,
+	callback = util.safe_callback(function(event)
+		local r = windows[tonumber(event.match)]
+		if r then
+			M.release(r.session)
+		end
+	end),
 })
 
 local function pack(...)
@@ -112,19 +209,20 @@ end
 
 function M.release(s)
 	local r = s.rail
-	s.rail = nil
 	if not r then
 		return
 	end
-	if windows[r.win] == r then
-		windows[r.win] = nil
+	-- Resolve visible native copies while the originating lifetime is live.
+	for _, win in ipairs(api.nvim_list_wins()) do
+		strip_window(win)
 	end
 	if api.nvim_win_is_valid(r.win) and api.nvim_win_get_buf(r.win) == r.buf then
 		restore(r.win, r)
 	end
-	for _, win in ipairs(api.nvim_list_wins()) do
-		strip_window(win)
+	if windows[r.win] == r then
+		windows[r.win] = nil
 	end
+	slots[r.slot], s.rail = nil, nil
 end
 
 function M.apply(s, win, stacked)
@@ -138,6 +236,7 @@ function M.apply(s, win, stacked)
 		return
 	end
 	if r then
+		resume(r)
 		return
 	end
 	strip_window(win)
@@ -146,26 +245,31 @@ function M.apply(s, win, stacked)
 		relativenumber = false,
 		signcolumn = "no",
 		foldcolumn = "0",
-		statuscolumn = "",
 		[stacked and "winfixheight" or "winfixwidth"] = true,
 	}
-	r = { win = win, buf = api.nvim_win_get_buf(win), stacked = stacked, before = {}, written = values }
+	local id = 1
+	while slots[id] do
+		id = id + 1
+	end
+	local token = "%#LazyVcsRailOwner" .. id .. "#%*"
+	values.statuscolumn = token
+	r = {
+		win = win,
+		buf = api.nvim_win_get_buf(win),
+		stacked = stacked,
+		before = {},
+		written = values,
+		token = token,
+		slot = id,
+		session = s,
+	}
 	s.rail = r
 	for name, value in pairs(values) do
 		r.before[name] = util.get_win_option(win, name)
-		util.set_win_option(win, name, value)
+		write(win, name, value)
 	end
 	windows[win] = r
-	records[r.buf] = records[r.buf] or {}
-	local saved = { before = r.before, written = r.written }
-	for index, record in ipairs(records[r.buf]) do
-		if vim.deep_equal(record, saved) then
-			table.remove(records[r.buf], index)
-			records[r.buf][#records[r.buf] + 1] = saved
-			return
-		end
-	end
-	records[r.buf][#records[r.buf] + 1] = saved
+	slots[id] = r
 end
 
 -- Sample WinEnter synchronously, then verify after temporary window calls and

@@ -555,7 +555,11 @@ local function conflict_base_async(path, root, relpath, callback, opts)
 					end
 					local identity = { root = root, relpath = relpath, index_stages = records }
 					if not ours then
-						return task:finish(finalize_payload({ base_bytes = "", base_identity = identity }))
+						return task:finish(finalize_payload({
+							base_bytes = "",
+							base_identity = identity,
+							presence = { left = "absent", right = "present" },
+						}))
 					end
 					task:add(process.bytes({ "git", "show", ours }, { cwd = root }, function(bytes, show_err)
 						if bytes == nil then

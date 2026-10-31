@@ -710,7 +710,8 @@ function M.open(session)
 		session.opts.base_window.collapse_absent
 		and session.presence
 		and session.presence.right == "absent"
-		and (session.base_text or session.rail_text)
+		and session.presence.left == "present"
+		and (session.readonly_comparison and session.rail_text or not session.readonly_comparison and session.base_text)
 		and not (session.comparison and session.comparison.property_only)
 		and vim.api.nvim_get_current_win() == editable_win
 	then
@@ -759,7 +760,7 @@ function M.rebalance(session)
 	local absent
 	if
 		session.opts.base_window.collapse_absent
-		and (session.base_text or session.rail_text)
+		and (session.readonly_comparison and session.rail_text or not session.readonly_comparison and session.base_text)
 		and not (session.comparison and (session.comparison.property_only or session.comparison.kind == "git_submodule"))
 		and not session.paused
 		and not session.capture_error
@@ -767,9 +768,9 @@ function M.rebalance(session)
 		and not session.rail_expanded
 		and session.presence
 	then
-		if session.presence.left == "absent" then
+		if session.presence.left == "absent" and session.presence.right == "present" then
 			absent = "left"
-		elseif session.presence.right == "absent" then
+		elseif session.presence.right == "absent" and session.presence.left == "present" then
 			absent = "right"
 		end
 	end

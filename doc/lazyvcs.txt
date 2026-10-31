@@ -1111,6 +1111,9 @@ Set filler = "/" for a plain hatch, or removed = false to keep native DiffAdd
 on both sides. The default filler = "auto" respects an existing diff: entry in
 the effective 'fillchars'. All changes are window-local and restored when
 the pane releases them; changes you make while a view is open are preserved.
+For copied diff windows, apply custom options on WinEnter or with vim.schedule
+from WinNew. Earlier non-nested WinNew callbacks can run before cleanup of copied
+options and suppress the option events needed to preserve equal-value changes.
 Your 'diffopt' is respected, including a value without filler or with linematch.
 If 'ambiwidth' is double when a view opens, the hatch falls back to /.
 Changing 'ambiwidth' to double after opening may raise E835. Choose filler = "/"

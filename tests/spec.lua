@@ -7363,6 +7363,11 @@ vim.list_extend(
 	require("spec_diff_style_ita")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
 )
 vim.list_extend(cases, require("spec_diff_style_owner")({ helpers = helpers }))
+vim.list_extend(cases, require("spec_diff_style_presence_edges")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(
+	cases,
+	require("spec_absent_rail_ownership")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
+)
 vim.list_extend(
 	cases,
 	require("spec_diff_style_saved")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })

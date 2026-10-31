@@ -121,7 +121,9 @@ return function(ctx)
 		assert(get(present) > get(win))
 		assert(vim.wo[win][s.stacked and "winfixheight" or "winfixwidth"])
 		assert(not vim.wo[win].number and not vim.wo[win].relativenumber)
-		assert(vim.wo[win].signcolumn == "no" and vim.wo[win].foldcolumn == "0" and vim.wo[win].statuscolumn == "")
+		assert(vim.wo[win].signcolumn == "no" and vim.wo[win].foldcolumn == "0")
+		local column = api.nvim_eval_statusline(vim.wo[win].statuscolumn, { winid = win, use_statuscol_lnum = 1 })
+		assert(column.str == "" and column.width == 0, "rail statuscolumn reserved visible columns")
 		assert(
 			vim.wo[win].diff and vim.wo[present].diff,
 			vim.inspect({

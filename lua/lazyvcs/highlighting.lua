@@ -207,10 +207,17 @@ local function strip_window(win)
 		local value = util.get_win_option(win, "winhighlight")
 		---@cast value string
 		if value:find(hidden, 1, true) or value:find(":LazyVcsDiff", 1, true) then
+			local origin = marker_record(value, api.nvim_win_get_buf(win))
 			local native = api.nvim_get_hl_ns({ winid = win }) > 0 and not explicit(win)
 			local user = buffer_mappings(win, value)
 			write_mapping(win, user)
-			if native and user == "" and vim.version.ge(vim.version(), { 0, 11, 7 }) then
+			if
+				native
+				and user == ""
+				and (vim.version.ge(vim.version(), { 0, 11, 7 }) or origin and origin.state.previous == -1)
+			then
+				-- Marker provenance proves this clone inherited its origin's theme.
+				-- Unrelated namespace-zero windows retain the floor compatibility path.
 				api.nvim_win_set_hl_ns(win, -1)
 			end
 		end
