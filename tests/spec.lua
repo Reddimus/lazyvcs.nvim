@@ -7360,6 +7360,11 @@ vim.list_extend(cases, require("spec_highlighting_defaults")())
 vim.list_extend(cases, require("spec_diff_style")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))
 vim.list_extend(
 	cases,
+	require("spec_diff_style_ita")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
+)
+vim.list_extend(cases, require("spec_diff_style_owner")({ helpers = helpers }))
+vim.list_extend(
+	cases,
 	require("spec_diff_style_saved")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
 )
 vim.list_extend(cases, require("spec_highlighting")({ helpers = helpers, wait_for = wait_for }))

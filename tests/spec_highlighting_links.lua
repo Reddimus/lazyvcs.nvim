@@ -40,12 +40,13 @@ return function(ctx)
 		)
 		if global_links then
 			assert(
-				api.nvim_get_hl_ns({ winid = win }) == ns and vim.wo[win].winhighlight == mapping,
+				api.nvim_get_hl_ns({ winid = win }) == ns and guard.user_winhighlight(win) == mapping,
 				"ambiguous source namespace replaced"
 			)
 		end
 		require("lazyvcs").close()
 		assert(foreground(win) == expected and api.nvim_get_hl_ns({ winid = win }) == ns, "source color not restored")
+		assert(vim.wo[win].winhighlight == mapping, "source mappings not restored")
 		assert(vim.deep_equal(api.nvim_get_hl(ns, {}), original), "source definitions mutated")
 		ns = api.nvim_create_namespace("lazyvcs-test-local-link-source")
 		api.nvim_set_hl(ns, "LazyVCSLinkTarget", { fg = 0x12f034 })

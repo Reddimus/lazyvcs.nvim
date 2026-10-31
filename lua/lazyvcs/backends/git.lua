@@ -203,22 +203,21 @@ local function finalize_payload(payload)
 end
 
 local function finish_index_payload(task, root, relpath, payload, opts, oid, presence_checked)
-	-- An empty blob alone cannot distinguish a real empty index file from -N.
-	-- Porcelain v2 represents intent-to-add with .A and a zero index object ID.
+	-- Status can hide ITA entries. Inspect the index without trusting worktree flags.
 	if not presence_checked and payload.base_bytes == "" then
-		task:add(process.bytes({ "git", "status", "--porcelain=v2", "--untracked-files=no", "--", relpath }, {
-			cwd = root,
-			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
-		}, function(records)
-			payload.presence = { left = records and "present" or "unknown", right = "present" }
-			if records then
-				local index_mode, index_oid = records:match("^1 %.A %S+ %S+ (%S+) %S+ %S+ (%x+) ")
-				if index_mode == "000000" and index_oid and index_oid:match("^0+$") then
-					payload.presence.left, payload.presence.intent_to_add = "absent", true
+		task:add(
+			require("lazyvcs.backends.git_index").intent_to_add_async(root, relpath, process.start, function(intent)
+				if not task:is_active() then
+					return
 				end
-			end
-			finish_index_payload(task, root, relpath, payload, opts, oid, true)
-		end))
+				payload.presence = {
+					left = intent == nil and "unknown" or intent and "absent" or "present",
+					right = "present",
+					intent_to_add = intent == true or nil,
+				}
+				finish_index_payload(task, root, relpath, payload, opts, oid, true)
+			end, opts)
+		)
 		return
 	end
 	task:add(
