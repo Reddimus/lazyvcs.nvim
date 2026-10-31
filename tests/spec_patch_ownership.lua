@@ -1,12 +1,22 @@
 return function(ctx)
 	local h, uv = ctx.helpers, vim.uv
+	local diagnostics = require("patch_windows_diagnostics")
 	local function guard(fn)
 		return function()
 			local stat, lstat, scandir = uv.fs_stat, uv.fs_lstat, uv.fs_scandir
+			diagnostics.capability(h)
+			local stop_diagnostics = diagnostics.trace()
 			local ok, err = xpcall(fn, function(value)
 				return type(value) == "table" and value or debug.traceback(value, 2)
 			end)
 			uv.fs_stat, uv.fs_lstat, uv.fs_scandir = stat, lstat, scandir
+			local captured, value = pcall(stop_diagnostics)
+			if not ok and not (type(err) == "table" and err.lazyvcs_skip) then
+				local record = captured and value or { kind = "trace-error", error = tostring(value) }
+				record.module = "patch-ownership"
+				record.case_line = debug.getinfo(fn, "S").linedefined
+				diagnostics.emit(record)
+			end
 			h.cleanup()
 			if not ok then
 				error(err, 0)

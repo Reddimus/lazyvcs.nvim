@@ -1,5 +1,6 @@
 return function(ctx)
 	local h, uv = ctx.helpers, vim.uv
+	local diagnostics = require("patch_windows_diagnostics")
 	local reader = require("lazyvcs.backends.patch_svn")
 	local seams = { "fs_lstat", "fs_open", "fs_fstat", "fs_read", "fs_close" }
 	local function protected(fn)
@@ -9,6 +10,8 @@ return function(ctx)
 				saved[name] = uv[name]
 			end
 			local original = reader.read
+			diagnostics.capability(h)
+			local stop_diagnostics = diagnostics.trace()
 			local ok, err = xpcall(fn, function(value)
 				return type(value) == "table" and value or debug.traceback(value, 2)
 			end)
@@ -16,6 +19,13 @@ return function(ctx)
 				uv[name] = value
 			end
 			reader.read = original
+			local captured, value = pcall(stop_diagnostics)
+			if not ok and not (type(err) == "table" and err.lazyvcs_skip) then
+				local record = captured and value or { kind = "trace-error", error = tostring(value) }
+				record.module = "patch-reads"
+				record.case_line = debug.getinfo(fn, "S").linedefined
+				diagnostics.emit(record)
+			end
 			h.cleanup()
 			if not ok then
 				error(err, 0)

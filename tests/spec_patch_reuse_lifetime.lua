@@ -1,5 +1,9 @@
 return function(ctx)
 	local h, api, util = ctx.helpers, vim.api, require("lazyvcs.util")
+	local diagnostics = require("patch_windows_diagnostics")
+	---@type table<string, any>|nil
+	local unicode_diagnostic
+	local unicode_stop
 	local cases, handles, group = {}, {}, nil
 	local function wait(fn)
 		ctx.wait_for(fn, "patch reuse lifetime did not settle", 15000)
@@ -34,11 +38,19 @@ return function(ctx)
 						errors[#errors + 1] = tostring(message)
 					end
 				end
+				diagnostics.capability(h)
+				unicode_diagnostic, unicode_stop = nil, nil
 				handles = {}
 				group = api.nvim_create_augroup("lazyvcs_patch_reuse_lifetime", { clear = true })
 				local ok, err = xpcall(fn, function(value)
 					return type(value) == "table" and value or debug.traceback(value, 2)
 				end)
+				if unicode_stop then
+					local stopped, trace = pcall(unicode_stop)
+					---@cast unicode_diagnostic table<string, any>
+					unicode_diagnostic.trace = stopped and trace or { error = tostring(trace) }
+					unicode_stop = nil
+				end
 				api.nvim_del_augroup_by_id(group)
 				util.system_start, vim.o.fileignorecase, vim.notify = start, ignorecase, notify
 				for _, task in ipairs(handles) do
@@ -49,6 +61,13 @@ return function(ctx)
 						pcall(api.nvim_buf_delete, buf, { force = true })
 					end
 				end
+				if not ok and unicode_diagnostic and not (type(err) == "table" and err.lazyvcs_skip) then
+					local collected, value = pcall(diagnostics.unicode, h, unicode_diagnostic)
+					diagnostics.emit(
+						collected and value or { kind = "Unicode-diagnostic-error", error = tostring(value) }
+					)
+				end
+				unicode_diagnostic = nil
 				h.cleanup()
 				if not ok then
 					error(err, 0)
@@ -221,9 +240,12 @@ return function(ctx)
 						h.exec({ "git", "config", "core.precomposeUnicode", "true" }, f.root)
 					end
 					local rel, bytes = parent .. "/leaf @.txt", "Unicode parent bytes\nlast"
+					unicode_diagnostic = { vcs = vcs, parent = parent, rel = rel, root = f.root }
+					unicode_stop = diagnostics.trace()
 					vim.fn.mkdir(f.root .. "/" .. parent)
 					write(f.root .. "/" .. rel, bytes)
 					local out = {}
+					unicode_diagnostic.result = out
 					open({
 						path = f.root .. "/" .. rel,
 						on_done = function(value, err)
@@ -236,14 +258,19 @@ return function(ctx)
 					assert(out.text and out.text:find("+Unicode parent bytes", 1, true), out.err)
 					assert(not out.text:find("+changed", 1, true), "selected Unicode leaf widened its scope")
 					local destination = h.tempdir() .. "/wc"
+					unicode_diagnostic.destination = destination
 					if vcs == "git" then
 						h.exec({ "git", "clone", f.root, destination }, vim.fs.dirname(destination))
 					else
 						h.exec({ "svn", "checkout", h.file_url(f.repo), destination }, vim.fs.dirname(destination))
 					end
 					local patchfile = h.tempdir() .. "/addition.patch"
+					unicode_diagnostic.patchfile = patchfile
 					write(patchfile, out.text)
-					h.exec(vcs == "git" and { "git", "apply", patchfile } or { "svn", "patch", patchfile }, destination)
+					unicode_diagnostic.apply_stdout = h.exec(
+						vcs == "git" and { "git", "apply", patchfile } or { "svn", "patch", patchfile },
+						destination
+					)
 					assert(read(destination .. "/" .. rel) == bytes, "native apply changed Unicode-parent bytes")
 				end)
 			end
