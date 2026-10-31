@@ -82,11 +82,10 @@ function M.check(h, fixture, parent, rel, bytes, out, sample_before)
 		---@type boolean|nil
 		local leaf = false
 		local neighbor = false
-		local expected = assert(uv.fs_stat(control .. "/" .. rel))
+		local expected = assert(uv.fs_realpath(control .. "/" .. rel))
 		for _, entry in ipairs(require("lazyvcs.backends.xml").parse_status(listed.stdout)) do
-			local actual = entry.wc_item == "added" and uv.fs_stat(control .. "/" .. entry.path) or nil
-			leaf = leaf
-				or (actual and actual.type == "file" and actual.dev == expected.dev and actual.ino == expected.ino)
+			local actual = entry.wc_item == "added" and uv.fs_realpath(control .. "/" .. entry.path) or nil
+			leaf = leaf or (actual == expected and read(control .. "/" .. entry.path) == bytes)
 			neighbor = neighbor or (entry.path == "neighbor" and entry.wc_item == "unversioned")
 		end
 		assert(leaf and neighbor, "native add lost the literal file or widened scope")
