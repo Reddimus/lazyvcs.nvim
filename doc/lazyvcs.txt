@@ -1132,6 +1132,8 @@ worktree" on the new side. A confirmed Git intent-to-add shows "Intent to add
 empty additions. Unknown presence keeps the existing labels. Compare retains
 its path labels and WORKTREE (unsaved) indicator. Live Git compares against the
 index, so staged additions have a present base while untracked files do not.
+Sidebar staged snapshots compare HEAD with INDEX; their absence labels name
+those endpoints, independently of files retained in the worktree.
 Reused namespaces and ColorScheme refreshes replace copied default definitions
 with the current theme colors, preserving the source definitions.
 The internal overlay is bounded to 4096 entries and 256 KiB, plus your mappings.

@@ -647,6 +647,7 @@ function M.resolve_diff_target(target)
 		relpath = relpath,
 		path = path,
 		section = section,
+		renamed_from = target.renamed_from,
 		change_kind = change_kind,
 		status = status,
 	}
@@ -676,16 +677,9 @@ function M.resolve_diff_target(target)
 	elseif section == "staged" then
 		comparison.kind = "git_staged"
 		local old_path = target.renamed_from or relpath
-		if change_kind == "added" or status:sub(1, 1) == "A" then
-			comparison.left = empty_side()
-		else
-			comparison.left = git_side("HEAD", "HEAD:" .. old_path, false)
-		end
-		if change_kind == "deleted" or status:sub(1, 1) == "D" then
-			comparison.right = empty_side()
-		else
-			comparison.right = git_side("INDEX", ":0:" .. relpath, false)
-		end
+		comparison.presence = { left = "unknown", right = "unknown", base = "HEAD", right_base = "INDEX" }
+		comparison.left = git_side("HEAD", "HEAD:" .. old_path, false)
+		comparison.right = git_side("INDEX", ":0:" .. relpath, false)
 	elseif section == "changes" then
 		comparison.kind = "git_unstaged"
 		comparison.presence = { left = "present", right = "unknown" }
@@ -720,6 +714,34 @@ function M.load_diff_target_async(target, on_done, opts)
 		vim.schedule(function()
 			task:finish(nil, resolve_err)
 		end)
+		return task
+	end
+
+	if comparison.kind == "git_staged" and not comparison._staged_entries then
+		require("lazyvcs.backends.git_staged").prepare(
+			task,
+			comparison,
+			opts.timeout_ms or ASYNC_TIMEOUT_MS,
+			function(entries, err)
+				if not entries then
+					return task:finish(nil, err)
+				end
+				comparison._staged_entries = true
+				comparison.presence = { base = "HEAD", right_base = "INDEX" }
+				for _, key in ipairs({ "left", "right" }) do
+					local item = entries[key]
+					comparison.presence[key] = item and "present" or "absent"
+					comparison[key] = item and git_side(key == "left" and "HEAD" or "INDEX", item.object, false)
+						or empty_side()
+					comparison[key].label = key == "left" and "HEAD" or "INDEX"
+					comparison[key].snapshot_oid = item and item.oid or nil
+				end
+				comparison.title = "HEAD ↔ INDEX"
+				task:add(M.load_diff_target_async(comparison, function(value, why)
+					task:finish(value, why)
+				end, opts))
+			end
+		)
 		return task
 	end
 
@@ -891,6 +913,7 @@ function M.load_diff_target_async(target, on_done, opts)
 		if failed or pending ~= 0 or not task:is_active() then
 			return
 		end
+		comparison._staged_entries = nil
 		if comparison.editable_side == "right" then
 			pending = 1
 			local function loaded(payload, err)
@@ -910,6 +933,29 @@ function M.load_diff_target_async(target, on_done, opts)
 					M.load_base_async(comparison.path, loaded, { root = comparison.root, timeout_ms = opts.timeout_ms })
 				)
 			end
+		elseif
+			comparison.kind == "git_staged"
+			and comparison.right.bytes == ""
+			and comparison.presence.right == "present"
+		then
+			pending = 1
+			task:add(
+				require("lazyvcs.backends.git_index").intent_to_add_async(
+					comparison.root,
+					comparison.relpath,
+					util.system_start,
+					function(intent, err)
+						if intent == nil then
+							return task:finish(nil, err)
+						end
+						if intent then
+							comparison.presence.right = "absent"
+						end
+						task:finish(comparison)
+					end,
+					opts
+				)
+			)
 		else
 			task:finish(comparison)
 		end
@@ -954,7 +1000,7 @@ function M.load_diff_target_async(target, on_done, opts)
 		then
 			pending = pending + 1
 			local loader = process.bytes
-			task:add(loader({ "git", "show", "--no-ext-diff", source.object }, {
+			task:add(loader({ "git", "show", "--no-ext-diff", side.snapshot_oid or source.object }, {
 				cwd = comparison.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 			}, function(lines, err, raw)

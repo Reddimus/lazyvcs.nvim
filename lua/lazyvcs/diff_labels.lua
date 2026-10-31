@@ -22,6 +22,7 @@ function M.labels(left, right, base, presence, left_document, right_document)
 	if not presence then
 		return left, right
 	end
+	base = presence.base or base
 	if presence.left == "absent" then
 		left = "No file at " .. base
 		if presence.right == "present" then
@@ -33,9 +34,9 @@ function M.labels(left, right, base, presence, left_document, right_document)
 		end
 	end
 	if presence.right == "absent" then
-		right = "No file in worktree"
+		right = presence.right_base and "No file at " .. presence.right_base or "No file in worktree"
 		if presence.left == "present" then
-			left = left .. " | Deleted from worktree"
+			left = left .. " | Deleted from " .. (presence.right_base or "worktree")
 		end
 	end
 	if presence.left == "present" and empty(left_document) then
