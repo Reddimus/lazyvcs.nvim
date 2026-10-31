@@ -12,7 +12,7 @@ function M.identified(entry, allow_link)
 		and entry.ino > 0
 end
 
-function M.parent(task, parent, ignorecase, guard, done)
+function M.parent(task, parent, guard, done)
 	if not task:is_active() then
 		return
 	end
@@ -22,9 +22,6 @@ function M.parent(task, parent, ignorecase, guard, done)
 				return task:finish(nil, err)
 			end
 			physical = util.normalize_literal_path(physical)
-			if ignorecase then
-				physical, parent = physical:lower(), parent:lower()
-			end
 			if physical ~= parent then
 				return task:finish(nil, "Patch file parent changed; retry or narrow the patch path")
 			end
@@ -33,7 +30,7 @@ function M.parent(task, parent, ignorecase, guard, done)
 	end)
 end
 
-function M.check(task, file, expected, ignorecase, guard, done)
+function M.check(task, file, expected, guard, done)
 	if not task:is_active() then
 		return
 	end
@@ -50,7 +47,7 @@ function M.check(task, file, expected, ignorecase, guard, done)
 				task:finish(nil, err or "Patch file changed; retry or narrow the patch path")
 			end))
 		end
-		M.parent(task, parent, ignorecase, guard, function()
+		M.parent(task, parent, guard, function()
 			done({ type = entry.type, dev = entry.dev, ino = entry.ino })
 		end)
 	end)

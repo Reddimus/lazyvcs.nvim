@@ -112,7 +112,7 @@ function M.read(task, file, limit, guard, done, expected)
 			return open()
 		end
 		-- Revalidate physical ancestry before opening the classified leaf.
-		paths.parent(task, expected.parent, expected.ignorecase, guard, open)
+		paths.parent(task, expected.parent, guard, open)
 	end)
 end
 
@@ -149,8 +149,7 @@ function M.files(task, repo, paths, guard, done, opts)
 					return task:finish(nil, "Patch file identity unavailable")
 				end
 				absolute[#absolute + 1] = file
-				expected[file] =
-					vim.tbl_extend("force", identity, { parent = vim.fs.dirname(file), ignorecase = ignorecase })
+				expected[file] = vim.tbl_extend("force", identity, { parent = vim.fs.dirname(file) })
 			end
 			table.sort(absolute)
 			done(absolute, expected)

@@ -104,7 +104,7 @@ function M.collect(repo, path, opts, callback)
 						return finish()
 					end
 					local absolute = util.normalize_literal_path(repo.root .. "/" .. file)
-					paths.check(task, absolute, nil, ignorecase, guard, function(entry)
+					paths.check(task, absolute, nil, guard, function(entry)
 						-- Run at the repository root with a relative operand. Git then writes
 						-- root-relative headers itself, including C quoting when necessary.
 						git({
@@ -121,7 +121,7 @@ function M.collect(repo, path, opts, callback)
 						}, function(text, truncated)
 							-- Validate before publication; the native child may have read
 							-- a replacement, so this is not a filesystem read sandbox.
-							paths.check(task, absolute, entry, ignorecase, guard, function()
+							paths.check(task, absolute, entry, guard, function()
 								if not append(text, truncated) then
 									return finish()
 								end
