@@ -112,7 +112,7 @@ assert(not called, "shutdown published application I/O completion")
 fs.fs_lstat(%q, function() called = true end)
 vim.wait(30)
 assert(not called, "shutdown accepted a new metadata request")
-print("NATIVE_PATCH_SHUTDOWN_OK")
+io.stdout:write("NATIVE_PATCH_SHUTDOWN_OK\n")
 ]],
 							root,
 							path,
