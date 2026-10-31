@@ -521,6 +521,11 @@ end
 function M.open(opts)
 	opts = vim.tbl_extend("force", {}, opts or {})
 	local path = assert(util.canonical_entry_path(opts.path or vim.fn.getcwd()))
+	-- Directories select a working context; file links remain repository entries.
+	local target = vim.uv.fs_stat(path)
+	if target and target.type == "directory" then
+		path = util.canonical_path(path)
+	end
 	if opts.include_untracked == nil then
 		opts.include_untracked = require("lazyvcs.config").get().patch.include_untracked
 	end
