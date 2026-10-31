@@ -1,12 +1,15 @@
+-- Intentional Patch-provider fault injection is restored after each case.
+---@diagnostic disable: duplicate-set-field
 return function(ctx)
+	local fs = require("lazyvcs.backends.patch_io")
 	local h, uv = ctx.helpers, vim.uv
 	local function guard(fn)
 		return function()
-			local stat, lstat, scandir = uv.fs_stat, uv.fs_lstat, uv.fs_scandir
+			local stat, lstat, scandir = uv.fs_stat, fs.fs_lstat, uv.fs_scandir
 			local ok, err = xpcall(fn, function(value)
 				return type(value) == "table" and value or debug.traceback(value, 2)
 			end)
-			uv.fs_stat, uv.fs_lstat, uv.fs_scandir = stat, lstat, scandir
+			uv.fs_stat, fs.fs_lstat, uv.fs_scandir = stat, lstat, scandir
 			h.cleanup()
 			if not ok then
 				error(err, 0)
@@ -173,8 +176,8 @@ return function(ctx)
 			end
 			local result, err = collect({ f.root .. "/missing" })
 			assert(not result and tostring(err):find("ENOENT", 1, true), "missing patch leaf silently disappeared")
-			local lstat = uv.fs_lstat
-			uv.fs_lstat = function(path, done)
+			local lstat = fs.fs_lstat
+			fs.fs_lstat = function(path, done)
 				if path == f.root .. "/unreadable" and done then
 					vim.schedule(function()
 						done("EACCES: denied", nil)
@@ -185,7 +188,7 @@ return function(ctx)
 			end
 			result, err = collect({ f.root .. "/unreadable" })
 			assert(not result and tostring(err):find("EACCES", 1, true), "unreadable leaf silently disappeared")
-			uv.fs_lstat = lstat
+			fs.fs_lstat = lstat
 			local many = {}
 			for index = 1, 10001 do
 				many[index] = f.root .. "/missing-" .. index

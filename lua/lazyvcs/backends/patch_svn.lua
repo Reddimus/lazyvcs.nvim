@@ -2,6 +2,7 @@
 local uv = vim.uv
 local util = require("lazyvcs.util")
 local paths = require("lazyvcs.backends.patch_path")
+local fs = require("lazyvcs.backends.patch_io")
 local M = {}
 
 function M.section(rel, text)
@@ -39,14 +40,14 @@ function M.read(task, file, limit, guard, done, expected)
 		return
 	end
 	-- The walker may have classified this path long before its turn to read.
-	uv.fs_lstat(file, function(stat_err, entry)
+	fs.fs_lstat(file, function(stat_err, entry)
 		if not task:is_active() then
 			return
 		end
 		if not identified(entry) then
 			return fail(stat_err or "Patch requires a regular file with a verifiable identity")
 		end
-		if expected and (not identified(expected) or entry.dev ~= expected.dev or entry.ino ~= expected.ino) then
+		if expected and (not identified(expected) or not paths.same(entry, expected)) then
 			return fail("Patch file changed during collection; retry or narrow the patch path")
 		end
 		local function open()
@@ -54,7 +55,7 @@ function M.read(task, file, limit, guard, done, expected)
 			-- Nonblocking protects a late FIFO; no-follow rejects late symlinks where
 			-- supported. The descriptor identity check also protects portable fallbacks.
 			local flags = bit.bor(constants.O_RDONLY, constants.O_NONBLOCK or 0, constants.O_NOFOLLOW or 0)
-			uv.fs_open(file, flags, 438, function(open_err, fd)
+			fs.fs_open(file, flags, 438, function(open_err, fd)
 				if not fd then
 					return fail(open_err)
 				end
@@ -62,7 +63,7 @@ function M.read(task, file, limit, guard, done, expected)
 				local function close(err, binary)
 					-- Only the current I/O callback closes its descriptor. Cancellation must
 					-- not close it while libuv still owns an in-flight operation.
-					uv.fs_close(fd, function(close_err)
+					fs.fs_close(fd, function(close_err)
 						vim.schedule(guard(function()
 							if err or close_err then
 								return task:finish(nil, err or close_err)
@@ -74,11 +75,11 @@ function M.read(task, file, limit, guard, done, expected)
 				if not task:is_active() then
 					return close()
 				end
-				uv.fs_fstat(fd, function(fd_err, stat)
+				fs.fs_fstat(fd, function(fd_err, stat)
 					if not task:is_active() then
 						return close()
 					end
-					if not identified(stat) or stat.dev ~= entry.dev or stat.ino ~= entry.ino then
+					if not identified(stat) or not paths.same(stat, entry) then
 						return close(fd_err or "Patch file changed before it could be read")
 					end
 					local read
@@ -86,7 +87,7 @@ function M.read(task, file, limit, guard, done, expected)
 						if size >= limit then
 							return close()
 						end
-						uv.fs_read(fd, math.min(65536, limit - size), size, function(err, bytes)
+						fs.fs_read(fd, math.min(65536, limit - size), size, function(err, bytes)
 							local binary = bytes and size == 0 and bytes:sub(1, 8192):find("\0", 1, true)
 							if bytes then
 								chunks[#chunks + 1], size = bytes, size + #bytes
@@ -158,6 +159,7 @@ function M.files(task, repo, paths, guard, done, opts)
 			files_only = true,
 			missing_is_error = true,
 			capture_identity = true,
+			lstat = fs.fs_lstat,
 			selected_path = opts.selected_path,
 			ignorecase = ignorecase,
 		}

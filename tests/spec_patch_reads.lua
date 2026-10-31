@@ -1,4 +1,7 @@
+-- Intentional Patch-provider fault injection is restored after each case.
+---@diagnostic disable: duplicate-set-field
 return function(ctx)
+	local fs = require("lazyvcs.backends.patch_io")
 	local h, uv = ctx.helpers, vim.uv
 	local reader = require("lazyvcs.backends.patch_svn")
 	local seams = { "fs_lstat", "fs_open", "fs_fstat", "fs_read", "fs_close" }
@@ -6,14 +9,14 @@ return function(ctx)
 		return function()
 			local saved = {}
 			for _, name in ipairs(seams) do
-				saved[name] = uv[name]
+				saved[name] = fs[name]
 			end
 			local original = reader.read
 			local ok, err = xpcall(fn, function(value)
 				return type(value) == "table" and value or debug.traceback(value, 2)
 			end)
 			for name, value in pairs(saved) do
-				uv[name] = value
+				fs[name] = value
 			end
 			reader.read = original
 			h.cleanup()
@@ -78,10 +81,10 @@ return function(ctx)
 							replacement = foreign .. ".fifo"
 							h.exec({ "mkfifo", replacement }, f.root)
 						end
-						local read, open = reader.read, uv.fs_open
+						local read, open = reader.read, fs.fs_open
 						local held, swap, opened, closed = nil, false, 0, 0
-						local close, owned = uv.fs_close, {}
-						uv.fs_close = function(fd, cb)
+						local close, owned = fs.fs_close, {}
+						fs.fs_close = function(fd, cb)
 							if owned[fd] then
 								closed = closed + 1
 							end
@@ -116,7 +119,7 @@ return function(ctx)
 							assert(uv.fs_rename(path, path .. ".old"))
 							assert(uv.fs_rename(replacement, path))
 						end
-						uv.fs_open = function(file, flags, mode, cb)
+						fs.fs_open = function(file, flags, mode, cb)
 							if file == path and cb then
 								if stage == "before_open" then
 									replace()
@@ -205,8 +208,8 @@ return function(ctx)
 			write(path, "owned leaf")
 			write(foreign, nonce)
 			link(foreign, replacement)
-			local open = uv.fs_open
-			uv.fs_open = function(file, flags, mode, cb)
+			local open = fs.fs_open
+			fs.fs_open = function(file, flags, mode, cb)
 				assert(uv.fs_rename(path, path .. ".old"))
 				assert(uv.fs_rename(replacement, path))
 				if type(flags) == "number" and uv.constants.O_NOFOLLOW then
@@ -227,7 +230,7 @@ return function(ctx)
 			local path = h.tempdir() .. "/leaf"
 			write(path, "ordinary")
 			local opened = false
-			uv.fs_open = function()
+			fs.fs_open = function()
 				opened = true
 				error("open after cancellation")
 			end
@@ -250,10 +253,10 @@ return function(ctx)
 			protected(function()
 				local path = h.tempdir() .. "/leaf"
 				write(path, "ordinary\n")
-				local original, close = uv[seam], uv.fs_close
+				local original, close = fs[seam], fs.fs_close
 				local opened, closed, injected = 0, 0, false
-				local open = uv.fs_open
-				uv.fs_open = function(file, flags, mode, cb)
+				local open = fs.fs_open
+				fs.fs_open = function(file, flags, mode, cb)
 					return open(file, flags, mode, function(err, fd)
 						if fd then
 							opened = opened + 1
@@ -261,11 +264,11 @@ return function(ctx)
 						cb(err, fd)
 					end)
 				end
-				uv.fs_close = function(fd, cb)
+				fs.fs_close = function(fd, cb)
 					closed = closed + 1
 					return close(fd, cb)
 				end
-				uv[seam] = function(...)
+				fs[seam] = function(...)
 					local args = { ... }
 					local cb = args[#args]
 					injected = true
@@ -294,17 +297,17 @@ return function(ctx)
 			protected(function()
 				local path = h.tempdir() .. "/leaf"
 				write(path, "ordinary\n")
-				local original, close, open, fstat = uv[seam], uv.fs_close, uv.fs_open, uv.fs_fstat
+				local original, close, open, fstat = fs[seam], fs.fs_close, fs.fs_open, fs.fs_fstat
 				local held, descriptor, opens, closes = nil, nil, 0, 0
-				uv.fs_open = function(file, flags, mode, cb)
+				fs.fs_open = function(file, flags, mode, cb)
 					opens = opens + 1
 					return open(file, flags, mode, function(err, fd)
 						descriptor = fd
 						cb(err, fd)
 					end)
 				end
-				local target = uv[seam]
-				uv[seam] = function(...)
+				local target = fs[seam]
+				fs[seam] = function(...)
 					local args = { ... }
 					local cb = args[#args]
 					args[#args] = function(...)
@@ -315,7 +318,7 @@ return function(ctx)
 					end
 					return target(unpack(args))
 				end
-				uv.fs_close = function(fd, cb)
+				fs.fs_close = function(fd, cb)
 					closes = closes + 1
 					return close(fd, cb)
 				end
@@ -334,12 +337,15 @@ return function(ctx)
 						return closes == 1
 					end, "cancelled descriptor leaked")
 					wait(function()
-						return fstat(assert(descriptor)) == nil
+						-- Windows completion acknowledges CloseHandle in its worker; POSIX
+						-- retains the original descriptor probe. Neither accepts a queued close.
+						return type(descriptor) == "table" and descriptor.closed
+							or type(descriptor) ~= "table" and fstat(assert(descriptor)) == nil
 					end, "descriptor remained open")
 				end
 				vim.wait(30)
 				assert(not result.done and closes <= 1, "late callback published or closed twice")
-				uv[seam] = original
+				fs[seam] = original
 			end),
 		}
 	end
@@ -348,8 +354,8 @@ return function(ctx)
 		protected(function()
 			local path = h.tempdir() .. "/leaf"
 			write(path, "ordinary\n")
-			local original = uv.fs_lstat
-			uv.fs_lstat = function(file, cb)
+			local original = fs.fs_lstat
+			fs.fs_lstat = function(file, cb)
 				return original(file, function(err, stat)
 					if stat then
 						stat.ino = nil

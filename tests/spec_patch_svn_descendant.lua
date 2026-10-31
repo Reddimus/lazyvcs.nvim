@@ -1,4 +1,7 @@
+-- Intentional Patch-provider fault injection is restored after each case.
+---@diagnostic disable: duplicate-set-field
 return function(ctx)
+	local fs = require("lazyvcs.backends.patch_io")
 	local h, uv = ctx.helpers, vim.uv
 	local util, reader = require("lazyvcs.util"), require("lazyvcs.backends.patch_svn")
 	local cases = {}
@@ -43,11 +46,11 @@ return function(ctx)
 			"test_patch_svn_descendant_" .. name,
 			function()
 				local start, scandir, lstat, realpath, open, read_file =
-					util.system_start, uv.fs_scandir, uv.fs_lstat, uv.fs_realpath, uv.fs_open, reader.read
+					util.system_start, uv.fs_scandir, fs.fs_lstat, uv.fs_realpath, fs.fs_open, reader.read
 				local ok, err = xpcall(fn, function(value)
 					return type(value) == "table" and value or debug.traceback(value, 2)
 				end)
-				util.system_start, uv.fs_scandir, uv.fs_lstat, uv.fs_realpath, uv.fs_open, reader.read =
+				util.system_start, uv.fs_scandir, fs.fs_lstat, uv.fs_realpath, fs.fs_open, reader.read =
 					start, scandir, lstat, realpath, open, read_file
 				h.cleanup()
 				if not ok then
@@ -234,9 +237,9 @@ return function(ctx)
 	end
 	case("ancestor_replaced_by_file_never_widens_selection", function()
 		local f = fixture()
-		local lstat, changed = uv.fs_lstat, false
+		local lstat, changed = fs.fs_lstat, false
 		---@diagnostic disable-next-line: duplicate-set-field
-		uv.fs_lstat = function(path, callback)
+		fs.fs_lstat = function(path, callback)
 			if path == f.root .. "/outer" and callback and not changed then
 				changed = true
 				assert(uv.fs_rename(path, path .. ".old"))
@@ -250,9 +253,9 @@ return function(ctx)
 	for _, kind in ipairs({ "missing", "error" }) do
 		case("chain_lstat_" .. kind, function()
 			local f = fixture()
-			local lstat, reached = uv.fs_lstat, false
+			local lstat, reached = fs.fs_lstat, false
 			---@diagnostic disable-next-line: duplicate-set-field
-			uv.fs_lstat = function(path, callback)
+			fs.fs_lstat = function(path, callback)
 				if path == f.selected and callback then
 					reached = true
 					if kind == "missing" then

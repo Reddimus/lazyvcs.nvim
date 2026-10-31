@@ -58,7 +58,7 @@ function M.expand(task, repo, entries, callback, opts)
 		then
 			return visit()
 		end
-		vim.uv.fs_lstat(path, function(stat_err, stat)
+		(opts.lstat or vim.uv.fs_lstat)(path, function(stat_err, stat)
 			schedule(task, function()
 				if not task:is_active() then
 					return
@@ -154,7 +154,14 @@ function M.expand(task, repo, entries, callback, opts)
 					items[#items + 1] = relpath
 					seen[relpath] = true
 					if identities then
-						identities[relpath] = { type = stat.type, dev = stat.dev, ino = stat.ino }
+						---@cast stat table
+						identities[relpath] = {
+							type = stat.type,
+							dev = stat.dev,
+							ino = stat.ino,
+							identity = stat.identity,
+							directory_reparse = stat.directory_reparse,
+						}
 					end
 				end
 				visit()

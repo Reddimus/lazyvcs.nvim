@@ -1,15 +1,41 @@
 -- Metadata checks shared by native Git additions and SVN's descriptor reader.
 local uv = vim.uv
 local util = require("lazyvcs.util")
+local fs = require("lazyvcs.backends.patch_io")
 local M = {}
 
-function M.identified(entry, allow_link)
-	return entry
-		and (entry.type == "file" or allow_link and entry.type == "link")
+function M.identity(entry)
+	if not entry then
+		return false
+	end
+	if entry.identity == "windows-file-id-128" then
+		return type(entry.dev) == "string"
+			and entry.dev:match("^%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x$") ~= nil
+			and type(entry.ino) == "string"
+			and #entry.ino == 32
+			and entry.ino:match("^%x+$") ~= nil
+			and entry.ino ~= string.rep("0", 32)
+	end
+	return entry.identity == nil
 		and type(entry.dev) == "number"
 		and entry.dev >= 0
 		and type(entry.ino) == "number"
 		and entry.ino > 0
+end
+
+function M.identified(entry, allow_link)
+	return M.identity(entry)
+		and (entry.type == "file" or allow_link and entry.type == "link" and not entry.directory_reparse)
+end
+
+function M.same(entry, expected)
+	return M.identity(entry)
+		and M.identity(expected)
+		and entry.type == expected.type
+		and entry.identity == expected.identity
+		and entry.directory_reparse == expected.directory_reparse
+		and entry.dev == expected.dev
+		and entry.ino == expected.ino
 end
 
 function M.parent(task, parent, guard, done)
@@ -100,20 +126,23 @@ function M.check(task, file, expected, guard, done)
 		return
 	end
 	local parent = vim.fs.dirname(file)
-	uv.fs_lstat(file, function(err, entry)
+	fs.fs_lstat(file, function(err, entry)
 		if not task:is_active() then
 			return
 		end
-		if
-			not M.identified(entry, true)
-			or expected and (entry.type ~= expected.type or entry.dev ~= expected.dev or entry.ino ~= expected.ino)
-		then
+		if not M.identified(entry, true) or expected and not M.same(entry, expected) then
 			return vim.schedule(guard(function()
 				task:finish(nil, err or "Patch file changed; retry or narrow the patch path")
 			end))
 		end
 		M.parent(task, parent, guard, function()
-			done({ type = entry.type, dev = entry.dev, ino = entry.ino })
+			done({
+				type = entry.type,
+				dev = entry.dev,
+				ino = entry.ino,
+				identity = entry.identity,
+				directory_reparse = entry.directory_reparse,
+			})
 		end)
 	end)
 end

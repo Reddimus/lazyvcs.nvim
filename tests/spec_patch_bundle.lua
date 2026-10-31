@@ -1,4 +1,7 @@
+-- Intentional Patch-provider fault injection is restored after each case.
+---@diagnostic disable: duplicate-set-field
 return function(ctx)
+	local fs = require("lazyvcs.backends.patch_io")
 	local h, uv, api = ctx.helpers, vim.uv, vim.api
 	local patch, reader, util = require("lazyvcs.patch"), require("lazyvcs.backends.patch_svn"), require("lazyvcs.util")
 	local function write(path, bytes)
@@ -44,12 +47,12 @@ return function(ctx)
 		cases[#cases + 1] = {
 			"test_patch_bundle_" .. name,
 			function()
-				local lstat, open, realpath = uv.fs_lstat, uv.fs_open, uv.fs_realpath
+				local lstat, open, realpath = fs.fs_lstat, fs.fs_open, uv.fs_realpath
 				local start, read = util.system_start, reader.read
 				local ok, err = xpcall(fn, function(value)
 					return type(value) == "table" and value or debug.traceback(value, 2)
 				end)
-				uv.fs_lstat, uv.fs_open, uv.fs_realpath = lstat, open, realpath
+				fs.fs_lstat, fs.fs_open, uv.fs_realpath = lstat, open, realpath
 				util.system_start, reader.read = start, read
 				for _, buf in ipairs(api.nvim_list_bufs()) do
 					if api.nvim_buf_get_name(buf):match("^lazyvcs://patch/") then
@@ -256,9 +259,9 @@ return function(ctx)
 					return original(task, file, limit, guard, done, identity)
 				end
 			end
-			local lstat, open = uv.fs_lstat, uv.fs_open
+			local lstat, open = fs.fs_lstat, fs.fs_open
 			if timing == "before_childstat" then
-				uv.fs_lstat = function(file, cb)
+				fs.fs_lstat = function(file, cb)
 					if file == path and cb and not swapped then
 						swap()
 					end
@@ -277,7 +280,7 @@ return function(ctx)
 			end, "walker did not reach child")
 			reader.read = original
 			if timing == "before_open" then
-				uv.fs_open = function(file, flags, mode, cb)
+				fs.fs_open = function(file, flags, mode, cb)
 					if file == path and cb then
 						swap()
 					end
@@ -373,7 +376,7 @@ return function(ctx)
 		vim.fn.mkdir(dir)
 		local path = dir .. "/child"
 		write(path, "leaf\n")
-		local realpath, open, held, opened = uv.fs_realpath, uv.fs_open, nil, false
+		local realpath, open, held, opened = uv.fs_realpath, fs.fs_open, nil, false
 		uv.fs_realpath = function(p, cb)
 			if p == dir and cb then
 				return realpath(p, function(...)
@@ -385,7 +388,7 @@ return function(ctx)
 			end
 			return realpath(p, cb)
 		end
-		uv.fs_open = function(p, ...)
+		fs.fs_open = function(p, ...)
 			if p == path then
 				opened = true
 			end
