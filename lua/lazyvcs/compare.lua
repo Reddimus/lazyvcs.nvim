@@ -196,7 +196,7 @@ resize = rail.guard(function(s, manual_event)
 		and s.preview_result
 		and s.preview_result.left_document
 		and s.preview_result.right_document
-		and not (s.worktree and s.worktree.capture_error)
+		and not (s.worktree and s.capture_failed_record == s.worktree)
 		and s.shown_item
 		and not s.shown_item.property_only
 		and s.shown_item.kind ~= "dir"
@@ -809,6 +809,8 @@ local function update_worktree(s, record)
 			"WORKTREE (unsaved) | " .. s.shown_item.relpath .. " | hunks unavailable: " .. (why or "unsupported text")
 		):gsub("%%", "%%%%")
 		set_label(s.rightwin, s.right_label, s.right)
+		-- Shared buffers notify several views; each view owns its recovery state.
+		s.capture_failed_record = record
 		local capture_error = why or "Working buffer hunks are unavailable"
 		if record.capture_error ~= capture_error then
 			record.capture_error = capture_error
@@ -819,7 +821,8 @@ local function update_worktree(s, record)
 		end
 		return
 	end
-	local recovered = record.capture_error ~= nil
+	local recovered = s.capture_failed_record == record
+	s.capture_failed_record = nil
 	record.capture_error = nil
 	local result = assert(worktree.result(record, s.preview_result, current))
 	if result.profile_key ~= s.preview_result.profile_key then
