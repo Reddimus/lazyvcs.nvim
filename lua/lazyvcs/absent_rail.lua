@@ -248,20 +248,38 @@ function M.release(s)
 end
 
 function M.apply(s, win, stacked)
-	local r = s.rail
-	if r and (r.win ~= win or r.stacked ~= stacked or api.nvim_win_get_buf(win) ~= r.buf) then
-		M.release(s)
-		r = nil
-	end
-	if not win then
+	if not win or not api.nvim_win_is_valid(win) then
 		M.release(s)
 		return
+	end
+	local buf, owner = api.nvim_win_get_buf(win), windows[win]
+	local function same_buffer()
+		return api.nvim_win_is_valid(win) and api.nvim_win_get_buf(win) == buf
+	end
+	local r = s.rail
+	if r and (r.win ~= win or r.stacked ~= stacked or api.nvim_win_get_buf(win) ~= r.buf) then
+		local expected = owner ~= r and owner or nil
+		M.release(s)
+		r = s.rail
+		if r or windows[win] ~= expected or not same_buffer() then
+			return
+		end
+		owner = expected
 	end
 	if r then
 		resume(r)
 		return
 	end
+	if owner then
+		M.release(owner.session)
+		if s.rail or windows[win] or not same_buffer() then
+			return
+		end
+	end
 	strip_window(win)
+	if s.rail or windows[win] or not same_buffer() then
+		return
+	end
 	local values = {
 		number = false,
 		relativenumber = false,
@@ -277,7 +295,7 @@ function M.apply(s, win, stacked)
 	values.statuscolumn = token
 	r = {
 		win = win,
-		buf = api.nvim_win_get_buf(win),
+		buf = buf,
 		stacked = stacked,
 		before = {},
 		written = values,
@@ -285,13 +303,33 @@ function M.apply(s, win, stacked)
 		slot = id,
 		session = s,
 	}
-	s.rail = r
-	for name, value in pairs(values) do
+	s.rail, windows[win], slots[id] = r, r, r
+	local function current()
+		return s.rail == r and windows[win] == r and slots[id] == r and same_buffer()
+	end
+	local function apply_value(name, value)
+		if not current() then
+			return false
+		end
 		r.before[name] = util.get_win_option(win, name)
 		write(win, name, value)
+		if not current() then
+			if s.rail == r and windows[win] == r then
+				M.release(s)
+			end
+			return false
+		end
+		return true
 	end
-	windows[win] = r
-	slots[id] = r
+	-- Native copies need provenance before any other collapsed option can escape.
+	if not apply_value("statuscolumn", token) then
+		return
+	end
+	for name, value in pairs(values) do
+		if name ~= "statuscolumn" and not apply_value(name, value) then
+			return
+		end
+	end
 end
 
 -- Sample WinEnter synchronously, then verify after temporary window calls and
