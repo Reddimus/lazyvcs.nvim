@@ -138,7 +138,9 @@ function M.read(task, file, limit, guard, done, expected)
 	end)
 end
 
-function M.files(task, repo, paths, guard, done, switched, ignorecase)
+function M.files(task, repo, paths, guard, done, opts)
+	opts = opts or {}
+	local ignorecase = opts.ignorecase
 	if ignorecase == nil then
 		ignorecase = vim.o.fileignorecase
 	end
@@ -150,7 +152,7 @@ function M.files(task, repo, paths, guard, done, switched, ignorecase)
 	for _, path in ipairs(paths) do
 		entries[#entries + 1] = { path = path, wc_item = "unversioned" }
 	end
-	for _, boundary in ipairs(switched or {}) do
+	for _, boundary in ipairs(opts.switched or {}) do
 		entries[#entries + 1] = type(boundary) == "table" and boundary or { path = boundary, switched = true }
 	end
 	require("lazyvcs.backends.svn_untracked").expand(
@@ -175,7 +177,13 @@ function M.files(task, repo, paths, guard, done, switched, ignorecase)
 			table.sort(absolute)
 			done(absolute, expected)
 		end),
-		{ files_only = true, missing_is_error = true, capture_identity = true }
+		{
+			files_only = true,
+			missing_is_error = true,
+			capture_identity = true,
+			selected_path = opts.selected_path,
+			ignorecase = ignorecase,
+		}
 	)
 end
 

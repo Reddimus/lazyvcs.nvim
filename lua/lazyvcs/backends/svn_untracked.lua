@@ -20,6 +20,17 @@ function M.expand(task, repo, entries, callback, opts)
 	opts = opts or {}
 	local items, seen = {}, {}
 	local identities = opts.capture_identity and {} or nil
+	if opts.selected_path then
+		local selected = util.relative_literal_path(repo.root, opts.selected_path, opts.ignorecase)
+		if not selected then
+			return callback(nil, "Selected untracked path is outside the working copy")
+		end
+		for component in selected:gmatch("[^/]+") do
+			if component == ".git" or component == ".svn" then
+				return callback(items, nil, identities)
+			end
+		end
+	end
 	local pending, switched = {}, {}
 	for _, entry in ipairs(entries) do
 		if entry.switched or entry.wc_item == "external" then
@@ -39,6 +50,14 @@ function M.expand(task, repo, entries, callback, opts)
 		if not path then
 			return callback(items, nil, identities)
 		end
+		local toward = opts.selected_path and util.relative_literal_path(path, opts.selected_path, opts.ignorecase)
+		if
+			opts.selected_path
+			and not toward
+			and not util.relative_literal_path(opts.selected_path, path, opts.ignorecase)
+		then
+			return visit()
+		end
 		vim.uv.fs_lstat(path, function(stat_err, stat)
 			schedule(task, function()
 				if not task:is_active() then
@@ -52,8 +71,27 @@ function M.expand(task, repo, entries, callback, opts)
 					callback(nil, stat_err)
 					return
 				end
+				if toward and toward ~= "." and stat.type ~= "directory" then
+					return callback(nil, "Selected patch ancestor is no longer a directory")
+				end
 				if stat.type == "directory" then
 					local function scan()
+						-- Native status proved the seed unversioned. Follow only the selected
+						-- ancestor chain, checking the same ignores and markers as a full walk.
+						if toward and toward ~= "." then
+							local name = assert(toward:match("^[^/]+"))
+							scanned = scanned + 1
+							if name ~= ".svn" and name ~= ".git" and not ignored(path .. "/" .. name, name) then
+								pending[#pending + 1] = path .. "/" .. name
+							end
+							if #pending > 10000 or scanned > 100000 then
+								return callback(
+									nil,
+									"Untracked discovery exceeded its path limit; narrow the patch path"
+								)
+							end
+							return visit()
+						end
 						vim.uv.fs_scandir(path, function(scan_err, handle)
 							local consume
 							consume = function()

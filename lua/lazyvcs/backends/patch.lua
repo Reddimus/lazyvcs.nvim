@@ -165,7 +165,7 @@ function M.collect(repo, path, opts, callback)
 		))
 	else
 		local target = util.svn_target(relative)
-		local function untracked(raw)
+		local function untracked(raw, selected_path)
 			if not opts.include_untracked then
 				return finish()
 			end
@@ -200,23 +200,85 @@ function M.collect(repo, path, opts, callback)
 					end, identities[file])
 				end)
 				next_file()
-			end, switched, ignorecase)
+			end, { switched = switched, ignorecase = ignorecase, selected_path = selected_path })
 		end
-		-- SVN rejects an unversioned operand to diff. Inspect status first so
-		-- selected loose files and directories can use the addition collector.
-		command({ "svn", "status", "--xml", "--ignore-externals", "--", target }, function(raw)
-			for _, entry in ipairs(xml.parse_status(raw)) do
-				local entry_path = util.normalize_literal_path(repo.root .. "/" .. entry.path)
-				if entry.wc_item == "unversioned" and entry_path == path then
-					return untracked(raw)
-				end
-			end
+		local function diff(raw)
 			command({ "svn", "diff", "--internal-diff", "--", relative }, function(text, truncated)
 				if not append(text, truncated) then
 					return finish()
 				end
 				untracked(raw)
 			end)
+		end
+		local function classify_selected(raw)
+			---@type string?
+			local ancestor = relative
+			local next_batch
+			next_batch = function()
+				local args = {
+					"svn",
+					"status",
+					"--xml",
+					"--ignore-externals",
+					"--no-ignore",
+					"--verbose",
+					"--depth",
+					"empty",
+					"--",
+				}
+				local paths, bytes = {}, 0
+				while ancestor and #paths < 64 do
+					if #paths > 0 and bytes + #ancestor + 1 > 32768 then
+						break
+					end
+					paths[#paths + 1] = ancestor
+					args[#args + 1] = util.svn_target(ancestor)
+					bytes = bytes + #ancestor + 1
+					ancestor = ancestor ~= "." and vim.fs.dirname(ancestor) or nil
+				end
+				command(args, function(status)
+					local entries = {}
+					for _, entry in ipairs(xml.parse_status(status)) do
+						entries[util.normalize_literal_path(repo.root .. "/" .. entry.path)] = entry
+					end
+					-- A child of an unversioned directory has no native status row.
+					-- Only an exact native ancestor row can authorize the scoped walk.
+					for _, candidate in ipairs(paths) do
+						local entry = entries[util.normalize_literal_path(repo.root .. "/" .. candidate)]
+						if entry then
+							if entry.wc_item == "unversioned" then
+								return untracked(status, path)
+							elseif entry.wc_item == "ignored" then
+								return finish()
+							end
+							return diff(raw)
+						end
+					end
+					if ancestor then
+						return next_batch()
+					end
+					task:finish(nil, "Cannot classify selected SVN path; retry or select its parent")
+				end, nil, false, true)
+			end
+			next_batch()
+		end
+		-- SVN rejects an unversioned operand to diff. Inspect status first so
+		-- selected loose files and directories can use the addition collector.
+		command({ "svn", "status", "--xml", "--ignore-externals", "--", target }, function(raw)
+			local exact = false
+			for _, entry in ipairs(xml.parse_status(raw)) do
+				local entry_path = util.normalize_literal_path(repo.root .. "/" .. entry.path)
+				if entry_path == path then
+					exact = true
+					if entry.wc_item == "unversioned" then
+						return untracked(raw)
+					end
+				end
+			end
+			if not exact and relative ~= "." then
+				return classify_selected(raw)
+			end
+			diff(raw)
 		end, nil, false, true)
 	end
 	return task
