@@ -468,10 +468,10 @@ reports that a command is already pending. Confirmation checks gitsigns hunks an
 rejects matching base mutations that begin or settle while open.
 
 Native hunk ranges follow supported algorithm, indent, linematch and whitespace
-settings in 'diffopt'. With icase, the Lua diff API cannot reproduce native
-Unicode comparisons, so native hunk jumps and reverts refuse the operation.
-Remove it with :set diffopt-=icase to use these commands. Diff panes remain
-available. Large native sign comparisons and previews run in a worker thread.
+settings in 'diffopt'. Live-diff and Compare hunk commands refuse icase because
+Lua diff cannot reproduce its native Unicode comparisons. Use
+:set diffopt-=icase to enable them. Standalone sign commands and diff panes
+remain available. Large native comparisons and previews run in a worker thread.
 Results from older edits or bases are discarded. Preview completion also
 checks the originating window and focus. Editing, leaving the window, or
 reloading the base cancels a pending preview. Duplicate pending previews share
