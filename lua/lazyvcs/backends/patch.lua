@@ -5,6 +5,93 @@ local xml = require("lazyvcs.backends.xml")
 local paths = require("lazyvcs.backends.patch_path")
 local M = {}
 
+-- Classify only Git's untracked additions. Tracked native diff output remains
+-- authoritative even when Git explicitly tracks a file inside another repository.
+local function git_untracked_files(task, root, files, guard, done)
+	local cache, kept, index = {}, {}, 0
+	local next_file
+	local function later(fn)
+		vim.schedule(guard(fn))
+	end
+	next_file = function()
+		index = index + 1
+		local file = files[index]
+		if not file then
+			return done(kept)
+		end
+		-- At the explicit Git root, keep ordinary files named .svn while
+		-- excluding a linked administration directory listed as a leaf.
+		if file == ".svn" then
+			vim.uv.fs_stat(root .. "/.svn", function(err, entry)
+				later(function()
+					if err and not tostring(err):match("^ENOENT:") then
+						return task:finish(nil, err)
+					end
+					if not entry or entry.type ~= "directory" then
+						kept[#kept + 1] = file
+					end
+					later(next_file)
+				end)
+			end)
+			return
+		end
+		local ancestors, current = {}, root
+		local components = vim.split(file, "/", { plain = true })
+		for i = 1, #components - 1 do
+			local component = components[i]
+			-- A leaf with this name can be an ordinary file. Administrative directory
+			-- components, however, never belong to the outer untracked collection.
+			if component == ".git" or component == ".svn" then
+				return later(next_file)
+			end
+			current = current .. "/" .. component
+			ancestors[#ancestors + 1] = current
+		end
+		local cursor = 0
+		local visit
+		visit = function()
+			local directory
+			repeat
+				cursor = cursor + 1
+				directory = ancestors[cursor]
+				if not directory then
+					kept[#kept + 1] = file
+					return later(next_file)
+				end
+				if cache[directory] then
+					return later(next_file)
+				end
+			until cache[directory] == nil
+			-- Match the shared SVN walker's marker kinds, following administrative
+			-- marker links only. No recursive filesystem walk or per-file VCS spawn.
+			vim.uv.fs_stat(directory .. "/.svn", function(svn_err, svn)
+				later(function()
+					if svn_err and not tostring(svn_err):match("^ENOENT:") then
+						return task:finish(nil, svn_err)
+					end
+					vim.uv.fs_stat(directory .. "/.git", function(git_err, git)
+						later(function()
+							if git_err and not tostring(git_err):match("^ENOENT:") then
+								return task:finish(nil, git_err)
+							end
+							local boundary = (svn and svn.type == "directory")
+								or (git and (git.type == "file" or git.type == "directory"))
+								or false
+							cache[directory] = boundary
+							if boundary then
+								return later(next_file)
+							end
+							visit()
+						end)
+					end)
+				end)
+			end)
+		end
+		visit()
+	end
+	later(next_file)
+end
+
 function M.collect(repo, path, opts, callback)
 	local task = require("lazyvcs.backends.comparison").task(callback)
 	local ignorecase = vim.o.fileignorecase
@@ -96,43 +183,46 @@ function M.collect(repo, path, opts, callback)
 					end
 				end
 				table.sort(files)
-				local index = 0
-				local function next_file()
-					index = index + 1
-					local file = files[index]
-					if not file then
-						return finish()
+				git_untracked_files(task, repo.root, files, guard, function(owned_files)
+					files = owned_files
+					local index = 0
+					local function next_file()
+						index = index + 1
+						local file = files[index]
+						if not file then
+							return finish()
+						end
+						local absolute = util.normalize_literal_path(repo.root .. "/" .. file)
+						paths.check(task, absolute, nil, guard, function(entry)
+							-- Run at the repository root with a relative operand. Git then writes
+							-- root-relative headers itself, including C quoting when necessary.
+							local dash = file == "-"
+							git({
+								"diff",
+								"--no-ext-diff",
+								"--no-color",
+								"--no-textconv",
+								"--src-prefix=" .. (dash and "" or "a/"),
+								"--dst-prefix=" .. (dash and "" or "b/"),
+								"--no-index",
+								"--",
+								"/dev/null",
+								-- A bare dash is stdin; empty prefixes keep ./- applicable.
+								dash and "./-" or file,
+							}, function(text, truncated)
+								-- Validate before publication; the native child may have read
+								-- a replacement, so this is not a filesystem read sandbox.
+								paths.check(task, absolute, entry, guard, function()
+									if not append(text, truncated) then
+										return finish()
+									end
+									next_file()
+								end)
+							end, nil, true)
+						end)
 					end
-					local absolute = util.normalize_literal_path(repo.root .. "/" .. file)
-					paths.check(task, absolute, nil, guard, function(entry)
-						-- Run at the repository root with a relative operand. Git then writes
-						-- root-relative headers itself, including C quoting when necessary.
-						local dash = file == "-"
-						git({
-							"diff",
-							"--no-ext-diff",
-							"--no-color",
-							"--no-textconv",
-							"--src-prefix=" .. (dash and "" or "a/"),
-							"--dst-prefix=" .. (dash and "" or "b/"),
-							"--no-index",
-							"--",
-							"/dev/null",
-							-- A bare dash is stdin; empty prefixes keep ./- applicable.
-							dash and "./-" or file,
-						}, function(text, truncated)
-							-- Validate before publication; the native child may have read
-							-- a replacement, so this is not a filesystem read sandbox.
-							paths.check(task, absolute, entry, guard, function()
-								if not append(text, truncated) then
-									return finish()
-								end
-								next_file()
-							end)
-						end, nil, true)
-					end)
-				end
-				next_file()
+					next_file()
+				end)
 			end, nil, false, true)
 		end
 		local function diff(base)
