@@ -2,6 +2,7 @@
 local util = require("lazyvcs.util")
 local process = require("lazyvcs.backends.process")
 local xml = require("lazyvcs.backends.xml")
+local paths = require("lazyvcs.backends.patch_path")
 local M = {}
 
 function M.collect(repo, path, opts, callback)
@@ -102,25 +103,32 @@ function M.collect(repo, path, opts, callback)
 					if not file then
 						return finish()
 					end
-					-- Run at the repository root with a relative operand. Git then writes
-					-- root-relative headers itself, including C quoting when necessary.
-					git({
-						"diff",
-						"--no-ext-diff",
-						"--no-color",
-						"--no-textconv",
-						"--src-prefix=a/",
-						"--dst-prefix=b/",
-						"--no-index",
-						"--",
-						"/dev/null",
-						file,
-					}, function(text, truncated)
-						if not append(text, truncated) then
-							return finish()
-						end
-						next_file()
-					end, nil, true)
+					local absolute = util.normalize_literal_path(repo.root .. "/" .. file)
+					paths.check(task, absolute, nil, ignorecase, guard, function(entry)
+						-- Run at the repository root with a relative operand. Git then writes
+						-- root-relative headers itself, including C quoting when necessary.
+						git({
+							"diff",
+							"--no-ext-diff",
+							"--no-color",
+							"--no-textconv",
+							"--src-prefix=a/",
+							"--dst-prefix=b/",
+							"--no-index",
+							"--",
+							"/dev/null",
+							file,
+						}, function(text, truncated)
+							-- Validate before publication; the native child may have read
+							-- a replacement, so this is not a filesystem read sandbox.
+							paths.check(task, absolute, entry, ignorecase, guard, function()
+								if not append(text, truncated) then
+									return finish()
+								end
+								next_file()
+							end)
+						end, nil, true)
+					end)
 				end
 				next_file()
 			end, nil, false, true)

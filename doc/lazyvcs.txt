@@ -838,8 +838,10 @@ Total patch content is limited to 16 MiB. Once exceeded, collection stops and
 appends "# lazyvcs: output truncated at 16 MiB". A truncated patch may end
 inside a hunk and cannot be assumed applicable. Errors appear in the buffer
 and an error notification. Git untracked additions are limited to 10000 files;
-select a narrower path if that limit is exceeded. SVN untracked files that vanish
+select a narrower path if that limit is exceeded. Untracked entries that vanish
 or change identity during collection report an error; retry after changes settle.
+Git rechecks entries and physical parents before accepting child output. These
+checks reject changed results; they do not sandbox reads or freeze the filesystem.
 
 Lua API:
 >lua

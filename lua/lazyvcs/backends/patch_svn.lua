@@ -1,6 +1,7 @@
 -- Bounded, asynchronous filesystem work for SVN's unversioned diff sections.
 local uv = vim.uv
 local util = require("lazyvcs.util")
+local paths = require("lazyvcs.backends.patch_path")
 local M = {}
 
 function M.section(rel, text)
@@ -33,14 +34,7 @@ function M.read(task, file, limit, guard, done, expected)
 			task:finish(nil, err)
 		end))
 	end
-	local function identified(stat)
-		return stat
-			and stat.type == "file"
-			and type(stat.dev) == "number"
-			and stat.dev >= 0
-			and type(stat.ino) == "number"
-			and stat.ino > 0
-	end
+	local identified = paths.identified
 	if not task:is_active() then
 		return
 	end
@@ -117,24 +111,8 @@ function M.read(task, file, limit, guard, done, expected)
 		if not expected then
 			return open()
 		end
-		-- A parent may have become a directory link before the walker saw its
-		-- child. Compare physical ancestry too, without following it for content.
-		uv.fs_realpath(expected.parent, function(parent_err, physical)
-			vim.schedule(guard(function()
-				if not physical then
-					return task:finish(nil, parent_err)
-				end
-				physical = util.normalize_literal_path(physical)
-				local parent = expected.parent
-				if expected.ignorecase then
-					physical, parent = physical:lower(), parent:lower()
-				end
-				if physical ~= parent then
-					return task:finish(nil, "Patch file parent changed; retry or narrow the patch path")
-				end
-				open()
-			end))
-		end)
+		-- Revalidate physical ancestry before opening the classified leaf.
+		paths.parent(task, expected.parent, expected.ignorecase, guard, open)
 	end)
 end
 
