@@ -341,6 +341,7 @@ local function finish_repo_job(state, repo, spec, result, err, raw)
 	end
 	if
 		spec.clear_draft
+		and draft_record(state, repo.root).revision == spec.draft_revision
 		and (repo.vcs ~= "svn" or spec.action ~= "commit" or (result and (result.stdout or ""):find("%S")))
 	then
 		set_commit_draft(state, repo.root, "")
@@ -1468,6 +1469,7 @@ function M.commit_repo(state, node)
 	if busy then
 		return notify_repo_busy(repo, job)
 	end
+	local draft_revision = draft_record(state, repo.root).revision
 
 	local preparing = { status = "running", action = "commit", label = "Preparing commit..." }
 	session_state.set_repo_job(repo.root, preparing)
@@ -1515,6 +1517,7 @@ function M.commit_repo(state, node)
 							sync_text = "Commit",
 							remote_refresh = true,
 							clear_draft = true,
+							draft_revision = draft_revision,
 							start = function(resolve, reject)
 								start_command(
 									repo,
@@ -1544,6 +1547,7 @@ function M.commit_repo(state, node)
 					sync_text = "Commit",
 					remote_refresh = true,
 					clear_draft = true,
+					draft_revision = draft_revision,
 					start = function(resolve, reject)
 						start_commit_command(repo, message, function(result, err, raw)
 							if err then
@@ -1566,6 +1570,7 @@ function M.commit_repo(state, node)
 				sync_text = "Commit",
 				remote_refresh = true,
 				clear_draft = true,
+				draft_revision = draft_revision,
 				start = function(resolve, reject)
 					start_commit_command(repo, message, function(result, err, raw)
 						if err then
