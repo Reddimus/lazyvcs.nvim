@@ -22,10 +22,75 @@ function M.parent(task, parent, guard, done)
 				return task:finish(nil, err)
 			end
 			physical = util.normalize_literal_path(physical)
-			if physical ~= parent then
-				return task:finish(nil, "Patch file parent changed; retry or narrow the patch path")
+			if physical == parent then
+				return done()
 			end
-			done()
+			local function fail(reason)
+				return task:finish(nil, reason or "Patch file parent changed; retry or narrow the patch path")
+			end
+			local function prefixes(path)
+				if path:sub(1, 1) ~= "/" and not path:match("^%a:/") then
+					return nil
+				end
+				local result = {}
+				while true do
+					result[#result + 1] = path
+					local next_parent = vim.fs.dirname(path)
+					if next_parent == path then
+						return result
+					end
+					path = next_parent
+				end
+			end
+			local lexical, canonical = prefixes(parent), prefixes(physical)
+			if not lexical or not canonical or #lexical ~= #canonical or lexical[#lexical] ~= canonical[#canonical] then
+				return fail()
+			end
+			local component = #lexical
+			while component > 0 and lexical[component] == canonical[component] do
+				component = component - 1
+			end
+			local function directory(entry)
+				return entry
+					and entry.type == "directory"
+					and type(entry.dev) == "number"
+					and entry.dev >= 0
+					and type(entry.ino) == "number"
+					and entry.ino > 0
+			end
+			-- A native spelling alias is valid only when every differing prefix
+			-- names the same directory without traversing a link or junction.
+			local next_component
+			next_component = function()
+				if not task:is_active() then
+					return
+				end
+				if component == 0 then
+					return done()
+				end
+				uv.fs_lstat(lexical[component], function(left_err, left)
+					vim.schedule(guard(function()
+						if left_err or not directory(left) then
+							return fail(left_err)
+						end
+						uv.fs_lstat(canonical[component], function(right_err, right)
+							vim.schedule(guard(function()
+								if
+									right_err
+									or not directory(right)
+									or left.dev ~= right.dev
+									or left.ino ~= right.ino
+								then
+									return fail(right_err)
+								end
+								component = component - 1
+								next_component()
+							end))
+						end)
+					end))
+				end)
+			end
+			next_component()
 		end))
 	end)
 end
