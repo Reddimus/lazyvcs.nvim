@@ -37,7 +37,10 @@ return function(ctx)
 </properties>]])
 					else
 						boundaries = boundaries + 1
-						assert(args[#args] == "C:/wc/sub/nested@", "Windows switch boundary was not normalized")
+						assert(
+							args[#args - 1] == "--" and args[#args] == "sub/nested@",
+							"Windows switch boundary was not relative"
+						)
 						cb([[<properties>
 <target path="https://example.test/branch"><inherited_property name="svn:global-ignores">*.branch</inherited_property></target>
 <target path="C:\wc\sub\nested"><property name="svn:global-ignores">*.local</property></target>

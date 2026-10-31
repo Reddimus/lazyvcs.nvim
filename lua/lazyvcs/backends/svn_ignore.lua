@@ -117,7 +117,8 @@ function M.load(task, repo, callback, switched)
 			"--show-inherited-props",
 			"-R",
 			"svn:global-ignores",
-			util.svn_target(repo.root),
+			"--",
+			util.svn_target("."),
 		}, function(raw, err)
 			if not raw then
 				return callback(nil, err)
@@ -203,13 +204,18 @@ function M.load(task, repo, callback, switched)
 					return finish_properties()
 				end
 				local path = boundary.path
+				local relative = util.relative_literal_path(repo.root, path, false)
+				if not relative then
+					return callback(nil, "SVN ignore boundary is outside the working copy")
+				end
 				local args = {
 					"svn",
 					"propget",
 					"--xml",
 					"--show-inherited-props",
 					"svn:global-ignores",
-					util.svn_target(path),
+					"--",
+					util.svn_target(relative),
 				}
 				if boundary.recursive then
 					table.insert(args, 5, "-R")

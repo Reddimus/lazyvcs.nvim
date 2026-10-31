@@ -1438,6 +1438,8 @@ budget.
 Git terminal prompts are disabled by default with GIT_TERMINAL_PROMPT=0. An
 explicit command environment can override that value. SVN commands always use
 --non-interactive. Configure credentials before running remote operations.
+SVN root discovery reads bounded UTF-8 XML from the current directory; ignore
+queries use working-copy-relative targets, including under Unicode roots.
 On POSIX, commands run without a controlling terminal. Terminal passphrase
 prompts for signing and interactive SSH host-key or passphrase prompts fail
 immediately. GUI pinentry and agents are unaffected.

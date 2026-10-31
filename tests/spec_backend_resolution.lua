@@ -341,9 +341,10 @@ return function(ctx)
 					svn.probe_async(inner .. "/sample.txt", cb)
 				end).root == inner)
 				local process, util = require("lazyvcs.backends.process"), require("lazyvcs.util")
-				local probe, calls = process.root, 0
+				local probe, calls = process.bytes, 0
 				---@diagnostic disable-next-line: duplicate-set-field
-				process.root = function(_, _, cb)
+				process.bytes = function(args, _, cb)
+					assert(args[3] == "--xml" and args[#args] == ".")
 					calls = calls + 1
 					vim.schedule(util.safe_callback(function()
 						cb(nil, "permission denied", { code = 1 })
@@ -356,7 +357,7 @@ return function(ctx)
 					end)
 					assert(missing == nil and calls == 1, "SVN ancestor probing masked an unrelated error")
 				end)
-				process.root = probe
+				process.bytes = probe
 				assert(ok, failure)
 				local called = false
 				local task = svn.probe_async(path, function()

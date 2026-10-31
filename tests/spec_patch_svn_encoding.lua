@@ -159,6 +159,18 @@ return function(ctx)
 		local native = native_diff(f.root)
 		local text, err = collect(f, f.root)
 		assert(text == native, err or "Unicode root was rejected")
+		write(f.root .. "/loose.txt", "ASCII untracked filename; Unicode content caf\195\169\n")
+		local out = {}
+		require("lazyvcs").patch({
+			path = f.root,
+			on_done = function(value, failure)
+				out.text, out.err, out.done = value, failure, true
+			end,
+		})
+		ctx.wait_for(function()
+			return out.done
+		end, "Unicode-root public untracked patch did not settle", 15000)
+		assert(assert(out.text, out.err):find("+ASCII untracked filename; Unicode content caf\195\169", 1, true))
 	end)
 	for index, parent in ipairs({ "caf\195\169", "cafe\204\129" }) do
 		case("native_capability_control_" .. index, function()

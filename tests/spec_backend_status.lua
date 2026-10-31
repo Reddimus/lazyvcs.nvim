@@ -60,7 +60,7 @@ return function(ctx)
 				local util, process = require("lazyvcs.util"), require("lazyvcs.backends.process")
 				local svn = require("lazyvcs.backends.svn")
 				local has, normalize, realpath = vim.fn.has, vim.fs.normalize, vim.uv.fs_realpath
-				local system, bytes = util.system, process.bytes
+				local system, bytes = util.system_result, process.bytes
 				---@diagnostic disable-next-line: duplicate-set-field
 				vim.fn.has = function(feature)
 					return feature == "win32" and 1 or has(feature)
@@ -77,12 +77,19 @@ return function(ctx)
 				end
 				local native = "C:\\wc\r\n"
 				---@diagnostic disable-next-line: duplicate-set-field
-				util.system = function()
-					return { stdout = native }
+				util.system_result = function(args)
+					assert(args[3] == "--xml" and args[#args] == ".")
+					return {
+						code = 0,
+						stdout = '<info><entry kind="dir"><wc-info><wcroot-abspath>C:\\wc</wcroot-abspath></wc-info></entry></info>',
+					}
 				end
 				---@diagnostic disable-next-line: duplicate-set-field
-				process.bytes = function(_, _, cb)
-					cb(native)
+				process.bytes = function(args, _, cb)
+					assert(args[3] == "--xml" and args[#args] == ".")
+					cb(
+						'<info><entry kind="dir"><wc-info><wcroot-abspath>C:\\wc</wcroot-abspath></wc-info></entry></info>'
+					)
 					return {}
 				end
 				local ok, err = pcall(function()
@@ -98,7 +105,7 @@ return function(ctx)
 					assert(result and result.root == "C:/wc", failure or "async SVN root was not normalized")
 				end)
 				vim.fn.has, vim.fs.normalize, vim.uv.fs_realpath = has, normalize, realpath
-				util.system, process.bytes = system, bytes
+				util.system_result, process.bytes = system, bytes
 				assert(ok, err)
 			end,
 		},

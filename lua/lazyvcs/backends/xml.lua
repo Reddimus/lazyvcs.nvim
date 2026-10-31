@@ -114,6 +114,7 @@ function M.parse_info(raw)
 	return {
 		url = child_text(block, "url"),
 		root = child_text(block, "root"),
+		wcroot_abspath = child_text(block, "wcroot-abspath"),
 		revision = entry.revision,
 		path = entry.path and M.local_path(entry.path),
 		kind = entry.kind,
@@ -122,6 +123,76 @@ function M.parse_info(raw)
 		copy_from_revision = child_text(block, "copy-from-rev"),
 		checksum = child_text(block, "checksum"),
 	}
+end
+
+-- Root discovery needs a complete record; the other info consumers also accept
+-- fragments from their existing bounded command protocols.
+function M.wcroot_abspath(raw)
+	local invalid = "SVN returned incomplete or invalid working-copy root XML"
+	if type(raw) ~= "string" or not require("lazyvcs.compare_text").valid_utf8(raw) then
+		return nil, invalid
+	end
+	local body = raw:gsub("^%s*<%?xml%s.-%?>", "")
+	if not body:match("^%s*<info>%s*<entry%f[%s>]") or not body:match("</entry>%s*</info>%s*$") then
+		return nil, invalid
+	end
+	local stack, cursor, counts = {}, 1, {}
+	while true do
+		local first, last, tag = body:find("<([^>]+)>", cursor)
+		if not first then
+			break
+		end
+		if body:sub(cursor, first - 1):find("<", 1, true) then
+			return nil, invalid
+		end
+		local closing, name, suffix = tag:match("^(/?)([%w_:%-]+)(.*)$")
+		if not name then
+			return nil, invalid
+		end
+		if closing == "/" then
+			if not suffix:match("^%s*$") or table.remove(stack) ~= name then
+				return nil, invalid
+			end
+		else
+			counts[name] = (counts[name] or 0) + 1
+			if not suffix:match("/%s*$") then
+				stack[#stack + 1] = name
+			end
+		end
+		cursor = last + 1
+	end
+	if
+		#stack ~= 0
+		or body:sub(cursor):find("<", 1, true)
+		or counts.info ~= 1
+		or counts.entry ~= 1
+		or counts["wc-info"] ~= 1
+		or counts["wcroot-abspath"] ~= 1
+	then
+		return nil, invalid
+	end
+	local info = body:match("<wc%-info%f[%s>][^>]*>(.-)</wc%-info>")
+	local value = info and info:match("<wcroot%-abspath>([^<]*)</wcroot%-abspath>")
+	if not value then
+		return nil, invalid
+	end
+	local valid = true
+	local remaining = value:gsub("&([^;]*);", function(entity)
+		local hex, decimal = entity:match("^#[xX]([%da-fA-F]+)$"), entity:match("^#(%d+)$")
+		if
+			(hex and tonumber(hex, 16) == 0)
+			or (decimal and tonumber(decimal) == 0)
+			or (not entities[entity] and not (hex and codepoint(hex, 16)) and not (decimal and codepoint(decimal, 10)))
+		then
+			valid = false
+		end
+		return ""
+	end)
+	local decoded = M.decode(value)
+	if not valid or remaining:find("&", 1, true) or decoded == "" or decoded:find("%z") then
+		return nil, invalid
+	end
+	return M.local_path(decoded)
 end
 
 function M.parse_info_entries(raw)

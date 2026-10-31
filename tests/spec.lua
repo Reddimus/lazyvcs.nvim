@@ -1142,7 +1142,13 @@ local function test_svn_async_blame_cancels_active_child_process()
 		wait_for(function()
 			return callbacks[1] ~= nil
 		end, "SVN discovery did not start", ASYNC_TIMEOUT_MS)
-		callbacks[1]({ stdout = vim.fs.dirname(path) .. "\n", code = 0 })
+		assert(vim.tbl_contains(handles[1].args, "--xml") and handles[1].args[#handles[1].args] == ".")
+		callbacks[1]({
+			stdout = '<info><entry kind="dir"><wc-info><wcroot-abspath>'
+				.. vim.fs.dirname(path):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+				.. "</wcroot-abspath></wc-info></entry></info>",
+			code = 0,
+		})
 		eq(#handles, 2)
 		callbacks[2]({ stdout = "", code = 0 })
 		eq(#handles, 3)
@@ -7449,6 +7455,7 @@ vim.list_extend(cases, require("spec_backend_paths")({ helpers = helpers, wait_f
 vim.list_extend(cases, require("spec_backend_resolution")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_svn_ignores")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_svn_unicode_roots")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_commands_config")({ helpers = helpers, wait_for = wait_for }))
 
