@@ -239,21 +239,74 @@ end
 
 local function fill(view, text, loading, content)
 	local generation, task = view.generation, view.task
-	local function current()
+	local writable = false
+	local expected_tick = api.nvim_buf_get_changedtick(view.buf)
+	local expected_name = api.nvim_buf_get_name(view.buf)
+	local function owned()
 		return view.generation == generation
 			and view.task == task
-			and task:is_active()
 			and views[view.path] == view
 			and api.nvim_buf_is_valid(view.buf)
+	end
+	local function unchanged()
+		return owned()
+			and api.nvim_buf_get_name(view.buf) == expected_name
+			and api.nvim_buf_get_changedtick(view.buf) == expected_tick
+	end
+	local function current()
+		if not owned() then
+			return false
+		end
+		if task:is_active() then
+			return true
+		end
+		if writable then
+			writable = false
+			-- Retire metadata before setters can install a replacement render.
+			view.text, view.index = nil, nil
+			if not unchanged() then
+				return false
+			end
+			if vim.bo[view.buf].modifiable then
+				vim.bo[view.buf].modifiable = false
+			end
+			local title = ("PATCH | " .. view.path .. " | CANCELLED | R reload  q close"):gsub("%%", "%%%%")
+			for _, win in ipairs(vim.fn.win_findbuf(view.buf)) do
+				if not unchanged() then
+					return false
+				end
+				if
+					api.nvim_win_is_valid(win)
+					and api.nvim_win_get_buf(win) == view.buf
+					and util.get_win_option(win, "winbar") == view.winbars[win]
+				then
+					view.winbars[win] = title
+					util.set_win_option(win, "winbar", title)
+				end
+			end
+		end
+		return false
 	end
 	if not current() then
 		return
 	end
+	writable = true
 	vim.bo[view.buf].modifiable = true
 	if not current() then
 		return
 	end
-	api.nvim_buf_set_lines(view.buf, 0, -1, false, content or lines(text))
+	local material = content or lines(text)
+	api.nvim_buf_set_lines(view.buf, 0, -1, false, material)
+	if owned() then
+		-- Only a canceled write needs a content comparison. Keep user edits made
+		-- inside the native line callback; active renders add no content scan.
+		if
+			task:is_active()
+			or vim.deep_equal(api.nvim_buf_get_lines(view.buf, 0, -1, false), #material == 0 and { "" } or material)
+		then
+			expected_tick = api.nvim_buf_get_changedtick(view.buf)
+		end
+	end
 	if not current() then
 		return
 	end
@@ -290,6 +343,7 @@ local function fill(view, text, loading, content)
 			util.set_win_option(win, "winbar", title)
 		end
 	end
+	return current()
 end
 
 local function collect(path, opts, done)
@@ -462,14 +516,15 @@ local function rerun(view)
 		view.path,
 		view.opts,
 		guard(view, generation, function(text, err, repos)
-			view.text = text
 			index_text(text or "", repos[1] and repos[1].root, saved, function(step)
 				-- Nested vim.schedule callbacks can drain in the same loop turn.
 				-- A timer yields to input and rendering between indexing batches.
 				vim.defer_fn(guard(view, generation, step), 1)
 			end, function(index, content, closest)
-				view.index = index
-				fill(view, err or text, false, not err and content or nil)
+				view.text, view.index = text, index
+				if not fill(view, err or text, false, not err and content or nil) then
+					return
+				end
 				if err then
 					util.notify(err, vim.log.levels.ERROR)
 				end
@@ -608,6 +663,22 @@ function M.open(opts)
 		view.opts = opts
 		return rerun(view)
 	end
+	local reserved_name = "lazyvcs://patch/" .. path
+	for _, existing in ipairs(api.nvim_list_bufs()) do
+		if
+			api.nvim_buf_is_valid(existing)
+			and api.nvim_buf_is_loaded(existing)
+			and api.nvim_buf_get_name(existing) == reserved_name
+		then
+			local cancelled = Task.new()
+			cancelled:cancel()
+			util.notify(
+				"Patch buffer unavailable; retry after the current event, or close/rename that buffer",
+				vim.log.levels.WARN
+			)
+			return cancelled
+		end
+	end
 	local anchor = opts.anchor_winid or api.nvim_get_current_win()
 	local destination = require("lazyvcs.editor_target").capture(opts.editor_winid or anchor, anchor)
 	-- :new avoids briefly duplicating a wipe-on-hide patch buffer when opening
@@ -628,17 +699,59 @@ function M.open(opts)
 	end
 	api.nvim_cmd({ cmd = "new", mods = mods }, {})
 	win = api.nvim_get_current_win()
-	util.editor_window(win)
 	local buf = api.nvim_get_current_buf()
 	local task = Task.new()
 	view =
 		{ path = path, buf = buf, editor = destination.winid, opts = opts, generation = 0, winbars = {}, task = task }
 	views[path] = view
-	api.nvim_buf_set_name(buf, "lazyvcs://patch/" .. path)
-	vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
-	vim.bo[buf].buflisted = false
-	vim.bo[buf].undolevels = -1
-	mappings(view)
+	local generation, expected_name = view.generation, api.nvim_buf_get_name(buf)
+	local disposing = false
+	local function dispose_pristine()
+		if
+			disposing
+			or view.task ~= task
+			or views[path] ~= nil
+			or not api.nvim_buf_is_valid(buf)
+			or #vim.fn.win_findbuf(buf) > 0
+			or api.nvim_buf_get_name(buf) ~= expected_name
+			or vim.bo[buf].modified
+		then
+			return
+		end
+		local content = api.nvim_buf_get_lines(buf, 0, -1, false)
+		if #content == 1 and content[1] == "" then
+			disposing = true
+			pcall(api.nvim_buf_delete, buf, { force = false })
+			disposing = false
+		end
+	end
+	local function current()
+		return views[path] == view
+			and view.task == task
+			and view.generation == generation
+			and task:is_active()
+			and api.nvim_buf_is_valid(buf)
+			and api.nvim_win_is_valid(win)
+			and api.nvim_win_get_buf(win) == buf
+			and api.nvim_buf_get_name(buf) == expected_name
+	end
+	local function stop()
+		task:cancel()
+		if views[path] == view and view.task == task and view.generation == generation then
+			view.generation = view.generation + 1
+			views[path] = nil
+		end
+		dispose_pristine()
+		return task
+	end
+	local function setup(fn)
+		if not current() then
+			return false
+		end
+		fn()
+		return current()
+	end
+	-- Establish lifetime cleanup before naming/options can dispatch user hooks.
 	api.nvim_create_autocmd({ "BufWinLeave", "BufWipeout", "BufHidden" }, {
 		buffer = buf,
 		callback = util.safe_callback(function(event)
@@ -653,12 +766,52 @@ function M.open(opts)
 			if views[path] == view then
 				views[path] = nil
 			end
+			dispose_pristine()
 		end),
 	})
-	vim.bo[buf].filetype = "diff"
-	if view.task ~= task or views[path] ~= view or not task:is_active() or not visible(view) then
-		task:cancel()
-		return task
+	if not setup(function()
+		expected_name = reserved_name
+		api.nvim_buf_set_name(buf, expected_name)
+	end) then
+		return stop()
+	end
+	if not setup(function()
+		util.diff_off(win)
+	end) then
+		return stop()
+	end
+	for _, option in ipairs({
+		{ "scrollbind", false },
+		{ "cursorbind", false },
+		{ "winbar", "" },
+		{ "statusline", "" },
+		{ "winfixwidth", false },
+	}) do
+		if not setup(function()
+			util.set_win_option(win, option[1], option[2])
+		end) then
+			return stop()
+		end
+	end
+	for _, option in ipairs({
+		{ "buftype", "nofile" },
+		{ "bufhidden", "wipe" },
+		{ "swapfile", false },
+		{ "buflisted", false },
+		{ "undolevels", -1 },
+	}) do
+		if not setup(function()
+			vim.bo[buf][option[1]] = option[2]
+		end) then
+			return stop()
+		end
+	end
+	if not setup(function()
+		mappings(view)
+	end) or not setup(function()
+		vim.bo[buf].filetype = "diff"
+	end) then
+		return stop()
 	end
 	return rerun(view)
 end
