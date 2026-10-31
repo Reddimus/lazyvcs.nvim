@@ -7285,6 +7285,7 @@ vim.list_extend(cases, require("spec_patch_fill_precondition")({ helpers = helpe
 vim.list_extend(cases, require("spec_patch_rerun_cancel")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_patch_cancel_display")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_patch_constructor_claim")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_active_ownership")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_patch_parent_alias")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(
 	cases,

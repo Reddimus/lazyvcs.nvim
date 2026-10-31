@@ -6,6 +6,123 @@ local M = {}
 local views = {}
 local LIMIT = 16 * 1024 * 1024
 local MARKER = "# lazyvcs: output truncated at 16 MiB\n"
+local buffer_options = {
+	"buftype",
+	"bufhidden",
+	"buflisted",
+	"swapfile",
+	"undolevels",
+	"filetype",
+	"fileformat",
+	"fileencoding",
+	"bomb",
+	"endofline",
+	"fixendofline",
+	"readonly",
+	"modified",
+	"modifiable",
+}
+
+local function retire_buffer(view, owner)
+	if view.buffer_owner ~= owner or owner.retired then
+		return false
+	end
+	owner.retired = true
+	owner.view, owner.write = nil, nil
+	if views[view.path] == view then
+		views[view.path] = nil
+	end
+	view.text, view.index = nil, nil
+	local task = view.task
+	-- on_lines runs under textlock. Settle cancellation after native callbacks return.
+	vim.schedule(util.safe_callback(function()
+		task:cancel()
+	end))
+	return false
+end
+
+local function current_buffer(view)
+	local owner, buf = view.buffer_owner, view.buf
+	if not owner or owner.retired or not api.nvim_buf_is_valid(buf) then
+		return false
+	end
+	if api.nvim_buf_get_name(buf) ~= owner.name or api.nvim_buf_get_changedtick(buf) ~= owner.tick then
+		return retire_buffer(view, owner)
+	end
+	for _, name in ipairs(buffer_options) do
+		if vim.bo[buf][name] ~= owner.options[name] then
+			return retire_buffer(view, owner)
+		end
+	end
+	return true
+end
+
+local function own_buffer(view)
+	local buf = view.buf
+	local owner =
+		{ view = view, name = api.nvim_buf_get_name(buf), tick = api.nvim_buf_get_changedtick(buf), options = {} }
+	for _, name in ipairs(buffer_options) do
+		owner.options[name] = vim.bo[buf][name]
+	end
+	view.buffer_owner = owner
+	api.nvim_buf_attach(buf, false, {
+		on_lines = function(_, _, tick)
+			local current = owner.view
+			if not current then
+				return true
+			end
+			local write = owner.write
+			if write and not write.tick then
+				write.tick = tick
+			else
+				retire_buffer(current, owner)
+				return true
+			end
+		end,
+		on_changedtick = function()
+			if owner.view then
+				retire_buffer(owner.view, owner)
+			end
+			---@diagnostic disable-next-line: redundant-return-value
+			return true
+		end,
+	})
+end
+
+local function set_buffer_option(view, name, value)
+	if not current_buffer(view) then
+		return false
+	end
+	view.buffer_owner.options[name] = value
+	vim.bo[view.buf][name] = value
+	return current_buffer(view)
+end
+
+local function set_buffer_lines(view, material)
+	if not current_buffer(view) then
+		return false
+	end
+	local owner, write, task, generation = view.buffer_owner, {}, view.task, view.generation
+	owner.write = write
+	local ok, err = pcall(api.nvim_buf_set_lines, view.buf, 0, -1, false, material)
+	if owner.write == write then
+		owner.write = nil
+	end
+	if not ok then
+		if view.buffer_owner == owner and view.task == task and view.generation == generation then
+			retire_buffer(view, owner)
+		end
+		error(err, 0)
+	end
+	if view.buffer_owner ~= owner or view.task ~= task or view.generation ~= generation then
+		return false
+	end
+	-- Adopt only the tick delivered for this write, never a callback's current text.
+	if not owner.retired and write.tick and api.nvim_buf_is_valid(view.buf) then
+		owner.tick = write.tick
+	end
+	return current_buffer(view)
+end
 
 local function lines(text)
 	local result = vim.split(text, "\n", { plain = true })
@@ -214,7 +331,7 @@ end
 
 local function guard(view, generation, fn)
 	return function(...)
-		if view.generation ~= generation or view.task.cancelled or not api.nvim_buf_is_valid(view.buf) then
+		if view.generation ~= generation or view.task.cancelled or not current_buffer(view) then
 			return
 		end
 		local ok, err = pcall(fn, ...)
@@ -243,7 +360,6 @@ end
 local function fill(view, text, loading, content)
 	local generation, task = view.generation, view.task
 	local writable = false
-	local expected_tick, expected_name
 	local function owned()
 		return view.generation == generation
 			and view.task == task
@@ -251,21 +367,10 @@ local function fill(view, text, loading, content)
 			and api.nvim_buf_is_valid(view.buf)
 	end
 	local function unchanged()
-		if not owned() then
-			return false
-		end
-		if
-			api.nvim_buf_get_name(view.buf) ~= expected_name
-			or api.nvim_buf_get_changedtick(view.buf) ~= expected_tick
-		then
-			-- Kept user data no longer belongs to a retry of this patch path.
-			views[view.path] = nil
-			return false
-		end
-		return true
+		return owned() and current_buffer(view)
 	end
 	local function current()
-		if not owned() then
+		if not unchanged() then
 			return false
 		end
 		if task:is_active() then
@@ -279,7 +384,9 @@ local function fill(view, text, loading, content)
 				return false
 			end
 			if vim.bo[view.buf].modifiable then
-				vim.bo[view.buf].modifiable = false
+				if not set_buffer_option(view, "modifiable", false) then
+					return false
+				end
 			end
 			local title = ("PATCH | " .. view.path .. " | CANCELLED | R reload  q close"):gsub("%%", "%%%%")
 			for _, win in ipairs(vim.fn.win_findbuf(view.buf)) do
@@ -304,26 +411,12 @@ local function fill(view, text, loading, content)
 	if not current() then
 		return
 	end
-	expected_tick = api.nvim_buf_get_changedtick(view.buf)
-	expected_name = api.nvim_buf_get_name(view.buf)
 	writable = true
-	vim.bo[view.buf].modifiable = true
-	if not current() then
+	if not set_buffer_option(view, "modifiable", true) or not current() then
 		return
 	end
 	local material = content or lines(text)
-	api.nvim_buf_set_lines(view.buf, 0, -1, false, material)
-	if owned() then
-		-- Only a canceled write needs a content comparison. Keep user edits made
-		-- inside the native line callback; active renders add no content scan.
-		if
-			task:is_active()
-			or vim.deep_equal(api.nvim_buf_get_lines(view.buf, 0, -1, false), #material == 0 and { "" } or material)
-		then
-			expected_tick = api.nvim_buf_get_changedtick(view.buf)
-		end
-	end
-	if not current() then
+	if not set_buffer_lines(view, material) or not current() then
 		return
 	end
 	-- Raw patch bytes must survive both :write and yanks, even when the user's
@@ -337,8 +430,7 @@ local function fill(view, text, loading, content)
 		{ "modified", false },
 		{ "modifiable", false },
 	}) do
-		vim.bo[view.buf][option[1]] = option[2]
-		if not current() then
+		if not set_buffer_option(view, option[1], option[2]) or not current() then
 			return
 		end
 	end
@@ -517,7 +609,7 @@ local function cancel_loading(view, task, generation, name, tick)
 			and api.nvim_buf_is_valid(buf)
 	end
 	local function current()
-		if not owned() then
+		if not owned() or not current_buffer(view) then
 			return false
 		end
 		if api.nvim_buf_get_name(buf) ~= name or api.nvim_buf_get_changedtick(buf) ~= tick then
@@ -531,21 +623,19 @@ local function cancel_loading(view, task, generation, name, tick)
 		return
 	end
 	view.text, view.index = nil, nil
-	vim.bo[buf].modifiable = true
-	if not current() then
+	if not set_buffer_option(view, "modifiable", true) or not current() then
 		return
 	end
 	local body = { "Patch request cancelled.", "Press R to reload." }
-	api.nvim_buf_set_lines(buf, 0, -1, false, body)
-	if owned() and vim.deep_equal(api.nvim_buf_get_lines(buf, 0, -1, false), body) then
-		tick = api.nvim_buf_get_changedtick(buf)
+	if not set_buffer_lines(view, body) then
+		return
 	end
+	tick = view.buffer_owner.tick
 	if not current() then
 		return
 	end
 	for _, option in ipairs({ "modified", "modifiable" }) do
-		vim.bo[buf][option] = false
-		if not current() then
+		if not set_buffer_option(view, option, false) or not current() then
 			return
 		end
 	end
@@ -575,7 +665,7 @@ local function rerun(view)
 			and view.task == previous
 			and view.generation == previous_generation
 			and view.buf == buf
-			and api.nvim_buf_is_valid(buf)
+			and current_buffer(view)
 	end
 	local function cancelled()
 		local task = Task.new()
@@ -864,6 +954,7 @@ function M.open(opts)
 	view =
 		{ path = path, buf = buf, editor = destination.winid, opts = opts, generation = 0, winbars = {}, task = task }
 	views[path] = view
+	own_buffer(view)
 	local generation, expected_name = view.generation, api.nvim_buf_get_name(buf)
 	local disposing = false
 	local function dispose_pristine()
@@ -894,6 +985,7 @@ function M.open(opts)
 			and api.nvim_win_is_valid(win)
 			and api.nvim_win_get_buf(win) == buf
 			and api.nvim_buf_get_name(buf) == expected_name
+			and current_buffer(view)
 	end
 	local function stop()
 		task:cancel()
@@ -929,10 +1021,13 @@ function M.open(opts)
 			dispose_pristine()
 		end),
 	})
-	if not setup(function()
-		expected_name = reserved_name
-		api.nvim_buf_set_name(buf, expected_name)
-	end) then
+	if
+		not setup(function()
+			expected_name = reserved_name
+			view.buffer_owner.name = expected_name
+			api.nvim_buf_set_name(buf, expected_name)
+		end)
+	then
 		return stop()
 	end
 	if not setup(function()
@@ -961,16 +1056,18 @@ function M.open(opts)
 		{ "undolevels", -1 },
 	}) do
 		if not setup(function()
-			vim.bo[buf][option[1]] = option[2]
+			set_buffer_option(view, option[1], option[2])
 		end) then
 			return stop()
 		end
 	end
-	if not setup(function()
-		mappings(view)
-	end) or not setup(function()
-		vim.bo[buf].filetype = "diff"
-	end) then
+	if
+		not setup(function()
+			mappings(view)
+		end) or not setup(function()
+			set_buffer_option(view, "filetype", "diff")
+		end)
+	then
 		return stop()
 	end
 	return rerun(view)
