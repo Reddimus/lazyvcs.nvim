@@ -65,16 +65,30 @@ local function strip_window(win)
 end
 
 local function resume(r)
-	if
-		windows[r.win] == r
-		and api.nvim_win_is_valid(r.win)
-		and api.nvim_win_get_buf(r.win) == r.buf
-		and r.suspended
-	then
+	local function current()
+		return r.session.rail == r
+			and windows[r.win] == r
+			and slots[r.slot] == r
+			and api.nvim_win_is_valid(r.win)
+			and api.nvim_win_get_buf(r.win) == r.buf
+	end
+	if r.suspended and current() then
 		for name, value in pairs(r.written) do
+			if not current() then
+				return
+			end
 			write(r.win, name, value)
+			-- A setter can release this rail, replace its owner, or leave its buffer.
+			if not current() then
+				if r.session.rail == r and windows[r.win] == r then
+					M.release(r.session)
+				end
+				return
+			end
 		end
-		r.suspended = nil
+		if current() then
+			r.suspended = nil
+		end
 	end
 end
 
