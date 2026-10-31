@@ -3,12 +3,15 @@ return function(ctx)
 	local util = require("lazyvcs.util")
 	local ops, model = require("lazyvcs.source_control.ops"), require("lazyvcs.source_control.model")
 	local jobs, session = require("lazyvcs.source_control.jobs"), require("lazyvcs.state")
+	local completion_timeout_ms
 	local function setup()
 		require("lazyvcs").setup({
 			use_gitsigns = false,
 			signs = { enabled = false },
 			source_control = { confirm_mutations = false, background = { git_workers = 1 } },
 		})
+		-- Positive completion includes preflight and mutation under one configured deadline.
+		completion_timeout_ms = require("lazyvcs.config").get().source_control.background.mutation_timeout_ms + 5000
 	end
 	local function row(f, vcs, path, section)
 		local repo, failure
@@ -42,7 +45,7 @@ return function(ctx)
 		return state, assert(find(model.collect(state, { root = f.root, scan_depth = 1 })), "tracked row missing")
 	end
 	local function finished(root)
-		wait(function()
+		local ok, err = pcall(wait, function()
 			for _, job in ipairs(jobs.history()) do
 				if
 					job.root == root
@@ -51,7 +54,34 @@ return function(ctx)
 					return true
 				end
 			end
-		end, "discard did not settle", 15000)
+		end, "discard did not settle", completion_timeout_ms)
+		if not ok then
+			local history, recent = {}, jobs.history()
+			for index = math.max(1, #recent - 9), #recent do
+				local job = recent[index]
+				history[#history + 1] = {
+					id = job.id,
+					root = job.root,
+					kind = job.kind,
+					status = job.status,
+					duration_ms = job.duration_ms,
+					error = job.error and job.error:sub(1, 256),
+				}
+			end
+			local marker = session.get_repo_job(root)
+			error(tostring(err) .. "\n" .. vim.inspect({
+				root = root,
+				timeout_ms = completion_timeout_ms,
+				marker = marker and {
+					status = marker.status,
+					action = marker.action,
+					generation = marker.generation,
+					timed_out = marker.timed_out,
+					error = marker.error and marker.error:sub(1, 256),
+				},
+				recent_history = history,
+			}), 0)
+		end
 	end
 	local function refusal_names(root, prefix)
 		local message
