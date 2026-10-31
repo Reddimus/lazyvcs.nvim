@@ -175,12 +175,16 @@ local function capture_window_options(winid)
 	return util.capture_win_options(winid, tracked_window_options)
 end
 
-local function restore_window_options(winid, values)
+local rail_only_options = { winfixwidth = true, winfixheight = true, signcolumn = true, statuscolumn = true }
+
+local function restore_window_options(winid, values, preserve_rail_preferences)
 	if not util.win_is_valid(winid) or not values then
 		return
 	end
 	for _, name in ipairs(tracked_window_options) do
-		restore_window_option(winid, name, values[name])
+		if not (preserve_rail_preferences and rail_only_options[name]) then
+			restore_window_option(winid, name, values[name])
+		end
 	end
 end
 
@@ -896,7 +900,8 @@ function M.close(session, opts)
 			if session.opts.set_winbar then
 				restore_winbar(session.editable_win, session.editable_prev_winbar)
 			end
-			restore_window_options(session.editable_win, session.editable_window_options)
+			-- Only the rail owns these fields; release already restored its latest preferences.
+			restore_window_options(session.editable_win, session.editable_window_options, true)
 			editable_restored = true
 		else
 			M.remember_departed(session)
@@ -932,7 +937,7 @@ function M.close(session, opts)
 	end
 
 	if base_survived and util.win_is_valid(session.base_win) then
-		restore_window_options(session.base_win, session.base_window_options)
+		restore_window_options(session.base_win, session.base_window_options, true)
 		util.set_win_option(session.base_win, "winfixwidth", session.base_prev_winfixwidth or false)
 		if session.opts.set_winbar then
 			restore_winbar(session.base_win, session.base_prev_winbar)
