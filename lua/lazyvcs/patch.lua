@@ -239,17 +239,40 @@ end
 
 local function fill(view, text, loading, content)
 	local generation, task = view.generation, view.task
+	local function current()
+		return view.generation == generation
+			and view.task == task
+			and task:is_active()
+			and views[view.path] == view
+			and api.nvim_buf_is_valid(view.buf)
+	end
+	if not current() then
+		return
+	end
 	vim.bo[view.buf].modifiable = true
+	if not current() then
+		return
+	end
 	api.nvim_buf_set_lines(view.buf, 0, -1, false, content or lines(text))
+	if not current() then
+		return
+	end
 	-- Raw patch bytes must survive both :write and yanks, even when the user's
 	-- defaults request CRLF, a BOM, or an output encoding.
-	vim.bo[view.buf].fileformat = "unix"
-	vim.bo[view.buf].fileencoding = ""
-	vim.bo[view.buf].bomb = false
-	vim.bo[view.buf].endofline = text ~= ""
-	vim.bo[view.buf].fixendofline = false
-	vim.bo[view.buf].modified = false
-	vim.bo[view.buf].modifiable = false
+	for _, option in ipairs({
+		{ "fileformat", "unix" },
+		{ "fileencoding", "" },
+		{ "bomb", false },
+		{ "endofline", text ~= "" },
+		{ "fixendofline", false },
+		{ "modified", false },
+		{ "modifiable", false },
+	}) do
+		vim.bo[view.buf][option[1]] = option[2]
+		if not current() then
+			return
+		end
+	end
 	local info = view.index or { files = {}, added = 0, deleted = 0 }
 	local title = loading and ("PATCH | " .. view.path .. " | LOADING")
 		or string.format("PATCH | %s | %d files +%d -%d", view.path, #info.files, info.added, info.deleted)
@@ -259,7 +282,7 @@ local function fill(view, text, loading, content)
 	title = (title .. " | q close  R reload  Y copy  <CR> file  ]v/[v hunk"):gsub("%%", "%%%%")
 	for _, win in ipairs(vim.fn.win_findbuf(view.buf)) do
 		-- A title callback can retire this render or close another captured window.
-		if view.generation ~= generation or view.task ~= task or not task:is_active() or views[view.path] ~= view then
+		if not current() then
 			return
 		end
 		if api.nvim_win_is_valid(win) and api.nvim_win_get_buf(win) == view.buf then
@@ -568,7 +591,20 @@ function M.open(opts)
 	local view = views[path]
 	local win = view and visible(view)
 	if win then
+		local generation, task = view.generation, view.task
 		api.nvim_set_current_win(win)
+		if
+			views[path] ~= view
+			or view.generation ~= generation
+			or view.task ~= task
+			or not api.nvim_buf_is_valid(view.buf)
+			or not api.nvim_win_is_valid(win)
+			or api.nvim_win_get_buf(win) ~= view.buf
+		then
+			local cancelled = Task.new()
+			cancelled:cancel()
+			return cancelled
+		end
 		view.opts = opts
 		return rerun(view)
 	end
