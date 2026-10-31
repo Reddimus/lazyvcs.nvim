@@ -1,3 +1,10 @@
+-- Repository selectors must never redirect fixture mutations.
+for key in pairs(vim.fn.environ()) do
+	if vim.startswith(key:upper(), "GIT_") then
+		vim.env[key] = nil
+	end
+end
+
 local repo_root = assert(vim.env.LAZYVCS_REPO_ROOT, "missing LAZYVCS_REPO_ROOT")
 
 vim.opt.runtimepath:prepend(repo_root)

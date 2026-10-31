@@ -87,7 +87,7 @@ function M.start(repo, args, opts, guards, on_exit)
 		return self:cancel("cancelled")
 	end
 
-	local function spawn(command, continuation, mutation, environment, allowed_code)
+	local function spawn(command, continuation, mutation, environment, allowed_code, output_budget)
 		if done or terminal then
 			return
 		end
@@ -106,6 +106,9 @@ function M.start(repo, args, opts, guards, on_exit)
 			on_terminate = terminate,
 			preserve_on_shutdown = opts.preserve_on_shutdown and mutation == true,
 		})
+		if output_budget then
+			process_opts.output_limit_bytes = output_budget
+		end
 		if environment then
 			process_opts.env = vim.tbl_extend("force", opts.env or {}, environment)
 		end
@@ -160,6 +163,9 @@ function M.start(repo, args, opts, guards, on_exit)
 	end
 
 	local function guard_error()
+		if guards.status_complete and not guards.status_complete() then
+			return "Status incomplete; refresh before bulk mutation."
+		end
 		if guards.guard_modified_buffers then
 			local err = buffer_guard.error(repo.root, guards.guard_paths, guards.guard_subtrees)
 			if err then
@@ -560,7 +566,85 @@ function M.start(repo, args, opts, guards, on_exit)
 		end, true)
 	end
 
+	local intent_paths
+	if repo.vcs == "git" and guards.tracked_discard then
+		intent_paths = {}
+		for _, target in ipairs(guards.tracked_discard) do
+			intent_paths[#intent_paths + 1] = target.relpath
+		end
+	elseif guards.git_intent_guard then
+		-- Preserve the direct single-path guard used by lower-level callers.
+		intent_paths = { guards.git_intent_guard }
+	end
 	local function git_preflight()
+		if intent_paths then
+			local index = require("lazyvcs.backends.git_index")
+			local cursor = 0
+			local function check_next()
+				cursor = cursor + 1
+				local path = intent_paths[cursor]
+				if not path then
+					intent_paths = nil
+					return git_preflight()
+				end
+				local commands, budget = index.intent_commands(path), index.intent_output_limit(path)
+				return spawn(commands[1], function(visible)
+					if visible.stdout_truncated or visible.stderr_truncated then
+						return reject("Cannot verify complete Git index intent; refusing Discard.")
+					end
+					spawn(commands[2], function(invisible)
+						if invisible.stdout_truncated or invisible.stderr_truncated then
+							return reject("Cannot verify complete Git index intent; refusing Discard.")
+						end
+						local intent, err = index.parse_intent(visible.stdout, invisible.stdout, path)
+						if intent ~= false then
+							return reject(
+								err
+									or "Discard refuses intent-to-add content not stored in Git; unstage or delete it explicitly."
+							)
+						end
+						check_next()
+					end, nil, nil, nil, budget)
+				end, nil, nil, nil, budget)
+			end
+			return check_next()
+		elseif guards.git_head_restore then
+			local command = {
+				"git",
+				"--literal-pathspecs",
+				"status",
+				"--porcelain=v1",
+				"-z",
+				"--ignored",
+				"--untracked-files=all",
+				"--",
+			}
+			vim.list_extend(command, guards.git_head_restore)
+			return spawn(command, function(result)
+				if result.stdout_truncated then
+					return reject("Cannot verify Discard restore paths; refresh and retry.")
+				end
+				for _, path in ipairs(guards.git_head_restore) do
+					if
+						result.stdout:find("?? " .. path .. "\0", 1, true)
+						or result.stdout:find("!! " .. path .. "\0", 1, true)
+					then
+						return reject("Discard refuses untracked or ignored file at " .. path .. "; move it and retry.")
+					end
+				end
+				guards.git_head_restore = nil
+				git_preflight()
+			end)
+		elseif guards.git_require_resolved then
+			return spawn({ "git", "ls-files", "--unmerged", "-z" }, function(result)
+				if result.stdout_truncated or result.stdout ~= "" then
+					return reject(
+						"Stage all and commit refuses unresolved conflicts; resolve and stage them explicitly."
+					)
+				end
+				mutate()
+			end)
+		end
 		if guards.git_addition then
 			local path = guards.git_addition
 			return spawn({ "git", "ls-files", "--stage", "-z", "--", path }, function(result)
@@ -652,12 +736,70 @@ function M.start(repo, args, opts, guards, on_exit)
 		mutate()
 	end
 
+	local function remote_preflight()
+		local intent = guards.git_remote_intent
+		if not intent then
+			return mutate()
+		end
+		local plan = require("lazyvcs.source_control.push_intent")
+		local function final_head()
+			spawn({ "git", "symbolic-ref", "--quiet", "HEAD" }, function(head)
+				if head.stdout_truncated or util.trim(head.stdout) ~= guards.branch_ref then
+					return reject("Branch changed during remote mutation preflight; retry the action.")
+				end
+				mutate()
+			end)
+		end
+		local function policy()
+			if intent.kind == "fast_forward" then
+				return spawn(plan.target_args(intent), function(result)
+					if result.stdout_truncated or util.trim(result.stdout) ~= intent.oid then
+						return reject("Fetched upstream commit changed after confirmation; retry the action.")
+					end
+					final_head()
+				end)
+			end
+			spawn(plan.policy_args(), function(result)
+				if result.stdout_truncated or util.trim(result.stdout) ~= intent.policy then
+					return reject("Push policy changed after confirmation; retry the action.")
+				end
+				local err = plan.policy_error(intent.branch, intent.target, intent.policy)
+				if err then
+					return reject(err)
+				end
+				final_head()
+			end)
+		end
+		spawn({
+			"git",
+			"for-each-ref",
+			"--format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)",
+			"refs/heads/" .. intent.branch,
+		}, function(result)
+			if result.stdout_truncated or result.stdout ~= plan.upstream_signature(intent) then
+				return reject("Upstream destination changed after confirmation; retry the action.")
+			end
+			if not intent.missing then
+				return policy()
+			end
+			spawn({ "git", "remote" }, function(remotes)
+				if
+					remotes.stdout_truncated
+					or not vim.tbl_contains(util.split_lines(remotes.stdout), intent.remote)
+				then
+					return reject("Publishing remote changed after confirmation; retry the action.")
+				end
+				policy()
+			end)
+		end)
+	end
+
 	if guards.branch_ref then
 		spawn({ "git", "symbolic-ref", "--quiet", "HEAD" }, function(result)
-			if util.trim(result.stdout) ~= guards.branch_ref then
+			if result.stdout_truncated or util.trim(result.stdout) ~= guards.branch_ref then
 				return reject("Branch changed while preparing the mutation; retry the action.")
 			end
-			mutate()
+			remote_preflight()
 		end)
 	elseif guards.svn_discard then
 		local plan = guards.svn_discard
@@ -671,13 +813,16 @@ function M.start(repo, args, opts, guards, on_exit)
 			util.svn_target(plan.relpath),
 		}, function(result)
 			local info = require("lazyvcs.backends.xml").parse_info(result.stdout)
-			local recursive = info and info.kind == "dir" and info.schedule == "delete"
+			local recursive = info
+				and info.kind == "dir"
+				and (info.schedule == "delete" or info.schedule == "add" or info.schedule == "replace")
 			if
 				not info
 				or not info.kind
 				or not info.schedule
 				or recursive ~= plan.recursive
 				or info.kind ~= plan.kind
+				or (plan.schedule and info.schedule ~= plan.schedule)
 			then
 				return reject("SVN directory classification changed before discard; refresh and retry.")
 			end

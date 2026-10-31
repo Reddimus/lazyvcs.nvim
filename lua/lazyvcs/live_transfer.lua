@@ -171,8 +171,8 @@ function M.new(lifecycle)
 			end
 			if p then
 				local view, detached = p.view, p.detached
-				s.base_lines, s.base_text, s.base_identity, s.hunks =
-					p.base_lines, p.base_text, p.base_identity, p.hunks
+				s.base_lines, s.base_text, s.base_identity = p.base_lines, p.base_text, p.base_identity
+				s.hunks = s.base_invalid and {} or p.hunks
 				state.clear_pending_transfer(s.editable_win)
 				s.phase = "active"
 				if detached then
@@ -186,6 +186,8 @@ function M.new(lifecycle)
 				if p.refresh_completion then
 					p.refresh_completion()
 				end
+				-- Retained sources can change while their refreshes are suspended.
+				lifecycle.refresh(s)
 				-- Leaving installed close-only controls; restore the hunk maps.
 				require("lazyvcs.window_controls").sync()
 			end
@@ -248,6 +250,9 @@ function M.new(lifecycle)
 				end
 				p.phase, s.phase = "committing", "committing"
 				replacement.editor_state = p.guards[target] or editor.guard_markdown_buffer(target, p.target_path)
+				if editor.refresh_guard then
+					editor.refresh_guard(replacement.editor_state)
+				end
 				p.guards[target] = nil
 				local ok, commit_err = pcall(function()
 					lifecycle.commit(s, replacement)
@@ -269,7 +274,7 @@ function M.new(lifecycle)
 					error(commit_err)
 				end
 			end)
-		end)
+		end, s.editable_win)
 		if valid() and p.phase == "loading" then
 			p.handle = handle
 		else

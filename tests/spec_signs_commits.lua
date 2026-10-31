@@ -140,6 +140,10 @@ return function(ctx)
 				prefix .. failure .. "_releases_base_and_commands",
 				s.guard(function()
 					local f, buf = s.fixture(svn)
+					if not svn then
+						s.h.exec({ "git", "add", "--", "sample.txt" }, f.root)
+						s.api.nvim_buf_set_lines(buf, 1, 2, false, { "unstaged after staging" })
+					end
 					s.refresh(buf, true)
 					local state, source = sidebar(f, svn), s.api.nvim_get_current_win()
 					local message = state.lazyvcs_commit_drafts[f.root]
@@ -184,6 +188,10 @@ return function(ctx)
 							}
 						end
 						ops.commit_repo(state, { path = f.root })
+						s.wait(function()
+							local job = store.get_repo_job(f.root)
+							return exit ~= nil or job and job.status ~= "running"
+						end, "commit status preflight did not complete", 15000)
 						if exit then
 							local raw = { code = 1, stdout = "", stderr = "injected commit failure" }
 							if failure == "cancel" or failure == "timeout" then

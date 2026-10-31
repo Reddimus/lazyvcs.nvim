@@ -8,10 +8,11 @@ local svn = require("lazyvcs.backends.svn")
 local M = {}
 
 local backends = { git, svn }
+local rank = { [git] = 1, [svn] = 2 }
 
 -- Resolving a backend costs one process per backend (`git rev-parse`, `svn info`).
 -- That used to run on every call, including per-keystroke sign refreshes. Cache
--- the answer per directory; `M.invalidate` clears it on directory changes.
+-- the answer per absolute directory; revalidation detects changed ownership.
 local probe_cache = {}
 local probe_order, probe_cursor = {}, 0
 local in_flight = {}
@@ -36,7 +37,7 @@ local NEGATIVE_TTL_MS = 5000
 function M.invalidate(path)
 	util.invalidate_git_entries()
 	if path then
-		local key = util.dir_of(path)
+		local key = util.dir_of(vim.fs.abspath(path))
 		probe_cache[key], checked_at[key] = nil, nil
 		local shared = in_flight[key]
 		if shared then
@@ -68,7 +69,7 @@ function M.resolve(path, opts)
 	-- dir_of, not dirname: callers also pass directories (buffer_ops falls back to
 	-- the cwd for non-file buffers), and dirname would probe the PARENT of a
 	-- working copy, so a repo root resolved to "no working copy found".
-	local key = util.dir_of(path)
+	local key = util.dir_of(vim.fs.abspath(path))
 	local hit = probe_cache[key]
 	if hit ~= nil then
 		if hit.backend then
@@ -102,7 +103,7 @@ end
 
 ---Return only a still-valid cached resolution. This never spawns a process.
 function M.resolve_cached(path)
-	local key = util.dir_of(path)
+	local key = util.dir_of(vim.fs.abspath(path))
 	local hit = probe_cache[key]
 	if not hit then
 		return nil
@@ -148,7 +149,7 @@ function M.resolve_async(path, on_done, opts)
 		M.invalidate(path)
 	end
 	local task = Task.new(on_done)
-	local key = util.dir_of(path)
+	local key = util.dir_of(vim.fs.abspath(path))
 	local hit = probe_cache[key]
 	if hit ~= nil and not opts.revalidate then
 		if hit.backend then
@@ -198,7 +199,11 @@ function M.resolve_async(path, on_done, opts)
 		end
 		if info and info.root then
 			roots[backend] = info.root
-			if not best or #info.root > #best.root then
+			if
+				not best
+				or #info.root > #best.root
+				or (#info.root == #best.root and rank[backend] < rank[best.backend])
+			then
 				best = { backend = backend, root = info.root }
 			end
 		end
@@ -206,7 +211,12 @@ function M.resolve_async(path, on_done, opts)
 			-- A missing executable, spawn failure or timeout cannot disprove a
 			-- previously resolved owner.
 			uncertain[backend] = not repository_failure(err, key, true)
-			if err and err ~= "" then
+			if
+				err
+				and err ~= ""
+				and not repository_failure(err, key, true)
+				and not tostring(err):match("executable not found$")
+			then
 				errors[#errors + 1] = err
 			end
 		end
@@ -471,13 +481,7 @@ function M.root(path)
 	return root
 end
 
--- Keep the resolved backend accurate when the user changes directory.
-vim.api.nvim_create_autocmd("DirChanged", {
-	group = vim.api.nvim_create_augroup("lazyvcs_backends", { clear = true }),
-	callback = function()
-		M.invalidate()
-	end,
-})
+vim.api.nvim_create_augroup("lazyvcs_backends", { clear = true })
 
 vim.api.nvim_create_autocmd({ "BufEnter", "BufWritePost" }, {
 	group = "lazyvcs_backends",
@@ -486,7 +490,10 @@ vim.api.nvim_create_autocmd({ "BufEnter", "BufWritePost" }, {
 			return
 		end
 		local path = util.buf_path(args.buf)
-		local key = util.dir_of(path)
+		if not path then
+			return
+		end
+		local key = util.dir_of(vim.fs.abspath(path))
 		local now = vim.uv.now()
 		if checked_at[key] and now - checked_at[key] < 5000 then
 			return

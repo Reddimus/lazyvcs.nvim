@@ -133,6 +133,12 @@ vim.api.nvim_win_set_cursor(state.winid, { 2, 0 })
 ]])
 
 	child.type_keys(" ")
+	assert(
+		vim.wait(5000, function()
+			return not child.is_blocked()
+		end, 10),
+		"Space did not resolve its leader-prefix timeout"
+	)
 	local after = child.lua_get([[(function()
 local state = require("lazyvcs.source_control.native")._state()
 local node = state.lazyvcs_line_nodes[2]
@@ -145,6 +151,15 @@ end)()]])
 	assert(after.text:match("Repositories %(2%)"), after.text)
 	eq(after.node_type, "view_section")
 	eq(after.expanded, false)
+
+	child.type_keys("<Space>vs")
+	assert(
+		vim.wait(5000, function()
+			return not child.is_blocked()
+		end, 10),
+		"global sidebar leader mapping remained blocked"
+	)
+	eq(child.lua_get("require('lazyvcs.source_control.native')._state() == nil"), true)
 end
 
 T["native sidebar"]["render preserves editor focus and metadata spacing"] = function()

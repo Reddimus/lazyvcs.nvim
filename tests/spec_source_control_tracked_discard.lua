@@ -180,14 +180,20 @@ return function(ctx)
 				return lstat(path, cb)
 			end
 			---@diagnostic disable-next-line: duplicate-set-field
-			util.system_start = function()
-				error("interrupted tracked preflight spawned a mutation")
+			util.system_start = function(args, opts, callback)
+				if
+					vim.tbl_contains(args, "--ita-visible-in-index")
+					or vim.tbl_contains(args, "--ita-invisible-in-index")
+				then
+					return start(args, opts, callback)
+				end
+				error("interrupted tracked preflight spawned an unexpected command")
 			end
 			local ok, err = xpcall(function()
 				local handle = starter.start(
 					{ root = f.root, vcs = "git" },
 					{ "git", "restore", "--", "sample.txt" },
-					{ cwd = f.root, timeout = mode == "timeout" and 10 or 5000 },
+					{ cwd = f.root, timeout = mode == "timeout" and 1000 or 5000 },
 					{
 						tracked_discard = { { path = f.file, relpath = "sample.txt" } },
 						guard_modified_buffers = true,
@@ -198,12 +204,15 @@ return function(ctx)
 						done, failure, raw = true, e, result
 					end
 				)
-				assert(complete, "tracked lstat was not submitted")
+				wait(function()
+					return complete or done
+				end, "tracked lstat was not submitted", 15000)
+				assert(complete, "tracked lstat was not submitted: " .. tostring(failure))
 				local buf
 				if mode == "cancel" then
 					handle:cancel("test")
 				elseif mode == "timeout" then
-					vim.wait(30)
+					vim.wait(1100)
 				else
 					buf = vim.fn.bufadd(f.file)
 					vim.fn.bufload(buf)
@@ -231,6 +240,9 @@ return function(ctx)
 
 	local function windows_links(link_name)
 		local has, lstat, start = vim.fn.has, vim.uv.fs_lstat, util.system_start
+		-- Real intent reads need a repository; link classification retains its
+		-- synthetic Windows path and never touches that path on the host.
+		local command_root = h.make_git_fixture().root
 		local ok, err = xpcall(function()
 			-- { PowerShell output, path, backend, accepted }
 			local cases = {
@@ -265,7 +277,12 @@ return function(ctx)
 				end
 				---@diagnostic disable-next-line: duplicate-set-field
 				util.system_start = function(args, opts, cb)
-					if args[1] == "powershell.exe" then
+					if
+						vim.tbl_contains(args, "--ita-visible-in-index")
+						or vim.tbl_contains(args, "--ita-invisible-in-index")
+					then
+						return start(args, opts, cb)
+					elseif args[1] == "powershell.exe" then
 						checked = true
 						assert(
 							args[#args]:find("-LiteralPath $env:LAZYVCS_LINK", 1, true)
@@ -276,6 +293,10 @@ return function(ctx)
 						)
 						cb({ code = 0, stdout = output .. "\r\n", stderr = "" })
 					else
+						assert(
+							args[1] == vcs and args[2] == (vcs == "git" and "restore" or "revert"),
+							"unexpected link-check command"
+						)
 						mutated = true
 						cb({ code = 0, stdout = "", stderr = "" })
 					end
@@ -284,7 +305,7 @@ return function(ctx)
 				require("lazyvcs.source_control.mutation_start").start(
 					{ root = "C:/repo", vcs = vcs },
 					vcs == "git" and { "git", "restore" } or { "svn", "revert" },
-					{ timeout = 5000, env = { LAZYVCS_TEST = "inherited" } },
+					{ cwd = command_root, timeout = 5000, env = { LAZYVCS_TEST = "inherited" } },
 					{ tracked_discard = { { path = path, relpath = case[2] } } },
 					function(_, e)
 						done, failure = true, e

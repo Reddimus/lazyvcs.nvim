@@ -558,7 +558,7 @@ return function(ctx)
 		local start = util.system_start
 		---@diagnostic disable-next-line: duplicate-set-field
 		util.system_start = function(args, opts, done)
-			if vim.tbl_contains(args, "--properties-only") then
+			if vim.tbl_contains(args, "proplist") then
 				return h.failed_system_spawn(start, args, opts, done)
 			end
 			return start(args, opts, done)

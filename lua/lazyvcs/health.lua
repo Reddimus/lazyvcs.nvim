@@ -4,6 +4,7 @@ local health = vim.health
 
 function M.check()
 	health.start("lazyvcs.nvim")
+	health.info("Running Neovim " .. tostring(vim.version()))
 
 	-- Requirements ----------------------------------------------------------
 	if vim.fn.has("nvim-0.11") == 1 then
@@ -39,9 +40,12 @@ function M.check()
 	-- Configuration ---------------------------------------------------------
 	health.start("lazyvcs.nvim: configuration")
 	local cfg = require("lazyvcs.config").get()
+	if not require("lazyvcs").is_initialized() then
+		health.warn("setup() has not run; the following settings are defaults, not active features")
+	end
 
 	if cfg.signs.enabled then
-		health.ok("Gutter signs are enabled")
+		health.ok("Gutter signs configured: enabled")
 		if cfg.use_gitsigns then
 			local has_gitsigns = package.loaded["gitsigns"] ~= nil or pcall(require, "gitsigns")
 			if has_gitsigns then
@@ -58,11 +62,11 @@ function M.check()
 		health.warn("Gutter signs are disabled by config (signs.enabled = false)")
 	end
 
-	health.ok("Inline blame mode: " .. cfg.blame.mode)
-	if cfg.blame.persist then
+	health.ok("Configured blame mode: " .. cfg.blame.mode .. "; inline visibility can be toggled at runtime")
+	if cfg.blame.persist and cfg.blame.mode == "inline" then
 		health.ok("Blame state persists across sessions (" .. require("lazyvcs.store").path() .. ")")
 	else
-		health.ok("Blame state persistence is disabled by config")
+		health.ok("Blame persistence applies only to inline mode and is disabled for this configuration")
 	end
 
 	-- Integrations ----------------------------------------------------------
@@ -70,7 +74,9 @@ function M.check()
 	local optional = require("lazyvcs.integrations.optional").status()
 	health.ok("Integration mode: " .. optional.mode)
 	for _, item in ipairs(optional.items) do
-		if item.available then
+		if item.key == "gitsigns" and item.available and not cfg.use_gitsigns then
+			health.ok("gitsigns.nvim installed but not selected (use_gitsigns = false); native Git signs are used")
+		elseif item.available then
 			health.ok(string.format("%s available for %s", item.label, item.feature))
 		else
 			health.ok(string.format("%s not installed; using %s", item.label, item.fallback))
@@ -80,13 +86,29 @@ function M.check()
 	-- AI commit messages ----------------------------------------------------
 	health.start("lazyvcs.nvim: AI commit messages")
 	local ai = require("lazyvcs.source_control.ai")
-	health.ok("Provider: " .. cfg.ai.commit_message.provider)
+	local selected = cfg.ai.commit_message.provider
+	health.ok("Provider: " .. selected)
+	if selected ~= "off" and not ai.available() then
+		health.warn(
+			"No configured AI provider detected; install the selected provider or select an installed provider (or auto)"
+		)
+	end
 	if cfg.ai.commit_message.provider == "auto" then
 		health.ok("Auto provider order: " .. table.concat(cfg.ai.commit_message.provider_order, ", "))
 	end
+	local selected_providers = {}
+	for _, provider in ipairs(selected == "auto" and cfg.ai.commit_message.provider_order or { selected }) do
+		selected_providers[provider] = true
+	end
 	for _, item in ipairs(ai.status()) do
 		if item.available then
-			health.ok(string.format("Provider %s available", item.provider))
+			health.ok(
+				string.format(
+					"Provider %s installed%s (authentication not checked)",
+					item.provider,
+					not selected_providers[item.provider] and ", not selected" or ""
+				)
+			)
 		elseif item.last_error then
 			health.warn(string.format("Provider %s unavailable: %s", item.provider, item.last_error))
 		else

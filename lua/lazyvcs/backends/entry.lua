@@ -36,8 +36,10 @@ function M.editable(kind, err)
 	if kind == "regular" or kind == "missing" then
 		return true
 	end
+	local detail = kind == "symlink" and "symlink bases are unsupported"
+		or ("current entry is " .. tostring(kind or "unknown"))
 	return false,
-		err or "Editable hunks require a regular file; symlink bases are unsupported",
+		err or ("Editable hunks require a regular file; " .. detail),
 		{ code = "unsupported_entry", kind = kind }
 end
 

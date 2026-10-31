@@ -69,9 +69,19 @@ return function(ctx)
 				vim.cmd(operation == "preview" and "LazyVCS preview" or "LazyVCS hunk " .. operation)
 				s.wait(function()
 					return operation == "revert" and s.api.nvim_buf_get_lines(buf, 1, 2, false)[1] == "two"
-						or #calls == i
+						or operation == "preview" and vim.bo.filetype == "diff"
+						or (operation ~= "preview" and operation ~= "revert" and #calls == i)
 				end, "cold cache dropped " .. operation, 15000)
-				assert((operation == "revert" and #calls == 3 or calls[i] == operation) and #s.marks(buf) == 0)
+				assert(
+					(
+						operation == "revert" and #calls == 2
+						or operation == "preview" and #calls == 2
+						or calls[i] == operation
+					) and #s.marks(buf) == 0
+				)
+				if operation == "preview" then
+					s.api.nvim_win_close(0, true)
+				end
 			end
 			local resolve, pending = backends.resolve_async, nil
 			---@diagnostic disable-next-line: duplicate-set-field
@@ -96,7 +106,7 @@ return function(ctx)
 					s.api.nvim_buf_delete(buf, { unload = true, force = true })
 				end
 				pending({ name = "git" })
-				assert(#calls == 3, "stale command executed after " .. change)
+				assert(#calls == 2, "stale command executed after " .. change)
 			end
 			backends.resolve_async = resolve
 		end),
@@ -144,7 +154,11 @@ return function(ctx)
 			package.loaded.gitsigns.nav_hunk = nil
 			s.edit(buf, { "new" })
 			vim.cmd("LazyVCS preview")
-			assert(delegated == 2)
+			s.wait(function()
+				return vim.bo.filetype == "diff"
+			end, "attached gitsigns suppressed whole-buffer preview", 15000)
+			assert(delegated == 1)
+			s.api.nvim_win_close(0, true)
 			package.loaded.gitsigns.preview_hunk = nil
 			vim.cmd("LazyVCS preview")
 			s.wait(function()

@@ -3,7 +3,10 @@ local M = {}
 function M.map(entries, base, current, uncommitted)
 	local out, b, c = {}, 1, 1
 	local diff = require("lazyvcs.diff")
-	local hunks = base.lines and diff.compute_text_hunks(base, current) or diff.compute_hunks(base, current)
+	local options = { algorithm = "histogram", result_type = "indices" }
+	---@type fun(base: table, current: table, opts?: table): table
+	local compute = base.lines and diff.compute_text_hunks or diff.compute_hunks
+	local hunks = compute(base, current, options)
 	local current_lines = current.lines or current
 	for _, hunk in ipairs(hunks) do
 		local first = hunk.current_count == 0 and hunk.current_start + 1 or hunk.current_start

@@ -51,7 +51,17 @@ function M.write(path, value)
 		return nil, "Could not encode persisted LazyVCS state"
 	end
 
-	local parent = vim.fn.fnamemodify(path, ":h")
+	local destination = path
+	local entry = vim.uv.fs_lstat(path)
+	if entry and entry.type == "link" then
+		local resolved, resolve_err = vim.uv.fs_realpath(path)
+		local target = resolved and vim.uv.fs_stat(resolved)
+		if not target or target.type ~= "file" then
+			return nil, resolve_err or "State symlink does not point to a regular file"
+		end
+		destination = resolved
+	end
+	local parent = vim.fn.fnamemodify(destination, ":h")
 	local made, mkdir_err = pcall(vim.fn.mkdir, parent, "p")
 	local stat = vim.uv.fs_stat(parent)
 	if not made or not stat or stat.type ~= "directory" then
@@ -59,7 +69,7 @@ function M.write(path, value)
 		return nil, (tostring(err):gsub("[\r\n]+", " "))
 	end
 	local suffix = string.format(".tmp.%d.%d", vim.fn.getpid(), vim.uv.hrtime())
-	local tmp = path .. suffix
+	local tmp = destination .. suffix
 	local fd, open_err = vim.uv.fs_open(tmp, "w", 384)
 	if not fd then
 		return nil, open_err or "Could not open temporary state file"
@@ -80,7 +90,7 @@ function M.write(path, value)
 			or (not close_ok and closed or close_err)
 		return nil, err or "Could not write temporary state file"
 	end
-	local renamed, rename_err = vim.uv.fs_rename(tmp, path)
+	local renamed, rename_err = vim.uv.fs_rename(tmp, destination)
 	if not renamed then
 		pcall(vim.uv.fs_unlink, tmp)
 		return nil, rename_err or "Could not replace persisted state"

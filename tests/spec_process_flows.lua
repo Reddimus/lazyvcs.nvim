@@ -42,6 +42,7 @@ return function(ctx)
 						end
 						local stdout = kind == "branch" and "main\n"
 							or kind == "for-each-ref" and "refs/heads/main\0refs/remotes/origin/main\0origin\0refs/heads/main\n"
+							or kind == "config" and "simple\n"
 							or kind == "status" and status
 							or ""
 						done({ code = 0, stdout = stdout, stderr = "" })

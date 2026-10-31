@@ -70,6 +70,15 @@ local function editable_sync(root, relpath, path)
 		return nil, load_err
 	end
 	local item, parse_err = index_entry(result.stdout, relpath)
+	if not item and not parse_err then
+		local ignored = util.system_result({ "git", "check-ignore", "-q", "--", "./" .. relpath }, { cwd = root })
+		if ignored.code == 0 then
+			return nil, "File is ignored by Git"
+		end
+		if ignored.code ~= 1 then
+			return nil, util.system_error(ignored)
+		end
+	end
 	return item or (not parse_err and { untracked = true } or nil), parse_err
 end
 
@@ -423,7 +432,21 @@ local function load_payload_async(path, on_done, opts, base_only)
 								payload.name = M.name
 								payload.impl = M
 							end
-							return task:finish(finalize_payload(payload))
+							return task:add(
+								process.start(
+									{ "git", "check-ignore", "-q", "--", "./" .. relpath },
+									{ cwd = root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS },
+									function(ignored, ignore_err, ignore_raw)
+										if ignored then
+											return task:finish(nil, "File is ignored by Git", { code = "untracked" })
+										end
+										if not ignore_raw or ignore_raw.code ~= 1 then
+											return task:finish(nil, ignore_err)
+										end
+										task:finish(finalize_payload(payload))
+									end
+								)
+							)
 						end
 
 						if raw and (raw.stdout_truncated or raw.stderr_truncated) then
@@ -493,15 +516,20 @@ local function conflict_base_async(path, root, relpath, callback, opts)
 					if not records then
 						return task:finish(nil, load_err)
 					end
-					local ours
+					local ours, has_conflict, has_stage0
 					for record in records:gmatch("([^%z]+)%z") do
 						local mode, oid, stage, name = record:match("^(%d+) (%x+) (%d+)\t(.*)$")
 						if name ~= relpath or (mode ~= "100644" and mode ~= "100755") then
 							return task:finish(nil, "Unsupported conflict index entry")
 						end
+						has_stage0 = has_stage0 or stage == "0"
+						has_conflict = has_conflict or stage == "1" or stage == "2" or stage == "3"
 						if stage == "2" then
 							ours = oid
 						end
+					end
+					if has_stage0 or not has_conflict then
+						return task:finish(nil, "Conflict is resolved; reopen this file from Changes")
 					end
 					local identity = { root = root, relpath = relpath, index_stages = records }
 					if not ours then
@@ -677,21 +705,156 @@ function M.load_diff_target_async(target, on_done, opts)
 		end
 	end
 
-	local function snapshot_side(side, bytes)
+	local function snapshot_side(side, bytes, decode_opts)
 		if #bytes > 1024 * 1024 then
 			return nil, "File exceeds the 1 MiB preview limit"
 		end
-		-- Object snapshots keep CRLF and BOM bytes as content, as line-only previews did.
-		side.bytes, side.lines = bytes, util.split_lines(bytes)
-		side.document = {
-			lines = side.lines,
-			eol = bytes:sub(-1) == "\n",
-			empty = bytes == "",
-			encoding = "utf-8",
-			bom = false,
-			profile_key = "git-object",
-		}
+		side.bytes = bytes
+		side.document =
+			require("lazyvcs.backends.comparison").snapshot_document(bytes, comparison.path, "git-object", decode_opts)
+		side.lines = side.document.lines
 		return true
+	end
+
+	local function snapshot_options(side, bytes, done)
+		local object = side.source and side.source.object or ""
+		local revision, relpath = object:match("^([^:]*):(.*)$")
+		if not relpath then
+			return done({})
+		end
+		if revision == "" then
+			relpath = relpath:match("^%d:(.*)$") or relpath
+		end
+		local command_opts = { cwd = comparison.root, timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS }
+		local args = {
+			"git",
+			"check-attr",
+			"-z",
+			revision == "" and "--cached" or "--source=" .. revision,
+			"working-tree-encoding",
+			"--",
+			relpath,
+		}
+		local function attributes_loaded(raw, err)
+			if not task:is_active() then
+				return
+			end
+			if not raw then
+				return done(nil, "Git snapshot attributes: " .. tostring(err))
+			end
+			local attributes = require("lazyvcs.backends.git_attributes")
+			local parsed, parse_err = attributes.parse(raw, relpath)
+			if not parsed or parsed["working-tree-encoding"] == nil then
+				return done(nil, parse_err or "Git returned no exact snapshot attribute record")
+			end
+			done(attributes.encoding(parsed) and { hint = false, encoding = "utf-8" } or {})
+		end
+		local function changed_attributes()
+			local text = require("lazyvcs.compare_text")
+			local prefix = bytes:sub(1, 4)
+			if
+				prefix:sub(1, 3) == "\239\187\191"
+				or prefix:sub(1, 2) == "\255\254"
+				or prefix:sub(1, 2) == "\254\255"
+				or prefix == "\0\0\254\255"
+			then
+				return done({ hint = false, fileencodings = "ucs-bom," .. vim.o.fileencodings })
+			end
+			if not bytes:find("\0", 1, true) and text.valid_utf8(bytes) then
+				local hint = require("lazyvcs.backends.comparison").decode_options(comparison.path).hint
+				if hint and hint.fileencoding ~= "utf-8" then
+					local profile = {
+						fileencoding = hint.fileencoding,
+						fileformat = "unix",
+						key = "historical-fallback",
+						binary = false,
+						bomb = false,
+					}
+					local hinted = text.decode(bytes, profile, 1024 * 1024)
+					profile.fileencoding = "utf-8"
+					local utf8 = text.decode(bytes, profile, 1024 * 1024)
+					if hinted and utf8 and not vim.deep_equal(hinted.lines, utf8.lines) then
+						return done(
+							nil,
+							"Git snapshot encoding is ambiguous: historical attributes changed and this Git lacks --source support"
+						)
+					end
+				end
+				return done({ hint = false, encoding = "utf-8" })
+			end
+			return done({})
+		end
+		local function older_git_attributes()
+			-- Git 2.34 cannot inspect attributes from a tree. If the relevant
+			-- attribute files match INDEX, --cached proves the same source policy.
+			local paths, parent = { ".gitattributes" }, relpath:match("^(.*)/[^/]*$")
+			while parent and parent ~= "" do
+				paths[#paths + 1] = parent .. "/.gitattributes"
+				parent = parent:match("^(.*)/[^/]*$")
+			end
+			local cursor = 1
+			local batch
+			batch = function()
+				if not task:is_active() then
+					return
+				end
+				if cursor > #paths then
+					local cached = vim.deepcopy(args)
+					cached[4] = "--cached"
+					return task:add(process.bytes(cached, command_opts, attributes_loaded))
+				end
+				local argv = {
+					"git",
+					"diff",
+					"--cached",
+					"--name-only",
+					"--no-ext-diff",
+					"--no-textconv",
+					"--no-renames",
+					"-z",
+					revision,
+					"--",
+				}
+				local length = 0
+				repeat
+					argv[#argv + 1] = paths[cursor]
+					length, cursor = length + #paths[cursor] + 32, cursor + 1
+				until cursor > #paths or length + #paths[cursor] + 32 > 8192
+				task:add(
+					process.bytes(
+						argv,
+						vim.tbl_extend("force", command_opts, { output_limit_bytes = 2 * (length + 1024) }),
+						function(changed, err)
+							if not task:is_active() then
+								return
+							end
+							if not changed then
+								return done(nil, "Git snapshot attributes: " .. tostring(err))
+							end
+							if changed ~= "" then
+								return changed_attributes()
+							end
+							batch()
+						end
+					)
+				)
+			end
+			batch()
+		end
+		task:add(process.bytes(args, command_opts, function(raw, err)
+			if not task:is_active() then
+				return
+			end
+			if
+				not raw
+				and revision ~= ""
+				and type(err) == "string"
+				and (err:find("unknown option", 1, true) or err:find("unrecognized option", 1, true))
+			then
+				return older_git_attributes()
+			end
+			attributes_loaded(raw, err)
+		end))
 	end
 
 	local pending = 0
@@ -731,7 +894,16 @@ function M.load_diff_target_async(target, on_done, opts)
 			end
 		elseif source.kind == "git_submodule_patch" then
 			pending = pending + 1
-			local args = { "git", "diff", "--no-ext-diff", "--no-color", "--submodule=short", "--full-index" }
+			local args = {
+				"git",
+				"-c",
+				"diff.autoRefreshIndex=false",
+				"diff",
+				"--no-ext-diff",
+				"--no-color",
+				"--submodule=short",
+				"--full-index",
+			}
 			if source.section == "staged" then
 				args[#args + 1] = "--cached"
 			end
@@ -748,15 +920,15 @@ function M.load_diff_target_async(target, on_done, opts)
 				side.lines = lines
 				complete()
 			end))
-		elseif source.kind == "git_object" then
+		elseif
+			source.kind == "git_object" and not (comparison.editable_side == "right" and side == comparison.left)
+		then
 			pending = pending + 1
-			local raw_side = comparison.editable_side == "right" and side == comparison.left
 			local loader = process.bytes
 			task:add(loader({ "git", "show", "--no-ext-diff", source.object }, {
 				cwd = comparison.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 			}, function(lines, err, raw)
-				pending = pending - 1
 				if failed then
 					return
 				end
@@ -777,23 +949,33 @@ function M.load_diff_target_async(target, on_done, opts)
 						)
 					then
 						snapshot_side(side, "")
+						pending = pending - 1
 						return complete()
 					end
 					failed = true
 					return task:finish(nil, err)
 				end
-				if raw_side then
-					side.bytes, side.lines = lines, nil
-				elseif comparison.editable_side then
+				if comparison.editable_side then
 					side.lines = util.split_lines(lines)
-				else
-					local decoded, decode_err = snapshot_side(side, lines)
+					pending = pending - 1
+					return complete()
+				end
+				snapshot_options(side, lines, function(decode_opts, attribute_err)
+					if failed or not task:is_active() then
+						return
+					end
+					pending = pending - 1
+					if not decode_opts then
+						failed = true
+						return task:finish(nil, attribute_err)
+					end
+					local decoded, decode_err = snapshot_side(side, lines, decode_opts)
 					if not decoded then
 						failed = true
 						return task:finish(nil, decode_err)
 					end
-				end
-				complete()
+					complete()
+				end)
 			end))
 		end
 	end
@@ -921,6 +1103,14 @@ function M.revert_file(path)
 	if not result or index_err then
 		return nil, index_err
 	end
+	local intent, intent_err = require("lazyvcs.backends.git_index").intent_to_add(root, relpath)
+	if intent == nil then
+		return nil, intent_err
+	end
+	if intent then
+		return nil, "Intent-to-add file has no saved index content; nothing to revert"
+	end
+
 	local stat, stat_err = vim.uv.fs_lstat(path)
 	local refusal = revert_stat_error(stat, stat_err)
 	if refusal then
@@ -953,7 +1143,7 @@ function M.revert_file_async(path, on_done, opts)
 		if not relpath then
 			return task:finish(nil, path_err)
 		end
-		local function restore()
+		local function perform_restore()
 			if not task:is_active() then
 				return
 			end
@@ -971,6 +1161,26 @@ function M.revert_file_async(path, on_done, opts)
 				task:finish(result, restore_err)
 			end))
 		end
+		local function restore()
+			task:add(
+				require("lazyvcs.backends.git_index").intent_to_add_async(
+					info.root,
+					relpath,
+					process.start,
+					function(intent, intent_err)
+						if intent == nil then
+							return task:finish(nil, intent_err)
+						end
+						if intent then
+							return task:finish(nil, "Intent-to-add file has no saved index content; nothing to revert")
+						end
+						perform_restore()
+					end,
+					opts
+				)
+			)
+		end
+
 		task:add(process.start({ "git", "ls-files", "--stage", "-z", "--", relpath }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
@@ -1032,7 +1242,10 @@ function M.blame_lines(path)
 		return nil, "File is not tracked by Git"
 	end
 
-	return util.system_lines({ "git", "blame", "--encoding=UTF-8", "--line-porcelain", "--", relpath }, { cwd = root })
+	return util.system_lines(
+		{ "git", "blame", "--encoding=UTF-8", "--porcelain", "--", relpath },
+		{ cwd = root, output_limit_bytes = 32 * 1024 * 1024 }
+	)
 end
 
 function M.blame_lines_async(path, on_done, opts)
@@ -1090,7 +1303,7 @@ function M.blame_lines_async(path, on_done, opts)
 									return task:finish(nil, policy_err)
 								end
 								local function blame()
-									local blame_args = { "git", "blame", "--encoding=UTF-8", "--line-porcelain" }
+									local blame_args = { "git", "blame", "--encoding=UTF-8", "--porcelain" }
 									local format = require("lazyvcs.backends.blame_format")
 									if
 										opts.line_start
@@ -1101,6 +1314,7 @@ function M.blame_lines_async(path, on_done, opts)
 										vim.list_extend(blame_args, { "-L", opts.line_start .. "," .. opts.line_end })
 									end
 									local blame_opts = {
+										output_limit_bytes = 32 * 1024 * 1024,
 										cwd = root,
 										timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 									}
@@ -1201,22 +1415,23 @@ end
 function M.parse_blame_entries(lines)
 	local out = {}
 	local current
+	local cache = {}
 	for _, line in ipairs(lines or {}) do
 		local revision = line:match("^(%x+)%s+%d+%s+%d+")
 		if revision and #revision ~= 40 and #revision ~= 64 then
 			revision = nil
 		end
 		if revision then
-			current = {
+			current = vim.tbl_extend("force", cache[revision] or {}, {
 				revision = short_revision(revision),
 				full_revision = revision,
-				author = "-",
-				date = "-",
-				summary = "",
 				backend = M.name,
 				uncommitted = revision:match("^0+$") and true or nil,
-			}
+			})
+			current.author, current.date, current.summary =
+				current.author or "-", current.date or "-", current.summary or ""
 		elseif current and line:sub(1, 1) == "\t" then
+			cache[current.full_revision] = vim.deepcopy(current)
 			if current.uncommitted then
 				current.revision = "-"
 				current.full_revision = nil
@@ -1227,8 +1442,11 @@ function M.parse_blame_entries(lines)
 			local key, value = line:match("^(%S+)%s+(.+)$")
 			if key == "author" then
 				current.author = value
+			elseif key == "author-mail" or key == "author-tz" or key == "filename" or key == "previous" then
+				current[key:gsub("-", "_")] = value
 			elseif key == "author-time" then
 				local timestamp = tonumber(value)
+				current.author_time = timestamp
 				current.date = timestamp and os.date("%Y-%m-%d", timestamp) or "-"
 			elseif key == "summary" then
 				current.summary = value

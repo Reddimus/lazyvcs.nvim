@@ -5,21 +5,21 @@ local integrations = {
 		key = "gitsigns",
 		label = "gitsigns.nvim",
 		module = "gitsigns",
-		feature = "Git signs, navigation, previews; live resets only for an exact hunk match against the index",
-		fallback = "plugin-owned hunk replacement",
+		feature = "Git signs, navigation and large-file previews; live resets stay native",
+		fallback = "native signs, navigation and previews",
 	},
 	{
 		key = "snacks",
 		label = "snacks.nvim",
 		module = "snacks.picker.select",
-		feature = "enhanced action, switch, and SVN file pickers",
+		feature = "Git/SVN file, action, switch and repository pickers",
 		fallback = "vim.ui.select",
 	},
 	{
 		key = "fzf_lua",
 		label = "fzf-lua",
 		module = "fzf-lua",
-		feature = "SVN modified-file picker fallback",
+		feature = "Git/SVN file, action, switch and repository picker fallback",
 		fallback = "vim.ui.select",
 	},
 	{
@@ -70,8 +70,11 @@ function M.status(checker)
 	for _, item in ipairs(integrations) do
 		local available
 		if item.executable then
-			available = checker == has_module and vim.fn.executable(item.executable) == 1
-				or checker(item.executable, item)
+			if checker == has_module then
+				available = vim.fn.executable(item.executable) == 1
+			else
+				available = checker(item.executable, item)
+			end
 		else
 			available = checker(item.module, item)
 		end

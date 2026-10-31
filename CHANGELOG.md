@@ -8,213 +8,45 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-10-31
+
 ### Fixed
 
-- Revert and navigate the hunk under the invoking cursor in splits of a live
-  diff.
-- Keep a completed base refresh when returning from a pending live-diff
-  transfer.
-- Mirror wrapping options in the base pane after switching live-diff files.
-- Revert Git live hunks against the displayed index. Delegate to gitsigns only
-  when its index base and complete hunk match the validated comparison.
-- Attach Resession save hooks when a live diff opens with any plugin loader.
-- Restore inherited highlight namespaces, keep private overlays out of global
-  defaults, and retain semantic suppression after theme changes on Neovim 0.11.
-- Preserve syntax colors for self-links in custom highlight namespaces.
-- Show staged final-newline changes in Git previews and hunk navigation,
-  including after refresh. Mark snapshot text that has no final newline.
-- Find Git repositories for deleted files whose parent directories are also
-  gone.
-- Recover Git base reads when a cached nested repository directory disappears.
-- Show final-newline changes in incoming SVN previews and hunk navigation.
-- Open SVN live diffs when a file's parent directories have been deleted.
-- Load SVN replacement files without depending on the diagnostic language, while
-  preserving readable bases for replacements with copy history.
-- Exclude SVN file externals from parent comparisons while keeping parent
-  deletions at the same path. Show versioned files and directories that are
-  missing from disk as missing rows with labeled previews.
-- Validate Leader and LocalLeader mappings using Neovim's native expansion.
-- Restore native gutter signs in other loaded buffers after repeated setup.
-- Describe gitsigns delegation and native fallback accurately in health output.
-- Complete current and parent directories in sidebar path arguments.
-- Restore the original Tree-sitter parser language after closing a Markdown live
-  diff.
-- Open editable Compare for Mac-format files containing embedded line feeds and
-  preserve those bytes when capturing buffer contents.
-- Keep native jump routing after Compare recovers a deleted working buffer.
-- Preserve opened diff folds when Compare switches between side-by-side and
-  stacked layouts.
-- Keep the cursor on the same line when returning to the editor immediately
-  after inserting or deleting lines in editable Compare.
-- Avoid accumulating jump tracking resources when repeatedly opening and closing
-  Compare tabs.
-- Refresh inline blame and blame splits after LazyVCS commits and history
-  changes.
-- Preserve encoded text and final-newline attribution in saved Git blame on
-  older Git versions.
-- Align blame splits with native diff filler and skip hidden blame tabs during
-  redraws.
-- Keep dates visible in Git blame splits by shortening long author names.
-- Restore the original final newline when reverting large-file hunks, and use
-  the gitsigns fallback when only the index base exceeds the native size limit.
-- Resume native signs when corrected decoding options make the base readable.
-- Keep diff previews and selected-line blame reports open without folded rows.
-- Protect saved files inside directory replacements during recursive SVN Discard
-  and Git whole-file revert.
-- Refuse Unstage when a stale file row would unstage replacement children,
-  including at a rename's old path.
-- Keep remote branch names stable when a tag has the same name.
-- Keep Git discovery, reads, and mutations in the selected repository when
-  inherited settings select another index or object directory. Preserve paired
-  `GIT_DIR` and `GIT_WORK_TREE` only for commands within that work tree and
-  outside repositories nested in it, supporting bare dotfiles repositories, and
-  read the environment safely in libuv callbacks.
-- Clarify that `s` follows the Sync setting, while `.` always opens repository
-  actions, and that Git whole-file revert preserves staged changes.
-- Keep popup replacement windows open when confirmation or commit input cancels.
-- Show complete destructive prompts in scrollable confirmation content.
-- Preserve selected files and loaded changes across repeated and repository-menu
-  refreshes.
-- Preserve the selected repository during incomplete discovery and keep a
-  selector available after hiding the only repository.
-- Bound repository failure notifications, keep the untracked Discard refusal
-  reason visible, and point to `.` for Show Last Error, which shows full
+- Protect intent-to-add, untracked and ignored contents during Discard,
+  including stale staged rows, deletions and both paths of a rename.
+- On Git conflicts, Discard restores HEAD in the index and working tree,
+  removing paths absent from HEAD.
+- Revalidate queued mutations, branch destinations and incomplete repository
+  status before changing files, commits or remotes.
+- Refresh live bases and hunks after staging, saving, option changes and pending
+  file transfers. Keep cancelled or superseded reads from reclaiming a view.
+- Match hunk navigation and revert to the invoking cursor and supported native
+  diff settings. Preserve encoded text, BOMs and final-newline changes.
+- Preserve editable Compare buffers, jumps, folds and focus through refresh,
+  recovery and layout changes. Route picker selections to normal editors, keep
+  global leader mappings usable, and let `h` collapse sidebar repository rows.
+- Align blame splits with winbars, folds, filler and virtual lines. Preserve
+  attribution across Git renames and SVN copied-directory history.
+- Keep large repository listings usable. Handle SVN directory properties,
+  ignored files, obstructed externals and nested Git working copies.
+- Preserve sidebar selection, commit drafts and preferences after refresh,
+  cancellation or failed discovery. Keep newer drafts when an earlier commit
+  finishes, and show failed reads with a retry action.
+- Keep confirmation text visible. Reject duplicate mappings and AI keys that
+  replace commit or cancellation controls. Report provider failures without
+  partial messages.
+- Restore scoped highlights, parser settings and window options when views
+  close. Bound asynchronous workers, caches and temporary-file cleanup.
+- Keep Git commands in the selected repository while preserving ordinary hook,
+  pathspec and locale behavior. Reject unsafe filesystem replacements.
+- Reject signalled or incomplete test groups, isolate fixture state, and verify
+  the exact signed release commit before publishing it.
+
+### Changed
+
+- Add advisory Greptile configuration, workflow security checks and stricter Lua
   diagnostics.
-- Collect SVN AI context with the internal diff tool and check provider
-  availability before requesting consent.
-- Stop cancelled CopilotChat requests from starting more transports.
-- Document the fzf-lua fallback for branch and action pickers.
-- Keep UI tests from changing an inherited Git repository or leaving fixture
-  preferences in the user's state directory.
-- Preserve an existing diff and its window settings when a live diff closes
-  after its base pane is replaced or moved to another tab.
-- Align wrapped insertions and deletions below the first line, and unequal
-  replacements, without counting native diff filler twice. Remove shared
-  alignment padding when another window shows the file, and restore it when that
-  window closes.
-- Release scratch buffers when a read-only comparison fails to open over unsaved
-  changes.
-- Update active diff colors when a theme changes its highlight namespace.
-  Restore theme inheritance in splits after removing copied diff overlays on
-  Neovim 0.11.7 and newer.
-- Reuse live hunks during navigation when the text and base have not changed.
-- Revert exactly the confirmed live hunk against the validated displayed base
-  when Gitsigns is installed, including when the action starts in the base pane.
-- Refuse SVN directory Discard when a restored directory or its parent is a
-  symlink or junction, protecting files outside the working copy.
-- Protect untracked and ignored files at a staged rename's old path from
-  Discard. The confirmation now names both rename paths.
-- Refuse Unstage and Discard of staged additions that changed before the action
-  started, preserving newly committed files.
-- Refuse Stage when a file became a directory, while allowing tracked
-  submodules.
-- Resolve Git conflicts with Discard by restoring HEAD in the index and working
-  tree, or removing the file when HEAD deleted it. The confirmation names this
-  scope.
-- Publish Git branches even when a tag has the same name.
-- Skip unreadable subdirectories during repository discovery, keep the
-  repositories found, and show one notice for skipped directories. Preserve
-  saved repository visibility until discovery completes without errors. An
-  unreadable scan root still reports an error.
-- Report preference synchronization and close failures without replacing the
-  previous preferences.
-- Show staged final-newline changes in Git previews and hunk navigation,
-  including after refresh. Mark snapshot text that has no final newline.
-- Find Git repositories for deleted files whose parent directories are also
-  gone.
-- Open SVN directory rows as shallow property previews, including local and
-  incoming additions. Keep file contents visible in file and directory
-  replacements.
-- Keep untracked files from SVN directory externals out of the parent Compare.
-- Preserve whitespace and decode base64 in inherited SVN ignore properties.
-  Accept undefined configuration references as literal ignore patterns.
-- List individual nonignored files inside new SVN directories in the files
-  picker.
-- Skip unloaded buffers when finding preview encoding hints to avoid navigation
-  delays in sessions with many buffers.
-- Complete sidebar shorthand paths, arguments before the cursor, and commands
-  with Ex modifiers or ranges. Respect Unicode case matching for directory
-  names.
-- Escape control characters in repository paths shown by the job profile.
-- Reject duplicate mappings that spell the same less-than key as `<lt>` and `<`.
-- Refuse SVN directory Discard when a restored directory or its parent is a
-  symlink or junction, protecting files outside the working copy.
-- Protect untracked and ignored files at a staged rename's old path from
-  Discard. The confirmation now names both rename paths.
-- Refuse Unstage and Discard of staged additions that changed before the action
-  started, preserving newly committed files.
-- Refuse Stage when a file became a directory, while allowing tracked
-  submodules.
-- Resolve Git conflicts with Discard by restoring HEAD in the index and working
-  tree, or removing the file when HEAD deleted it. The confirmation names this
-  scope.
-- Publish Git branches even when a tag has the same name.
-- Skip unreadable subdirectories during repository discovery, keep the
-  repositories found, and show one notice for skipped directories. Preserve
-  saved repository visibility until discovery completes without errors. An
-  unreadable scan root still reports an error.
-- Report preference synchronization and close failures without replacing the
-  previous preferences.
-- Treat externally terminated commands as failures so failed commits keep their
-  drafts and interrupted AI providers cannot return partial messages.
-- Keep Git features working when the editor inherits glob or case-insensitive
-  pathspec settings.
-- Detect CopilotChat installations on Neovim's runtimepath without loading them.
-- Include plain patches in AI commit context when Git uses an external diff
-  helper or forced colors.
-- Remove CopilotChat response-header files after cancelled or failed requests.
-- Verify and publish the same release commit, and reject a signed tag that
-  points to another commit.
-- Correct the security support table for 0.12.x and describe picker preview
-  cleanup accurately.
-- Preserve pasted commit message bodies when saving and reopening sidebar
-  drafts.
-- Keep confirmation choices visible when the editor uses closed folds.
-- Keep the selected file after a sidebar refresh unless you move during loading.
-- Show failed status reads with a retry action instead of a clean working tree.
-- Let `h` collapse repository rows and clarify the documented `l` toggle.
-- Preserve the active tab and cursor when a background popup closes.
-- Stop cancelled sidebar status reads and repository discovery until you retry.
-- Reject incompatible SVN BASE preview blame and keep final-newline edits
-  uncommitted in SVN blame, including saved Compare previews.
-- Use decoded text for Git blame in encoded saved Compare previews.
-- Show line-history commits after Git renames and display their author names and
-  messages as UTF-8.
-- Keep blame splits aligned when diagnostic virtual lines change.
-- Revert final-newline changes that leave an empty buffer row with
-  `nofixendofline`.
-- Keep pending hunk commands through base mutations and replacement-base loads.
-- Render and remove native signs in batches so large changes allow input and
-  redraw between batches.
-- Report failed file-picker buffer switches without a callback traceback.
-- Keep Compare shortcuts inside the focused pane and honor explicit editable
-  settings when reopening the same repository through another path.
-- Restore native jump history when cycling editable Compare files.
-- Update Compare hunk navigation after metadata review and external file
-  rereads.
-- Avoid false changes in editable files with mixed line endings and retain
-  final-newline-only hunks in snapshot review.
-- Preview deleted and replaced Git submodules with plain text and enforce the 1
-  MiB preview limit. Reject sparse previews if the index changes during loading.
-- Show removed SVN file properties and omit canceled file changes when bounded
-  content and property checks confirm they match the selected revision.
-- Revert and navigate the hunk under the invoking cursor in splits of a live
-  diff.
-- Keep a completed base refresh when returning from a pending live-diff
-  transfer.
-- Mirror wrapping options in the base pane after switching live-diff files.
-- Attach Resession save hooks when a live diff opens with any plugin loader.
-- Restore inherited highlight namespaces, keep private overlays out of global
-  defaults, and retain semantic suppression after theme changes on Neovim 0.11.
-- Preserve syntax colors for self-links in custom highlight namespaces.
-- Preserve pasted commit message bodies when saving and reopening sidebar
-  drafts.
-- Keep confirmation choices visible when the editor uses closed folds.
-- Keep the selected file after a sidebar refresh unless you move during loading.
-- Show failed status reads with a retry action instead of a clean working tree.
-- Let `h` collapse repository rows and clarify the documented `l` toggle.
-- Preserve the active tab and cursor when a background popup closes.
-- Stop cancelled sidebar status reads and repository discovery until you retry.
+- Move macOS CI to `macos-15` and pin the Windows Subversion download.
 
 ## [0.12.1] - 2026-10-23
 
@@ -1090,4 +922,5 @@ First tagged release.
 [0.11.7]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.6...v0.11.7
 [0.12.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.7...v0.12.0
 [0.12.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.0...v0.12.1
-[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.1...HEAD
+[0.12.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.1...v0.12.2
+[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.2...HEAD

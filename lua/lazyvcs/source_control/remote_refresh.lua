@@ -23,6 +23,7 @@ function M.claim(root, interval_ms, now_ms)
 end
 
 local snapshots, pending = {}, setmetatable({}, { __mode = "v" })
+local epochs = setmetatable({}, { __mode = "v" })
 local serial, clock, retained_bytes = 0, 0, 0
 -- Remember bounded-cache losses separately from roots that have never been checked.
 local dropped = {}
@@ -65,16 +66,21 @@ end
 
 function M.begin(root)
 	serial = serial + 1
-	local token = { root = root, version = serial }
+	local epoch = epochs[root] or {}
+	epochs[root] = epoch
+	local token = { root = root, version = serial, epoch = epoch }
 	pending[root] = token
 	return token
 end
 
 function M.publish(token, items)
-	if pending[token.root] ~= token then
+	if epochs[token.root] ~= token.epoch or (token.epoch.published and token.epoch.published > token.version) then
 		return false
 	end
-	pending[token.root] = nil
+	if pending[token.root] == token then
+		pending[token.root] = nil
+	end
+	token.epoch.published = token.version
 	remove(token.root)
 	local bytes = #vim.json.encode(items)
 	if bytes <= 4 * 1024 * 1024 then
@@ -107,6 +113,7 @@ function M.publish(token, items)
 end
 
 function M.invalidate(root)
+	epochs[root] = nil
 	pending[root] = nil
 	remove(root)
 	if listener then

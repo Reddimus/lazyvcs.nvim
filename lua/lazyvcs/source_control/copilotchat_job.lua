@@ -24,6 +24,11 @@ function M.adopt(job, scope, files)
 		end
 		timer = nil
 	end
+	function owned:abandon()
+		if files then
+			files:abandon()
+		end
+	end
 	function owned:force()
 		if not self.finished and not handle:is_closing() and handle:is_active() then
 			pcall(handle.kill, handle, 9)

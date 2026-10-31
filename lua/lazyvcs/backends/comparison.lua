@@ -82,7 +82,7 @@ function M.read_file(task, path, callback)
 				vim.uv.fs_readlink(path, function(link_err, target)
 					schedule_read(task, function()
 						if task:is_active() then
-							callback(target, link_err)
+							callback(target, link_err, "link")
 						end
 					end)
 				end)
@@ -116,7 +116,7 @@ function M.read_file(task, path, callback)
 							if data and #data > M.max_file_bytes then
 								return callback(nil, "File exceeds the 1 MiB preview limit")
 							end
-							callback(data, read_err)
+							callback(data, read_err, "file")
 						end)
 					end
 				)
@@ -133,13 +133,17 @@ end
 
 function M.decode_options(path)
 	local text = require("lazyvcs.compare_text")
-	local resolved = util.canonical_path(path)
+	local resolved = util.canonical_entry_path(path)
+	local entry = vim.uv.fs_lstat(path)
+	if entry and entry.type == "link" then
+		return { fileencodings = vim.o.fileencodings }
+	end
 	local hint
 	for _, buf in ipairs(vim.api.nvim_list_bufs()) do
 		if
 			vim.api.nvim_buf_is_loaded(buf)
 			and util.is_real_file_buffer(buf)
-			and util.canonical_path(vim.api.nvim_buf_get_name(buf)) == resolved
+			and util.canonical_entry_path(vim.api.nvim_buf_get_name(buf)) == resolved
 		then
 			local profile = text.profile(buf)
 			if profile then
@@ -164,17 +168,34 @@ function M.decode_side(result, side, bytes, opts)
 	return true
 end
 
-function M.lines(data)
-	if type(data) ~= "string" then
-		return nil, "File contents unavailable"
+-- Immutable snapshots decode legacy encodings while keeping CR and BOM
+-- characters visible to hunk comparison. Always retain the original bytes.
+function M.snapshot_document(bytes, path, key, opts)
+	local text = require("lazyvcs.compare_text")
+	local detected =
+		text.decode_preview(bytes, vim.tbl_extend("force", M.decode_options(path), opts or {}), M.max_file_bytes)
+	local document
+	if detected then
+		document = text.decode(bytes, {
+			fileencoding = detected.encoding,
+			fileformat = "unix",
+			bomb = false,
+			binary = false,
+			key = key .. ":" .. detected.encoding,
+		}, M.max_file_bytes)
+		if document and document.bom then
+			-- Snapshot panes compare serialized text. Represent the source BOM as
+			-- a character so adding/removing one remains a navigable hunk, even
+			-- when the decoded document otherwise contains no text.
+			document.lines[1] = "\239\187\191" .. (document.lines[1] or "")
+			document.empty = false
+		end
 	end
-	if data:find("\0", 1, true) then
-		return nil, "Binary file; text preview unavailable"
-	end
-	if #data > M.max_file_bytes then
-		return nil, "File exceeds the 1 MiB preview limit"
-	end
-	return util.split_lines(data:gsub("\r\n", "\n"))
+	document = document
+		or { lines = util.split_lines(bytes), encoding = "utf-8", eol = bytes:sub(-1) == "\n", empty = bytes == "" }
+	document.bom = false
+	document.profile_key = key .. ":" .. document.encoding
+	return document
 end
 
 function M.provider(vcs)

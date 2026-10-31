@@ -167,16 +167,6 @@ function M.clear_pending_transfer(winid)
 	end
 end
 
-function M.clear_all_pending_transfers()
-	local windows = {}
-	for _, pending in pairs(M.pending_transfers) do
-		windows[#windows + 1] = pending.editable_win
-	end
-	for _, win in ipairs(windows) do
-		M.clear_pending_transfer(win)
-	end
-end
-
 function M.set_repo_job(repo_root, job)
 	if not repo_root then
 		return

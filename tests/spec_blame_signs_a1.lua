@@ -347,6 +347,7 @@ return function(ctx)
 					end
 				end
 				for _, mode in ipairs({ "winfixbuf", "modified" }) do
+					require("lazyvcs.util").set_win_option(win, "winfixbuf", false)
 					choose = nil
 					require("lazyvcs.buffer_ops").files()
 					t.wait(function()

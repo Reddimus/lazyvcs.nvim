@@ -280,7 +280,9 @@ local function test_diff_reset()
 
 	local buf = vim.api.nvim_create_buf(false, true)
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, current)
-	diff.reset_hunk(buf, base, hunks[1])
+	local base_doc = { lines = base, eol = true, empty = #base == 0 }
+	local current_doc = assert(require("lazyvcs.compare_text").capture(buf, 1024 * 1024))
+	diff.reset_text_hunk(buf, base_doc, current_doc, diff.compute_text_hunks(base_doc, current_doc)[1])
 	eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), base, "reset_hunk should restore base lines")
 end
 
@@ -294,7 +296,9 @@ local function test_diff_reset_for_insertion()
 
 	local buf = vim.api.nvim_create_buf(false, true)
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, current)
-	diff.reset_hunk(buf, base, hunks[1])
+	local base_doc = { lines = base, eol = true, empty = #base == 0 }
+	local current_doc = assert(require("lazyvcs.compare_text").capture(buf, 1024 * 1024))
+	diff.reset_text_hunk(buf, base_doc, current_doc, diff.compute_text_hunks(base_doc, current_doc)[1])
 	eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), base, "reset_hunk should remove inserted lines")
 end
 
@@ -308,7 +312,9 @@ local function test_diff_reset_for_deletion()
 
 	local buf = vim.api.nvim_create_buf(false, true)
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, current)
-	diff.reset_hunk(buf, base, hunks[1])
+	local base_doc = { lines = base, eol = true, empty = #base == 0 }
+	local current_doc = assert(require("lazyvcs.compare_text").capture(buf, 1024 * 1024))
+	diff.reset_text_hunk(buf, base_doc, current_doc, diff.compute_text_hunks(base_doc, current_doc)[1])
 	eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), base, "reset_hunk should restore deleted lines")
 end
 
@@ -322,7 +328,9 @@ local function test_diff_reset_for_top_deletion()
 
 	local buf = vim.api.nvim_create_buf(false, true)
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, current)
-	diff.reset_hunk(buf, base, hunks[1])
+	local base_doc = { lines = base, eol = true, empty = #base == 0 }
+	local current_doc = assert(require("lazyvcs.compare_text").capture(buf, 1024 * 1024))
+	diff.reset_text_hunk(buf, base_doc, current_doc, diff.compute_text_hunks(base_doc, current_doc)[1])
 	eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), base, "reset_hunk should restore top-of-file deletions")
 end
 
@@ -530,7 +538,10 @@ local function test_ai_commit_message_auto_falls_back_to_next_cli_provider()
 	util.system_start = function(args, opts, on_exit)
 		local key = table.concat(args, " ")
 		calls[#calls + 1] = key
-		if key:match("^git diff %-%-staged") then
+		if args[1] == "git" and vim.tbl_contains(args, "--staged") then
+			eq(args[2], "-c")
+			eq(args[3], "diff.autoRefreshIndex=false")
+			assert(not vim.tbl_contains(args, "--minimal"), "AI diff forces expensive minimal optimization")
 			on_exit({ code = 0, stdout = "diff --git a/app.lua b/app.lua\n+return true\n", stderr = "" }, nil)
 		elseif key:match("^claude ") then
 			on_exit(nil, "claude failed")
@@ -567,7 +578,10 @@ local function test_ai_commit_message_auto_falls_back_to_next_cli_provider()
 		eq(provider, "codex")
 		assert(codex_stdin:match("Use ticket IDs when present"), "custom instructions should be included")
 		assert(codex_stdin:match("diff %-%-git"), "diff context should be included")
-		eq(calls[1], "git diff --staged --no-ext-diff --no-color --stat --patch --minimal --unified=1")
+		eq(
+			calls[1],
+			"git -c diff.autoRefreshIndex=false diff --staged --no-ext-diff --no-color --stat --patch --unified=1"
+		)
 		assert(calls[2]:match("^claude "), "auto provider should try claude first")
 		eq(calls[3], "codex --ask-for-approval never exec --skip-git-repo-check --ephemeral --sandbox read-only -")
 	end)
@@ -725,7 +739,7 @@ local function test_svn_xml_parses_info_status_list_and_entities()
 	local status = xml.parse_status([[
 		<status><target path=".">
 		  <entry path="src/a&amp;b.txt">
-		    <wc-status item="modified" props="modified" revision="7" tree-conflicted="true" switched="true"/>
+		    <wc-status item="modified" props="modified" revision="7" tree-conflicted="true" switched="true" copied="true"/>
 		    <repos-status item="deleted" props="none"/>
 		  </entry>
 		</target></status>
@@ -740,6 +754,7 @@ local function test_svn_xml_parses_info_status_list_and_entities()
 		revision = "7",
 		tree_conflicted = true,
 		switched = true,
+		copied = true,
 		file_external = false,
 	})
 
@@ -989,7 +1004,6 @@ local function test_source_control_persist_owns_state_serialization_and_apply()
 			hidden_repos = { "/repo/b" },
 			focused_repo = "/repo/z",
 			show_clean = false,
-			selection_mode = "single",
 			changes_view_mode = "tree",
 			changes_sort = "path",
 		})
@@ -1003,7 +1017,7 @@ local function test_source_control_persist_owns_state_serialization_and_apply()
 		})
 		eq(state.lazyvcs_focused_repo, "/repo/a")
 		eq(state.lazyvcs_show_clean, true)
-		eq(state.lazyvcs_selection_mode, "multiple")
+		eq(state.lazyvcs_selection_mode, nil)
 		eq(state.lazyvcs_changes_view_mode, "list")
 		eq(state.lazyvcs_changes_sort, "status")
 	end, debug.traceback)
@@ -1132,7 +1146,12 @@ local function test_svn_async_blame_cancels_active_child_process()
 		eq(#handles, 2)
 		callbacks[2]({ stdout = "", code = 0 })
 		eq(#handles, 3)
-		assert(vim.tbl_contains(handles[3].args, "blame"), "fixture did not reach svn blame")
+		callbacks[3]({
+			stdout = '<info><entry kind="file" revision="1"><url>file:///fixture/sample.txt</url><wc-info><schedule>normal</schedule></wc-info></entry></info>',
+			code = 0,
+		})
+		eq(#handles, 4)
+		assert(vim.tbl_contains(handles[4].args, "blame"), "fixture did not reach svn blame")
 		-- Other buffers share this single worker and can already be queued when
 		-- cancellation completes. The mock must not capture their real processes.
 		local other_done, other_started = false, false
@@ -1146,9 +1165,9 @@ local function test_svn_async_blame_cancels_active_child_process()
 			other_done = true
 		end)
 		job:kill()
-		assert(handles[3].killed, "active svn blame child process should be killed")
+		assert(handles[4].killed, "active svn blame child process should be killed")
 		assert(not other_started, "worker released before physical completion")
-		callbacks[3]({ stdout = "     1 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line\n", code = 0 })
+		callbacks[4]({ stdout = "     1 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line\n", code = 0 })
 		eq(completed, false)
 		local released = false
 		jobs.command({ root = vim.fs.dirname(path), vcs = "svn" }, "buffer", { "worker-probe" }, {
@@ -1203,7 +1222,7 @@ local function test_source_control_collects_dirty_nested_repos()
 	eq(root.children[1].type, "view_section")
 	eq(root.children[1].name, "Repositories (3)")
 	eq(root.children[2].type, "view_section")
-	eq(root.children[2].name, "Changes (3)")
+	eq(root.children[2].name, "Changes (2)")
 
 	eq(root.children[1].children[1].type, "repo_selector")
 	eq(root.children[1].children[2].type, "repo_selector")
@@ -1213,18 +1232,15 @@ local function test_source_control_collects_dirty_nested_repos()
 
 	eq(root.children[2].children[1].type, "repo_changes")
 	eq(root.children[2].children[2].type, "repo_changes")
-	eq(root.children[2].children[3].type, "repo_changes")
 	eq(root.children[2].children[1].name, "git-dirty")
 	eq(root.children[2].children[1].extra.vcs, "git")
 	eq(root.children[2].children[1].extra.counts.local_changes, 1)
 	eq(root.children[2].children[1].children[1].type, "commit_input")
 	eq(root.children[2].children[1].children[2].type, "action_button")
 	eq(root.children[2].children[1].children[3].type, "section")
-	eq(root.children[2].children[2].name, "git-clean")
-	eq(root.children[2].children[2].extra.vcs, "git")
-	eq(root.children[2].children[3].name, "projects")
-	eq(root.children[2].children[3].extra.vcs, "svn")
-	eq(root.children[2].children[3].extra.counts.local_changes, 1)
+	eq(root.children[2].children[2].name, "projects")
+	eq(root.children[2].children[2].extra.vcs, "svn")
+	eq(root.children[2].children[2].extra.counts.local_changes, 1)
 end
 
 local function test_source_control_progressive_collect_shows_unhydrated_repos()
@@ -1326,6 +1342,8 @@ local function test_source_control_async_summary_waits_for_command_callback()
 	eq(summary, nil, "summary callback should not run until command output arrives")
 	eq(#pending, 1)
 	pending[1].on_done({ code = 0, stdout = "## main...origin/main [ahead 1]\n M lua/file.lua\n", stderr = "" })
+	eq(summary, nil)
+	pending[2].on_done({ code = 0, stdout = "origin\n", stderr = "" })
 	eq(summary.branch, "main")
 	eq(summary.counts.local_changes, 1)
 	eq(summary.sync.status, "outgoing")
@@ -2550,9 +2568,9 @@ local function test_source_control_hides_clean_repo_after_summary_hydration()
 		scan_depth = 3,
 	})
 	eq(root.children[1].name, "Repositories (2)")
-	eq(root.children[2].name, "Changes (2)")
+	eq(root.children[2].name, "Changes (1)")
 	eq(root.children[2].children[1].name, "git-dirty")
-	eq(root.children[2].children[2].name, "git-clean")
+	eq(#root.children[2].children, 1)
 end
 
 local function test_source_control_open_repo_recreates_force_expand_after_intermediate_navigate()
@@ -3725,37 +3743,46 @@ local function test_svn_blame_split_is_fixed_width_and_muted()
 	local source_buf = vim.api.nvim_get_current_buf()
 	require("lazyvcs.util").set_win_option(source_win, "scrollbind", false)
 	require("lazyvcs.util").set_win_option(source_win, "cursorbind", false)
-	require("lazyvcs.blame").blame_split()
+	local previous_statuscolumn = vim.o.statuscolumn
+	local previous_local_statuscolumn = vim.wo[source_win].statuscolumn
+	vim.o.statuscolumn = "%l "
+	local ok, err = xpcall(function()
+		require("lazyvcs.blame").blame_split()
 
-	wait_for(function()
+		wait_for(function()
+			local view = require("lazyvcs.blame")._test_blame_views()[source_buf]
+			return view and not view.loading and vim.api.nvim_win_is_valid(view.winid)
+		end, "split blame should open", 5000)
+
 		local view = require("lazyvcs.blame")._test_blame_views()[source_buf]
-		return view and not view.loading and vim.api.nvim_win_is_valid(view.winid)
-	end, "split blame should open", 5000)
-
-	local view = require("lazyvcs.blame")._test_blame_views()[source_buf]
-	eq(vim.api.nvim_get_current_win(), source_win)
-	assert(vim.wo[view.winid].winfixwidth, "split blame should use fixed width")
-	assert(vim.api.nvim_win_get_width(view.winid) <= 24, "split blame should respect max width")
-	assert(vim.wo[view.winid].winhighlight:match("LazyVcsBlame"), "split blame should use muted highlights")
-	eq(vim.wo[view.winid].number, false)
-	eq(vim.wo[view.winid].relativenumber, false)
-	eq(vim.wo[view.winid].signcolumn, "no")
-	eq(vim.wo[view.winid].foldcolumn, "0")
-	eq(vim.wo[view.winid].wrap, false)
-	eq(vim.wo[view.winid].list, false)
-	eq(vim.wo[view.winid].spell, false)
-	eq(vim.wo[view.winid].scrollbind, true)
-	eq(vim.wo[view.winid].cursorbind, true)
-	eq(vim.wo[source_win].scrollbind, true)
-	eq(vim.wo[source_win].cursorbind, true)
-	pcall(function()
+		eq(vim.api.nvim_get_current_win(), source_win)
+		assert(vim.wo[view.winid].winfixwidth, "split blame should use fixed width")
+		assert(vim.api.nvim_win_get_width(view.winid) <= 24, "split blame should respect max width")
+		assert(vim.wo[view.winid].winhighlight:match("LazyVcsBlame"), "split blame should use muted highlights")
+		eq(vim.wo[view.winid].number, false)
+		eq(vim.wo[view.winid].relativenumber, false)
+		eq(vim.wo[view.winid].signcolumn, "no")
+		eq(vim.wo[view.winid].foldcolumn, "0")
+		eq(vim.wo[view.winid].wrap, false)
+		eq(vim.wo[view.winid].list, false)
+		eq(vim.wo[view.winid].spell, false)
+		eq(vim.wo[view.winid].scrollbind, true)
+		eq(vim.wo[view.winid].cursorbind, true)
+		eq(vim.wo[source_win].scrollbind, true)
+		eq(vim.wo[source_win].cursorbind, true)
 		eq(vim.wo[view.winid].statuscolumn, "")
-	end)
-	local blame_lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
-	assert(vim.tbl_contains(blame_lines, "Uncommitted line"), "split blame should label uncommitted rows")
-	require("lazyvcs.blame").blame_split()
-	eq(vim.wo[source_win].scrollbind, false)
-	eq(vim.wo[source_win].cursorbind, false)
+		eq(vim.wo[source_win].statuscolumn, "%l ")
+		local blame_lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
+		assert(vim.tbl_contains(blame_lines, "Uncommitted line"), "split blame should label uncommitted rows")
+		require("lazyvcs.blame").blame_split()
+		eq(vim.wo[source_win].scrollbind, false)
+		eq(vim.wo[source_win].cursorbind, false)
+	end, debug.traceback)
+	vim.o.statuscolumn = previous_statuscolumn
+	if vim.api.nvim_win_is_valid(source_win) then
+		vim.wo[source_win].statuscolumn = previous_local_statuscolumn
+	end
+	assert(ok, err)
 end
 
 local function test_live_diff_places_base_window_on_the_left()
@@ -4648,12 +4675,13 @@ local function test_live_diff_async_open_does_not_reclaim_navigated_window()
 			return deferred
 		end
 
-		local task = actions.open({ silent = true })
-		eq(task, deferred)
+		local task = assert(actions.open({ silent = true }))
+		assert(task ~= deferred and task:is_active(), "open should own its backend read")
 		vim.cmd.edit(vim.fn.fnameescape(second))
 		local second_bufnr = vim.api.nvim_get_current_buf()
 
-		assert(deferred:finish(fake_git_load_result(first, root)))
+		deferred:finish(fake_git_load_result(first, root))
+		assert(not task:is_active() and not deferred:is_active(), "obsolete open should cancel its read owner")
 		eq(vim.api.nvim_get_current_buf(), second_bufnr, "async completion must not restore the source buffer")
 		eq(state.get(first_bufnr), nil, "navigation must prevent the stale diff session from opening")
 		eq(diff_window_count(), 0)
@@ -4749,10 +4777,11 @@ local function test_live_diff_close_during_inflight_transfer_does_not_reopen()
 		wait_for(function()
 			return pending ~= nil
 		end, "transfer should start a deferred backend request")
-		eq(state.peek_pending_transfer(session.editable_win).handle, pending)
+		local owner = state.peek_pending_transfer(session.editable_win).handle
+		assert(owner ~= pending and owner:is_active(), "transfer should own its backend read")
 
 		actions.close()
-		assert(pending.killed, "closing the session must cancel its in-flight transfer")
+		assert(owner.cancelled and pending.killed, "closing the session must cancel its owner and in-flight transfer")
 		eq(state.get(session.editable_bufnr), nil)
 		eq(state.peek_pending_transfer(session.editable_win), nil)
 		eq(diff_window_count(), 0)
@@ -5448,12 +5477,13 @@ local function test_source_control_git_sync_uses_explicit_upstream_fast_forward(
 		end,
 	}
 	local responses = {
+		["git rev-parse --verify refs/remotes/origin/develop^{commit}"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
 		["git branch --show-current"] = "develop\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/develop\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/develop"] = "refs/heads/develop\0refs/remotes/origin/develop\0origin\0refs/heads/develop\n",
 		["git fetch --prune --quiet -- origin"] = "",
 		["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## develop...origin/develop [behind 1]\n",
-		["git merge --ff-only refs/remotes/origin/develop"] = "",
+		["git merge --ff-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5472,8 +5502,12 @@ local function test_source_control_git_sync_uses_explicit_upstream_fast_forward(
 		"git fetch --prune --quiet -- origin",
 		"git branch --show-current",
 		"git status --branch --porcelain=v1 --untracked-files=no --ignored=no",
+		"git rev-parse --verify refs/remotes/origin/develop^{commit}",
 		"git symbolic-ref --quiet HEAD",
-		"git merge --ff-only refs/remotes/origin/develop",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/develop",
+		"git rev-parse --verify refs/remotes/origin/develop^{commit}",
+		"git symbolic-ref --quiet HEAD",
+		"git merge --ff-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	})
 	assert(not table.concat(calls, "\n"):match("git pull"), "sync should not run bare git pull")
 	eq(session_state.get_repo_job(repo_root), nil)
@@ -5517,12 +5551,13 @@ local function test_source_control_git_pull_action_uses_explicit_upstream_fast_f
 		end,
 	}
 	local responses = {
+		["git rev-parse --verify refs/remotes/origin/develop^{commit}"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
 		["git branch --show-current"] = "develop\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/develop\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/develop"] = "refs/heads/develop\0refs/remotes/origin/develop\0origin\0refs/heads/develop\n",
 		["git fetch --prune --quiet -- origin"] = "",
 		["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## develop...origin/develop [behind 1]\n",
-		["git merge --ff-only refs/remotes/origin/develop"] = "",
+		["git merge --ff-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5541,8 +5576,12 @@ local function test_source_control_git_pull_action_uses_explicit_upstream_fast_f
 		"git fetch --prune --quiet -- origin",
 		"git branch --show-current",
 		"git status --branch --porcelain=v1 --untracked-files=no --ignored=no",
+		"git rev-parse --verify refs/remotes/origin/develop^{commit}",
 		"git symbolic-ref --quiet HEAD",
-		"git merge --ff-only refs/remotes/origin/develop",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/develop",
+		"git rev-parse --verify refs/remotes/origin/develop^{commit}",
+		"git symbolic-ref --quiet HEAD",
+		"git merge --ff-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	})
 	assert(not table.concat(calls, "\n"):match("git pull"), "pull action should not run bare git pull")
 	eq(session_state.get_repo_job(repo_root), nil)
@@ -5588,6 +5627,7 @@ local function test_source_control_git_sync_pushes_to_configured_upstream()
 		end,
 	}
 	local responses = {
+		["git config --get --default simple push.default"] = "upstream\n",
 		["git branch --show-current"] = "feature/local\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/local\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local"] = "refs/heads/feature/local\0refs/remotes/fork/feature/shared\0fork\0refs/heads/feature/shared\n",
@@ -5612,6 +5652,10 @@ local function test_source_control_git_sync_pushes_to_configured_upstream()
 		"git fetch --prune --quiet -- fork",
 		"git branch --show-current",
 		"git status --branch --porcelain=v1 --untracked-files=no --ignored=no",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local",
+		"git config --get --default simple push.default",
 		"git symbolic-ref --quiet HEAD",
 		"git push -- fork refs/heads/feature/local:refs/heads/feature/shared",
 	})
@@ -5656,6 +5700,7 @@ local function test_source_control_git_publish_branch_sets_upstream_to_origin()
 		end,
 	}
 	local responses = {
+		["git config --get --default simple push.default"] = "simple\n",
 		["git branch --show-current"] = "feature/new\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
@@ -5679,6 +5724,12 @@ local function test_source_control_git_publish_branch_sets_upstream_to_origin()
 		"git remote",
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
+		"git remote",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
 		"git push --set-upstream -- origin refs/heads/feature/new:refs/heads/feature/new",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
@@ -5724,6 +5775,7 @@ local function test_source_control_git_sync_without_upstream_publishes_branch()
 		end,
 	}
 	local responses = {
+		["git config --get --default simple push.default"] = "simple\n",
 		["git branch --show-current"] = "feature/new\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
@@ -5747,6 +5799,11 @@ local function test_source_control_git_sync_without_upstream_publishes_branch()
 		"git remote",
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
+		"git remote",
+		"git config --get --default simple push.default",
 		"git symbolic-ref --quiet HEAD",
 		"git push --set-upstream -- origin refs/heads/feature/new:refs/heads/feature/new",
 	})
@@ -5791,6 +5848,7 @@ local function test_source_control_git_push_uses_configured_upstream()
 		end,
 	}
 	local responses = {
+		["git config --get --default simple push.default"] = "upstream\n",
 		["git branch --show-current"] = "feature/local\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/local\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local"] = "refs/heads/feature/local\0refs/remotes/fork/feature/shared\0fork\0refs/heads/feature/shared\n",
@@ -5810,7 +5868,11 @@ local function test_source_control_git_push_uses_configured_upstream()
 	eq(calls, {
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local",
-		"git branch --show-current",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
 		"git push -- fork refs/heads/feature/local:refs/heads/feature/shared",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
@@ -5854,6 +5916,7 @@ local function test_source_control_git_publish_falls_back_to_single_remote()
 		end,
 	}
 	local responses = {
+		["git config --get --default simple push.default"] = "simple\n",
 		["git branch --show-current"] = "feature/new\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
@@ -5877,6 +5940,12 @@ local function test_source_control_git_publish_falls_back_to_single_remote()
 		"git remote",
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
+		"git remote",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
 		"git push --set-upstream -- fork refs/heads/feature/new:refs/heads/feature/new",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
@@ -7224,6 +7293,7 @@ vim.list_extend(cases, require("spec_copilotchat_context")({ helpers = helpers, 
 vim.list_extend(cases, require("spec_confirm")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_commit_messages")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_ai_drafts")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_commit_draft_owner")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_ai_context")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_switch_refs")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_source_control_geometry")({ helpers = helpers, wait_for = wait_for }))
@@ -7248,6 +7318,7 @@ vim.list_extend(cases, require("spec_signs_commands")({ helpers = helpers, wait_
 vim.list_extend(cases, require("spec_signs_lifecycle")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_integrations_resession")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_integrations_editor")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_a3_config")())
 vim.list_extend(cases, require("spec_process_shutdown")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_process_flows")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_windows_process")({ helpers = helpers, wait_for = wait_for }))
@@ -7273,6 +7344,7 @@ vim.list_extend(cases, require("spec_revert_context")({ helpers = helpers, wait_
 vim.list_extend(cases, require("spec_revert_paths")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_literal_paths")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_split_labels")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_blame_a3")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_pending_history")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_window_options")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_selection_changes")({ helpers = helpers, wait_for = wait_for }))
@@ -7356,6 +7428,29 @@ vim.list_extend(cases, require("spec_compare_worktree_windows")({ helpers = help
 vim.list_extend(cases, require("spec_repository_audit")())
 vim.list_extend(cases, require("spec_compare_worktree_state")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_compare_user_state")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_compare_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_views_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_views_review_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_live_build_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_case_policy_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_worker_profile_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_live_reload_profile")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_live_transfer_settlement")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_backend_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_git_intent")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_git_intent_tree")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_backend_review_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_svn_external_scope")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_svn_admin_links")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_snapshot_boundaries_a3")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_source_control_a3")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_source_control_a3_followup")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_source_control_staged_intent")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_source_control_a3_v3")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,

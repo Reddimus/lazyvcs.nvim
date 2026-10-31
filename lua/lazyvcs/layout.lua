@@ -99,6 +99,9 @@ local function configure_base_buffer(session)
 	vim.bo[buf].modifiable = true
 	vim.bo[buf].readonly = false
 	vim.bo[buf].filetype = vim.bo[session.editable_bufnr].filetype
+	editor.guard_scratch_buffer(buf)
+	vim.bo[buf].tabstop = vim.bo[session.editable_bufnr].tabstop
+	vim.bo[buf].vartabstop = vim.bo[session.editable_bufnr].vartabstop
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, session.base_lines)
 	if session.base_text then
 		vim.bo[buf].endofline = session.base_text.eol
@@ -230,6 +233,16 @@ function M.release_derived_diff(session)
 	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(session.tabpage)) do
 		local buf = vim.api.nvim_win_get_buf(win)
 		local owner = state.for_window(win)
+		if
+			win ~= session.editable_win
+			and win ~= session.base_win
+			and not owner
+			and buf == session.editable_bufnr
+			and session.opts.set_winbar
+			and util.get_win_option(win, "winbar") == session.editable_label
+		then
+			restore_winbar(win, session.editable_prev_winbar)
+		end
 		if
 			win ~= session.editable_win
 			and win ~= session.base_win
@@ -505,6 +518,7 @@ function M.present(session, lines, filetype)
 	local ok, err = pcall(vim.api.nvim_buf_set_lines, buf, 0, -1, false, lines)
 	vim.bo[buf].modifiable, vim.bo[buf].readonly, vim.bo[buf].modified = false, true, false
 	vim.bo[buf].filetype = filetype or ""
+	editor.guard_scratch_buffer(buf)
 	if not ok then
 		error(err)
 	end
@@ -543,6 +557,9 @@ function M.rebind(old, replacement)
 		vim.bo[buf].fixendofline = false
 	end
 	vim.bo[buf].filetype = replacement.paused and "" or vim.bo[replacement.editable_bufnr].filetype
+	editor.guard_scratch_buffer(buf)
+	vim.bo[buf].tabstop = vim.bo[replacement.editable_bufnr].tabstop
+	vim.bo[buf].vartabstop = vim.bo[replacement.editable_bufnr].vartabstop
 	for _, name in ipairs({ "wrap", "linebreak", "breakindent" }) do
 		util.set_win_option(replacement.base_win, name, util.get_win_option(replacement.editable_win, name))
 	end
@@ -619,13 +636,6 @@ function M.open(session)
 	pcall(vim.api.nvim_win_set_width, session.base_win, resolve_base_width(session))
 	M.bind_pair(session, editable_win)
 	set_window_labels(session)
-end
-
----True when either pane soft-wraps, so buffer lines and screen rows diverge.
-function M.panes_wrap(session)
-	return (util.win_is_valid(session.editable_win) and vim.wo[session.editable_win].wrap)
-		or (util.win_is_valid(session.base_win) and vim.wo[session.base_win].wrap)
-		or false
 end
 
 function M.rebalance(session)

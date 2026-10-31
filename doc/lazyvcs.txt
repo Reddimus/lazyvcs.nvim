@@ -26,8 +26,9 @@ lazyvcs.nvim provides native VCS workflows:
 
 The live diff shows the read-only base on the left and your editable file on
 the right. Git compares against the index. SVN uses BASE with
-`svn cat -r BASE path`. Git untracked files and SVN added files use an empty
-base. See |lazyvcs-inline-signs| for Git attribute handling.
+`svn cat -r BASE path`. Nonignored Git untracked files and SVN additions
+without history use an empty base. Copied and moved SVN files retain their
+BASE history. See |lazyvcs-inline-signs| for Git attribute handling.
 
 Git subprocesses always strip GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY,
 GIT_ALTERNATE_OBJECT_DIRECTORIES, GIT_COMMON_DIR, GIT_NAMESPACE, GIT_PREFIX,
@@ -39,13 +40,19 @@ including, the work tree root contains a .git file or directory. A bare
 dotfiles repository therefore works in its work tree, while a repository
 nested inside it uses its own .git. The .git check is cached per directory for
 up to five seconds, and repository redetection clears the cache.
-Authentication and ordinary Git configuration remain inherited, and Neovim's
-environment is unchanged.
+Relative paired Git selectors resolve against Neovim's working directory.
+Pathspec flags are stripped from child environments; literal file commands use
+explicit pathspecs so commit hooks retain normal glob behavior. Git optional
+locks are disabled by default for background reads. Child diagnostics use
+LC_MESSAGES=C while preserving other effective locale categories. Authentication
+and ordinary Git configuration remain inherited; Neovim's environment stays
+unchanged.
 
 Explicit live-diff, signs, and sidebar refresh commands
 redetect repository ownership. BufEnter and BufWritePost also revalidate the
 buffer directory asynchronously, at most once per five seconds. Cursor movement
-uses cached resolution.
+uses cached resolution. Git wins equal-root ties. Git and SVN detection have
+separate worker pools so a slow SVN probe does not block Git.
 
 The source-control sidebar is native Neovim UI. Neo-tree is not required.
 
@@ -341,13 +348,15 @@ Suggested global mappings, as in the |lazyvcs-configuration| install spec:
     ]v           next hunk
     [v           previous hunk
 
-Live diff buffer-local mappings:
+Live diff buffer-local mappings (hunk keys apply in the editable pane):
 
     q            close the live diff session (keymaps.close)
     <leader>q    close from the left/base diff window
     <leader>vr   revert current hunk
     ]v           next hunk
     [v           previous hunk
+
+From the base pane, use :LazyVCS hunk next/prev/revert or global mappings.
 
 The left/base pane always maps <leader>q as a close alias, in addition to
 keymaps.close, because that pane is read-only. It is not configurable;
@@ -380,7 +389,8 @@ Source-control sidebar mappings. Unlike the live-diff mappings above, these are
 buffer-local and fixed; `config.keymaps` does not reach them.
 
     q            close the sidebar
-    <CR>, l      focus repo, toggle Changes repo rows, run action, or open file
+    <CR>, l, double-click
+                 focus repo, toggle Changes repo rows, run action, or open file
                  diff
     h            collapse node, including Changes repository rows
     C            compare the selected repository against a base
@@ -413,19 +423,20 @@ INLINE SIGNS                                           *lazyvcs-inline-signs*
 
 Git and SVN file buffers get gutter signs automatically. lazyvcs compares the
 buffer against the backend base in the background and updates signs after edits:
-the index for Git and working-copy BASE for SVN (`svn cat -r BASE`). Git
-untracked files and SVN added files use an empty base, and inline blame renders
-their rows as uncommitted lines.
+the index for Git and working-copy BASE for SVN. Nonignored Git untracked
+files and SVN additions without history use an empty base. SVN additions show
+uncommitted blame; Git untracked files show no inline blame.
 
 Git reads raw index bytes with `git show`. For files with `ident` enabled and no
 filter driver, `git cat-file --filters` supplies checkout-form content. Background
 base loads never invoke external smudge drivers. Files with a filter driver keep
 raw index content. Historical object comparisons also keep raw content.
 
-When `use_gitsigns` is true (the default), lazyvcs delegates Git signs, hunk
-navigation, and previews when gitsigns.nvim can report this buffer's hunks.
-Unattached buffers, including untracked files under default gitsigns settings,
-use native fallback. lazyvcs always renders SVN signs. If gitsigns detaches,
+When `use_gitsigns` is true (the default), lazyvcs delegates Git signs and
+hunk navigation when gitsigns.nvim can report this buffer's hunks. Previews
+within signs.max_file_bytes compare the whole buffer natively; larger files
+can preview a validated gitsigns hunk. Unattached buffers use native fallback.
+lazyvcs always renders SVN signs. If gitsigns detaches,
 the next edit resumes native signs automatically. Attached gitsigns buffers
 keep their normal gutter.
 
@@ -457,8 +468,12 @@ with a warning. Buffer unload cancels it silently. A second large-file revert
 reports that a command is already pending. Confirmation checks gitsigns hunks and
 rejects matching base mutations that begin or settle while open.
 
-Large native sign comparisons and previews run histogram diff in a worker
-thread. Results from older edits or bases are discarded. Preview completion also
+Native hunk ranges follow supported algorithm, indent, linematch and whitespace
+settings in 'diffopt'. Live-diff and Compare hunk commands refuse icase because
+Lua diff cannot reproduce its native Unicode comparisons. Use
+:set diffopt-=icase to enable them. Standalone sign commands and diff panes
+remain available. Large native comparisons and previews run in a worker thread.
+Results from older edits or bases are discarded. Preview completion also
 checks the originating window and focus. Editing, leaving the window, or
 reloading the base cancels a pending preview. Duplicate pending previews share
 one worker. Requests made while a cancelled worker finishes retain the newest
@@ -548,6 +563,9 @@ Behavior:
   Up to 512 unexpired intervals are retained. When full, new roots use local
   status until an interval expires. Explicit `R` always permits a remote attempt.
 - Keeps other repos usable while one repo syncs, updates, commits, or switches.
+- Status output beyond 32 MiB shows incomplete counts as unknown and retains
+  repository metadata. Stage All and Commit refuse incomplete status. Narrow
+  the changes and refresh with R to retry. Cached rows remain visibly marked.
 - Keeps cached repo badges visible during refresh. Summary completion preserves
   details loaded while the refresh was pending. SVN incoming rows remain
   available during local detail loading; a successful remote refresh replaces
@@ -559,6 +577,9 @@ Behavior:
 - Publishes no-upstream Git branches with upstream tracking. Push uses the
   configured upstream remote and destination ref, including local upstreams.
   Configured remote names are literal operands, including leading dashes.
+  A different destination branch name is refused unless push.default=upstream
+  explicitly allows it. Push confirmations name the source and destination;
+  queued mutations recheck both. Pull-only Sync does not apply push policy.
 - Keeps repositories with a deleted upstream visible with an `Upstream gone`
   warning. Refresh does not change tracking or republish the branch.
 - Uses origin for publishing, or the only configured remote when origin is
@@ -574,6 +595,9 @@ Behavior:
   directories remain eligible. Stage refuses directory replacements of files,
   but permits exact stage-zero index gitlinks and ordinary indexed files beneath
   a former HEAD gitlink.
+- Intent-to-add Discard refuses because the index has no saved content.
+  This includes entries hidden by assume-unchanged or skip-worktree. Restoring
+  a staged deletion also refuses an untracked or ignored replacement file.
 - Conflict Discard restores HEAD in both the index and working tree. If HEAD
   lacks the path, Discard removes it. The confirmation names this scope.
 - Tracked-file Discard checks every restore target, including rename sources
@@ -642,12 +666,59 @@ type, size, and contents. POSIX opens are nonblocking, so even a FIFO swapped in
 after the path check loads defaults without blocking the editor. An atomic
 replacement by another editor does not truncate a valid document.
 
+Standalone <Space> waits for 'timeoutlen' so Space-leader mappings can resolve.
+`toggle [path]` switches an open sidebar to a different path. With no path, or
+an equivalent path, it closes the sidebar. X cancels work for the selected
+repository. The sidebar cancel command and API can also stop discovery.
+
+Sidebar status commands allow 32 MiB of stdout and 32 MiB of stderr. Output
+beyond that limit retains repository identity and available branch metadata, with
+an Incomplete badge and a retry action. Counts show ? and retained groups begin
+with Cached. Truncated file records are never treated as complete status.
+Stage All is disabled while status is incomplete, and commit preflight refuses
+incomplete status. SVN reads branch metadata through a separate local info read.
+Commit rereads local status before choosing its scope. Automatic stage-all and
+commit refuses unresolved conflicts. Resolve and stage those files explicitly.
+Pull and Sync only fast-forward. If branches diverge, merge or rebase explicitly
+before retrying. Branch creation uses --no-track, including remote starting refs.
+Same-name pushes use an explicit refspec under any push.default policy. Pushing
+to a differently named upstream requires explicit push.default=upstream.
+Sync checks push policy only when it will push. Behind-only Sync confirms the
+fast-forward target without consulting push policy. No-op Sync needs no mutation
+confirmation, and diverged branches refuse integration.
+Confirmations name the source branch, remote, and destination ref. Push startup
+rechecks that destination, the branch, and push.default. Fast-forward startup
+rechecks the upstream and captured commit, then merges that immutable commit.
+
+Saving a file refreshes its repository's local rows after a short delay. It
+preserves incoming SVN metadata and waits for pending remote reads. R forces
+rediscovery and a remote check.
+
+Discard refuses intent-to-add Git files because Git does not store their content.
+Unstage or delete those files explicitly. Restoring HEAD also refuses untracked
+or ignored files at a restore path, including staged deletions and rename sources.
+Move the independent file before retrying. Added, replaced, and deleted SVN
+directories discard scheduled descendants recursively. Ordinary directory
+property changes retain shallow behavior.
+
+Sidebar highlights use default links that colorschemes can override:
+    LazyVcsFile       Normal
+    LazyVcsSection    Title
+    LazyVcsSecondary  Comment
+    LazyVcsDisabled   Comment
+    LazyVcsBusy       DiagnosticInfo
+
 Sidebar preferences are stored per project in
 `stdpath('state')/lazyvcs/source_control/<sha256(normalized-root)>.json`.
 The legacy `lazyvcs/source_control.json` is read when no project file exists.
-Saving migrates only that project and leaves the legacy file unchanged.
+Saving preference changes migrates only that project and leaves the legacy file unchanged.
 Different projects save independently. Concurrent saves of the same project
-use the last completed write. Invalid preference fields are ignored.
+merge only changed fields. Two changes to the same field use the last completed
+write. Visibility changes merge per repository. Unchanged lifecycle saves do not
+write preferences. Defaults follow configuration until explicitly overridden;
+selection_mode always follows configuration. Existing saved view preferences
+remain explicit overrides because older files have no provenance. Remove the
+project preference file to reset those overrides. Invalid fields are ignored.
 
 Git and SVN commits read messages from private temporary files, which are deleted
 when the commit process exits. Message length does not consume process argument
@@ -749,10 +820,10 @@ LazyVCS when Neovim rereads a Compare snapshot buffer, such as after `:edit`.
 
 Optional integrations are detected at runtime:
 
-    gitsigns.nvim     Git signs, navigation, and previews
+    gitsigns.nvim     Git signs, navigation, and large-file hunk previews
     snacks.nvim       Action picker, VS Code-style Git branch picker,
-                      and SVN file pickers
-    fzf-lua           SVN file, branch/tag, and action picker fallback
+                      and Git/SVN file pickers
+    fzf-lua           Git/SVN file, branch/tag, and action picker fallback
     CopilotChat.nvim  Commit-message generation with `gm`
     Claude CLI        Commit-message generation with `gm`
     Codex CLI         Commit-message generation with `gm`
@@ -762,15 +833,17 @@ Optional integrations are detected at runtime:
 |:checkhealth| `lazyvcs` reports `vanilla` mode when built-in fallbacks are
 active and `enhanced` mode when one or more optional integrations are present.
 
-To install all enhanced integrations, remove optional=true and add them as
-lazy.nvim dependencies:
+To install all enhanced integrations, add them as lazy.nvim dependencies:
 
 >lua
   dependencies = {
     "lewis6991/gitsigns.nvim",
     "folke/snacks.nvim",
     "ibhagwan/fzf-lua",
-    "CopilotC-Nvim/CopilotChat.nvim",
+    {
+      "CopilotC-Nvim/CopilotChat.nvim",
+      dependencies = { "nvim-lua/plenary.nvim" },
+    },
   }
 <
 
@@ -902,7 +975,7 @@ Main options:
     debounce_ms        Delay before live diff refresh.
     diff_highlighting  "syntax" (default) hides LSP semantic overlays in all
                        diff panes. "editor" keeps the editor's colors.
-    use_gitsigns       Delegate Git signs, navigation, and previews to gitsigns.
+    use_gitsigns       Delegate Git signs, navigation, and large-file previews.
                        Live hunk resets use native buffer replacement.
     set_winbar         Set simple winbar labels during live diff.
     session_keymaps    Add buffer-local live diff and Compare navigation mappings.
@@ -1027,15 +1100,20 @@ Git/SVN blame options:
 
 Terminal Neovim cannot apply true per-text opacity. lazyvcs uses muted,
 theme-aware Comment highlights for blame text. Inline blame stays quiet during
-fast loads, shows `Blame loading...` only for slow SVN calls, and labels local
-SVN rows as `Uncommitted line` instead of displaying raw `- - -` placeholders.
-SVN attribution preserves full author names, including spaces. Git blame metadata
-is UTF-8 even when i18n.logOutputEncoding requests another encoding.
+fast loads, shows blame.loading_text for slow Git or SVN calls, and labels
+local/uncommitted rows with blame.uncommitted_text. Git untracked files have
+no blame history and show no inline annotation.
+SVN attribution preserves full author names, including spaces. Copied and moved
+files, including directory children, retain their pinned origin history. A
+local attribution cache holds at most 32 paths and 16 MiB, keyed by URL, revision
+and pristine checksum. Binary or unsupported decoded line models are refused.
+Git blame metadata is UTF-8 even when i18n.logOutputEncoding requests another
+encoding.
 
 Source-control options:
 
     enabled            Enable the source-control sidebar.
-    ui                 `auto` or `native`.
+    ui                 `auto` or `native`; both use the native sidebar.
     scan_depth         Nested repo discovery depth.
     width              Initial sidebar width, enforced beside fixed splits.
     auto_expand_width  Start sidebar in auto-fit mode.
@@ -1107,6 +1185,9 @@ close, so reads need no tree walk. taskkill requires a live direct process and
 falls back to direct termination. Descendants whose parent has already exited
 may survive for commands without an owned job. Explicit editor Git restore and
 SVN revert cancellation use mutation scope and terminate owned descendants.
+Forced cancellation can leave Git locks. LazyVCS reports recovery guidance
+immediately on Windows, adds the exact index.lock path when detected, and
+never deletes locks automatically.
 
 Neovim exit discards queued work, including mutations that have not started.
 Running repository mutations (commit, update, merge, switch, stage, unstage,
@@ -1120,8 +1201,10 @@ LuaJIT's built-in FFI, inherits standard streams and waits for the command. Only
 preserved commands detach from the editor. Explicit cancellation and timeouts
 terminate the helper and its owned descendants, including native shell children.
 Normal command completion releases the job so intentional background work can
-finish independently. Background helpers must close inherited output handles to
-avoid delaying command completion. Other scopes retain taskkill fallback.
+finish independently. Background helpers should close inherited output handles.
+An exited command retains its exit result; inherited pipes drain only until the
+request deadline, then close without killing intentional background work. Other
+scopes retain taskkill fallback.
 A hook or helper that writes output afterwards can fail and abort the mutation.
 Git aborts cleanly in this case without leaving an index.lock.
 Commit message files survive exit in stdpath("cache")/lazyvcs/commit, with a
@@ -1221,6 +1304,12 @@ CLI diff context reaches providers over stdin, or as a private 0600 attachment
 that is deleted on completion, so it never appears in process arguments or
 task listings. Codex runs with a read-only sandbox and approval disabled.
 
+Sidebar generation shows a Generating label. Replacing a nonempty draft asks
+Replace or Keep. Failure notices fit one screen row, and Show Last Error in the
+repository actions displays full diagnostics. Invalid UTF-8 context bytes become
+ASCII byte escapes before the context limit applies. SVN-generated diff and
+status paths are relative to the working copy.
+
 New sidebar generation cancels the previous request for that repository. Submitted
 drafts and successful commits invalidate pending results, even when submitted
 text is unchanged. Closing the sidebar, changing its path, or cancelling repository
@@ -1279,7 +1368,8 @@ NOTES                                                           *lazyvcs-notes*
   transfer their live diff when you switch to another supported file.
 - Git compares live diff buffers against the index.
 - SVN compares live diff buffers against working-copy BASE.
-- Git untracked files and SVN added files show an empty base.
+- Nonignored Git untracked files and SVN additions without history show an
+  empty base. Copied and moved SVN files retain their BASE history.
 - Native hunks compare decoded UTF-8 buffer text with the Git index or SVN BASE,
   preserving CRLF, BOMs, supported file encodings, empty files, and final-newline
   changes. Raw and decoded live-diff content is limited to 1 MiB per side; signs
@@ -1329,5 +1419,10 @@ NOTES                                                           *lazyvcs-notes*
 
 - Inline blame is one global toggle; with `blame.persist` it is saved to
   `stdpath('state')/lazyvcs/state.json` and restored on the next launch.
+
+Compare and session saves: AstroNvim may skip autosaving a Compare tab because
+its panes include scratch buffers. Explicit Resession saves while Compare is
+open can omit borrowed files or retain Compare window options. Close Compare
+before saving a session; live-diff save integration does not cover Compare.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

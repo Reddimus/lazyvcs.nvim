@@ -391,8 +391,9 @@ return function(ctx)
 					)
 					model.load_repo_summary_async = loader
 					local a, b = cache.begin(f.root), cache.begin(f.root)
-					assert(not cache.publish(a, first.remote_snapshot), "superseded refresh accepted")
+					assert(cache.publish(a, first.remote_snapshot), "completed refresh lost to pending newer check")
 					assert(cache.publish(b, first.remote_snapshot))
+					assert(not cache.publish(a, first.remote_snapshot), "older refresh replaced newer published result")
 					local isolated = cache.read(f.root)
 					isolated.items[1].id = "changed"
 					assert(cache.read(f.root).items[1].id == id, "cache exposed mutable rows")

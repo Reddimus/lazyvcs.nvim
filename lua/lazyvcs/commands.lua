@@ -317,8 +317,15 @@ local function dispatch(opts)
 		-- A path-taking group (`:LazyVCS sidebar ~/code`) should treat an unknown
 		-- first token as the argument to its default verb rather than an error.
 		local default = entry.verbs[entry.default]
-		if default.complete == "dir" then
-			return default.run(rest)
+		if
+			default.complete == "dir"
+			and (
+				verb:find("[/\\]")
+				or verb:match("^[.~$]")
+				or vim.fn.isdirectory(require("lazyvcs.util").expand_user_path(verb)) == 1
+			)
+		then
+			return entry.verbs.open.run(rest)
 		end
 		return fail(
 			string.format(
@@ -333,6 +340,29 @@ local function dispatch(opts)
 	return action.run(vim.list_slice(rest, 2))
 end
 
+local ex_modifiers = {
+	silent = true,
+	keepalt = true,
+	keepjumps = true,
+	keepmarks = true,
+	keeppatterns = true,
+	lockmarks = true,
+	noautocmd = true,
+	noswapfile = true,
+	aboveleft = true,
+	belowright = true,
+	botright = true,
+	topleft = true,
+	leftabove = true,
+	rightbelow = true,
+	vertical = true,
+	horizontal = true,
+	browse = true,
+	confirm = true,
+	hide = true,
+	sandbox = true,
+}
+
 local function complete(arg_lead, cmd_line, cursor_pos)
 	cursor_pos = cursor_pos or #cmd_line
 	local suffix = cmd_line:sub(cursor_pos + 1)
@@ -340,11 +370,45 @@ local function complete(arg_lead, cmd_line, cursor_pos)
 		arg_lead = arg_lead:sub(1, #arg_lead - #suffix)
 	end
 	cmd_line = cmd_line:sub(1, cursor_pos)
-	-- Modifiers and ranges precede the user command, outside its arguments.
+	-- Mask delimited search addresses and earlier commands without evaluating ranges.
+	local masked, delimiter, escaped, segment = {}, nil, false, 1
+	for index = 1, #cmd_line do
+		local char = cmd_line:sub(index, index)
+		masked[index] = char
+		if delimiter then
+			masked[index] = " "
+			if escaped then
+				escaped = false
+			elseif char == "\\" then
+				escaped = true
+			elseif char == delimiter then
+				delimiter = nil
+			end
+		elseif char == '"' then
+			delimiter = char
+			masked[index] = " "
+		elseif char == "/" or char == "?" then
+			local prefix = table.concat(masked, "", segment, index - 1):gsub("'[a-z<>]", "")
+			while true do
+				local modifier, after = prefix:match("^%s*(%a+)!?%s+()")
+				if not modifier or not ex_modifiers[modifier] then
+					break
+				end
+				prefix = prefix:sub(after)
+			end
+			if prefix:match("^[%s%d.,;$%%+%-:]*[gv]?!?$") then
+				delimiter = char
+				masked[index] = " "
+			end
+		elseif char == "|" and cmd_line:sub(index - 1, index - 1) ~= "\\" then
+			segment = index + 1
+		end
+	end
+	local searchable = table.concat(masked)
 	local command_end
-	for start, command, after in cmd_line:gmatch("()%f[%a](L%a*)()%f[%A]") do
+	for start, command, after in searchable:gmatch("()%f[%a](L%a*)()%f[%A]") do
 		local previous = cmd_line:sub(start - 1, start - 1)
-		if previous ~= "'" and previous ~= "`" and vim.startswith("LazyVCS", command) then
+		if start >= segment and previous ~= "'" and previous ~= "`" and vim.startswith("LazyVCS", command) then
 			command_end = after - 1
 			break
 		end

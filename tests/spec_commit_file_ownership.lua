@@ -63,6 +63,11 @@ return function(ctx)
 					lazyvcs_commit_drafts = { [f.root] = "Owned commit" },
 					lazyvcs_render = function() end,
 				}, { path = f.root })
+				if ok then
+					wait(function()
+						return path ~= nil
+					end, "commit did not pass status preflight", 5000)
+				end
 				util.system_start = start
 				assert(ok, err)
 				wait(function()

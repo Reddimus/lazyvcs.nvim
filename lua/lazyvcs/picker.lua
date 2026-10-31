@@ -44,7 +44,10 @@ function M.select(items, opts, on_choice)
 	return vim.ui.select(items, {
 		prompt = opts.prompt,
 		format_item = opts.format_item or item_text,
-	}, on_choice)
+	}, function(choice, index)
+		vim.cmd.redraw()
+		return on_choice(choice, index)
+	end)
 end
 
 return M

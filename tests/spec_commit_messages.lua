@@ -31,6 +31,16 @@ return function(ctx)
 	local function guarded(fn, opts)
 		return function()
 			local select, start, notify, command = picker.select, util.system_start, util.notify, jobs.command
+			local model = require("lazyvcs.source_control.model")
+			local summary = model.load_repo_summary_async
+			-- Synthetic repositories isolate message-file transport from repository loading.
+			---@diagnostic disable-next-line: duplicate-set-field
+			model.load_repo_summary_async = function(repo, opts, run, done)
+				if not vim.uv.fs_stat(repo.root .. "/.git") and not vim.uv.fs_stat(repo.root .. "/.svn") then
+					return done(repo)
+				end
+				return summary(repo, opts, run, done)
+			end
 			local notices = {}
 			---@diagnostic disable-next-line: duplicate-set-field
 			picker.select = function(_, _, done)
@@ -48,6 +58,10 @@ return function(ctx)
 			end, debug.traceback)
 			picker.select, util.system_start, util.notify = select, start, notify
 			jobs.command = command
+			model.load_repo_summary_async = summary
+			if not ok and type(err) == "table" and err.lazyvcs_skip then
+				error(err, 0)
+			end
 			assert(ok, tostring(err) .. "\nNotifications: " .. vim.inspect(notices))
 		end
 	end

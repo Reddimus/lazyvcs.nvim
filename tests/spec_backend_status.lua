@@ -54,6 +54,9 @@ return function(ctx)
 		{
 			"test_svn_windows_roots_normalize_native_probe_output",
 			function()
+				if vim.fn.executable("svn") ~= 1 then
+					error({ lazyvcs_skip = "svn unavailable" }, 0)
+				end
 				local util, process = require("lazyvcs.util"), require("lazyvcs.backends.process")
 				local svn = require("lazyvcs.backends.svn")
 				local has, normalize, realpath = vim.fn.has, vim.fs.normalize, vim.uv.fs_realpath

@@ -334,10 +334,11 @@ the GitHub release.
   generated inside the synchronous leaf and passed as curl file options. It also
   supplies a private header dump file for each scoped transport. It captures
   file identity there and removes matching files asynchronously after exit, or
-  after a spawn failure. Temporary-name wrappers are restored before the leaf
-  returns. New transports are rejected during shutdown. Self-authored offline
-  fixtures model async leaves and run local children; no third-party plugin
-  source is included.
+  after a spawn failure. An identity-checked final sweep also runs at shutdown,
+  independently of process reaping. Temporary-name wrappers are restored before
+  the leaf returns. New transports are rejected during shutdown. Self-authored
+  offline fixtures model async leaves and run local children; no third-party
+  plugin source is included.
 - `blame_context.lua` captures source identity and changedtick for blame
   requests.
 - `blame_selection.lua` presents selected-line reports through a cancellable
@@ -405,26 +406,26 @@ Git text preview adds at most two cancellable `git check-attr` processes for
 `working-tree-encoding`, submitted in parallel. Empty sides skip their attribute
 read: added or untracked bases and deleted saved sides require none. Metadata
 previews skip both reads. A failed `check-attr --source` falls back to
-'fileencodings' detection for the blob. `util.system_start` forces `LC_ALL=C`
-for Git children; `jobs.command` uses that launcher. The attribute fallback does
-not depend on the error text. Preview reads are bounded to 1 MiB. Untracked SVN
-directory traversal does not follow symlinks. Git rename detection has a limit
-of 1000 candidates. Repository resolution uses at most 512 cached directories
-and shares concurrent probes for one directory. Positive resolutions do not
-expire on cursor paths. Explicit refresh forces discovery. BufEnter and
-BufWritePost revalidate asynchronously at most once per directory every five
-seconds. Failed repository reads invalidate ownership and retry once, excluding
-cancellation, timeouts, and output limits. Root command output loses exactly one
-record terminator; supplied root hints retain every pathname byte. SVN ignore
-patterns are compiled once per discovery and matched in O(pattern tokens times
-filename bytes) with bounded row storage. Git retained-file reconciliation
-batches at most 128 paths and 24 KB of argument budget per command, preserving
-per-path clean filters. Wrapped alignment takes O(log hunks + visible units)
-time and O(visible units) space. The scheduler uses a priority heap with O(log
-queued) enqueue/dequeue and a 4096-job limit per queue. Editor commands have
-separate queues with two Git workers and one SVN worker, so background
-operations cannot consume their capacity. Sidebar cancellation leaves editor
-requests running.
+'fileencodings' detection for the blob. `util.system_start` forces English Git
+messages with `LC_MESSAGES=C`, preserving the other effective locale categories;
+`jobs.command` uses that launcher. The attribute fallback does not depend on the
+error text. Preview reads are bounded to 1 MiB. Untracked SVN directory
+traversal does not follow symlinks. Git rename detection has a limit of 1000
+candidates. Repository resolution uses at most 512 cached directories and shares
+concurrent probes for one directory. Positive resolutions do not expire on
+cursor paths. Explicit refresh forces discovery. BufEnter and BufWritePost
+revalidate asynchronously at most once per directory every five seconds. Failed
+repository reads invalidate ownership and retry once, excluding cancellation,
+timeouts, and output limits. Root command output loses exactly one record
+terminator; supplied root hints retain every pathname byte. SVN ignore patterns
+are compiled once per discovery and matched in O(pattern tokens times filename
+bytes) with bounded row storage. Git retained-file reconciliation batches at
+most 128 paths and 24 KB of argument budget per command, preserving per-path
+clean filters. Wrapped alignment takes O(log hunks + visible units) time and
+O(visible units) space. The scheduler uses a priority heap with O(log queued)
+enqueue/dequeue and a 4096-job limit per queue. Editor commands have separate
+queues with two Git workers and one SVN worker, so background operations cannot
+consume their capacity. Sidebar cancellation leaves editor requests running.
 
 Use disposable repositories for mutation tests. For live terminal validation,
 exercise keyboard and mouse actions in both vanilla Neovim and AstroNvim; verify
@@ -462,3 +463,7 @@ environment and set `LAZYVCS_E2E_PYTHON` to its Python executable. Set
 `E2E_ARTIFACT_DIR` to keep terminal transcripts and assertion snapshots. The
 macOS verification job runs this against native Subversion as well as the
 headless suite.
+
+Repository probes run outside read queues to avoid worker deadlocks. At equal
+Git and SVN roots, Git wins. SVN blame caches network results by URL, revision
+and pristine checksum, then maps local edits without repeating that read.

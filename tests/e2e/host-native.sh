@@ -11,6 +11,7 @@ ARTIFACT_DIR="${E2E_ARTIFACT_DIR:-${REPO_ROOT}/artifacts/host-e2e}"
 mkdir -p "${ARTIFACT_DIR}" "${state}/config/nvim"
 export XDG_CONFIG_HOME="${state}/config" XDG_DATA_HOME="${state}/data"
 export XDG_STATE_HOME="${state}/state" XDG_CACHE_HOME="${state}/cache"
+unset NVIM_APPNAME VIMINIT
 export LAZYVCS_E2E_PLUGIN_ROOT="${REPO_ROOT}"
 cat >"${XDG_CONFIG_HOME}/nvim/init.lua" <<'LUA'
 vim.opt.runtimepath:prepend(vim.env.LAZYVCS_E2E_PLUGIN_ROOT)

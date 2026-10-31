@@ -382,7 +382,10 @@ return function(ctx)
 						}
 					)
 						:wait()
-					assert(result.code == 0, (result.stdout or "") .. (result.stderr or ""))
+					assert(
+						result.code == 0 and (result.signal or 0) == 0,
+						(result.stdout or "") .. (result.stderr or "")
+					)
 					return
 				end
 				setup()

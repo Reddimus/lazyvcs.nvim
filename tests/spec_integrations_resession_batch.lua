@@ -92,7 +92,7 @@ return function(ctx)
 		end)
 		wins[#wins + 1] = api.nvim_get_current_win()
 		-- nvim_win_call restores focus; find the new derived editable split.
-		for _, win in ipairs(api.nvim_tabpage_list_wins(0)) do
+		for _, win in ipairs(api.nvim_tabpage_list_wins(sessions[1].tabpage)) do
 			if api.nvim_win_get_buf(win) == sessions[1].editable_bufnr and win ~= sessions[1].editable_win then
 				wins[#wins] = win
 			end

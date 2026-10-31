@@ -14,10 +14,13 @@ local groups = {
 -- into unrelated coverage while remaining portable across Unix and Windows.
 if not vim.env.LAZYVCS_TEST_GROUP or vim.env.LAZYVCS_TEST_GROUP == "" then
 	local failures = {}
-	local function forward(output)
+	local function forward(output, captured)
 		return function(err, data)
 			assert(not err, err)
 			if data then
+				if captured then
+					captured[#captured + 1] = data
+				end
 				output:write(data)
 				output:flush()
 			end
@@ -25,10 +28,14 @@ if not vim.env.LAZYVCS_TEST_GROUP or vim.env.LAZYVCS_TEST_GROUP == "" then
 	end
 	for _, group in ipairs(groups) do
 		print(string.format("\n===== lazyvcs test group: %s =====", group))
+		-- Hosted macOS SVN fixtures exceed ten minutes even on healthy main runs.
+		local captured, captured_error = {}, {}
 		local result = vim.system({
 			vim.v.progpath,
 			"--headless",
 			"-u",
+			"NONE",
+			"-i",
 			"NONE",
 			-- Preserve the parent settings when exercising Windows-style defaults.
 			"--cmd",
@@ -39,14 +46,20 @@ if not vim.env.LAZYVCS_TEST_GROUP or vim.env.LAZYVCS_TEST_GROUP == "" then
 			run_file,
 		}, {
 			text = true,
-			stdout = forward(io.stdout),
-			stderr = forward(io.stderr),
+			stdout = forward(io.stdout, captured),
+			stderr = forward(io.stderr, captured_error),
 			env = {
 				LAZYVCS_TEST_GROUP = group,
 			},
-		}):wait()
-		if result.code ~= 0 then
-			failures[#failures + 1] = group
+		}):wait(vim.fn.has("macunix") == 1 and 1200000 or 600000)
+		local output = table.concat(captured) .. table.concat(captured_error)
+		if
+			result.code ~= 0
+			or (result.signal or 0) ~= 0
+			or not output:find("lazyvcs " .. group .. " tests:", 1, true)
+			or not output:find("lazyvcs tests: ok", 1, true)
+		then
+			failures[#failures + 1] = group .. string.format(" (exit %s, signal %s)", result.code, result.signal or 0)
 		end
 	end
 
@@ -61,12 +74,19 @@ if not vim.env.LAZYVCS_TEST_GROUP or vim.env.LAZYVCS_TEST_GROUP == "" then
 end
 
 vim.opt.runtimepath:prepend(repo_root)
-local test_state_dir = vim.fn.tempname()
+local test_state_dir = vim.fs.normalize(vim.fn.tempname())
 vim.env.XDG_STATE_HOME = test_state_dir
 vim.env.XDG_CACHE_HOME = test_state_dir .. "/cache"
+vim.env.HOME = test_state_dir .. "/home"
+vim.env.APPDATA = test_state_dir .. "/home/AppData"
+vim.fn.mkdir(vim.env.APPDATA, "p")
+local case_cwd = test_state_dir .. "/cwd"
+vim.fn.mkdir(case_cwd, "p")
+vim.fn.chdir(case_cwd)
 vim.api.nvim_create_autocmd("VimLeavePre", {
 	once = true,
 	callback = function()
+		vim.fn.chdir(repo_root)
 		vim.fn.delete(test_state_dir, "rf")
 	end,
 })

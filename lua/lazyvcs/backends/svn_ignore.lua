@@ -50,6 +50,33 @@ local function property_values(raw)
 	return values
 end
 
+-- An X row records an external definition even when an ordinary entry now
+-- obstructs that path. Directory externals have their own administration root.
+local function external_working_copy(task, path, callback)
+	local function inspect(target, done)
+		vim.uv.fs_lstat(target, function(err, stat)
+			vim.schedule(util.safe_callback(function()
+				if not task:is_active() then
+					return
+				end
+				if err and not tostring(err):match("^ENOENT:") and not tostring(err):match("^ENOTDIR:") then
+					return callback(nil, err)
+				end
+				done(stat)
+			end))
+		end)
+	end
+	inspect(path, function(root)
+		-- Do not follow symlink or junction obstructions into another working copy.
+		if not root or root.type ~= "directory" then
+			return callback(false)
+		end
+		inspect(path .. "/.svn", function(admin)
+			callback(admin ~= nil)
+		end)
+	end)
+end
+
 function M.load(task, repo, callback, switched)
 	local sections = { miscellany = {} }
 	local sources
@@ -164,34 +191,68 @@ function M.load(task, repo, callback, switched)
 			-- every versioned file and URL-encoding differences in boundary detection.
 			local boundaries = {}
 			for _, path in ipairs(switched or {}) do
-				boundaries[#boundaries + 1] = local_path(path)
+				boundaries[#boundaries + 1] = type(path) == "table"
+						and { path = local_path(path.path), recursive = path.recursive }
+					or { path = local_path(path) }
 			end
 			local index = 0
 			local function next_boundary()
 				index = index + 1
-				local path = boundaries[index]
-				if not path then
+				local boundary = boundaries[index]
+				if not boundary then
 					return finish_properties()
 				end
-				common.command(task, repo, {
+				local path = boundary.path
+				local args = {
 					"svn",
 					"propget",
 					"--xml",
 					"--show-inherited-props",
 					"svn:global-ignores",
 					util.svn_target(path),
-				}, function(props, props_err)
-					if not props then
-						return callback(nil, props_err)
-					end
-					local values, decode_err = property_values(props)
-					if not values then
-						return callback(nil, decode_err)
-					end
-					inherited[path] = table.concat(values, "\n")
-					boundaries_at[path] = true
-					next_boundary()
-				end)
+				}
+				if boundary.recursive then
+					table.insert(args, 5, "-R")
+				end
+				local function load_boundary()
+					common.command(task, repo, args, function(props, props_err)
+						if not props then
+							return callback(nil, props_err)
+						end
+						local root_values = {}
+						for attrs, body in props:gmatch("<target%s+([^>]+)>(.-)</target>") do
+							local target = xml.attributes(attrs).path
+							local values, decode_err = property_values(body)
+							if not values then
+								return callback(nil, decode_err)
+							end
+							if target and target:match("^%a[%w+.-]*://") then
+								vim.list_extend(root_values, values)
+							elseif target then
+								inherited[local_path(target)] = table.concat(values, "\n")
+							end
+						end
+						if inherited[path] then
+							root_values[#root_values + 1] = inherited[path]
+						end
+						inherited[path] = table.concat(root_values, "\n")
+						boundaries_at[path] = true
+						next_boundary()
+					end)
+				end
+				if boundary.recursive then
+					external_working_copy(task, path, function(present, inspect_err)
+						if present == nil then
+							return callback(nil, inspect_err)
+						end
+						if not present then
+							return next_boundary()
+						end
+						load_boundary()
+					end)
+				else
+					load_boundary()
+				end
 			end
 			next_boundary()
 		end)

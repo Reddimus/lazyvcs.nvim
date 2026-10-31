@@ -4,8 +4,21 @@ local runtime = require("lazyvcs.process_runtime")
 local M = {}
 
 function M.new()
-	local names, owned = {}, {}
+	local names, owned, releasing = {}, {}, {}
+	local abandoned = false
 	local registry = { shutdown = function() end, force = function() end, close_timers = function() end }
+	function registry:abandon()
+		abandoned = true
+		for _, paths in ipairs({ owned, releasing }) do
+			for path, identity in pairs(paths) do
+				local stat = vim.uv.fs_lstat(path)
+				if stat and stat.type == identity.type and stat.dev == identity.dev and stat.ino == identity.ino then
+					pcall(vim.uv.fs_unlink, path)
+				end
+			end
+		end
+		names, owned, releasing = {}, {}, {}
+	end
 	function registry:record(path)
 		if type(path) == "string" then
 			names[path] = true
@@ -59,15 +72,26 @@ function M.new()
 			end
 		end
 		for path, identity in pairs(paths) do
+			releasing[path] = identity
 			pending = pending + 1
 			vim.uv.fs_lstat(
 				path,
 				util.safe_callback(function(err, stat)
-					if err then
+					if abandoned then
+						complete()
+					elseif err then
+						releasing[path] = nil
 						complete(err)
 					elseif stat.type == identity.type and stat.dev == identity.dev and stat.ino == identity.ino then
-						vim.uv.fs_unlink(path, util.safe_callback(complete))
+						vim.uv.fs_unlink(
+							path,
+							util.safe_callback(function(unlink_err)
+								releasing[path] = nil
+								complete(unlink_err)
+							end)
+						)
 					else
+						releasing[path] = nil
 						complete()
 					end
 				end)

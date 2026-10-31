@@ -1,3 +1,10 @@
+-- Repository selectors must never redirect fixture mutations.
+for key in pairs(vim.fn.environ()) do
+	if vim.startswith(key:upper(), "GIT_") then
+		vim.env[key] = nil
+	end
+end
+
 local run_file = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p")
 local repo_root = vim.fn.fnamemodify(run_file, ":h:h")
 local mini_path = vim.env.MINI_TEST_PATH or (repo_root .. "/deps/mini.nvim-v0.18.0")

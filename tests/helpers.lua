@@ -236,7 +236,7 @@ function M.make_git_markdown_transfer_fixture()
 end
 
 function M.make_svn_fixture()
-	if vim.fn.executable("svnadmin") ~= 1 then
+	if vim.fn.executable("svnadmin") ~= 1 or vim.fn.executable("svn") ~= 1 then
 		-- Raised as a structured value so the test runner classifies this as a
 		-- SKIP instead of a hard failure that aborts the rest of the suite.
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
@@ -267,7 +267,7 @@ function M.make_svn_fixture()
 end
 
 function M.make_svn_added_fixture()
-	if vim.fn.executable("svnadmin") ~= 1 then
+	if vim.fn.executable("svnadmin") ~= 1 or vim.fn.executable("svn") ~= 1 then
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
@@ -374,7 +374,7 @@ function M.make_git_switch_fixture()
 end
 
 function M.make_svn_transfer_fixture()
-	if vim.fn.executable("svnadmin") ~= 1 then
+	if vim.fn.executable("svnadmin") ~= 1 or vim.fn.executable("svn") ~= 1 then
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
@@ -418,7 +418,7 @@ function M.make_svn_transfer_fixture()
 end
 
 function M.make_svn_update_fixture()
-	if vim.fn.executable("svnadmin") ~= 1 then
+	if vim.fn.executable("svnadmin") ~= 1 or vim.fn.executable("svn") ~= 1 then
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
@@ -451,7 +451,7 @@ function M.make_svn_update_fixture()
 end
 
 function M.make_svn_switch_fixture()
-	if vim.fn.executable("svnadmin") ~= 1 then
+	if vim.fn.executable("svnadmin") ~= 1 or vim.fn.executable("svn") ~= 1 then
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 
@@ -511,7 +511,7 @@ function M.make_git_source_control_fixture()
 end
 
 function M.make_mixed_source_control_fixture()
-	if vim.fn.executable("svnadmin") ~= 1 then
+	if vim.fn.executable("svnadmin") ~= 1 or vim.fn.executable("svn") ~= 1 then
 		error({ lazyvcs_skip = "svnadmin not installed — SVN tests skipped" })
 	end
 

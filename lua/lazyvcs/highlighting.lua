@@ -18,10 +18,10 @@ local function explicit(win)
 	if source > 0 then
 		local mappings = {}
 		for from, to in tostring(util.get_win_option(win, "winhighlight")):gmatch("([^,:]+):([^,]+)") do
-			mappings[from] = to
+			mappings[from:lower()] = to:lower()
 		end
 		for name, value in pairs(api.nvim_get_hl(source, {})) do
-			if not value.link or value.link ~= mappings[name] then
+			if not value.link or value.link:lower() ~= mappings[name:lower()] then
 				return true
 			end
 		end
@@ -73,6 +73,8 @@ local function strip_unowned()
 end
 
 local function overlay(win, state)
+	local current = util.get_win_option(win, "winhighlight")
+	state.user = user_mappings(current, state)
 	local entries = state.user == "" and {} or { state.user }
 	local names = vim.tbl_keys(state.suppressed)
 	table.sort(names)
@@ -80,7 +82,7 @@ local function overlay(win, state)
 		entries[#entries + 1] = name .. ":" .. hidden
 	end
 	state.overlay = table.concat(entries, ",")
-	if util.get_win_option(win, "winhighlight") ~= state.overlay then
+	if current ~= state.overlay then
 		write_mapping(win, state.overlay)
 	end
 	state.native_ns = api.nvim_get_hl_ns({ winid = win })
@@ -234,6 +236,16 @@ local function acquire()
 	return slot
 end
 
+local function restore_namespace(win, state)
+	if state.private_ns then
+		local user = user_mappings(util.get_win_option(win, "winhighlight"), state)
+		api.nvim_win_set_hl_ns(win, 0)
+		write_mapping(win, user)
+	else
+		api.nvim_win_set_hl_ns(win, state.previous)
+	end
+end
+
 function M.refresh(win)
 	local state = windows[win]
 	if not state or not owned(win, state) then
@@ -245,13 +257,13 @@ function M.refresh(win)
 	if state.native and state.previous == -1 and source > 0 then
 		state.user = user_mappings(util.get_win_option(win, "winhighlight"), state)
 		write_mapping(win, state.user)
-		api.nvim_win_set_hl_ns(win, state.previous)
+		restore_namespace(win, state)
 		state.native, state.preserved = nil, true
 	end
 	if not state.native then
 		if requires_source_namespace(theme, global) then
 			if state.slot then
-				api.nvim_win_set_hl_ns(win, state.previous)
+				restore_namespace(win, state)
 				state.slot.busy = false
 				state.slot = nil
 			end
@@ -314,7 +326,7 @@ function M.refresh(win)
 		if state.native_ns <= 0 and next(state.suppressed) then
 			write_mapping(win, state.user)
 			state.native, state.preserved = nil, true
-			api.nvim_win_set_hl_ns(win, state.previous)
+			restore_namespace(win, state)
 			return M.refresh(win)
 		end
 	else
@@ -335,11 +347,11 @@ function M.release(win)
 			write_mapping(win, user)
 			-- Older runtimes stop activating native overlays after restoring inheritance.
 			if restore and user == "" and vim.version.ge(vim.version(), { 0, 11, 7 }) then
-				api.nvim_win_set_hl_ns(win, state.previous)
+				restore_namespace(win, state)
 			end
 		end
 	elseif not state.preserved and owned(win, state) then
-		api.nvim_win_set_hl_ns(win, state.previous)
+		restore_namespace(win, state)
 	end
 	if state.slot then
 		state.slot.busy = false
@@ -504,6 +516,7 @@ function M.apply(win, policy)
 	if not explicit(win) then
 		local state = {
 			native = true,
+			private_ns = api.nvim_get_hl_ns({ winid = win }) > 0 and util.get_win_option(win, "winhighlight") ~= "",
 			previous = api.nvim_get_hl_ns({ winid = win }),
 			user = util.get_win_option(win, "winhighlight"),
 			buf = api.nvim_win_get_buf(win),

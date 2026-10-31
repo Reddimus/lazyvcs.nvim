@@ -154,7 +154,7 @@ return function(ctx)
 				end)
 				local entries = load(f, buf, backend, "decoded")
 				assert(#entries == #lines and entries[3].revision == "2" and entries[#lines].uncommitted)
-				assert(vim.deep_equal(commands, { "status", "blame", "cat" }), vim.inspect(commands))
+				assert(vim.deep_equal(commands, { "status", "info", "blame", "cat" }), vim.inspect(commands))
 			end,
 		},
 		{

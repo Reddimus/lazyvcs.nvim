@@ -101,6 +101,10 @@ local function defers_to_gitsigns(backend_name, bufnr)
 	if type(gs) ~= "table" or type(gs.get_hunks) ~= "function" then
 		return false
 	end
+	local ok, cache = pcall(require, "gitsigns.cache")
+	if ok and type(cache) == "table" and type(cache.cache) == "table" then
+		return cache.cache[bufnr] ~= nil
+	end
 	local usable, hunks = pcall(gs.get_hunks, bufnr)
 	return usable and type(hunks) == "table"
 end
@@ -207,6 +211,7 @@ local function render_signs(bufnr, state)
 	state.sign_marks = state.sign_marks or {}
 	local marks, hunks = state.sign_marks, state.hunks
 	local index, hunk_index, offset = 1, 1, 0
+	local last_row, last_kind
 	local line_count = math.max(vim.api.nvim_buf_line_count(bufnr), 1)
 	local function batch()
 		if buffers[bufnr] ~= state or state.sign_render ~= token or not vim.api.nvim_buf_is_loaded(bufnr) then
@@ -237,6 +242,14 @@ local function render_signs(bufnr, state)
 					),
 					1
 				) - 1
+				local duplicate = row == last_row
+				if duplicate then
+					index = index - 1
+					if kind ~= last_kind then
+						kind = "changedelete"
+					end
+				end
+				last_row, last_kind = row, kind
 				local ok, id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_id, row, 0, {
 					id = marks[index],
 					sign_text = opts().text[kind] or opts().text.change,
@@ -332,13 +345,18 @@ render = function(bufnr, on_ready)
 		state.compute_waiters[#state.compute_waiters + 1] = on_ready
 	end
 	local identity, identity_err = compare_text.identity(bufnr)
+	local diffopt = vim.o.diffopt
 	if not identity or not state.base_text or identity.profile_key ~= state.base_text.profile_key then
 		state.hunks, state.loaded = {}, false
 		render_signs(bufnr, state)
 		complete(nil, identity_err or "Buffer decoding profile changed; reload the VCS base")
 		return false
 	end
-	if vim.deep_equal(state.rendered_identity, identity) and state.rendered_base == state.base_text then
+	if
+		vim.deep_equal(state.rendered_identity, identity)
+		and state.rendered_base == state.base_text
+		and state.rendered_diffopt == diffopt
+	then
 		render_signs(bufnr, state)
 		complete(state)
 		return true
@@ -358,7 +376,7 @@ render = function(bufnr, on_ready)
 		if not state.native and delegate_to_gitsigns(bufnr, state) then
 			return
 		end
-		state.rendered_identity, state.rendered_base = identity, base
+		state.rendered_identity, state.rendered_base, state.rendered_diffopt = identity, base, diffopt
 		state.current_text, state.hunks = current, hunks
 		render_signs(bufnr, state)
 		complete(state)
@@ -382,6 +400,7 @@ render = function(bufnr, on_ready)
 				state.base_text ~= base
 				or state.base_generation ~= generation
 				or not vim.deep_equal(compare_text.identity(bufnr), identity)
+				or vim.o.diffopt ~= diffopt
 			then
 				if not state.base_text and not state.unavailable_reason then
 					return
@@ -408,6 +427,8 @@ render = function(bufnr, on_ready)
 	return true
 end
 
+local on_edit
+
 local function ensure_state(bufnr, path)
 	local state = buffers[bufnr]
 	if state and state.path == path then
@@ -425,21 +446,40 @@ local function ensure_state(bufnr, path)
 		loading = false,
 	}
 	buffers[bufnr] = state
+	vim.api.nvim_buf_attach(bufnr, false, {
+		on_lines = function()
+			if buffers[bufnr] ~= state then
+				return true
+			end
+			if not state.lines_pending then
+				state.lines_pending = true
+				vim.schedule(util.safe_callback(function()
+					state.lines_pending = nil
+					if buffers[bufnr] == state and on_edit then
+						on_edit(bufnr)
+					end
+				end))
+			end
+		end,
+		on_detach = function()
+			state.lines_pending = nil
+		end,
+	})
 	return state
 end
 
-local function path_identity(path, entry)
+local function path_identity(path, entry, ignorecase)
 	local canonical = entry and util.canonical_entry_path(path) or util.canonical_path(path)
-	return vim.o.fileignorecase and canonical:lower() or canonical
+	return ignorecase and canonical:lower() or canonical
 end
 
 local function matches_change(change, state)
 	local _, cached_root = backends.resolve_cached(state.path)
 	local root = state.root or cached_root
-	local path = path_identity(state.path, true)
+	local path = path_identity(state.path, true, change.ignorecase)
 	return (
-		root and path_identity(root) == change.root
-		or (not root and util.relative_literal_path(change.root, path) ~= nil)
+		root and path_identity(root, false, change.ignorecase) == change.root
+		or (not root and util.relative_literal_path(change.root, path, change.ignorecase) ~= nil)
 	) and (not change.paths or change.paths[path] == true)
 end
 
@@ -521,11 +561,12 @@ delegate_to_gitsigns = function(bufnr, state, on_ready)
 end
 
 function M.begin_base_change(root, paths)
-	local change = { root = path_identity(root) }
+	local change = { ignorecase = vim.o.fileignorecase }
+	change.root = path_identity(root, false, change.ignorecase)
 	if paths then
 		change.paths = {}
 		for _, path in ipairs(paths) do
-			change.paths[path_identity(path, true)] = true
+			change.paths[path_identity(path, true, change.ignorecase)] = true
 		end
 	end
 	base_changes[change] = true
@@ -603,7 +644,13 @@ function M.refresh(bufnr, reload_base, on_ready, native)
 			ensure_state(bufnr, skipped_path).skipped = true
 		end
 		if on_ready then
-			on_ready(nil, "No supported VCS buffer")
+			on_ready(
+				nil,
+				string.format(
+					"File exceeds signs.max_file_bytes (%d bytes); native hunk commands are unavailable",
+					opts().max_file_bytes
+				)
+			)
 		end
 		return
 	end
@@ -787,6 +834,13 @@ local function schedule(bufnr)
 			M.refresh(bufnr, false)
 		end))
 	)
+end
+
+on_edit = function(bufnr)
+	local state = buffers[bufnr]
+	if opts().enabled and state and not state.unavailable_reason and not delegated_owner_available(bufnr, state) then
+		schedule(bufnr)
+	end
 end
 
 local function with_current_state(context, on_ready, asynchronous, on_failure)
@@ -1038,13 +1092,21 @@ local function revert_large_gitsigns_hunk(context)
 			end
 			local reverted = with_unchanged_buffer(context, function()
 				local added, removed = selected.added, selected.removed
-				local added_lines, removed_lines = added.lines, removed.lines
+				local added_lines, removed_lines = vim.deepcopy(added.lines), vim.deepcopy(removed.lines)
 				if vim.bo[bufnr].fileformat == "dos" then
 					added_lines, removed_lines = strip_gitsigns_cr(added_lines), strip_gitsigns_cr(removed_lines)
 				end
 				local start_row = added.count == 0 and added.start or math.max(added.start - 1, 0)
 				local end_row = start_row + added.count
 				local line_count = vim.api.nvim_buf_line_count(bufnr)
+				if start_row == 0 and vim.bo[bufnr].bomb then
+					if added_lines[1] then
+						added_lines[1] = added_lines[1]:gsub("^\239\187\191", "")
+					end
+					if removed_lines[1] then
+						removed_lines[1] = removed_lines[1]:gsub("^\239\187\191", "")
+					end
+				end
 				if
 					#added.lines ~= added.count
 					or #removed.lines ~= removed.count
@@ -1244,6 +1306,7 @@ local function jump_to_hunk(context, direction)
 			return
 		end
 		local line = vim.api.nvim_win_get_cursor(0)[1]
+		vim.cmd("normal! m'")
 		diff.focus_hunk(0, bufnr, diff.find_neighbor_hunk(hunks, line, direction))
 	end)
 end
@@ -1345,10 +1408,32 @@ local function preview_request(context, loaded, release)
 end
 
 local function preview_diff(context)
-	if call_gitsigns("preview_hunk") then
-		return true
-	end
 	local bufnr = context.bufnr
+	local _, reason = supported_buffer(bufnr)
+	if reason == "too_large" then
+		local gs = gitsigns_api()
+		if gs and type(gs.get_hunks) == "function" then
+			local ok, hunks = pcall(gs.get_hunks, bufnr)
+			if ok and type(hunks) == "table" then
+				if #hunks == 0 then
+					util.notify("No changes", vim.log.levels.INFO)
+					return true
+				end
+				for _, h in ipairs(hunks) do
+					if
+						diff.find_current_hunk(
+							{ { current_start = h.added.start, current_count = h.added.count } },
+							context.cursor[1]
+						)
+					then
+						return call_gitsigns("preview_hunk")
+					end
+				end
+				util.notify("No hunk at the cursor", vim.log.levels.INFO)
+				return true
+			end
+		end
+	end
 	local function queue_if_busy()
 		local busy = preview_workers[bufnr]
 		if not busy then
@@ -1557,21 +1642,24 @@ function M.setup()
 	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
 		group = augroup,
 		callback = util.safe_callback(function(args)
-			local state = buffers[args.buf]
-			-- A suspended base waits for a base change, write, buffer entry or refresh.
-			if
-				opts().enabled
-				and state
-				and not state.unavailable_reason
-				and not delegated_owner_available(args.buf, state)
-			then
-				schedule(args.buf)
+			on_edit(args.buf)
+		end),
+	})
+	vim.api.nvim_create_autocmd("OptionSet", {
+		group = augroup,
+		pattern = "diffopt",
+		callback = util.safe_callback(function()
+			for buf, state in pairs(buffers) do
+				state.rendered_identity = nil
+				if opts().enabled and not state.unavailable_reason then
+					schedule(buf)
+				end
 			end
 		end),
 	})
 	vim.api.nvim_create_autocmd("OptionSet", {
 		group = augroup,
-		pattern = { "fileencoding", "fileformat", "bomb", "binary", "endofline", "fixendofline" },
+		pattern = { "fileencoding", "fileformat", "bomb", "binary", "endofline", "endoffile", "fixendofline" },
 		callback = util.safe_callback(function()
 			local buf = vim.api.nvim_get_current_buf()
 			local state = buffers[buf]

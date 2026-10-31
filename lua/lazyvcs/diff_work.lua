@@ -1,7 +1,7 @@
 -- Isolated worker entry point: libuv executes it in a fresh Lua state, so it
 -- must not capture upvalues. Prefer the Neovim 0.12 name; 0.11 has only vim.diff.
 local M = {}
-local function worker(left, right, result_type)
+local function worker(left, right, result_type, packed_options)
 	local diff = type(vim.text) == "table" and vim.text.diff or nil
 	if type(diff) ~= "function" then
 		---@diagnostic disable-next-line: deprecated
@@ -10,7 +10,9 @@ local function worker(left, right, result_type)
 	if type(diff) ~= "function" then
 		return false, ""
 	end
-	local ok, raw = pcall(diff, left, right, { algorithm = "histogram", result_type = result_type })
+	local options = packed_options and vim.mpack.decode(packed_options) or { algorithm = "histogram" }
+	options.result_type = result_type
+	local ok, raw = pcall(diff, left, right, options)
 	if not ok then
 		return true, "", tostring(raw)
 	end
@@ -19,11 +21,13 @@ end
 
 M._worker = worker
 
-function M.start(left, right, result_type, done)
+function M.start(left, right, result_type, done, options)
+	options = options
+		or (result_type == "indices" and require("lazyvcs.diff").native_options() or { algorithm = "histogram" })
 	local work
 	local ok, err = pcall(function()
 		work = assert(vim.uv.new_work(worker, vim.schedule_wrap(require("lazyvcs.util").safe_callback(done))))
-		assert(work:queue(left, right, result_type))
+		assert(work:queue(left, right, result_type, vim.mpack.encode(options)))
 	end)
 	return ok and work or nil, not ok and tostring(err) or nil
 end
@@ -49,7 +53,7 @@ function M.latest()
 				failure = "Threaded diff is unavailable"
 			end
 			request.done(not failure and vim.mpack.decode(raw) or nil, failure)
-		end)
+		end, request.options)
 		if not work then
 			queue.running = nil
 			request.done(nil, err)
@@ -59,7 +63,7 @@ function M.latest()
 		if self.closed then
 			return
 		end
-		local request = { left = left, right = right, done = done }
+		local request = { left = left, right = right, done = done, options = require("lazyvcs.diff").native_options() }
 		if self.running then
 			self.pending = request
 		else

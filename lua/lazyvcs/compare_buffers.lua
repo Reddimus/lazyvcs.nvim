@@ -4,7 +4,7 @@ local M = {}
 local resources = {}
 local installed = false
 local sequence = 0
-local namespace = vim.fn.sha256(tostring(vim.uv.hrtime()) .. ":" .. vim.uv.os_getpid()):sub(1, 32)
+local namespace = string.format("%x-%x", vim.uv.os_getpid(), vim.uv.hrtime())
 
 local function protected_write(buf, update)
 	vim.bo[buf].modifiable, vim.bo[buf].readonly = true, false
@@ -289,7 +289,7 @@ local function update(buf, lines)
 	if vim.deep_equal(current, lines) then
 		return
 	end
-	local hunks = diff.compute_hunks(current, lines)
+	local hunks = diff.compute_hunks(current, lines, { algorithm = "histogram", result_type = "indices" })
 	protected_write(buf, function()
 		for i = #hunks, 1, -1 do
 			local hunk = hunks[i]
@@ -339,7 +339,7 @@ function M.store(s, item, result)
 			local resource =
 				{ session = s, pair = pair, side = side[1], directory = vim.fs.dirname(s.root .. "/" .. side[3]) }
 			resources[side[2]] = resource
-			vim.bo[side[2]].filetype = vim.filetype.match({ filename = s.root .. "/" .. side[3] }) or ""
+			resource.path = s.root .. "/" .. side[3]
 			source_context(side[2], resource)
 			s.keymaps[side[2]] = s.pane_mappings
 		end
@@ -359,6 +359,21 @@ function M.store(s, item, result)
 	end
 	update(pair.left, result.left)
 	update(pair.right, result.right)
+	for _, buf in ipairs({ pair.left, pair.right }) do
+		local resource = resources[buf]
+		if not resource.typed then
+			local ok, ft, on_detect = pcall(vim.filetype.match, { buf = buf, filename = resource.path })
+			if not ok then
+				ft, on_detect = vim.filetype.match({ filename = resource.path }), nil
+			end
+			vim.bo[buf].filetype = ft or ""
+			if on_detect then
+				on_detect(buf)
+			end
+			locked(buf)
+			resource.typed = true
+		end
+	end
 	touch(cache, pair)
 	return pair
 end

@@ -4,6 +4,40 @@ local compat = require("lazyvcs.compat")
 
 local M = {}
 
+-- Use native diff's split/ignore rules for ranges exposed beside native panes.
+function M.native_options()
+	local result = { algorithm = "myers", result_type = "indices" }
+	for part in vim.o.diffopt:gmatch("[^,]+") do
+		local algorithm = part:match("^algorithm:(.+)$")
+		local linematch = part:match("^linematch:(%d+)$")
+		if algorithm then
+			result.algorithm = algorithm
+		elseif linematch then
+			result.linematch = tonumber(linematch)
+		elseif part == "indent-heuristic" then
+			result.indent_heuristic = true
+		elseif part == "iwhite" then
+			result.ignore_whitespace_change = true
+		elseif part == "iwhiteall" then
+			result.ignore_whitespace = true
+		elseif part == "iwhiteeol" then
+			result.ignore_whitespace_change_at_eol = true
+		elseif part == "iblank" then
+			result.ignore_blank_lines = true
+		end
+	end
+	return result
+end
+
+-- Native icase has Unicode behavior that differs from tolower(), and the Lua
+-- diff API exposes no equivalent flag. Never act on unrepresentable ranges.
+function M.native_hunks_supported()
+	if ("," .. vim.o.diffopt .. ","):find(",icase,", 1, true) then
+		return false, "Native hunk commands are unavailable with diffopt icase; use :set diffopt-=icase"
+	end
+	return true
+end
+
 local function normalize_hunk(item)
 	return {
 		base_start = item[1],
@@ -13,11 +47,8 @@ local function normalize_hunk(item)
 	}
 end
 
-function M.compute_hunks(base_lines, current_lines)
-	local raw = compat.diff(util.join_lines(base_lines), util.join_lines(current_lines), {
-		algorithm = "histogram",
-		result_type = "indices",
-	})
+function M.compute_hunks(base_lines, current_lines, options)
+	local raw = compat.diff(util.join_lines(base_lines), util.join_lines(current_lines), options or M.native_options())
 
 	local hunks = {}
 	if type(raw) ~= "table" then
@@ -66,9 +97,8 @@ end
 ---@param base LazyVcsText
 ---@param current LazyVcsText
 ---@return table[] hunks
-function M.compute_text_hunks(base, current)
-	local raw =
-		compat.diff(text.serialize(base), text.serialize(current), { algorithm = "histogram", result_type = "indices" })
+function M.compute_text_hunks(base, current, options)
+	local raw = compat.diff(text.serialize(base), text.serialize(current), options or M.native_options())
 	return M.text_hunks(raw, base, current)
 end
 
@@ -101,6 +131,18 @@ function M.text_hunks(raw, base, current)
 		hunk.covers_eof = base_eof and current_eof
 		hunks[#hunks + 1] = hunk
 	end
+	if (base.eof_marker or false) ~= (current.eof_marker or false) then
+		local last = hunks[#hunks]
+		if not last or not last.covers_eof then
+			hunks[#hunks + 1] = {
+				base_start = math.max(#base.lines, 1),
+				base_count = base.empty and 0 or 1,
+				current_start = math.max(#current.lines, 1),
+				current_count = current.empty and 0 or 1,
+				covers_eof = true,
+			}
+		end
+	end
 	return hunks
 end
 
@@ -112,10 +154,17 @@ function M.reset_text_hunk(bufnr, base, current, hunk)
 	local start_row = hunk.current_count == 0 and hunk.current_start or math.max(hunk.current_start - 1, 0)
 	local end_row = current.empty and -1 or start_row + hunk.current_count
 	local base_eol
-	if hunk.covers_eof then
+	if hunk.covers_eof and not base.empty then
 		base_eol = base.eol
 	end
 	M.reset_hunk_lines(bufnr, start_row, end_row, util.slice(base.lines, hunk.base_start, hunk.base_count), base_eol)
+	if hunk.covers_eof then
+		vim.bo[bufnr].endoffile = base.eof_marker or false
+		if base.eof_marker then
+			vim.bo[bufnr].fixendofline = false
+			vim.bo[bufnr].modified = true
+		end
+	end
 end
 
 ---@param bufnr integer
@@ -178,19 +227,6 @@ function M.find_neighbor_hunk(hunks, line, direction)
 		end
 	end
 	return hunks[#hunks]
-end
-
-function M.reset_hunk(bufnr, base_lines, hunk)
-	local start_idx = math.max(hunk.current_start - 1, 0)
-	local end_idx = start_idx + hunk.current_count
-
-	if hunk.current_count == 0 and hunk.base_count > 0 then
-		start_idx = math.max(hunk.current_start, 0)
-		end_idx = start_idx
-	end
-
-	local replacement = util.slice(base_lines, hunk.base_start, hunk.base_count)
-	vim.api.nvim_buf_set_lines(bufnr, start_idx, end_idx, false, replacement)
 end
 
 function M.compute_target_view(hunk, win_height, line_count)
