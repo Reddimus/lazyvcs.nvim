@@ -134,8 +134,6 @@ local function index_text(text, default_root, saved, schedule, done)
 			elseif file and not hunk and (line:match("^rename to ") or line:match("^copy to ")) then
 				local name = line:match("^rename to (.*)$") or line:match("^copy to (.*)$")
 				file.path = name:sub(1, 1) == '"' and git_path(name:gsub('^"', '"b/')) or name
-			elseif file and not hunk and line:match("^Binary files ") then
-				file.path = line:match(" and b/(.*) differ$") or file.path
 			elseif file and not hunk and line:match("^%-%-%- ") then
 				file.old = file.svn and file.path or git_path(line:sub(5))
 				index.deleted = index.deleted - 1
@@ -240,6 +238,7 @@ local function clear_departed_winbars(view)
 end
 
 local function fill(view, text, loading, content)
+	local generation, task = view.generation, view.task
 	vim.bo[view.buf].modifiable = true
 	api.nvim_buf_set_lines(view.buf, 0, -1, false, content or lines(text))
 	-- Raw patch bytes must survive both :write and yanks, even when the user's
@@ -259,8 +258,14 @@ local function fill(view, text, loading, content)
 	end
 	title = (title .. " | q close  R reload  Y copy  <CR> file  ]v/[v hunk"):gsub("%%", "%%%%")
 	for _, win in ipairs(vim.fn.win_findbuf(view.buf)) do
-		util.set_win_option(win, "winbar", title)
-		view.winbars[win] = title
+		-- A title callback can retire this render or close another captured window.
+		if view.generation ~= generation or view.task ~= task or not task:is_active() or views[view.path] ~= view then
+			return
+		end
+		if api.nvim_win_is_valid(win) and api.nvim_win_get_buf(win) == view.buf then
+			view.winbars[win] = title
+			util.set_win_option(win, "winbar", title)
+		end
 	end
 end
 
@@ -408,9 +413,20 @@ local function rerun(view)
 	view.generation = view.generation + 1
 	local generation, saved = view.generation, position(view)
 	view.text, view.index = nil, nil
-	fill(view, "Loading patch for " .. view.path .. "...\n", true)
 	local task = Task.new()
 	view.task = task
+	-- OptionSet callbacks may close the view or start a replacement request.
+	fill(view, "Loading patch for " .. view.path .. "...\n", true)
+	if
+		not task:is_active()
+		or view.task ~= task
+		or view.generation ~= generation
+		or views[view.path] ~= view
+		or not visible(view)
+	then
+		task:cancel()
+		return task
+	end
 	task:add(collect(
 		view.path,
 		view.opts,
@@ -434,7 +450,7 @@ local function rerun(view)
 			end)
 		end)
 	))
-	return view.task
+	return task
 end
 
 local function open_file(view)
@@ -561,13 +577,14 @@ function M.open(opts)
 	win = api.nvim_get_current_win()
 	util.editor_window(win)
 	local buf = api.nvim_get_current_buf()
-	view = { path = path, buf = buf, editor = destination.winid, opts = opts, generation = 0, winbars = {} }
+	local task = Task.new()
+	view =
+		{ path = path, buf = buf, editor = destination.winid, opts = opts, generation = 0, winbars = {}, task = task }
 	views[path] = view
 	api.nvim_buf_set_name(buf, "lazyvcs://patch/" .. path)
 	vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
 	vim.bo[buf].buflisted = false
 	vim.bo[buf].undolevels = -1
-	vim.bo[buf].filetype = "diff"
 	mappings(view)
 	api.nvim_create_autocmd({ "BufWinLeave", "BufWipeout", "BufHidden" }, {
 		buffer = buf,
@@ -585,6 +602,11 @@ function M.open(opts)
 			end
 		end),
 	})
+	vim.bo[buf].filetype = "diff"
+	if view.task ~= task or views[path] ~= view or not task:is_active() or not visible(view) then
+		task:cancel()
+		return task
+	end
 	return rerun(view)
 end
 

@@ -66,7 +66,15 @@ function M.collect(repo, path, opts, callback)
 		return task
 	end
 	if repo.vcs == "git" then
-		local prefix = { "git", "-c", "core.quotepath=false", "-c", "diff.suppressBlankEmpty=false" }
+		local prefix = {
+			"git",
+			"-c",
+			"core.quotepath=false",
+			"-c",
+			"diff.suppressBlankEmpty=false",
+			"-c",
+			"diff.autoRefreshIndex=false",
+		}
 		local function git(args, done, extra, difference, metadata)
 			command(vim.list_extend(vim.deepcopy(prefix), args), done, extra, difference, metadata)
 		end
