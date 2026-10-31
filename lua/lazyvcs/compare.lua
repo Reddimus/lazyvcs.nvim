@@ -386,6 +386,7 @@ set_panes = rail.guard(function(s, next_display)
 		right_label = s.right_label,
 		views = { capture(s.leftwin), capture(s.rightwin) },
 		worktree = s.worktree,
+		capture_failed_record = s.capture_failed_record,
 	}
 	local borrowed = {}
 	for _, win in ipairs({ s.leftwin, s.rightwin }) do
@@ -494,6 +495,7 @@ set_panes = rail.guard(function(s, next_display)
 		if next_worktree then
 			local current = worktree.capture(next_worktree)
 			if current then
+				s.capture_failed_record = nil
 				result = assert(worktree.result(next_worktree, result, current))
 				local pair = buffers.store(s, item, result)
 				if left ~= pair.left then
@@ -608,6 +610,7 @@ set_panes = rail.guard(function(s, next_display)
 				vim.bo[buf].filetype = value.ft
 			end
 			s.worktree = before.worktree
+			s.capture_failed_record = before.capture_failed_record
 			s.left, s.right, s.mode = before.left, before.right, before.mode
 			s.preview_result, s.shown_item, s.preview_stamp = before.result, before.item, before.stamp
 			s.presence = before.presence

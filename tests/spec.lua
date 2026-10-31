@@ -7378,6 +7378,7 @@ vim.list_extend(cases, require("spec_diff_style_staged")({ helpers = helpers, wa
 vim.list_extend(cases, require("spec_diff_style_staged_replacements")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_diff_style_eligibility")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_diff_style_shared_recovery")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_diff_style_reacquire")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_diff_style_presence_edges")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_diff_style_resume")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_absent_rail_reentry")())
