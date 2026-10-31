@@ -15,8 +15,22 @@ local function write(win, name, value)
 	end
 end
 
-local function restore(win, record, preserve)
+local function restore(win, record, preserve, owner)
+	owner = owner or { window = windows[record.win], slot = slots[record.slot] }
+	local target = windows[win]
 	for name, value in pairs(record.before) do
+		-- Setters can run user callbacks which replace this lifetime or buffer.
+		-- Snapshot bindings also permit cleanup of an unpublished partial apply.
+		if
+			not api.nvim_win_is_valid(win)
+			or api.nvim_win_get_buf(win) ~= record.buf
+			or record.session.rail ~= record
+			or windows[record.win] ~= owner.window
+			or slots[record.slot] ~= owner.slot
+			or windows[win] ~= target
+		then
+			return
+		end
 		if name ~= preserve and util.get_win_option(win, name) == record.written[name] then
 			write(win, name, value)
 		end
@@ -212,17 +226,25 @@ function M.release(s)
 	if not r then
 		return
 	end
+	local owner = { window = windows[r.win], slot = slots[r.slot] }
 	-- Resolve visible native copies while the originating lifetime is live.
 	for _, win in ipairs(api.nvim_list_wins()) do
-		strip_window(win)
+		if api.nvim_win_is_valid(win) then
+			strip_window(win)
+		end
 	end
 	if api.nvim_win_is_valid(r.win) and api.nvim_win_get_buf(r.win) == r.buf then
-		restore(r.win, r)
+		restore(r.win, r, nil, owner)
 	end
 	if windows[r.win] == r then
 		windows[r.win] = nil
 	end
-	slots[r.slot], s.rail = nil, nil
+	if slots[r.slot] == r then
+		slots[r.slot] = nil
+	end
+	if s.rail == r then
+		s.rail = nil
+	end
 end
 
 function M.apply(s, win, stacked)
