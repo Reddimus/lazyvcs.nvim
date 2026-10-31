@@ -7,10 +7,30 @@ local hidden = "LazyVcsSemanticHidden"
 local writing = false
 local filler_writes = 0
 local max_overlay_bytes = 256 * 1024
-local mapping_records, filler_slots = {}, {}
+local filler_slots = {}
 local owner_source, owner_prefix = "LazyVcsDiffOwner", "LazyVcsDiffOwner"
 local write_mapping, user_mappings, strip_unowned, release_filler
 local derived = {}
+local aliases = { LazyVcsDiffFiller = "LazyVcsOverlayFiller", LazyVcsDiffRemoved = "LazyVcsOverlayRemoved" }
+local private_targets = {
+	lazyvcssemantichidden = true,
+	lazyvcsoverlayfiller = true,
+	lazyvcsoverlayremoved = true,
+}
+
+local function private_entry(from, to)
+	return private_targets[to:lower()]
+		or from:lower() == owner_source:lower() and to:lower():match("^lazyvcsdiffowner%d+$") ~= nil
+end
+
+local function has_private(value)
+	for from, to in value:gmatch("([^,:]+):([^,]+)") do
+		if private_entry(from, to) then
+			return true
+		end
+	end
+	return false
+end
 
 local function invalidate(state)
 	state.revision = (state.revision or 0) + 1
@@ -20,7 +40,7 @@ end
 local function marker_record(value, buf)
 	local found
 	for from, to in value:gmatch("([^,:]+):([^,]+)") do
-		local id = from == owner_source and tonumber(to:match("^" .. owner_prefix .. "(%d+)$"))
+		local id = from:lower() == owner_source:lower() and tonumber(to:lower():match("^lazyvcsdiffowner(%d+)$"))
 		local record = id and filler_slots[id] and filler_slots[id].record
 		if record and record.buf == buf and windows[record.win] == record.state and record.state.filler == record then
 			found = record
@@ -49,6 +69,14 @@ local function defaults(refresh)
 			derived[name].default = nil
 		else
 			derived[name] = nil
+		end
+	end
+	for public, alias in pairs(aliases) do
+		local current = api.nvim_get_hl(0, { name = alias, create = false })
+		if (current.link or ""):lower() ~= public:lower() then
+			-- Registered defaults survive :highlight clear. These names are private;
+			-- reassert a cleared or replaced link without rewriting an unchanged one.
+			api.nvim_set_hl(0, alias, { link = public, default = true, force = true })
 		end
 	end
 end
@@ -84,12 +112,38 @@ function M.user_fillchars(win)
 	return record and value == record.written and record.raw or value
 end
 
+local function mark_filler(win, state, record)
+	if not current_filler(win, state, record) then
+		return false
+	end
+	local revision = state.revision
+	record.user = user_mappings(util.get_win_option(win, "winhighlight"))
+	record.mapping = (record.user ~= "" and record.user .. "," or "") .. owner_source .. ":" .. state.owner_tag
+	write_mapping(win, record.mapping)
+	return current_filler(win, state, record)
+		and state.revision == revision
+		and marker_record(util.get_win_option(win, "winhighlight"), state.buf) == record
+end
+
 local function apply_filler(win, state, style)
 	if not state.role or not style.enabled then
 		release_filler(win, state)
 		return
 	end
 	if state.filler and not state.filler.suspended then
+		local record = state.filler
+		if
+			current_filler(win, state, record)
+			and marker_record(util.get_win_option(win, "winhighlight"), state.buf) ~= record
+		then
+			-- A user WinHL edit can remove the marker without changing this filler.
+			-- Restore its existing copy provenance, including on the pooled path.
+			if not mark_filler(win, state, record) and current_filler(win, state, record) then
+				-- A native callback may overwrite the marker without replacing us.
+				-- Keep its user mapping and release filler that cannot identify copies.
+				release_filler(win, state)
+			end
+		end
 		return
 	end
 	local previous_slot = state.filler and state.filler.slot
@@ -145,12 +199,11 @@ local function apply_filler(win, state, style)
 	-- Value equality cannot identify a copied window's raw origin. This inert mapping
 	-- follows native clones even when WinNew regenerates their namespace ID.
 	local record = state.filler
-	local mapping = util.get_win_option(win, "winhighlight")
-	record.user = mapping
-	record.mapping = (mapping ~= "" and mapping .. "," or "") .. owner_source .. ":" .. state.owner_tag
 	-- Publish before either observable write so nested cleanup can settle it.
-	write_mapping(win, record.mapping)
-	if not current_filler(win, state, record) then
+	if not mark_filler(win, state, record) then
+		if current_filler(win, state, record) then
+			release_filler(win, state)
+		end
 		return
 	end
 	local ok, err = pcall(write_filler, win, value)
@@ -187,26 +240,11 @@ local function explicit(win)
 	return false
 end
 
-user_mappings = function(value, state)
-	if state and state.filler and value == state.filler.mapping then
-		return state.filler.user
-	end
-	if state and value == state.restored_mapping then
-		return value
-	end
-	if state and value == state.user then
-		return value
-	end
-	if state and value == state.overlay then
-		return state.user
-	end
+user_mappings = function(value)
 	local entries = {}
 	for entry in value:gmatch("[^,]+") do
 		local from, to = entry:match("^([^:]+):(.+)$")
-		local injected = state and state.overlay and (state.diff_mappings or {})[from] == to
-		local owner = from == owner_source and state and state.owner_tag == to
-		local semantic_hidden = (not state or state.overlay) and to == hidden
-		if not semantic_hidden and not injected and not owner then
+		if not (from and to and private_entry(from, to)) then
 			entries[#entries + 1] = entry
 		end
 	end
@@ -224,32 +262,17 @@ end
 
 local function buffer_mappings(win, value)
 	local record = marker_record(value, api.nvim_win_get_buf(win))
-	if record and value == record.mapping then
-		return record.user
-	end
-	local records = mapping_records[api.nvim_win_get_buf(win)] or {}
-	if records[value] then
-		return user_mappings(value, records[value])
-	end
-	for _, saved in pairs(records) do
-		if value == saved.user then
-			return value
-		end
-	end
-	if record then
-		return user_mappings(value, record.state)
-	end
-	for _, record in pairs(records) do
-		value = user_mappings(value, record)
-	end
-	return user_mappings(value)
+	return user_mappings(record and value == record.mapping and record.user or value)
 end
 
 local function strip_window(win, preserve_filler, copied)
 	if api.nvim_win_is_valid(win) and not windows[win] then
+		local mapping = util.get_win_option(win, "winhighlight")
+		if not has_private(mapping) then
+			return
+		end
 		local buf = api.nvim_win_get_buf(win)
 		local raw = local_filler(win)
-		local mapping = util.get_win_option(win, "winhighlight")
 		if copied and (copied.buf ~= buf or copied.mapping ~= mapping) then
 			return
 		end
@@ -262,12 +285,14 @@ local function strip_window(win, preserve_filler, copied)
 		end
 		local value = util.get_win_option(win, "winhighlight")
 		---@cast value string
-		if value:find(hidden, 1, true) or value:find(":LazyVcsDiff", 1, true) then
+		if has_private(value) then
 			local retained = copied and value == copied.mapping and copied
 			local origin = retained and retained.record or marker_record(value, api.nvim_win_get_buf(win))
 			local native = api.nvim_get_hl_ns({ winid = win }) > 0 and not explicit(win)
 			local user = retained and retained.user or buffer_mappings(win, value)
-			write_mapping(win, user)
+			if value ~= user then
+				write_mapping(win, user)
+			end
 			if
 				api.nvim_win_is_valid(win)
 				and api.nvim_win_get_buf(win) == buf
@@ -330,8 +355,7 @@ release_filler = function(win, state)
 				return
 			end
 			local current_mapping = util.get_win_option(win, "winhighlight")
-			local user = user_mappings(current_mapping, state)
-			state.restored_mapping = user
+			local user = user_mappings(current_mapping)
 			if current_mapping ~= user then
 				write_mapping(win, user)
 			end
@@ -351,7 +375,7 @@ end
 
 local function overlay(win, state)
 	local current = util.get_win_option(win, "winhighlight")
-	state.user = user_mappings(current, state)
+	state.user = user_mappings(current)
 	local entries = state.user == "" and {} or { state.user }
 	local names = vim.tbl_keys(state.suppressed)
 	table.sort(names)
@@ -365,13 +389,6 @@ local function overlay(win, state)
 		entries[#entries + 1] = owner_source .. ":" .. state.owner_tag
 	end
 	state.overlay = table.concat(entries, ",")
-	mapping_records[state.buf] = mapping_records[state.buf] or {}
-	mapping_records[state.buf][state.overlay] = {
-		overlay = state.overlay,
-		user = state.user,
-		diff_mappings = state.diff_mappings,
-		owner_tag = state.owner_tag,
-	}
 	if current ~= state.overlay then
 		write_mapping(win, state.overlay)
 	end
@@ -395,7 +412,7 @@ end
 function M.user_winhighlight(win)
 	local value = util.get_win_option(win, "winhighlight")
 	---@cast value string
-	return windows[win] and user_mappings(value, windows[win]) or buffer_mappings(win, value)
+	return windows[win] and user_mappings(value) or buffer_mappings(win, value)
 end
 
 local function semantic(name)
@@ -447,23 +464,45 @@ local function suppress(slot, token, ft)
 	return added
 end
 
+local function lookup(graph, name, folded)
+	local value = graph[name]
+	if not value then
+		if not folded then
+			folded = {}
+			for key, definition in pairs(graph) do
+				folded[key:lower()] = definition
+			end
+		end
+		value = folded[name:lower()]
+	end
+	return value, folded
+end
+
 local function resolver(theme, global)
 	local resolved, resolving = {}, {}
+	local theme_folded, global_folded
 	local function inherited(name)
-		if resolved[name] then
-			return resolved[name]
+		local key = name:lower()
+		if resolved[key] then
+			return resolved[key]
 		end
-		if resolving[name] then
+		if resolving[key] then
 			return {}
 		end
-		resolving[name] = true
-		local value = theme[name] or global[name]
+		resolving[key] = true
+		-- A differently cased source definition still precedes a global one.
+		-- These indexes are local to this graph snapshot and built only on misses.
+		local value
+		value, theme_folded = lookup(theme, name, theme_folded)
+		if not value then
+			value, global_folded = lookup(global, name, global_folded)
+		end
 		if not value and name:sub(1, 1) == "@" and name:find("%.") then
 			value = inherited((name:gsub("%.[^.]+$", "")))
 		elseif value and value.link then
-			if value.link == name then
-				value = global[name] or {}
-				value = vim.deepcopy(value)
+			if value.link:lower() == key then
+				value, global_folded = lookup(global, name, global_folded)
+				value = vim.deepcopy(value or {})
 				value.link = nil
 			else
 				value = inherited(value.link)
@@ -471,8 +510,8 @@ local function resolver(theme, global)
 		end
 		value = vim.deepcopy(value or {})
 		value.default = nil
-		resolved[name], resolving[name] = value, nil
-		return resolved[name]
+		resolved[key], resolving[key] = value, nil
+		return resolved[key]
 	end
 	return inherited
 end
@@ -530,7 +569,7 @@ end
 
 local function restore_namespace(win, state)
 	if state.private_ns then
-		local user = user_mappings(util.get_win_option(win, "winhighlight"), state)
+		local user = user_mappings(util.get_win_option(win, "winhighlight"))
 		api.nvim_win_set_hl_ns(win, 0)
 		write_mapping(win, user)
 	else
@@ -563,7 +602,7 @@ function M.refresh(win)
 	local source = state.previous == -1 and api.nvim_get_hl_ns({}) or state.previous
 	local theme = source and source > 0 and api.nvim_get_hl(source, {}) or {}
 	if state.native and state.previous == -1 and source > 0 then
-		state.user = user_mappings(util.get_win_option(win, "winhighlight"), state)
+		state.user = user_mappings(util.get_win_option(win, "winhighlight"))
 		write_mapping(win, state.user)
 		if not current_state(win, state) or state.revision ~= revision then
 			return
@@ -587,7 +626,7 @@ function M.refresh(win)
 	local slot = state.native and state or state.slot
 	slot.suppressed, slot.bytes, slot.count = {}, 0, 0
 	if state.native then
-		state.user = user_mappings(util.get_win_option(win, "winhighlight"), state)
+		state.user = user_mappings(util.get_win_option(win, "winhighlight"))
 		api.nvim_set_hl(0, hidden, {})
 	end
 	if not state.native then
@@ -605,26 +644,26 @@ function M.refresh(win)
 		local mappings = state.native and state.user or M.user_winhighlight(win)
 		local user = {}
 		for from, to in mappings:gmatch("([^,:]+):([^,]+)") do
-			user[from] = to
+			user[from:lower()] = to
 		end
 		local inherited = resolver(theme, global)
 		local targets = { DiffDelete = "LazyVcsDiffFiller" }
 		if state.role == "old" and style.removed then
 			targets.DiffAdd = "LazyVcsDiffRemoved"
-		elseif user.DiffAdd then
+		elseif user.diffadd then
 			-- Explicit namespaces take precedence over winhighlight. Reproduce
 			-- the user's addition mapping even on a pane with no color override.
 			targets.DiffAdd = "DiffAdd"
 		end
 		for from, to in pairs(targets) do
 			if state.native then
-				if not user[from] then
-					state.diff_mappings[from] = to
+				if not user[from:lower()] then
+					state.diff_mappings[from] = aliases[to] or to
 				end
 			else
-				local value = inherited(user[from] or to)
+				local value = inherited(user[from:lower()] or to)
 				if
-					not user[from]
+					not user[from:lower()]
 					and to == "LazyVcsDiffRemoved"
 					and derived[to]
 					and not (theme[to] and next(theme[to]))
@@ -704,7 +743,7 @@ function M.release(win)
 	if state.native then
 		if same_buffer then
 			local restore = owned(win, state)
-			local user = user_mappings(util.get_win_option(win, "winhighlight"), state)
+			local user = user_mappings(util.get_win_option(win, "winhighlight"))
 			write_mapping(win, user)
 			-- Older runtimes stop activating native overlays after restoring inheritance.
 			if
@@ -742,8 +781,8 @@ local function protected(callback)
 	end
 end
 
--- A hidden buffer can restore owned values from Neovim's saved window options
--- after the last view closes. Keep its cleanup records until BufWipeout.
+-- Clean self-describing private mappings when Neovim restores saved window
+-- options, including after the last view closes.
 local cleanup_group = api.nvim_create_augroup("LazyVCSDiffHighlightCleanup", { clear = true })
 -- Filler suspension changes window options, not the semantic highlight graph.
 -- Reuse only an exact native overlay or already-owned pooled slot.
@@ -831,8 +870,7 @@ api.nvim_create_autocmd("BufLeave", {
 					style = record.style,
 				}
 			end
-			local user = user_mappings(current, state)
-			state.restored_mapping = user
+			local user = user_mappings(current)
 			if local_filler(win) == record.written then
 				write_filler(win, record.raw)
 			end
@@ -887,12 +925,6 @@ api.nvim_create_autocmd("ColorScheme", {
 		end
 		defaults(true)
 	end),
-})
-api.nvim_create_autocmd("BufWipeout", {
-	group = cleanup_group,
-	callback = function(event)
-		mapping_records[event.buf] = nil
-	end,
 })
 
 local function listen()

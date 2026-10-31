@@ -7365,6 +7365,10 @@ vim.list_extend(
 vim.list_extend(cases, require("spec_diff_style_owner")({ helpers = helpers }))
 vim.list_extend(
 	cases,
+	require("spec_diff_style_palette")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
+)
+vim.list_extend(
+	cases,
 	require("spec_diff_style_intent")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
 )
 vim.list_extend(cases, require("spec_diff_style_svn_target")({ helpers = helpers, wait_for = wait_for }))

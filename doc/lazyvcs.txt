@@ -1106,6 +1106,11 @@ lines keep DiffAdd. DiffChange and DiffText keep their theme colors. User-define
 highlight groups and explicit DiffAdd/DiffDelete winhighlight mappings win.
 Blame splits are unaffected.
 
+Live window mappings use private LazyVcsOverlayFiller/Removed aliases. Customize
+colors through LazyVcsDiffFiller/Removed. The two aliases, LazyVcsSemanticHidden,
+and pairs LazyVcsDiffOwner:LazyVcsDiffOwner<digits> are reserved for cleanup;
+other mappings, including mappings to the public groups, remain user options.
+
 Set diff_style = { enabled = false } to keep native diff colors and filler.
 Set filler = "/" for a plain hatch, or removed = false to keep native DiffAdd
 on both sides. The default filler = "auto" respects an existing diff: entry in

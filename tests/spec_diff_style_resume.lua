@@ -254,9 +254,9 @@ return function(ctx)
 				assert(raw(s.base_win) == "" and vim.go.fillchars == "eob:!,diff:z")
 			elseif setting == "style" then
 				assert(raw(s.base_win):find("diff:.", 1, true))
-				assert(not vim.wo[s.base_win].winhighlight:find("DiffAdd:LazyVcsDiffRemoved", 1, true))
+				assert(not vim.wo[s.base_win].winhighlight:find("DiffAdd:LazyVcsOverlayRemoved", 1, true))
 			else
-				assert(not vim.wo[s.base_win].winhighlight:find("DiffAdd:LazyVcsDiffRemoved", 1, true))
+				assert(not vim.wo[s.base_win].winhighlight:find("DiffAdd:LazyVcsOverlayRemoved", 1, true))
 			end
 		end)
 	end

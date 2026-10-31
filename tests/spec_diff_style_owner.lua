@@ -46,11 +46,11 @@ return function(ctx)
 	end
 	return {
 		{
-			"test_core_diff_style_deliberate_marker_mapping_survives_owned_lifetime",
+			"test_core_diff_style_deliberate_user_owner_mapping_survives_owned_lifetime",
 			guarded(function()
 				local path = file()
 				local win = api.nvim_get_current_win()
-				local user = "Normal:WarningMsg,LazyVcsDiffOwner:LazyVcsDiffOwner1"
+				local user = "Normal:WarningMsg,LazyVcsUserOwner:LazyVcsUserOwner1"
 				apply(win, "", user)
 				assert(highlighting.user_winhighlight(win) == user)
 				vim.cmd.split()

@@ -142,7 +142,7 @@ return function(ctx)
 		local win = api.nvim_get_current_win()
 		guard.apply(win, "syntax", "old")
 		-- A partial edit keeps DiffAdd owned but replaces DiffDelete explicitly.
-		set_style("eob:?,diff:z", "Normal:ErrorMsg,DiffDelete:WarningMsg,DiffAdd:LazyVcsDiffRemoved")
+		set_style("eob:?,diff:z", "Normal:ErrorMsg,DiffDelete:WarningMsg,DiffAdd:LazyVcsOverlayRemoved")
 		api.nvim_win_set_buf(win, api.nvim_create_buf(false, true))
 		guard.release(win)
 		edit(f.file)
