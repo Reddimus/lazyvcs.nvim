@@ -34,7 +34,7 @@ return function(ctx)
 				}) do
 					for _, async in ipairs({ false, true }) do
 						local f = h.make_git_fixture()
-						local rel = "literal-[?]*.txt"
+						local rel = vim.fn.has("win32") == 1 and "literal-[x].txt" or "literal-[?]*.txt"
 						local path = f.root .. "/" .. rel
 						local expected = "private contents to retain\n"
 						write(path, expected)
@@ -75,7 +75,7 @@ return function(ctx)
 								if not head then
 									h.exec({ "git", "init" }, f.root)
 								end
-								local rel = "control-[?]*.txt"
+								local rel = vim.fn.has("win32") == 1 and "control-[x].txt" or "control-[?]*.txt"
 								local path = f.root .. "/" .. rel
 								local spec = ":(literal)" .. rel
 								if head and (kind == "ordinary" or kind == "recreated") then
