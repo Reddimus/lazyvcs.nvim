@@ -73,9 +73,9 @@ local function resume(r)
 			and api.nvim_win_get_buf(r.win) == r.buf
 	end
 	if r.suspended and current() then
-		for name, value in pairs(r.written) do
+		local function apply_value(name, value)
 			if not current() then
-				return
+				return false
 			end
 			write(r.win, name, value)
 			-- A setter can release this rail, replace its owner, or leave its buffer.
@@ -83,6 +83,16 @@ local function resume(r)
 				if r.session.rail == r and windows[r.win] == r then
 					M.release(r.session)
 				end
+				return false
+			end
+			return true
+		end
+		-- Suspension restored user options, so copies need their token again first.
+		if not apply_value("statuscolumn", r.written.statuscolumn) then
+			return
+		end
+		for name, value in pairs(r.written) do
+			if name ~= "statuscolumn" and not apply_value(name, value) then
 				return
 			end
 		end

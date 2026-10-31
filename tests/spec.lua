@@ -7379,6 +7379,7 @@ vim.list_extend(cases, require("spec_diff_style_resume")({ helpers = helpers, wa
 vim.list_extend(cases, require("spec_absent_rail_reentry")())
 vim.list_extend(cases, require("spec_absent_rail_initial")())
 vim.list_extend(cases, require("spec_absent_rail_resume")())
+vim.list_extend(cases, require("spec_absent_rail_resume_copy")())
 vim.list_extend(
 	cases,
 	require("spec_absent_rail_ownership")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
