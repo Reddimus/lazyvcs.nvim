@@ -7251,6 +7251,25 @@ vim.list_extend(
 	cases,
 	require("spec_live_regressions")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
 )
+vim.list_extend(cases, require("spec_patch")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_review")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_ownership")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_reads")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_git_entries")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_physical_case")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_bundle")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_context")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_directory")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_lifecycle_paths")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_svn_descendant")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_svn_peg")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_reload_owners")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_reuse_lifetime")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_setup_lifetime")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_cancel_ownership")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_fill_precondition")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_rerun_cancel")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_cancel_display")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(
 	cases,
 	require("spec_discovery")({

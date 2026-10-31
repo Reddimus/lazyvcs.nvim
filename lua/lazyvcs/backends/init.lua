@@ -473,6 +473,11 @@ function M.name_for(path)
 	return backend and backend.name or nil
 end
 
+---Collect raw diff sections through the shared cancellable process layer.
+function M.patch_repository_async(repo, path, opts, on_done)
+	return require("lazyvcs.backends.patch").collect(repo, path, opts, on_done)
+end
+
 function M.root(path)
 	local backend, root, err = M.resolve(path)
 	if not backend then

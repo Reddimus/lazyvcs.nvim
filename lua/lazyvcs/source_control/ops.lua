@@ -1681,6 +1681,7 @@ end
 local function repo_actions(repo)
 	local actions = {
 		{ label = "Compare against base...", action = "compare" },
+		{ label = "Show patch", action = "patch" },
 		{ label = "Commit", action = "commit", enabled = not repo.incomplete },
 		{ label = "Generate Commit Message", action = "generate", enabled = ai.available() },
 		{ label = "Refresh", action = "refresh" },
@@ -1821,6 +1822,13 @@ local function execute_repo_action(state, repo, action, node)
 			)
 		end
 		return
+	end
+	if action == "patch" then
+		return require("lazyvcs").patch({
+			path = repo.root,
+			editor_winid = state.editor_winid,
+			anchor_winid = state.winid,
+		})
 	end
 	if action == "compare" then
 		if window_exists(state) then

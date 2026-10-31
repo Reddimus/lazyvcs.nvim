@@ -17,6 +17,9 @@ and this project adheres to
   space. Focus the rail to expand it, or disable `compare.collapse_absent` or
   `base_window.collapse_absent` to keep normal pane sizes.
 
+- `:LazyVCS patch [path]` opens a copyable Git or SVN patch, with untracked
+  files and a Lua callback API.
+
 ## [0.12.2] - 2026-10-31
 
 ### Fixed
