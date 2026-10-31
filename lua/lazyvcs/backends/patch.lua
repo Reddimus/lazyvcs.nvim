@@ -254,7 +254,7 @@ function M.collect(repo, path, opts, callback)
 					untracked(raw)
 				end
 				if filenames then
-					return filenames.headers(repo, task, text, guard, publish)
+					return filenames.headers(repo, task, text, guard, publish, truncated)
 				end
 				publish()
 			end)

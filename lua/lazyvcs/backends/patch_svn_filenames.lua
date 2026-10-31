@@ -8,17 +8,28 @@ function M.path(repo, path)
 	return not relative:find("[\128-\255]")
 end
 
-function M.headers(repo, task, text, guard, done)
+function M.headers(repo, task, text, guard, done, truncated)
+	local limit = #text
+	if truncated then
+		-- system_start appends one of these exact transport suffixes. Inspect
+		-- only captured command bytes; the caller still appends the original text.
+		local marker = text:find("\n%.%.%. %[truncated at least [1-9]%d* bytes%]$")
+			or text:find("\n%.%.%. %[truncated [1-9]%d* bytes%]$")
+		if marker then
+			limit = marker - 1
+		end
+	end
 	local cursor, old, new = 1, 0, 0
 	local step
 	step = function()
 		for _ = 1, 4096 do
-			if cursor > #text then
+			if cursor > limit then
 				return done()
 			end
 			local last = text:find("\n", cursor, true)
-			local line = text:sub(cursor, last and last - 1 or #text):gsub("\r$", "")
-			cursor = last and last + 1 or #text + 1
+			last = last and math.min(last, limit + 1) or limit + 1
+			local line = text:sub(cursor, last - 1):gsub("\r$", "")
+			cursor = last + 1
 			local prefix = line:sub(1, 1)
 			if old > 0 or new > 0 then
 				if prefix == "+" then
