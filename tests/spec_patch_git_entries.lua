@@ -1,4 +1,16 @@
 return function(ctx)
+	local fs, identity = require("lazyvcs.backends.patch_io"), require("lazyvcs.backends.patch_path")
+	local function metadata(path)
+		local value, failure, done
+		fs.fs_lstat(path, function(err, entry)
+			failure, value, done = err, entry, true
+		end)
+		ctx.wait_for(function()
+			return done
+		end, "Git entry fixture metadata did not settle", 15000)
+		assert(value, failure)
+		return value
+	end
 	local h, uv, util = ctx.helpers, vim.uv, require("lazyvcs.util")
 	local patch = require("lazyvcs.patch")
 	local cases = {}
@@ -136,7 +148,7 @@ return function(ctx)
 	end)
 	add("same_inode_edit_before_child_remains_native", function()
 		local f, start = fixture(), util.system_start
-		local before = assert(uv.fs_lstat(f.leaf))
+		local before = metadata(f.leaf)
 		---@diagnostic disable-next-line: duplicate-set-field
 		util.system_start = function(args, opts, callback)
 			if child(args) then
@@ -148,8 +160,8 @@ return function(ctx)
 		wait(function()
 			return out.done
 		end)
-		local after = assert(uv.fs_lstat(f.leaf))
-		assert(before.dev == after.dev and before.ino == after.ino)
+		local after = metadata(f.leaf)
+		assert(identity.same(before, after))
 		assert(out.text and out.text:find("+updated same entry", 1, true), out.err)
 	end)
 	add("cancel_after_child_before_metadata_drops_late_callback", function()

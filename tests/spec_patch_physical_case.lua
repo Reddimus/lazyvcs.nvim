@@ -1,6 +1,18 @@
 return function(ctx)
 	local h, uv, util = ctx.helpers, vim.uv, require("lazyvcs.util")
+	local fs, identity = require("lazyvcs.backends.patch_io"), require("lazyvcs.backends.patch_path")
 	local cases, links = {}, {}
+	local function metadata(path)
+		local value, failure, done
+		fs.fs_lstat(path, function(err, entry)
+			failure, value, done = err, entry, true
+		end)
+		ctx.wait_for(function()
+			return done
+		end, "physical case fixture metadata did not settle", 15000)
+		assert(value, failure)
+		return value
+	end
 	local function link(target, path)
 		assert(uv.fs_symlink(target, path, vim.fn.has("win32") == 1 and { junction = true } or nil))
 		links[#links + 1] = path
@@ -48,12 +60,12 @@ return function(ctx)
 			f.root = parent .. "/owned"
 			local other = parent .. "/OWNED"
 			local made, why = uv.fs_mkdir(other, 448)
-			local first, second = assert(uv.fs_stat(f.root)), uv.fs_stat(other)
-			if second and first.dev == second.dev and first.ino == second.ino then
+			local first, second = metadata(f.root), metadata(other)
+			if identity.same(first, second) then
 				error({ lazyvcs_skip = "fixture filesystem cannot create distinct case-only directories" }, 0)
 			end
 			assert(made, why)
-			assert(second and (first.dev ~= second.dev or first.ino ~= second.ino))
+			assert(identity.identity(first) and identity.identity(second) and not identity.same(first, second))
 			vim.fn.mkdir(f.root .. "/loose")
 			vim.fn.mkdir(other .. "/loose")
 			h.write_file(f.root .. "/loose/child.txt", "original owned bytes\n")
