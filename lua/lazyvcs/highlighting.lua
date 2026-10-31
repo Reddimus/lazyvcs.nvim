@@ -662,13 +662,11 @@ function M.refresh(win)
 				end
 			else
 				local value = inherited(user[from:lower()] or to)
-				if
-					not user[from:lower()]
-					and to == "LazyVcsDiffRemoved"
-					and derived[to]
-					and not (theme[to] and next(theme[to]))
-				then
-					value = inherited("DiffDelete")
+				if not user[from:lower()] and to == "LazyVcsDiffRemoved" and derived[to] then
+					local themed = lookup(theme, to)
+					if not (themed and next(themed)) then
+						value = inherited("DiffDelete")
+					end
 				end
 				define(slot, from, value)
 			end

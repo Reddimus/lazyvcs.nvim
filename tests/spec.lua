@@ -7357,6 +7357,7 @@ vim.list_extend(cases, require("spec_blame_lifecycle")({ helpers = helpers, wait
 vim.list_extend(cases, require("spec_blame_history")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_metadata")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_highlighting_defaults")())
+vim.list_extend(cases, require("spec_palette_source_case")())
 vim.list_extend(cases, require("spec_diff_style")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))
 vim.list_extend(
 	cases,
