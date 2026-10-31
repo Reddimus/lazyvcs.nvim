@@ -1,5 +1,7 @@
 return function(ctx)
 	local uv, h = vim.uv, ctx.helpers
+	local fs = require("lazyvcs.backends.patch_io")
+	local paths = require("lazyvcs.backends.patch_path")
 	local parent = require("lazyvcs.backends.patch_path").parent
 	local Task = require("lazyvcs.backends.task")
 	local cases = {}
@@ -27,11 +29,11 @@ return function(ctx)
 		cases[#cases + 1] = {
 			"test_patch_parent_alias_" .. name,
 			function()
-				local realpath, lstat = uv.fs_realpath, uv.fs_lstat
+				local realpath, lstat = uv.fs_realpath, fs.fs_lstat
 				local ok, err = xpcall(fn, function(e)
 					return type(e) == "table" and e or debug.traceback(e, 2)
 				end)
-				uv.fs_realpath, uv.fs_lstat = realpath, lstat
+				uv.fs_realpath, fs.fs_lstat = realpath, lstat
 				h.cleanup()
 				assert(ok, err)
 			end,
@@ -39,8 +41,9 @@ return function(ctx)
 	end
 	case("native_exact_path_keeps_no_extra_lstat", function()
 		local dir = h.tempdir()
-		local count, lstat = 0, uv.fs_lstat
-		uv.fs_lstat = function(...)
+		local count, lstat = 0, fs.fs_lstat
+		---@diagnostic disable-next-line: duplicate-set-field
+		fs.fs_lstat = function(...)
 			count = count + 1
 			---@diagnostic disable-next-line: return-type-mismatch
 			return lstat(...)
@@ -67,8 +70,11 @@ return function(ctx)
 		"relative_input",
 		"cancel_lexical",
 		"cancel_physical",
+		"native_tokens",
+		"token_change",
 	}) do
-		case("recorded_macos_" .. mode, function()
+		local native_tokens = mode == "native_tokens" or mode == "token_change"
+		case((native_tokens and "controlled_windows_" or "recorded_macos_") .. mode, function()
 			local root = "/recorded/mac-native-root"
 			local lexical, physical = root .. "/caf\195\169", root .. "/cafe\204\129"
 			local first_lexical, first_physical = lexical, physical
@@ -89,12 +95,25 @@ return function(ctx)
 					callback(nil, physical)
 				end)
 			end
-			uv.fs_lstat = function(path, callback)
+			---@diagnostic disable-next-line: duplicate-set-field
+			fs.fs_lstat = function(path, callback)
 				calls[#calls + 1] = path
 				assert(
 					path == first_lexical or path == first_physical or deep and (path == lexical or path == physical)
 				)
 				local stat = { type = "directory", dev = 16777228, ino = 3539091 }
+				if native_tokens then
+					stat = {
+						type = "directory",
+						identity = "windows-file-id-128",
+						dev = "0000000054cba874",
+						ino = "000000000000000000000000003602d3",
+						directory_reparse = false,
+					}
+					if mode == "token_change" and path == physical then
+						stat.ino = "000000000000000000000000003602d4"
+					end
+				end
 				if deep and (path == lexical or path == physical) then
 					stat.ino = 3539092
 				end
@@ -138,7 +157,7 @@ return function(ctx)
 				wait(function()
 					return result.done
 				end)
-				if mode == "directory" or mode == "deep_directory" then
+				if mode == "directory" or mode == "deep_directory" or mode == "native_tokens" then
 					assert(result.ok and not result.err, result.err)
 					assert(#calls == (deep and 4 or 2), "alias check did not cover each differing directory prefix")
 				else
@@ -158,8 +177,7 @@ return function(ctx)
 			end
 			assert(linked, err)
 			local selected, target = deep and alias .. "/child" or alias, deep and old .. "/child" or old
-			local a, b = assert(uv.fs_stat(selected)), assert(uv.fs_stat(target))
-			assert(a.dev == b.dev and a.ino == b.ino, "fixture must reach the same original directory")
+			assert(uv.fs_realpath(selected) == uv.fs_realpath(target), "fixture must reach the same original directory")
 			local _, result = request(selected)
 			wait(function()
 				return result.done
@@ -173,8 +191,19 @@ return function(ctx)
 		local a, b = root .. "/first", root .. "/second"
 		vim.fn.mkdir(a)
 		vim.fn.mkdir(b)
-		local first, second = assert(uv.fs_lstat(a)), assert(uv.fs_lstat(b))
-		assert(first.dev ~= second.dev or first.ino ~= second.ino)
+		local first, second
+		fs.fs_lstat(a, function(err, entry)
+			assert(not err, err)
+			first = entry
+		end)
+		fs.fs_lstat(b, function(err, entry)
+			assert(not err, err)
+			second = entry
+		end)
+		wait(function()
+			return first ~= nil and second ~= nil
+		end)
+		assert(paths.identity(first) and paths.identity(second) and not paths.same(first, second))
 		-- The canonical result is controlled; directory identities are native.
 		---@diagnostic disable: missing-return
 		uv.fs_realpath = function(path, callback)

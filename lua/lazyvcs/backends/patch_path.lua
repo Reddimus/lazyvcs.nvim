@@ -77,12 +77,7 @@ function M.parent(task, parent, guard, done)
 				component = component - 1
 			end
 			local function directory(entry)
-				return entry
-					and entry.type == "directory"
-					and type(entry.dev) == "number"
-					and entry.dev >= 0
-					and type(entry.ino) == "number"
-					and entry.ino > 0
+				return entry and entry.type == "directory" and M.identity(entry)
 			end
 			-- A native spelling alias is valid only when every differing prefix
 			-- names the same directory without traversing a link or junction.
@@ -94,19 +89,14 @@ function M.parent(task, parent, guard, done)
 				if component == 0 then
 					return done()
 				end
-				uv.fs_lstat(lexical[component], function(left_err, left)
+				fs.fs_lstat(lexical[component], function(left_err, left)
 					vim.schedule(guard(function()
 						if left_err or not directory(left) then
 							return fail(left_err)
 						end
-						uv.fs_lstat(canonical[component], function(right_err, right)
+						fs.fs_lstat(canonical[component], function(right_err, right)
 							vim.schedule(guard(function()
-								if
-									right_err
-									or not directory(right)
-									or left.dev ~= right.dev
-									or left.ino ~= right.ino
-								then
+								if right_err or not directory(right) or not M.same(left, right) then
 									return fail(right_err)
 								end
 								component = component - 1
