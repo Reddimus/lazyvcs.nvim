@@ -705,7 +705,6 @@ function M.resolve_diff_target(target)
 		end
 		if change_kind == "deleted" or local_item == "deleted" or local_item == "missing" then
 			comparison.right = empty_side()
-			comparison.presence.right = (change_kind == "deleted" or local_item == "deleted") and "absent" or "unknown"
 		else
 			comparison.right = worktree_side(path)
 			comparison.editable_side = "right"
@@ -797,6 +796,28 @@ function M.load_diff_target_async(target, on_done, opts)
 						task:finish(comparison)
 					end, { root = comparison.root }))
 				end
+			elseif
+				comparison.kind == "svn_local"
+				and not comparison.property_only
+				and (comparison.right.source or {}).kind == "empty"
+			then
+				pending = 1
+				-- Scheduled deletion can retain a file or link (--keep-local).
+				-- Preserve the logical empty snapshot; only ENOENT proves absence.
+				comparison.presence = comparison.presence or { left = "unknown", right = "unknown" }
+				comparison.presence.right = "unknown"
+				task:set_deadline(opts.timeout_ms or ASYNC_TIMEOUT_MS, "SVN comparison timed out")
+				vim.uv.fs_lstat(comparison.path, function(err, stat)
+					vim.schedule(function()
+						if not task:is_active() then
+							return
+						end
+						if not stat and err and tostring(err):match("^ENOENT[: ]") then
+							comparison.presence.right = "absent"
+						end
+						task:finish(comparison)
+					end)
+				end)
 			else
 				task:finish(comparison)
 			end

@@ -5,6 +5,7 @@ local windows, pool = {}, {}
 local group
 local hidden = "LazyVcsSemanticHidden"
 local writing = false
+local filler_writes = 0
 local max_overlay_bytes = 256 * 1024
 local mapping_records, filler_slots = {}, {}
 local owner_source, owner_prefix = "LazyVcsDiffOwner", "LazyVcsDiffOwner"
@@ -56,6 +57,23 @@ local function local_filler(win)
 	return api.nvim_get_option_value("fillchars", { win = win, scope = "local" })
 end
 
+local function current_state(win, state)
+	return windows[win] == state and api.nvim_win_is_valid(win) and api.nvim_win_get_buf(win) == state.buf
+end
+
+local function current_filler(win, state, record)
+	return current_state(win, state) and state.filler == record and record.slot.record == record
+end
+
+local function write_filler(win, value)
+	filler_writes = filler_writes + 1
+	local ok, err = pcall(util.set_win_option, win, "fillchars", value)
+	filler_writes = filler_writes - 1
+	if not ok then
+		error(err)
+	end
+end
+
 -- Also used while projecting the pre-diff window into a saved session.
 function M.user_fillchars(win)
 	local value = local_filler(win)
@@ -76,6 +94,9 @@ local function apply_filler(win, state, style)
 	end
 	local previous_slot = state.filler and state.filler.slot
 	release_filler(win, state)
+	if not current_state(win, state) then
+		return
+	end
 	local raw = local_filler(win)
 	local global = api.nvim_get_option_value("fillchars", { scope = "global" })
 	local effective = raw ~= "" and raw or global
@@ -93,14 +114,6 @@ local function apply_filler(win, state, style)
 	end
 	local prefix = #entries > 0 and table.concat(entries, ",") .. "," or ""
 	local value = prefix .. "diff:" .. (style.filler == "auto" and "╱" or style.filler)
-	local ok, err = pcall(util.set_win_option, win, "fillchars", value)
-	if not ok then
-		if not tostring(err):find("E1512", 1, true) then
-			error(err)
-		end
-		value = prefix .. "diff:/"
-		util.set_win_option(win, "fillchars", value)
-	end
 	local slot, id
 	for index, candidate in ipairs(filler_slots) do
 		if candidate == previous_slot or not previous_slot and not candidate.record then
@@ -129,12 +142,27 @@ local function apply_filler(win, state, style)
 		role = state.role,
 	}
 	slot.record = state.filler
-	-- Equal fillchars writes do not identify their raw origin. This inert mapping
+	-- Value equality cannot identify a copied window's raw origin. This inert mapping
 	-- follows native clones even when WinNew regenerates their namespace ID.
+	local record = state.filler
 	local mapping = util.get_win_option(win, "winhighlight")
-	state.filler.user = mapping
-	state.filler.mapping = (mapping ~= "" and mapping .. "," or "") .. owner_source .. ":" .. state.owner_tag
-	write_mapping(win, state.filler.mapping)
+	record.user = mapping
+	record.mapping = (mapping ~= "" and mapping .. "," or "") .. owner_source .. ":" .. state.owner_tag
+	-- Publish before either observable write so nested cleanup can settle it.
+	write_mapping(win, record.mapping)
+	if not current_filler(win, state, record) then
+		return
+	end
+	local ok, err = pcall(write_filler, win, value)
+	if not ok then
+		if not tostring(err):find("E1512", 1, true) then
+			error(err)
+		end
+		if current_filler(win, state, record) then
+			record.written = prefix .. "diff:/"
+			write_filler(win, record.written)
+		end
+	end
 end
 
 local function explicit(win)
@@ -217,22 +245,34 @@ local function buffer_mappings(win, value)
 	return user_mappings(value)
 end
 
-local function strip_window(win)
-	if not windows[win] then
+local function strip_window(win, preserve_filler, copied)
+	if api.nvim_win_is_valid(win) and not windows[win] then
+		local buf = api.nvim_win_get_buf(win)
 		local raw = local_filler(win)
-		local original = M.user_fillchars(win)
-		if raw ~= original then
-			util.set_win_option(win, "fillchars", original)
+		local mapping = util.get_win_option(win, "winhighlight")
+		if copied and (copied.buf ~= buf or copied.mapping ~= mapping) then
+			return
+		end
+		local original = copied and raw == copied.record.written and copied.record.raw or M.user_fillchars(win)
+		if raw ~= original and not preserve_filler then
+			write_filler(win, original)
+		end
+		if not api.nvim_win_is_valid(win) or api.nvim_win_get_buf(win) ~= buf or windows[win] then
+			return
 		end
 		local value = util.get_win_option(win, "winhighlight")
 		---@cast value string
 		if value:find(hidden, 1, true) or value:find(":LazyVcsDiff", 1, true) then
-			local origin = marker_record(value, api.nvim_win_get_buf(win))
+			local retained = copied and value == copied.mapping and copied
+			local origin = retained and retained.record or marker_record(value, api.nvim_win_get_buf(win))
 			local native = api.nvim_get_hl_ns({ winid = win }) > 0 and not explicit(win)
-			local user = buffer_mappings(win, value)
+			local user = retained and retained.user or buffer_mappings(win, value)
 			write_mapping(win, user)
 			if
-				native
+				api.nvim_win_is_valid(win)
+				and api.nvim_win_get_buf(win) == buf
+				and not windows[win]
+				and native
 				and user == ""
 				and (vim.version.ge(vim.version(), { 0, 11, 7 }) or origin and origin.state.previous == -1)
 			then
@@ -244,9 +284,24 @@ local function strip_window(win)
 	end
 end
 
-strip_unowned = function()
-	for _, win in ipairs(api.nvim_list_wins()) do
-		strip_window(win)
+strip_unowned = function(record)
+	local wins, copies = api.nvim_list_wins(), {}
+	if record then
+		-- Nested release can reuse this slot before later copies are visited.
+		-- Capture only this lifetime's copies before the first observable restore.
+		for _, win in ipairs(wins) do
+			if api.nvim_win_is_valid(win) and not windows[win] then
+				local buf = api.nvim_win_get_buf(win)
+				local mapping = util.get_win_option(win, "winhighlight")
+				if marker_record(mapping, buf) == record then
+					copies[win] =
+						{ buf = buf, mapping = mapping, record = record, user = buffer_mappings(win, mapping) }
+				end
+			end
+		end
+	end
+	for _, win in ipairs(wins) do
+		strip_window(win, false, copies[win])
 	end
 end
 
@@ -255,22 +310,43 @@ release_filler = function(win, state)
 	if not record then
 		return
 	end
-	-- Clean all visible copies while this lifetime is still resolvable. BufLeave
-	-- removes the same write before Neovim saves hidden window options.
-	strip_unowned()
-	if api.nvim_win_is_valid(win) and api.nvim_win_get_buf(win) == record.buf then
-		if local_filler(win) == record.written then
-			util.set_win_option(win, "fillchars", record.raw)
+	local releasing, restoring = record.releasing, record.restoring
+	record.releasing = true
+	local ok, err = pcall(function()
+		if not releasing then
+			strip_unowned(record)
 		end
-		local current = util.get_win_option(win, "winhighlight")
-		local user = user_mappings(current, state)
-		state.restored_mapping = user
-		if current ~= user then
-			write_mapping(win, user)
+		if state.filler ~= record or record.slot.record ~= record then
+			return
 		end
+		if current_state(win, state) then
+			if not restoring and local_filler(win) == record.written then
+				-- During copy cleanup, an inner release still restores this origin.
+				-- During this setter, its new raw value is already visible to callbacks.
+				record.restoring = true
+				write_filler(win, record.raw)
+			end
+			if not current_filler(win, state, record) then
+				return
+			end
+			local current_mapping = util.get_win_option(win, "winhighlight")
+			local user = user_mappings(current_mapping, state)
+			state.restored_mapping = user
+			if current_mapping ~= user then
+				write_mapping(win, user)
+			end
+		end
+		if state.filler == record then
+			state.filler, state.owner_tag = nil, nil
+		end
+		if record.slot.record == record then
+			record.slot.record = nil
+		end
+	end)
+	record.releasing, record.restoring = releasing, restoring
+	if not ok then
+		error(err)
 	end
-	state.filler, state.owner_tag = nil, nil
-	record.slot.record = nil
 end
 
 local function overlay(win, state)
@@ -299,7 +375,9 @@ local function overlay(win, state)
 	if current ~= state.overlay then
 		write_mapping(win, state.overlay)
 	end
-	state.native_ns = api.nvim_get_hl_ns({ winid = win })
+	if current_state(win, state) then
+		state.native_ns = api.nvim_get_hl_ns({ winid = win })
+	end
 end
 
 local function owned(win, state)
@@ -470,13 +548,26 @@ function M.refresh(win)
 	end
 	defaults()
 	local style = state.style
+	local revision = state.revision
 	apply_filler(win, state, style)
+	if not current_state(win, state) then
+		if windows[win] == state then
+			M.release(win)
+		end
+		return
+	end
+	if state.revision ~= revision then
+		return
+	end
 	local global = api.nvim_get_hl(0, {})
 	local source = state.previous == -1 and api.nvim_get_hl_ns({}) or state.previous
 	local theme = source and source > 0 and api.nvim_get_hl(source, {}) or {}
 	if state.native and state.previous == -1 and source > 0 then
 		state.user = user_mappings(util.get_win_option(win, "winhighlight"), state)
 		write_mapping(win, state.user)
+		if not current_state(win, state) or state.revision ~= revision then
+			return
+		end
 		restore_namespace(win, state)
 		state.native, state.preserved = nil, true
 	end
@@ -580,8 +671,14 @@ function M.refresh(win)
 	end
 	if state.native then
 		overlay(win, state)
+		if not current_state(win, state) or state.revision ~= revision then
+			return
+		end
 		if state.native_ns <= 0 and next(state.suppressed) then
 			write_mapping(win, state.user)
+			if not current_state(win, state) or state.revision ~= revision then
+				return
+			end
 			state.native, state.preserved = nil, true
 			restore_namespace(win, state)
 			return M.refresh(win)
@@ -596,26 +693,40 @@ function M.release(win)
 	if not state then
 		return
 	end
+	local nested_filler_release = state.filler and state.filler.releasing
 	invalidate(state)
 	release_filler(win, state)
+	if windows[win] ~= state then
+		return
+	end
+	local same_buffer = current_state(win, state)
 	windows[win] = nil
 	if state.native then
-		if api.nvim_win_is_valid(win) then
+		if same_buffer then
 			local restore = owned(win, state)
 			local user = user_mappings(util.get_win_option(win, "winhighlight"), state)
 			write_mapping(win, user)
 			-- Older runtimes stop activating native overlays after restoring inheritance.
-			if restore and user == "" and vim.version.ge(vim.version(), { 0, 11, 7 }) then
+			if
+				not windows[win]
+				and api.nvim_win_is_valid(win)
+				and api.nvim_win_get_buf(win) == state.buf
+				and restore
+				and user == ""
+				and vim.version.ge(vim.version(), { 0, 11, 7 })
+			then
 				restore_namespace(win, state)
 			end
 		end
-	elseif not state.preserved and owned(win, state) then
+	elseif same_buffer and not state.preserved and owned(win, state) then
 		restore_namespace(win, state)
 	end
 	if state.slot then
 		state.slot.busy = false
 	end
-	strip_unowned()
+	if not nested_filler_release then
+		strip_unowned()
+	end
 	if not next(windows) and group then
 		api.nvim_del_augroup_by_id(group)
 		group = nil
@@ -660,7 +771,7 @@ local function resettle(win, state)
 	local saved = state.suspension
 	state.suspension = nil
 	if saved and unchanged(win, state, saved, saved.raw, saved.suspended_ns, saved.user) then
-		util.set_win_option(win, "fillchars", saved.filler.written)
+		write_filler(win, saved.filler.written)
 		if unchanged(win, state, saved, saved.filler.written, saved.suspended_ns, saved.user) then
 			write_mapping(win, saved.overlay)
 			if unchanged(win, state, saved, saved.filler.written, saved.active_ns, saved.overlay) then
@@ -669,7 +780,9 @@ local function resettle(win, state)
 			end
 		end
 	end
-	M.refresh(win)
+	if current_state(win, state) then
+		M.refresh(win)
+	end
 end
 
 local function resume_filler(win, state)
@@ -720,11 +833,17 @@ api.nvim_create_autocmd("BufLeave", {
 			end
 			local user = user_mappings(current, state)
 			state.restored_mapping = user
-			if local_filler(win) == state.filler.written then
-				util.set_win_option(win, "fillchars", state.filler.raw)
+			if local_filler(win) == record.written then
+				write_filler(win, record.raw)
+			end
+			if not current_filler(win, state, record) then
+				return
 			end
 			if current ~= user then
 				write_mapping(win, user)
+			end
+			if not current_filler(win, state, record) then
+				return
 			end
 			record.suspended = true
 			if saved and windows[win] == state and state.filler == record and state.revision == saved.revision then
@@ -781,7 +900,12 @@ local function listen()
 		return
 	end
 	group = api.nvim_create_augroup("LazyVCSDiffHighlighting", { clear = true })
-	api.nvim_create_autocmd({ "WinEnter", "WinNew" }, { group = group, callback = protected(strip_unowned) })
+	api.nvim_create_autocmd(
+		{ "WinEnter", "WinNew" },
+		{ group = group, callback = protected(function()
+			strip_unowned()
+		end) }
+	)
 	local function schedule(win, state, mapping_changed)
 		invalidate(state)
 		state.mapping_changed = state.mapping_changed or mapping_changed
@@ -833,6 +957,25 @@ local function listen()
 			local state = windows[win]
 			if state then
 				schedule(win, state, true)
+			end
+		end),
+	})
+	api.nvim_create_autocmd("OptionSet", {
+		group = group,
+		pattern = "fillchars",
+		callback = protected(function()
+			if filler_writes > 0 or vim.v.option_command == "setglobal" then
+				return
+			end
+			local win = api.nvim_get_current_win()
+			local state = windows[win]
+			if state and current_state(win, state) and state.filler then
+				-- Equal writes are still explicit local preferences. Session projection
+				-- and copied windows must use this latest raw value too.
+				state.filler.raw = local_filler(win)
+				invalidate(state)
+			elseif not state then
+				strip_window(win, true)
 			end
 		end),
 	})
@@ -938,7 +1081,9 @@ function M.apply(win, policy, role, style)
 		}
 		windows[win] = state
 		M.refresh(win)
-		listen()
+		if current_state(win, state) then
+			listen()
+		end
 		return
 	end
 	windows[win] = {
@@ -950,7 +1095,9 @@ function M.apply(win, policy, role, style)
 		style = style,
 	}
 	M.refresh(win)
-	listen()
+	if windows[win] and current_state(win, windows[win]) then
+		listen()
+	end
 end
 
 return M
