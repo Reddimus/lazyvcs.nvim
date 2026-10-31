@@ -76,9 +76,15 @@ function M.collect(repo, path, opts, callback)
 			end
 			-- The process wrapper passes each pathspec literally, including glob bytes.
 			git({ "ls-files", "-z", "--others", "--exclude-standard", "--", relative }, function(raw)
-				local files = vim.split(raw, "\0", { plain = true, trimempty = true })
-				if #files > 10000 then
-					return task:finish(nil, "More than 10000 untracked files; narrow the patch path")
+				local files = {}
+				for file in raw:gmatch("[^%z]+") do
+					-- Git marks nested repository directories with a trailing slash.
+					if file:sub(-1) ~= "/" then
+						files[#files + 1] = file
+						if #files > 10000 then
+							return task:finish(nil, "More than 10000 untracked files; narrow the patch path")
+						end
+					end
 				end
 				table.sort(files)
 				local index = 0

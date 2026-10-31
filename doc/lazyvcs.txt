@@ -802,8 +802,9 @@ before application.
 
 Git compares staged and unstaged changes against HEAD, or the empty tree for an
 unborn branch. SVN includes working-copy changes and scheduled additions.
-Nonignored untracked files are included by default. Set patch.include_untracked
-to false to omit them. Git retains its binary-file diagnostics without binary
+Nonignored untracked files are included by default. Git untracked additions stop
+at nested repository boundaries. Set patch.include_untracked to false to omit
+untracked files. Git retains its binary-file diagnostics without binary
 payloads. SVN unversioned text files use added-file sections, including missing
 final-newline markers. Unversioned binary files use SVN's binary diagnostic.
 Binary diagnostics do not contain the bytes needed to apply binary changes.
