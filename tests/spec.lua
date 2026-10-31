@@ -7255,6 +7255,7 @@ vim.list_extend(cases, require("spec_patch")({ helpers = helpers, wait_for = wai
 vim.list_extend(cases, require("spec_patch_review")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_patch_ownership")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_patch_reads")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_bundle")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(
 	cases,
 	require("spec_discovery")({

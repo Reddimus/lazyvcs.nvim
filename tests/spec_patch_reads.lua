@@ -88,13 +88,13 @@ return function(ctx)
 							return close(fd, cb)
 						end
 						---@diagnostic disable-next-line: duplicate-set-field
-						reader.read = function(task, file, limit, guard, done)
+						reader.read = function(task, file, limit, guard, done, identity)
 							if file == path then
 								held = function()
-									read(task, file, limit, guard, done)
+									read(task, file, limit, guard, done, identity)
 								end
 							else
-								return read(task, file, limit, guard, done)
+								return read(task, file, limit, guard, done, identity)
 							end
 						end
 						local result = {}

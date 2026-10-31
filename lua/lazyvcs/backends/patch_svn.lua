@@ -27,7 +27,7 @@ function M.section(rel, text)
 	return table.concat(parts)
 end
 
-function M.read(task, file, limit, guard, done)
+function M.read(task, file, limit, guard, done, expected)
 	local function fail(err)
 		vim.schedule(guard(function()
 			task:finish(nil, err)
@@ -52,60 +52,96 @@ function M.read(task, file, limit, guard, done)
 		if not identified(entry) then
 			return fail(stat_err or "Patch requires a regular file with a verifiable identity")
 		end
-		local constants = uv.constants
-		-- Nonblocking protects a late FIFO; no-follow rejects late symlinks where
-		-- supported. The descriptor identity check also protects portable fallbacks.
-		local flags = bit.bor(constants.O_RDONLY, constants.O_NONBLOCK or 0, constants.O_NOFOLLOW or 0)
-		uv.fs_open(file, flags, 438, function(open_err, fd)
-			if not fd then
-				return fail(open_err)
-			end
-			local chunks, size = {}, 0
-			local function close(err, binary)
-				-- Only the current I/O callback closes its descriptor. Cancellation must
-				-- not close it while libuv still owns an in-flight operation.
-				uv.fs_close(fd, function(close_err)
-					vim.schedule(guard(function()
-						if err or close_err then
-							return task:finish(nil, err or close_err)
-						end
-						done(table.concat(chunks), not binary and size >= limit)
-					end))
-				end)
-			end
-			if not task:is_active() then
-				return close()
-			end
-			uv.fs_fstat(fd, function(fd_err, stat)
+		if expected and (not identified(expected) or entry.dev ~= expected.dev or entry.ino ~= expected.ino) then
+			return fail("Patch file changed during collection; retry or narrow the patch path")
+		end
+		local function open()
+			local constants = uv.constants
+			-- Nonblocking protects a late FIFO; no-follow rejects late symlinks where
+			-- supported. The descriptor identity check also protects portable fallbacks.
+			local flags = bit.bor(constants.O_RDONLY, constants.O_NONBLOCK or 0, constants.O_NOFOLLOW or 0)
+			uv.fs_open(file, flags, 438, function(open_err, fd)
+				if not fd then
+					return fail(open_err)
+				end
+				local chunks, size = {}, 0
+				local function close(err, binary)
+					-- Only the current I/O callback closes its descriptor. Cancellation must
+					-- not close it while libuv still owns an in-flight operation.
+					uv.fs_close(fd, function(close_err)
+						vim.schedule(guard(function()
+							if err or close_err then
+								return task:finish(nil, err or close_err)
+							end
+							done(table.concat(chunks), not binary and size >= limit)
+						end))
+					end)
+				end
 				if not task:is_active() then
 					return close()
 				end
-				if not identified(stat) or stat.dev ~= entry.dev or stat.ino ~= entry.ino then
-					return close(fd_err or "Patch file changed before it could be read")
-				end
-				local read
-				read = function()
-					if size >= limit then
+				uv.fs_fstat(fd, function(fd_err, stat)
+					if not task:is_active() then
 						return close()
 					end
-					uv.fs_read(fd, math.min(65536, limit - size), size, function(err, bytes)
-						local binary = bytes and size == 0 and bytes:sub(1, 8192):find("\0", 1, true)
-						if bytes then
-							chunks[#chunks + 1], size = bytes, size + #bytes
+					if not identified(stat) or stat.dev ~= entry.dev or stat.ino ~= entry.ino then
+						return close(fd_err or "Patch file changed before it could be read")
+					end
+					local read
+					read = function()
+						if size >= limit then
+							return close()
 						end
-						if task:is_active() and not err and bytes and bytes ~= "" and size < limit and not binary then
-							return read()
-						end
-						close(err, binary)
-					end)
-				end
-				read()
+						uv.fs_read(fd, math.min(65536, limit - size), size, function(err, bytes)
+							local binary = bytes and size == 0 and bytes:sub(1, 8192):find("\0", 1, true)
+							if bytes then
+								chunks[#chunks + 1], size = bytes, size + #bytes
+							end
+							if
+								task:is_active()
+								and not err
+								and bytes
+								and bytes ~= ""
+								and size < limit
+								and not binary
+							then
+								return read()
+							end
+							close(err, binary)
+						end)
+					end
+					read()
+				end)
 			end)
+		end
+		if not expected then
+			return open()
+		end
+		-- A parent may have become a directory link before the walker saw its
+		-- child. Compare physical ancestry too, without following it for content.
+		uv.fs_realpath(expected.parent, function(parent_err, physical)
+			vim.schedule(guard(function()
+				if not physical then
+					return task:finish(nil, parent_err)
+				end
+				physical = util.normalize_literal_path(physical)
+				local parent = expected.parent
+				if expected.ignorecase then
+					physical, parent = physical:lower(), parent:lower()
+				end
+				if physical ~= parent then
+					return task:finish(nil, "Patch file parent changed; retry or narrow the patch path")
+				end
+				open()
+			end))
 		end)
 	end)
 end
 
-function M.files(task, repo, paths, guard, done, switched)
+function M.files(task, repo, paths, guard, done, switched, ignorecase)
+	if ignorecase == nil then
+		ignorecase = vim.o.fileignorecase
+	end
 	-- The shared walker bounds discovered children; also bound a flat initial list.
 	if #paths > 10000 then
 		return task:finish(nil, "Too many unversioned paths; narrow the patch path")
@@ -121,18 +157,25 @@ function M.files(task, repo, paths, guard, done, switched)
 		task,
 		repo,
 		entries,
-		guard(function(files, err)
+		guard(function(files, err, identities)
 			if not files then
 				return task:finish(nil, err)
 			end
-			local absolute = {}
+			local absolute, expected = {}, {}
 			for _, path in ipairs(files) do
-				absolute[#absolute + 1] = util.normalize_literal_path(repo.root .. "/" .. path)
+				local file = util.normalize_literal_path(repo.root .. "/" .. path)
+				local identity = identities and identities[path]
+				if not identity then
+					return task:finish(nil, "Patch file identity unavailable")
+				end
+				absolute[#absolute + 1] = file
+				expected[file] =
+					vim.tbl_extend("force", identity, { parent = vim.fs.dirname(file), ignorecase = ignorecase })
 			end
 			table.sort(absolute)
-			done(absolute)
+			done(absolute, expected)
 		end),
-		{ files_only = true, missing_is_error = true }
+		{ files_only = true, missing_is_error = true, capture_identity = true }
 	)
 end
 

@@ -5,7 +5,8 @@ local xml = require("lazyvcs.backends.xml")
 local M = {}
 
 function M.collect(repo, path, opts, callback)
-	local task = require("lazyvcs.backends.task").new(callback)
+	local task = require("lazyvcs.backends.comparison").task(callback)
+	local ignorecase = vim.o.fileignorecase
 	local function guard(fn)
 		return function(...)
 			if not task:is_active() then
@@ -36,6 +37,10 @@ function M.collect(repo, path, opts, callback)
 					and not value.cancelled
 					and not value.timed_out
 					and (value.signal or 0) == 0
+					-- Git also returns 1 for some no-index access failures. LC_MESSAGES=C
+					-- makes native error diagnostics distinguishable from valid warnings.
+					and not ("\n" .. (value.stderr or "")):find("\nerror:", 1, true)
+					and not ("\n" .. (value.stderr or "")):find("\nfatal:", 1, true)
 				then
 					err = nil
 				end
@@ -72,6 +77,9 @@ function M.collect(repo, path, opts, callback)
 			-- The process wrapper passes each pathspec literally, including glob bytes.
 			git({ "ls-files", "-z", "--others", "--exclude-standard", "--", relative }, function(raw)
 				local files = vim.split(raw, "\0", { plain = true, trimempty = true })
+				if #files > 10000 then
+					return task:finish(nil, "More than 10000 untracked files; narrow the patch path")
+				end
 				table.sort(files)
 				local index = 0
 				local function next_file()
@@ -160,7 +168,7 @@ function M.collect(repo, path, opts, callback)
 				return finish()
 			end
 			local svn = require("lazyvcs.backends.patch_svn")
-			svn.files(task, repo, paths, guard, function(files)
+			svn.files(task, repo, paths, guard, function(files, identities)
 				local index = 0
 				local next_file
 				next_file = guard(function()
@@ -175,10 +183,10 @@ function M.collect(repo, path, opts, callback)
 							return finish()
 						end
 						next_file()
-					end)
+					end, identities[file])
 				end)
 				next_file()
-			end, switched)
+			end, switched, ignorecase)
 		end
 		-- SVN rejects an unversioned operand to diff. Inspect status first so
 		-- selected loose files and directories can use the addition collector.

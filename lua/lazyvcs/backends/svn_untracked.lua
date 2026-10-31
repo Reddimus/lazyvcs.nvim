@@ -19,6 +19,7 @@ end
 function M.expand(task, repo, entries, callback, opts)
 	opts = opts or {}
 	local items, seen = {}, {}
+	local identities = opts.capture_identity and {} or nil
 	local pending, switched = {}, {}
 	for _, entry in ipairs(entries) do
 		if entry.switched or entry.wc_item == "external" then
@@ -36,7 +37,7 @@ function M.expand(task, repo, entries, callback, opts)
 		cursor = cursor + 1
 		local path = pending[cursor]
 		if not path then
-			return callback(items)
+			return callback(items, nil, identities)
 		end
 		vim.uv.fs_lstat(path, function(stat_err, stat)
 			schedule(task, function()
@@ -114,13 +115,16 @@ function M.expand(task, repo, entries, callback, opts)
 				if not seen[relpath] then
 					items[#items + 1] = relpath
 					seen[relpath] = true
+					if identities then
+						identities[relpath] = { type = stat.type, dev = stat.dev, ino = stat.ino }
+					end
 				end
 				visit()
 			end)
 		end)
 	end
 	if #pending == 0 then
-		return callback(items)
+		return callback(items, nil, identities)
 	end
 	require("lazyvcs.backends.svn_ignore").load(task, repo, function(predicate, ignore_err)
 		if not predicate then

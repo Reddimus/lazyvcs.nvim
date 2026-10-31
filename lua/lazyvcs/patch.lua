@@ -126,8 +126,8 @@ local function index_text(text, default_root, saved, schedule, done)
 					hunks = {},
 				}
 				index.files[#index.files + 1], hunk = file, nil
-			elseif file and not hunk and line:match("^rename to ") then
-				local name = line:sub(11)
+			elseif file and not hunk and (line:match("^rename to ") or line:match("^copy to ")) then
+				local name = line:match("^rename to (.*)$") or line:match("^copy to (.*)$")
 				file.path = name:sub(1, 1) == '"' and git_path(name:gsub('^"', '"b/')) or name
 			elseif file and not hunk and line:match("^Binary files ") then
 				file.path = line:match(" and b/(.*) differ$") or file.path
@@ -544,6 +544,7 @@ function M.open(opts)
 	api.nvim_buf_set_name(buf, "lazyvcs://patch/" .. path)
 	vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
 	vim.bo[buf].buflisted = false
+	vim.bo[buf].undolevels = -1
 	vim.bo[buf].filetype = "diff"
 	mappings(view)
 	api.nvim_create_autocmd({ "BufWinLeave", "BufWipeout", "BufHidden" }, {
