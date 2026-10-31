@@ -8,6 +8,78 @@ local requests = require("lazyvcs.source_control.ai_requests")
 local M = {}
 
 local last_error_by_provider = {}
+local diagnostic_errors, diagnostic_order = {}, {}
+
+function M.last_error(root)
+	return diagnostic_errors[root or ""]
+end
+
+function M.clear_error(root)
+	root = root or ""
+	diagnostic_errors[root] = nil
+	for index = #diagnostic_order, 1, -1 do
+		if diagnostic_order[index] == root then
+			table.remove(diagnostic_order, index)
+		end
+	end
+end
+
+function M.notify_error(root, err)
+	root = root or ""
+	if not diagnostic_errors[root] then
+		diagnostic_order[#diagnostic_order + 1] = root
+	end
+	diagnostic_errors[root] = tostring(err)
+	while #diagnostic_order > 32 do
+		diagnostic_errors[table.remove(diagnostic_order, 1)] = nil
+	end
+	local available = tonumber(vim.v.echospace) or 0
+	local width = math.max(1, math.min(vim.o.columns - 1, available > 0 and available or vim.o.columns - 1))
+	local summary = vim.fn.strtrans((tostring(err):gsub("[\r\n]+", " ")))
+	local suffix = "; .: Show Last Error"
+	util.notify(
+		util.truncate_display(summary, math.max(0, width - #suffix)) .. suffix:sub(1, width),
+		vim.log.levels.WARN
+	)
+end
+
+local function utf8_context(raw)
+	local chunks, i = {}, 1
+	while i <= #raw do
+		local first = raw:byte(i)
+		local size = first < 128 and 1
+			or first >= 194 and first <= 223 and 2
+			or first >= 224 and first <= 239 and 3
+			or first >= 240 and first <= 244 and 4
+			or 0
+		local valid = size > 0 and i + size - 1 <= #raw
+		for offset = 1, size - 1 do
+			local byte = raw:byte(i + offset) or 0
+			if byte < 128 or byte > 191 then
+				valid = false
+			end
+		end
+		local second = raw:byte(i + 1) or 0
+		if
+			(first == 224 and second < 160)
+			or (first == 237 and second > 159)
+			or (first == 240 and second < 144)
+			or (first == 244 and second > 143)
+		then
+			valid = false
+		end
+		if valid then
+			chunks[#chunks + 1] = raw:sub(i, i + size - 1)
+			i = i + size
+		else
+			chunks[#chunks + 1] = string.format("\\x%02X", first)
+			i = i + 1
+		end
+	end
+	return table.concat(chunks)
+end
+
+M._test_utf8_context = utf8_context
 local privacy_accepted = false
 local executable_checker = function(name)
 	return vim.fn.executable(name) == 1
@@ -198,20 +270,31 @@ local function git_context(request, repo_root, callback)
 		{
 			args = {
 				"git",
+				"-c",
+				"diff.autoRefreshIndex=false",
 				"diff",
 				"--staged",
 				"--no-ext-diff",
 				"--no-color",
 				"--stat",
 				"--patch",
-				"--minimal",
 				"--unified=1",
 			},
 			cwd = repo_root,
 			timeout = timeout,
 		},
 		{
-			args = { "git", "diff", "--no-ext-diff", "--no-color", "--stat", "--patch", "--minimal", "--unified=1" },
+			args = {
+				"git",
+				"-c",
+				"diff.autoRefreshIndex=false",
+				"diff",
+				"--no-ext-diff",
+				"--no-color",
+				"--stat",
+				"--patch",
+				"--unified=1",
+			},
 			cwd = repo_root,
 			timeout = timeout,
 		},
@@ -239,8 +322,8 @@ end
 local function svn_context(request, repo_root, callback)
 	local timeout = config.get().source_control.background.status_timeout_ms
 	local commands = {
-		{ args = { "svn", "diff", "--internal-diff", repo_root }, cwd = repo_root, timeout = timeout },
-		{ args = { "svn", "status", util.svn_target(repo_root) }, cwd = repo_root, timeout = timeout },
+		{ args = { "svn", "diff", "--internal-diff" }, cwd = repo_root, timeout = timeout },
+		{ args = { "svn", "status" }, cwd = repo_root, timeout = timeout },
 	}
 	local context = config.get().ai.commit_message.context
 	if context == "status" then
@@ -263,7 +346,7 @@ local function build_prompt(repo, context)
 		lines[#lines + 1] = "Follow these user instructions: " .. util.trim(opts.instructions)
 	end
 	lines[#lines + 1] = ""
-	lines[#lines + 1] = util.truncate(context, opts.max_context_chars)
+	lines[#lines + 1] = util.truncate(utf8_context(context), opts.max_context_chars)
 	return table.concat(lines, "\n")
 end
 
@@ -425,7 +508,7 @@ local function try_provider(request, providers, index, repo, prompt, callback)
 	local provider = providers[index]
 	if not provider then
 		local errors = {}
-		for name, err in pairs(last_error_by_provider) do
+		for name, err in pairs(request.errors or {}) do
 			errors[#errors + 1] = name .. ": " .. err
 		end
 		table.sort(errors)
@@ -433,6 +516,7 @@ local function try_provider(request, providers, index, repo, prompt, callback)
 	end
 	if not provider_available(provider) then
 		last_error_by_provider[provider] = "not available"
+		request.errors[provider] = "not available"
 		return try_provider(request, providers, index + 1, repo, prompt, callback)
 	end
 	run_provider(request, provider, repo, prompt, function(message, err)
@@ -444,6 +528,7 @@ local function try_provider(request, providers, index, repo, prompt, callback)
 			return callback(message, nil, provider)
 		end
 		last_error_by_provider[provider] = err or "failed"
+		request.errors[provider] = err or "failed"
 		if config.get().ai.commit_message.provider == "auto" then
 			return try_provider(request, providers, index + 1, repo, prompt, callback)
 		end
@@ -472,10 +557,11 @@ function M.generate(repo, callback, opts)
 	end
 
 	if not M.available() then
-		return nil, "No AI commit-message provider is available; install or configure ai.commit_message.provider"
+		return nil, "AI provider unavailable; see :checkhealth lazyvcs"
 	end
 
 	local request = new_request(callback, opts.on_cancel)
+	request.errors = {}
 	request.repo = repo
 	request.owner = opts.owner or repo.root
 	request.registration = requests.register(util.canonical_path(repo.root), request.owner, function(reason)

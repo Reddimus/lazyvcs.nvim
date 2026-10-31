@@ -913,7 +913,7 @@ return function(ctx)
 		---@diagnostic disable-next-line: duplicate-set-field
 		util.system_start = function(args, _, on_exit)
 			local command = table.concat(args, " ")
-			if command:match("^git diff %-%-staged") then
+			if args[1] == "git" and vim.tbl_contains(args, "--staged") then
 				local result = {
 					code = 0,
 					stdout = "diff --git a/app.lua b/app.lua\n+return 'complete attachment'\n",
@@ -1260,10 +1260,7 @@ return function(ctx)
 
 		local ok, err = xpcall(function()
 			ops.sync_repo(state, node)
-			assert(
-				not vim.tbl_contains(calls, "git merge --ff-only refs/remotes/origin/main"),
-				"sync must guard its merge"
-			)
+			assert(not table.concat(calls, "\n"):find("git merge ", 1, true), "sync must guard its merge")
 			local job = assert(session_state.get_repo_job(fixture.root), "refused sync should report its failure")
 			assert(job.status == "error", "refused sync should finish as an error")
 		end, debug.traceback)
@@ -1305,6 +1302,7 @@ return function(ctx)
 			extra = { repo_root = fixture.root },
 		}
 		local responses = {
+			["git config --get --default simple push.default"] = "simple\n",
 			["git branch --show-current"] = "main\n",
 			["git symbolic-ref --quiet HEAD"] = "refs/heads/main\n",
 			["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/main"] = "refs/heads/main\0refs/remotes/origin/main\0origin\0refs/heads/main\n",
@@ -1438,6 +1436,7 @@ return function(ctx)
 		local previous_system_start = util.system_start
 		local calls = {}
 		local responses = {
+			["git rev-parse --verify refs/remotes/origin/main^{commit}"] = string.rep("a", 40) .. "\n",
 			["git branch --show-current"] = "main\n",
 			["git symbolic-ref --quiet HEAD"] = "refs/heads/main\n",
 			["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/main"] = "refs/heads/main\0refs/remotes/origin/main\0origin\0refs/heads/main\n",
@@ -1462,7 +1461,7 @@ return function(ctx)
 			ops.run_primary_action(state, node)
 			assert(vim.bo.modified, "test buffer should become modified during pull preparation")
 			assert(
-				not vim.tbl_contains(calls, "git merge --ff-only refs/remotes/origin/main"),
+				not table.concat(calls, "\n"):find("git merge ", 1, true),
 				"pull must recheck loaded buffers before changing the worktree"
 			)
 			local job = assert(session_state.get_repo_job(fixture.root), "refused pull should report its failure")
@@ -1540,7 +1539,7 @@ return function(ctx)
 				vcs = "git",
 				loader = model.load_repo_details_async,
 				stdout = git_status,
-				truncate_call = 2,
+				truncate_call = 1,
 			},
 			{
 				name = "SVN summary",
@@ -1575,9 +1574,19 @@ return function(ctx)
 				load_err = err
 			end)
 
-			assert(loaded == nil, case.name .. " must not return partial repository state")
-			assert(load_err and load_err:match("truncated"), case.name .. " should report truncation")
-			assert(calls == case.truncate_call, case.name .. " should stop after the truncated command")
+			if case.truncate_call == 1 then
+				assert(
+					loaded and loaded.incomplete and loaded.counts.complete == false,
+					case.name .. " must mark partial state unknown"
+				)
+				assert(#loaded.sections == 0, case.name .. " parsed partial file rows")
+				assert(calls == (case.vcs == "svn" and 2 or 1), "overflow metadata command count changed")
+			else
+				assert(
+					loaded == nil and load_err and load_err:match("truncated"),
+					case.name .. " should reject truncated independent info"
+				)
+			end
 		end
 
 		for _, case in ipairs({
@@ -1613,8 +1622,14 @@ return function(ctx)
 				end
 			)
 
-			assert(loaded == nil, case.name .. " must not return partial repository state")
-			assert(load_err and load_err:match("truncated"), case.name .. " should report truncation")
+			if case.truncate_call == 4 then
+				assert(loaded and loaded.incomplete and loaded.branch == "main" and loaded.counts.complete == false)
+			else
+				assert(
+					loaded == nil and load_err and load_err:match("truncated"),
+					case.name .. " should reject incomplete remote metadata"
+				)
+			end
 			assert(calls == case.truncate_call, case.name .. " should stop after the truncated command")
 		end
 	end

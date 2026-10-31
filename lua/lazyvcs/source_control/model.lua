@@ -28,6 +28,11 @@ local remote_snapshots = require("lazyvcs.source_control.remote_refresh")
 ---@field error? string
 ---@field remote_error? string
 ---@field detail_error? string
+---@field incomplete? boolean
+---@field summary_incomplete? boolean
+---@field detail_incomplete? boolean
+---@field counts_complete? boolean
+---@field has_remotes? boolean
 ---@field branch? string
 ---@field upstream? string
 ---@field upstream_gone? boolean
@@ -35,6 +40,9 @@ local remote_snapshots = require("lazyvcs.source_control.remote_refresh")
 ---@field unborn? boolean
 
 local M = {}
+
+-- The launcher reserves half of a shared output budget for stdout.
+local STATUS_OUTPUT_LIMIT = 64 * 1024 * 1024
 
 local function truncated_output_error(result, command)
 	if result and result.stdout_truncated then
@@ -79,7 +87,9 @@ local function svn_branch_from_info(raw)
 	if info.root and info.root ~= "" and rel:sub(1, #info.root) == info.root then
 		rel = rel:sub(#info.root + 2)
 	end
-	rel = rel:gsub("^projects/", "")
+	rel = rel:gsub("^projects/", ""):gsub("%%(%x%x)", function(byte)
+		return string.char(tonumber(byte, 16))
+	end)
 	if rel == "trunk" then
 		return "trunk"
 	end
@@ -124,11 +134,16 @@ local function sync_badge(text, status, highlight)
 end
 
 local function make_counts(previous)
-	return {
+	local counts = {
 		local_changes = previous and previous.counts and previous.counts.local_changes or 0,
 		staged = previous and previous.counts and previous.counts.staged or 0,
+		conflicts = previous and previous.counts and previous.counts.conflicts or 0,
 		remote = previous and previous.counts and previous.counts.remote or 0,
 	}
+	if previous and previous.incomplete then
+		counts.complete = false
+	end
+	return counts
 end
 
 local function placeholder_status(repo, previous)
@@ -140,6 +155,7 @@ local function placeholder_status(repo, previous)
 		relpath = repo.relpath,
 		path_label = repo.path_label,
 		branch = previous and previous.branch or nil,
+		has_remotes = previous and previous.has_remotes,
 		upstream = previous and previous.upstream or nil,
 		detached = previous and previous.detached or false,
 		unborn = previous and previous.unborn or false,
@@ -152,6 +168,10 @@ local function placeholder_status(repo, previous)
 		counts = make_counts(previous),
 		sync = previous and previous.sync or sync_badge("…", "loading", "Comment"),
 		error = previous and previous.error or nil,
+		incomplete = previous and previous.incomplete or false,
+		summary_incomplete = previous and previous.summary_incomplete or false,
+		detail_incomplete = previous and previous.detail_incomplete or false,
+		counts_complete = not (previous and previous.incomplete),
 		summary_loaded = previous and previous.summary_loaded or false,
 		details_loaded = previous and previous.details_loaded or false,
 		loading_details = previous and previous.loading_details or false,
@@ -250,6 +270,7 @@ function M.discover_async(root, max_depth, on_done, opts)
 	local repos = {}
 	local incomplete = {}
 	local seen = {}
+	local retry = {}
 	local stack = {
 		{ root = root, depth = 0, entered = false },
 	}
@@ -295,7 +316,12 @@ function M.discover_async(root, max_depth, on_done, opts)
 									task:finish(nil, "Cannot scan " .. message)
 									return
 								end
-								incomplete[#incomplete + 1] = message
+								local vanished = tostring(err):match("^ENOENT") or tostring(err):match("^ENOTDIR")
+								if vanished and not frame.retried then
+									retry[#retry + 1] = { root = frame.root, depth = frame.depth, retried = true }
+								elseif not vanished then
+									incomplete[#incomplete + 1] = message
+								end
 								table.remove(stack)
 								step()
 								return
@@ -328,6 +354,15 @@ function M.discover_async(root, max_depth, on_done, opts)
 			end
 		end
 		if #stack == 0 then
+			if #retry > 0 then
+				stack = retry
+				retry = {}
+				for _, frame in ipairs(stack) do
+					seen[frame.root] = nil
+				end
+				vim.schedule(step)
+				return
+			end
 			return finish()
 		end
 		vim.schedule(step)
@@ -360,8 +395,8 @@ local function parse_git_branch(line)
 		detached = true
 	end
 
-	if not detached and not unborn then
-		local lhs, rhs, suffix = branch:match("^(.-)%.%.%.([^ ]+)(.*)$")
+	if not detached then
+		local lhs, rhs, suffix = branch_name:match("^(.-)%.%.%.([^ ]+)(.*)$")
 		if lhs and rhs then
 			branch_name = lhs
 			upstream = rhs
@@ -398,6 +433,7 @@ local function parse_git_summary(lines)
 	local counts = {
 		local_changes = 0,
 		staged = 0,
+		conflicts = 0,
 		remote = 0,
 	}
 	local seen = {}
@@ -411,7 +447,14 @@ local function parse_git_summary(lines)
 				counts.local_changes = counts.local_changes + 1
 			end
 			local index = line:sub(1, 1)
-			if index ~= " " and index ~= "?" then
+			if require("lazyvcs.backends.git_status").is_unmerged(line:sub(1, 2)) then
+				counts.conflicts = counts.conflicts + 1
+			end
+			if
+				index ~= " "
+				and index ~= "?"
+				and not require("lazyvcs.backends.git_status").is_unmerged(line:sub(1, 2))
+			then
 				counts.staged = counts.staged + 1
 			end
 		end
@@ -484,6 +527,7 @@ local function make_file_item(repo, section, opts)
 			change_kind = opts.change_kind,
 			status = opts.status,
 			index_status = opts.index_status,
+			intent_to_add = opts.intent_to_add or false,
 			section = section,
 			deleted = opts.deleted or false,
 			renamed_from = opts.renamed_from,
@@ -506,6 +550,7 @@ local function build_git_sync(branch_info, counts, fetch_error)
 	end
 	if
 		not branch_info.upstream
+		and branch_info.has_remotes ~= false
 		and not branch_info.unborn
 		and not branch_info.detached
 		and branch_info.branch
@@ -537,6 +582,10 @@ local function build_git_summary(repo, opts, status_stdout, fetch_error)
 	opts = opts or {}
 	local previous = opts.previous or {}
 	local branch_info, counts = parse_git_summary(util.split_lines(status_stdout))
+	branch_info.has_remotes = opts.has_remotes
+	if branch_info.has_remotes == nil then
+		branch_info.has_remotes = previous.has_remotes
+	end
 
 	return {
 		root = repo.root,
@@ -546,6 +595,7 @@ local function build_git_summary(repo, opts, status_stdout, fetch_error)
 		relpath = repo.relpath,
 		path_label = repo.path_label,
 		branch = branch_info.branch,
+		has_remotes = branch_info.has_remotes,
 		detached = branch_info.detached,
 		unborn = branch_info.unborn,
 		upstream = branch_info.upstream,
@@ -620,6 +670,7 @@ local function parse_git_entries(root, raw, sort_key)
 	local counts = {
 		local_changes = 0,
 		staged = 0,
+		conflicts = 0,
 		remote = 0,
 	}
 
@@ -653,6 +704,7 @@ local function parse_git_entries(root, raw, sort_key)
 				}
 			)
 		elseif require("lazyvcs.backends.git_status").is_unmerged(status) then
+			counts.conflicts = counts.conflicts + 1
 			sections.merge.items[#sections.merge.items + 1] = make_file_item({ root = root, vcs = "git" }, "merge", {
 				path = abs_path,
 				relpath = relpath,
@@ -688,6 +740,7 @@ local function parse_git_entries(root, raw, sort_key)
 						path = abs_path,
 						relpath = relpath,
 						status = " " .. worktree,
+						intent_to_add = index == " " and worktree == "A",
 						index_status = index,
 						change_kind = git_kind_from_char(worktree, "modified"),
 						deleted = worktree == "D" and not file_exists(abs_path),
@@ -733,6 +786,7 @@ local function build_git_detail(repo, opts, status_stdout, raw_stdout)
 			upstream = summary.upstream,
 			upstream_gone = summary.upstream_gone,
 			branch = summary.branch,
+			has_remotes = summary.has_remotes,
 			-- Both are required by the publish test in `build_git_sync`. Dropping
 			-- them made a repo with no commits yet ("unborn") offer Publish
 			-- Branch, whose push fails with "src refspec does not match any".
@@ -831,7 +885,7 @@ build_svn_detail = function(repo, opts, status_stdout, info_stdout)
 	}
 	local remote_count = 0
 	for _, entry in ipairs(entries) do
-		if entry.wc_item ~= "external" then
+		if entry.wc_item ~= "external" and not entry.file_external then
 			local abs_path, relpath = resolve_svn_entry_path(repo.root, entry.path)
 			local local_property_only = (entry.wc_item == "normal" or entry.wc_item == "none")
 				and svn_props_changed(entry.wc_props)
@@ -922,7 +976,19 @@ build_svn_detail = function(repo, opts, status_stdout, info_stdout)
 	return M.merge_details(nil, result)
 end
 
+local function compose_completeness(status)
+	status.incomplete = status.summary_incomplete == true or status.detail_incomplete == true
+	status.counts_complete = not status.incomplete
+	if status.incomplete then
+		status.counts.complete = false
+	else
+		status.counts.complete = nil
+	end
+	return status
+end
+
 local function compose_status(status)
+	compose_completeness(status)
 	status.counts = make_counts(status)
 	if status.vcs == "svn" then
 		local sections = {}
@@ -945,6 +1011,7 @@ local function compose_status(status)
 			"force",
 			build_git_sync({
 				branch = status.branch,
+				has_remotes = status.has_remotes,
 				upstream = status.upstream,
 				upstream_gone = status.upstream_gone,
 				detached = status.detached,
@@ -959,7 +1026,9 @@ local function compose_status(status)
 			}
 		)
 	end
-	if status.error or status.remote_error or status.detail_error then
+	if status.incomplete then
+		status.sync = vim.tbl_extend("force", status.sync, sync_badge("Incomplete", "incomplete", "DiagnosticWarn"))
+	elseif status.error or status.remote_error or status.detail_error then
 		status.sync = vim.tbl_extend("force", status.sync, sync_badge("!", "error", "DiagnosticError"))
 	end
 	return status
@@ -971,7 +1040,13 @@ end
 function M.merge_summary(current, summary)
 	current = current or {}
 	local result = vim.tbl_extend("force", current, summary)
-	for _, field in ipairs({ "branch", "upstream", "upstream_gone", "detached", "unborn", "sync" }) do
+	if summary.summary_incomplete ~= nil then
+		result.summary_incomplete = summary.summary_incomplete == true
+	else
+		result.summary_incomplete = summary.incomplete == true
+	end
+	result.detail_incomplete = current.detail_incomplete == true
+	for _, field in ipairs({ "branch", "upstream", "upstream_gone", "detached", "unborn", "has_remotes", "sync" }) do
 		result[field] = summary[field]
 	end
 	-- The live cache may have replaced or invalidated the summary's private snapshot.
@@ -983,6 +1058,7 @@ function M.merge_summary(current, summary)
 		result.counts = vim.tbl_extend("force", summary.counts, {
 			local_changes = current.counts.local_changes,
 			staged = current.counts.staged,
+			conflicts = current.counts.conflicts,
 		})
 	else
 		result.counts = vim.deepcopy(summary.counts)
@@ -1001,6 +1077,17 @@ end
 ---@return lazyvcs.RepositoryStatus
 function M.merge_details(current, detail)
 	local result = vim.tbl_extend("force", detail, current or {})
+	if detail.detail_incomplete ~= nil then
+		result.detail_incomplete = detail.detail_incomplete == true
+	else
+		result.detail_incomplete = detail.incomplete == true
+	end
+	result.summary_incomplete = current and current.summary_incomplete == true or false
+	if detail.incomplete and not (current and current.summary_loaded) then
+		for _, key in ipairs({ "branch", "upstream", "detached", "unborn", "has_remotes" }) do
+			result[key] = detail[key]
+		end
+	end
 	result.sections = detail.sections
 	result.details_loaded = detail.details_loaded
 	result.loading_details = false
@@ -1010,6 +1097,7 @@ function M.merge_details(current, detail)
 	result.counts = vim.tbl_extend("force", result.counts or {}, {
 		local_changes = counts.local_changes,
 		staged = counts.staged,
+		conflicts = counts.conflicts,
 	})
 	result.remote_snapshot = (current or {}).remote_snapshot or detail.remote_snapshot
 	return compose_status(result)
@@ -1042,14 +1130,18 @@ end
 function M.refresh_cache(cache)
 	local retained = {}
 	for root, status in pairs(cache or {}) do
-		if status.vcs == "svn" and (status.remote_snapshot or status.remote_unknown) then
-			retained[root] = placeholder_status(status, {
-				remote_snapshot = status.remote_snapshot,
-				remote_local = status.remote_local,
-				remote_unknown = status.remote_unknown,
-				counts = { remote = status.remote_snapshot and #status.remote_snapshot or 0 },
-			})
-		end
+		retained[root] = placeholder_status(status, {
+			branch = status.branch,
+			upstream = status.upstream,
+			has_remotes = status.has_remotes,
+			detached = status.detached,
+			unborn = status.unborn,
+			upstream_gone = status.upstream_gone,
+			remote_snapshot = status.remote_snapshot,
+			remote_local = status.remote_local,
+			remote_unknown = status.remote_unknown,
+			counts = { remote = status.remote_snapshot and #status.remote_snapshot or 0 },
+		})
 	end
 	return retained
 end
@@ -1129,13 +1221,92 @@ local function cached_section_children(state, key, build)
 	return value
 end
 
+-- Headers are independent metadata. Never parse any partial file records.
+local function git_cap_metadata(raw, version)
+	if version == 1 then
+		local header = raw:match("^(## [^\n]*)\n")
+		return header and parse_git_branch(header) or nil
+	end
+	local headers, offset = {}, 1
+	while raw:sub(offset, offset + 1) == "# " do
+		local boundary = raw:find("\0", offset, true)
+		if not boundary then
+			break
+		end
+		local key, value = raw:sub(offset, boundary - 1):match("^# branch%.(%S+) (.*)$")
+		if key then
+			headers[key] = value
+		end
+		offset = boundary + 1
+	end
+	if not headers.head or not headers.oid then
+		return nil
+	end
+	local branch = headers.head == "(detached)" and "HEAD" or headers.head
+	local metadata = { branch = branch, detached = headers.head == "(detached)", unborn = headers.oid == "(initial)" }
+	if headers.upstream then
+		metadata.upstream = headers.upstream
+	end
+	if headers.ab then
+		local ahead, behind = headers.ab:match("^%+(%d+) %-(%d+)$")
+		metadata.ahead, metadata.behind = tonumber(ahead), tonumber(behind)
+	end
+	return metadata
+end
+
+local function status_cap(result, raw)
+	local output = result or raw
+	return output and output.stdout_truncated and not output.cancelled and not output.timed_out and output or nil
+end
+
+local function finish_incomplete(repo, opts, run_command, on_done, scope, output, version)
+	local previous = opts.previous or {}
+	local status =
+		M.make_error(repo, previous, "Status incomplete: output exceeded 32 MiB; cached rows and counts may be stale")
+	status.incomplete, status.counts_complete = true, false
+	status.counts.complete = false
+	status.summary_incomplete = scope == "summary" or previous.summary_incomplete
+	status.detail_incomplete = scope == "details" or previous.detail_incomplete
+	status.sync = sync_badge("Incomplete", "incomplete", "DiagnosticWarn")
+	if repo.vcs == "git" then
+		local metadata = git_cap_metadata(output.stdout or "", version)
+		if metadata then
+			if metadata.branch ~= status.branch then
+				status.upstream, status.upstream_gone = nil, false
+			end
+			for _, field in ipairs({ "branch", "upstream", "upstream_gone", "detached", "unborn" }) do
+				if metadata[field] ~= nil then
+					status[field] = metadata[field]
+				end
+			end
+		end
+		return on_done(status)
+	end
+	run_command({ "svn", "info", "--xml", "--depth", "empty", "--", util.svn_target(repo.root) }, {
+		kind = scope,
+		timeout_ms = opts.status_timeout_ms,
+	}, function(info)
+		if info and not info.stdout_truncated then
+			local parsed = parse_svn_info_xml(info.stdout)
+			if parsed and parsed.url then
+				status.branch = svn_branch_from_info(info.stdout)
+			end
+		end
+		on_done(status)
+	end)
+end
+
 function M.load_repo_summary_async(repo, opts, run_command, on_done)
 	opts = opts or {}
 	if repo.vcs == "git" then
 		run_command(
 			{ "git", "status", "--branch", "--porcelain=v1", "--untracked-files=all", "--ignored=no" },
-			{ kind = "summary", timeout_ms = opts.status_timeout_ms },
-			function(status, status_err)
+			{ kind = "summary", timeout_ms = opts.status_timeout_ms, output_limit_bytes = STATUS_OUTPUT_LIMIT },
+			function(status, status_err, raw)
+				local capped = status_cap(status, raw)
+				if capped then
+					return finish_incomplete(repo, opts, run_command, on_done, "summary", capped, 1)
+				end
 				if not status then
 					return on_done(nil, status_err)
 				end
@@ -1143,13 +1314,9 @@ function M.load_repo_summary_async(repo, opts, run_command, on_done)
 				if truncated_err then
 					return on_done(nil, truncated_err)
 				end
-				local branch_info = parse_git_summary(util.split_lines(status.stdout))
-				if not (opts.remote_refresh and branch_info.upstream) then
-					return on_done(build_git_summary(repo, opts, status.stdout, nil))
-				end
 				run_command(
 					{ "git", "remote" },
-					{ kind = "remote", timeout_ms = opts.status_timeout_ms },
+					{ kind = "summary", timeout_ms = opts.status_timeout_ms },
 					function(remotes, remote_err)
 						if not remotes then
 							return on_done(nil, remote_err)
@@ -1158,41 +1325,46 @@ function M.load_repo_summary_async(repo, opts, run_command, on_done)
 						if remotes_truncated_err then
 							return on_done(nil, remotes_truncated_err)
 						end
-						if not remotes or #util.split_lines(remotes.stdout) == 0 then
+						opts.has_remotes = util.trim(remotes.stdout) ~= ""
+						if not opts.remote_refresh or not opts.has_remotes then
 							return on_done(build_git_summary(repo, opts, status.stdout, nil))
 						end
 						run_command(
 							{ "git", "fetch", "--all", "--prune", "--quiet" },
 							{ kind = "remote", timeout_ms = opts.remote_timeout_ms },
 							function(_, fetch_err)
-								run_command(
-									{
-										"git",
-										"status",
-										"--branch",
-										"--porcelain=v1",
-										"--untracked-files=all",
-										"--ignored=no",
-									},
-									{ kind = "summary", timeout_ms = opts.status_timeout_ms },
-									function(refreshed, refresh_err)
-										if not refreshed then
-											return on_done(nil, refresh_err)
-										end
-										local refreshed_truncated_err = truncated_output_error(refreshed, "Git status")
-										if refreshed_truncated_err then
-											return on_done(nil, refreshed_truncated_err)
-										end
-										on_done(
-											build_git_summary(
-												repo,
-												opts,
-												refreshed and refreshed.stdout or status.stdout,
-												fetch_err
-											)
-										)
+								run_command({
+									"git",
+									"status",
+									"--branch",
+									"--porcelain=v1",
+									"--untracked-files=all",
+									"--ignored=no",
+								}, {
+									kind = "summary",
+									timeout_ms = opts.status_timeout_ms,
+									output_limit_bytes = STATUS_OUTPUT_LIMIT,
+								}, function(refreshed, refresh_err, raw)
+									local capped = status_cap(refreshed, raw)
+									if capped then
+										return finish_incomplete(repo, opts, run_command, on_done, "summary", capped, 1)
 									end
-								)
+									if not refreshed then
+										return on_done(nil, refresh_err)
+									end
+									local refreshed_truncated_err = truncated_output_error(refreshed, "Git status")
+									if refreshed_truncated_err then
+										return on_done(nil, refreshed_truncated_err)
+									end
+									on_done(
+										build_git_summary(
+											repo,
+											opts,
+											refreshed and refreshed.stdout or status.stdout,
+											fetch_err
+										)
+									)
+								end)
 							end
 						)
 					end
@@ -1209,9 +1381,24 @@ function M.load_repo_summary_async(repo, opts, run_command, on_done)
 	args[#args + 1] = util.svn_target(repo.root)
 	run_command(args, {
 		kind = opts.remote_refresh and "remote" or "summary",
+		output_limit_bytes = STATUS_OUTPUT_LIMIT,
 		timeout_ms = opts.remote_refresh and opts.remote_timeout_ms or opts.status_timeout_ms,
-	}, function(status, status_err)
+	}, function(status, status_err, raw)
+		local capped = status_cap(status, raw)
+		if capped then
+			return finish_incomplete(repo, opts, run_command, on_done, "summary", capped)
+		end
 		if not status then
+			if opts.remote_refresh and not tostring(status_err):match("^[Cc]ancel") then
+				local local_opts = vim.tbl_extend("force", opts, { remote_refresh = false })
+				return M.load_repo_summary_async(repo, local_opts, run_command, function(local_status, local_err)
+					if local_status then
+						local_status.remote_error = status_err
+						local_status.sync = sync_badge("!", "error", "DiagnosticError")
+					end
+					on_done(local_status, local_err)
+				end)
+			end
 			return on_done(nil, status_err)
 		end
 		local truncated_err = truncated_output_error(status, "SVN status")
@@ -1220,7 +1407,7 @@ function M.load_repo_summary_async(repo, opts, run_command, on_done)
 		end
 		run_command(
 			{ "svn", "info", "--xml", util.svn_target(repo.root) },
-			{ kind = "summary", timeout_ms = opts.status_timeout_ms },
+			{ kind = "summary", timeout_ms = opts.status_timeout_ms, output_limit_bytes = STATUS_OUTPUT_LIMIT },
 			function(info, info_err)
 				if not info then
 					return on_done(nil, info_err)
@@ -1239,28 +1426,59 @@ function M.load_repo_details_async(repo, opts, run_command, on_done)
 	opts = opts or {}
 	if repo.vcs == "git" then
 		run_command(
-			{ "git", "status", "--branch", "--porcelain=v1", "--untracked-files=all", "--ignored=no" },
-			{ kind = "details", timeout_ms = opts.status_timeout_ms },
-			function(status, status_err)
-				if not status then
-					return on_done(nil, status_err)
+			{ "git", "status", "--branch", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=no" },
+			{ kind = "details", timeout_ms = opts.status_timeout_ms, output_limit_bytes = STATUS_OUTPUT_LIMIT },
+			function(files, files_err, raw)
+				local capped = status_cap(files, raw)
+				if capped then
+					return finish_incomplete(repo, opts, run_command, on_done, "details", capped, 2)
 				end
-				local truncated_err = truncated_output_error(status, "Git status")
+				if not files then
+					return on_done(nil, files_err)
+				end
+				local truncated_err = truncated_output_error(files, "Git status")
 				if truncated_err then
 					return on_done(nil, truncated_err)
 				end
+				local headers = {}
+				for record in files.stdout:gmatch("([^%z]+)%z") do
+					local key, value = record:match("^# branch%.(%S+) (.*)$")
+					if key then
+						headers[key] = value
+					end
+				end
+				local branch = headers.head == "(detached)" and "HEAD (no branch)" or headers.head or "HEAD"
+				if headers.oid == "(initial)" then
+					branch = "No commits yet on " .. branch
+				end
+				if headers.upstream then
+					branch = branch .. "..." .. headers.upstream
+					if headers.ab then
+						local ahead, behind = headers.ab:match("^%+(%d+) %-(%d+)$")
+						branch = branch .. string.format(" [ahead %s, behind %s]", ahead or 0, behind or 0)
+					elseif headers.oid ~= "(initial)" then
+						branch = branch .. " [gone]"
+					end
+				end
+				local function finish()
+					on_done(build_git_detail(repo, opts, "## " .. branch .. "\n", files.stdout))
+				end
+				if opts.has_remotes ~= nil or (opts.previous or {}).has_remotes ~= nil then
+					return finish()
+				end
 				run_command(
-					{ "git", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=no" },
+					{ "git", "remote" },
 					{ kind = "details", timeout_ms = opts.status_timeout_ms },
-					function(files, files_err)
-						if not files then
-							return on_done(nil, files_err)
+					function(remotes, err)
+						if not remotes then
+							return on_done(nil, err)
 						end
-						local files_truncated_err = truncated_output_error(files, "Git status")
-						if files_truncated_err then
-							return on_done(nil, files_truncated_err)
+						local truncated = truncated_output_error(remotes, "Git remote list")
+						if truncated then
+							return on_done(nil, truncated)
 						end
-						on_done(build_git_detail(repo, opts, status.stdout, files.stdout))
+						opts.has_remotes = util.trim(remotes.stdout) ~= ""
+						finish()
 					end
 				)
 			end
@@ -1275,8 +1493,13 @@ function M.load_repo_details_async(repo, opts, run_command, on_done)
 	args[#args + 1] = util.svn_target(repo.root)
 	run_command(args, {
 		kind = opts.remote_refresh and "remote" or "details",
+		output_limit_bytes = STATUS_OUTPUT_LIMIT,
 		timeout_ms = opts.remote_refresh and opts.remote_timeout_ms or opts.status_timeout_ms,
-	}, function(status, status_err)
+	}, function(status, status_err, raw)
+		local capped = status_cap(status, raw)
+		if capped then
+			return finish_incomplete(repo, opts, run_command, on_done, "details", capped)
+		end
 		if not status then
 			return on_done(nil, status_err)
 		end
@@ -1286,7 +1509,7 @@ function M.load_repo_details_async(repo, opts, run_command, on_done)
 		end
 		run_command(
 			{ "svn", "info", "--xml", util.svn_target(repo.root) },
-			{ kind = "details", timeout_ms = opts.status_timeout_ms },
+			{ kind = "details", timeout_ms = opts.status_timeout_ms, output_limit_bytes = STATUS_OUTPUT_LIMIT },
 			function(info, info_err)
 				if not info then
 					return on_done(nil, info_err)
@@ -1308,7 +1531,13 @@ local function repo_visible(repo, show_clean)
 	if not repo.summary_loaded then
 		return true
 	end
-	return repo.sync.status == "error"
+	return repo.incomplete == true
+		or repo.error ~= nil
+		or repo.detail_error ~= nil
+		or repo.remote_error ~= nil
+		or repo.loading_summary == true
+		or repo.loading_details == true
+		or repo.sync.status == "error"
 		or repo.sync.status == "unknown"
 		or repo.sync.status == "incoming"
 		or repo.sync.status == "outgoing"
@@ -1358,6 +1587,9 @@ local function branch_label(repo)
 end
 
 local function primary_action(repo)
+	if repo.incomplete then
+		return { label = "Retry status", action = "refresh" }
+	end
 	if repo.job and repo.job.status == "running" then
 		return { label = repo.job.label or "Working...", action = repo.job.action or "busy" }
 	end
@@ -1487,7 +1719,7 @@ local function make_section_node(repo, section, source_opts, state)
 	return {
 		id = id,
 		type = "section",
-		name = string.format("%s (%d)", section.label, #section.items),
+		name = string.format("%s%s (%d)", repo.incomplete and "Cached " or "", section.label, #section.items),
 		loaded = true,
 		children = children,
 		extra = {
@@ -1500,6 +1732,7 @@ end
 
 local function make_repo_change_children(repo, source_opts, state)
 	local draft = repo.draft ~= "" and repo.draft or ""
+	local generating = state.lazyvcs_commit_pending and state.lazyvcs_commit_pending[repo.root]
 	local placeholder = "Commit message"
 	local primary = primary_action(repo)
 	local disabled = repo.job and repo.job.status == "running"
@@ -1507,13 +1740,13 @@ local function make_repo_change_children(repo, source_opts, state)
 		{
 			id = repo.root .. "::commit",
 			type = "commit_input",
-			name = draft ~= "" and draft or placeholder,
+			name = generating and "Generating..." or draft ~= "" and draft or placeholder,
 			extra = {
 				repo_root = repo.root,
 				placeholder = placeholder,
 				draft = draft,
 				primary_label = primary.label,
-				show_input_action_button = source_opts.show_input_action_button,
+				show_input_action_button = source_opts.show_input_action_button and not source_opts.show_action_button,
 				disabled = disabled,
 				busy_label = primary.label,
 			},
@@ -1557,7 +1790,8 @@ local function make_repo_change_children(repo, source_opts, state)
 			id = repo.root .. "::status_error",
 			type = "message",
 			name = loading and "Loading repository status..."
-				or ("Status failed: " .. tostring(status_error):gsub("[\r\n]+", " ") .. " (press <CR> to retry)"),
+				or repo.incomplete and "Incomplete; <CR>: retry status (32 MiB cap)"
+				or ("Retry <CR>: failed: " .. tostring(status_error):gsub("[\r\n]+", " ")),
 			extra = {
 				repo_root = repo.root,
 				error = true,
@@ -1602,7 +1836,7 @@ local function make_repo_change_children(repo, source_opts, state)
 		and state.lazyvcs_cancelled_summaries[repo.root]
 		and not repo.summary_loaded
 	then
-		message = "Status cancelled; press R to retry"
+		message = "R: retry status (cancelled)"
 	elseif repo.loading_summary or not repo.summary_loaded then
 		message = "Loading repository status..."
 	elseif repo.counts.local_changes == 0 and repo.counts.remote == 0 then
@@ -1848,7 +2082,22 @@ function M.collect(state, opts)
 		end
 	end
 
+	local change_count = #change_nodes
 	if #change_nodes == 0 then
+		local clean_hidden = 0
+		for _, repo in ipairs(loaded) do
+			if
+				state.lazyvcs_repo_visibility_overrides[repo.root] == nil
+				and not state.lazyvcs_show_clean
+				and not repo_visible(repo, false)
+			then
+				clean_hidden = clean_hidden + 1
+			end
+		end
+		local complete = not state.lazyvcs_discovering
+			and not state.lazyvcs_discovery_cancelled
+			and not state.lazyvcs_discovery_error
+			and not next(state.lazyvcs_discovery_incomplete or {})
 		-- Discovery is asynchronous, so the first render legitimately has no
 		-- repositories yet. Saying "none selected" there reads as a result
 		-- rather than a pending state.
@@ -1856,9 +2105,15 @@ function M.collect(state, opts)
 			id = root .. "::changes::empty",
 			type = "message",
 			name = state.lazyvcs_discovering and "Discovering repositories..."
-				or state.lazyvcs_discovery_cancelled and "Discovery cancelled; press R to retry"
+				or state.lazyvcs_discovery_cancelled and "R: retry discovery (cancelled)"
+				or (complete and clean_hidden > 0 and "H: show " .. clean_hidden .. " clean repositories")
+				or (complete and #repo_specs == 0 and "No repositories found")
+				or (not complete and "Discovery incomplete; press R to retry")
 				or "No repositories selected",
-			extra = { discovering = state.lazyvcs_discovering == true },
+			extra = {
+				discovering = state.lazyvcs_discovering == true,
+				action = complete and clean_hidden > 0 and "show_clean" or nil,
+			},
 		}
 	end
 
@@ -1910,7 +2165,7 @@ function M.collect(state, opts)
 	children[#children + 1] = {
 		id = root .. "::changes",
 		type = "view_section",
-		name = string.format("Changes (%d)", #change_nodes),
+		name = string.format("Changes (%d)", change_count),
 		loaded = true,
 		children = change_nodes,
 		extra = { section = "changes" },

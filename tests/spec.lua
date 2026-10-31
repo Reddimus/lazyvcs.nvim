@@ -538,7 +538,10 @@ local function test_ai_commit_message_auto_falls_back_to_next_cli_provider()
 	util.system_start = function(args, opts, on_exit)
 		local key = table.concat(args, " ")
 		calls[#calls + 1] = key
-		if key:match("^git diff %-%-staged") then
+		if args[1] == "git" and vim.tbl_contains(args, "--staged") then
+			eq(args[2], "-c")
+			eq(args[3], "diff.autoRefreshIndex=false")
+			assert(not vim.tbl_contains(args, "--minimal"), "AI diff forces expensive minimal optimization")
 			on_exit({ code = 0, stdout = "diff --git a/app.lua b/app.lua\n+return true\n", stderr = "" }, nil)
 		elseif key:match("^claude ") then
 			on_exit(nil, "claude failed")
@@ -575,7 +578,10 @@ local function test_ai_commit_message_auto_falls_back_to_next_cli_provider()
 		eq(provider, "codex")
 		assert(codex_stdin:match("Use ticket IDs when present"), "custom instructions should be included")
 		assert(codex_stdin:match("diff %-%-git"), "diff context should be included")
-		eq(calls[1], "git diff --staged --no-ext-diff --no-color --stat --patch --minimal --unified=1")
+		eq(
+			calls[1],
+			"git -c diff.autoRefreshIndex=false diff --staged --no-ext-diff --no-color --stat --patch --unified=1"
+		)
 		assert(calls[2]:match("^claude "), "auto provider should try claude first")
 		eq(calls[3], "codex --ask-for-approval never exec --skip-git-repo-check --ephemeral --sandbox read-only -")
 	end)
@@ -998,7 +1004,6 @@ local function test_source_control_persist_owns_state_serialization_and_apply()
 			hidden_repos = { "/repo/b" },
 			focused_repo = "/repo/z",
 			show_clean = false,
-			selection_mode = "single",
 			changes_view_mode = "tree",
 			changes_sort = "path",
 		})
@@ -1012,7 +1017,7 @@ local function test_source_control_persist_owns_state_serialization_and_apply()
 		})
 		eq(state.lazyvcs_focused_repo, "/repo/a")
 		eq(state.lazyvcs_show_clean, true)
-		eq(state.lazyvcs_selection_mode, "multiple")
+		eq(state.lazyvcs_selection_mode, nil)
 		eq(state.lazyvcs_changes_view_mode, "list")
 		eq(state.lazyvcs_changes_sort, "status")
 	end, debug.traceback)
@@ -1217,7 +1222,7 @@ local function test_source_control_collects_dirty_nested_repos()
 	eq(root.children[1].type, "view_section")
 	eq(root.children[1].name, "Repositories (3)")
 	eq(root.children[2].type, "view_section")
-	eq(root.children[2].name, "Changes (3)")
+	eq(root.children[2].name, "Changes (2)")
 
 	eq(root.children[1].children[1].type, "repo_selector")
 	eq(root.children[1].children[2].type, "repo_selector")
@@ -1227,18 +1232,15 @@ local function test_source_control_collects_dirty_nested_repos()
 
 	eq(root.children[2].children[1].type, "repo_changes")
 	eq(root.children[2].children[2].type, "repo_changes")
-	eq(root.children[2].children[3].type, "repo_changes")
 	eq(root.children[2].children[1].name, "git-dirty")
 	eq(root.children[2].children[1].extra.vcs, "git")
 	eq(root.children[2].children[1].extra.counts.local_changes, 1)
 	eq(root.children[2].children[1].children[1].type, "commit_input")
 	eq(root.children[2].children[1].children[2].type, "action_button")
 	eq(root.children[2].children[1].children[3].type, "section")
-	eq(root.children[2].children[2].name, "git-clean")
-	eq(root.children[2].children[2].extra.vcs, "git")
-	eq(root.children[2].children[3].name, "projects")
-	eq(root.children[2].children[3].extra.vcs, "svn")
-	eq(root.children[2].children[3].extra.counts.local_changes, 1)
+	eq(root.children[2].children[2].name, "projects")
+	eq(root.children[2].children[2].extra.vcs, "svn")
+	eq(root.children[2].children[2].extra.counts.local_changes, 1)
 end
 
 local function test_source_control_progressive_collect_shows_unhydrated_repos()
@@ -1340,6 +1342,8 @@ local function test_source_control_async_summary_waits_for_command_callback()
 	eq(summary, nil, "summary callback should not run until command output arrives")
 	eq(#pending, 1)
 	pending[1].on_done({ code = 0, stdout = "## main...origin/main [ahead 1]\n M lua/file.lua\n", stderr = "" })
+	eq(summary, nil)
+	pending[2].on_done({ code = 0, stdout = "origin\n", stderr = "" })
 	eq(summary.branch, "main")
 	eq(summary.counts.local_changes, 1)
 	eq(summary.sync.status, "outgoing")
@@ -2564,9 +2568,9 @@ local function test_source_control_hides_clean_repo_after_summary_hydration()
 		scan_depth = 3,
 	})
 	eq(root.children[1].name, "Repositories (2)")
-	eq(root.children[2].name, "Changes (2)")
+	eq(root.children[2].name, "Changes (1)")
 	eq(root.children[2].children[1].name, "git-dirty")
-	eq(root.children[2].children[2].name, "git-clean")
+	eq(#root.children[2].children, 1)
 end
 
 local function test_source_control_open_repo_recreates_force_expand_after_intermediate_navigate()
@@ -5473,12 +5477,13 @@ local function test_source_control_git_sync_uses_explicit_upstream_fast_forward(
 		end,
 	}
 	local responses = {
+		["git rev-parse --verify refs/remotes/origin/develop^{commit}"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
 		["git branch --show-current"] = "develop\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/develop\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/develop"] = "refs/heads/develop\0refs/remotes/origin/develop\0origin\0refs/heads/develop\n",
 		["git fetch --prune --quiet -- origin"] = "",
 		["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## develop...origin/develop [behind 1]\n",
-		["git merge --ff-only refs/remotes/origin/develop"] = "",
+		["git merge --ff-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5497,8 +5502,12 @@ local function test_source_control_git_sync_uses_explicit_upstream_fast_forward(
 		"git fetch --prune --quiet -- origin",
 		"git branch --show-current",
 		"git status --branch --porcelain=v1 --untracked-files=no --ignored=no",
+		"git rev-parse --verify refs/remotes/origin/develop^{commit}",
 		"git symbolic-ref --quiet HEAD",
-		"git merge --ff-only refs/remotes/origin/develop",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/develop",
+		"git rev-parse --verify refs/remotes/origin/develop^{commit}",
+		"git symbolic-ref --quiet HEAD",
+		"git merge --ff-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	})
 	assert(not table.concat(calls, "\n"):match("git pull"), "sync should not run bare git pull")
 	eq(session_state.get_repo_job(repo_root), nil)
@@ -5542,12 +5551,13 @@ local function test_source_control_git_pull_action_uses_explicit_upstream_fast_f
 		end,
 	}
 	local responses = {
+		["git rev-parse --verify refs/remotes/origin/develop^{commit}"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
 		["git branch --show-current"] = "develop\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/develop\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/develop"] = "refs/heads/develop\0refs/remotes/origin/develop\0origin\0refs/heads/develop\n",
 		["git fetch --prune --quiet -- origin"] = "",
 		["git status --branch --porcelain=v1 --untracked-files=no --ignored=no"] = "## develop...origin/develop [behind 1]\n",
-		["git merge --ff-only refs/remotes/origin/develop"] = "",
+		["git merge --ff-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] = "",
 	}
 
 	---@diagnostic disable-next-line: duplicate-set-field
@@ -5566,8 +5576,12 @@ local function test_source_control_git_pull_action_uses_explicit_upstream_fast_f
 		"git fetch --prune --quiet -- origin",
 		"git branch --show-current",
 		"git status --branch --porcelain=v1 --untracked-files=no --ignored=no",
+		"git rev-parse --verify refs/remotes/origin/develop^{commit}",
 		"git symbolic-ref --quiet HEAD",
-		"git merge --ff-only refs/remotes/origin/develop",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/develop",
+		"git rev-parse --verify refs/remotes/origin/develop^{commit}",
+		"git symbolic-ref --quiet HEAD",
+		"git merge --ff-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	})
 	assert(not table.concat(calls, "\n"):match("git pull"), "pull action should not run bare git pull")
 	eq(session_state.get_repo_job(repo_root), nil)
@@ -5613,6 +5627,7 @@ local function test_source_control_git_sync_pushes_to_configured_upstream()
 		end,
 	}
 	local responses = {
+		["git config --get --default simple push.default"] = "upstream\n",
 		["git branch --show-current"] = "feature/local\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/local\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local"] = "refs/heads/feature/local\0refs/remotes/fork/feature/shared\0fork\0refs/heads/feature/shared\n",
@@ -5637,6 +5652,10 @@ local function test_source_control_git_sync_pushes_to_configured_upstream()
 		"git fetch --prune --quiet -- fork",
 		"git branch --show-current",
 		"git status --branch --porcelain=v1 --untracked-files=no --ignored=no",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local",
+		"git config --get --default simple push.default",
 		"git symbolic-ref --quiet HEAD",
 		"git push -- fork refs/heads/feature/local:refs/heads/feature/shared",
 	})
@@ -5681,6 +5700,7 @@ local function test_source_control_git_publish_branch_sets_upstream_to_origin()
 		end,
 	}
 	local responses = {
+		["git config --get --default simple push.default"] = "simple\n",
 		["git branch --show-current"] = "feature/new\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
@@ -5704,6 +5724,12 @@ local function test_source_control_git_publish_branch_sets_upstream_to_origin()
 		"git remote",
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
+		"git remote",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
 		"git push --set-upstream -- origin refs/heads/feature/new:refs/heads/feature/new",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
@@ -5749,6 +5775,7 @@ local function test_source_control_git_sync_without_upstream_publishes_branch()
 		end,
 	}
 	local responses = {
+		["git config --get --default simple push.default"] = "simple\n",
 		["git branch --show-current"] = "feature/new\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
@@ -5772,6 +5799,11 @@ local function test_source_control_git_sync_without_upstream_publishes_branch()
 		"git remote",
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
+		"git remote",
+		"git config --get --default simple push.default",
 		"git symbolic-ref --quiet HEAD",
 		"git push --set-upstream -- origin refs/heads/feature/new:refs/heads/feature/new",
 	})
@@ -5816,6 +5848,7 @@ local function test_source_control_git_push_uses_configured_upstream()
 		end,
 	}
 	local responses = {
+		["git config --get --default simple push.default"] = "upstream\n",
 		["git branch --show-current"] = "feature/local\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/local\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local"] = "refs/heads/feature/local\0refs/remotes/fork/feature/shared\0fork\0refs/heads/feature/shared\n",
@@ -5835,7 +5868,11 @@ local function test_source_control_git_push_uses_configured_upstream()
 	eq(calls, {
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local",
-		"git branch --show-current",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/local",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
 		"git push -- fork refs/heads/feature/local:refs/heads/feature/shared",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
@@ -5879,6 +5916,7 @@ local function test_source_control_git_publish_falls_back_to_single_remote()
 		end,
 	}
 	local responses = {
+		["git config --get --default simple push.default"] = "simple\n",
 		["git branch --show-current"] = "feature/new\n",
 		["git symbolic-ref --quiet HEAD"] = "refs/heads/feature/new\n",
 		["git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new"] = "refs/heads/feature/new\0\0\0\n",
@@ -5902,6 +5940,12 @@ local function test_source_control_git_publish_falls_back_to_single_remote()
 		"git remote",
 		"git branch --show-current",
 		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
+		"git for-each-ref --format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/feature/new",
+		"git remote",
+		"git config --get --default simple push.default",
+		"git symbolic-ref --quiet HEAD",
 		"git push --set-upstream -- fork refs/heads/feature/new:refs/heads/feature/new",
 	})
 	eq(session_state.get_repo_job(repo_root), nil)
@@ -7393,6 +7437,12 @@ vim.list_extend(cases, require("spec_git_intent")({ helpers = helpers, wait_for 
 vim.list_extend(cases, require("spec_backend_review_a3")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_svn_external_scope")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_snapshot_boundaries_a3")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_source_control_a3")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_source_control_a3_followup")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_source_control_a3_v3")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,

@@ -207,7 +207,7 @@ return function(ctx)
 				return warnings == 2
 			end, "collapsed repository did not retry", 1000)
 			select(s, function(node)
-				return node.extra and node.extra.action == "retry_repo" and node.name:find("Status failed:", 1, true)
+				return node.extra and node.extra.action == "retry_repo" and node.name:find("Retry <CR>:", 1, true)
 			end)
 			key(s, "<CR>")
 			ctx.wait_for(function()

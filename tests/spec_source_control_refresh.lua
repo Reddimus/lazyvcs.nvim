@@ -115,6 +115,9 @@ return function(ctx)
 				s.lazyvcs_commit_drafts[f.root] = "keep parent draft"
 				setup({ confirm_mutations = false })
 				ops.commit_repo(s, { path = f.root })
+				ctx.wait_for(function()
+					return not require("lazyvcs.state").get_repo_job(f.root)
+				end, "parent commit preflight did not finish", 15000)
 				assert(
 					s.lazyvcs_commit_drafts[f.root] == "keep parent draft"
 						and not require("lazyvcs.state").get_repo_job(f.root),
@@ -130,6 +133,7 @@ return function(ctx)
 				local repo = { root = f.root, name = "noop", vcs = "svn" }
 				local status = load(model.load_repo_details_async, repo, {})
 				h.exec({ "svn", "revert", f.file }, f.root)
+				h.write_file(f.root .. "/unversioned", "not scheduled\n")
 				local state = {
 					path = f.root,
 					lazyvcs_repo_cache = { [f.root] = status },

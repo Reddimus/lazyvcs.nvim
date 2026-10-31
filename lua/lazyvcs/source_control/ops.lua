@@ -36,6 +36,9 @@ local function detach_generation(state, record)
 	record.current = nil
 	state.lazyvcs_commit_pending[ticket.root] = nil
 	ticket.active = false
+	if state.lazyvcs_repaint then
+		state.lazyvcs_repaint(state)
+	end
 	state.lazyvcs_commit_generation_count = state.lazyvcs_commit_generation_count - 1
 	if state.lazyvcs_commit_generation_count == 0 then
 		draft_states[state] = nil
@@ -102,6 +105,10 @@ local function finish_commit_generation(ticket, message)
 	detach_generation(state, record)
 	if message and util.trim(message) ~= "" then
 		set_commit_draft(state, ticket.root, message)
+		ai.clear_error(ticket.root)
+		if state.lazyvcs_repaint then
+			state.lazyvcs_repaint(state)
+		end
 	end
 	return true
 end
@@ -243,7 +250,7 @@ local function clear_repo_details_loading(state, repo_root)
 end
 
 local function refresh_repo(state, repo_root, remote_refresh)
-	require("lazyvcs.backends").resolve_async(repo_root, function() end, { force_resolve = true })
+	require("lazyvcs.backends").invalidate(repo_root)
 	invalidate_repo(state, repo_root, remote_refresh, "repository refreshed")
 	navigate_if_visible(state)
 end
@@ -278,10 +285,6 @@ end
 
 local function repo_needs_publish(repo)
 	return repo and repo.sync and repo.sync.status == "publish"
-end
-
-local function publish_prompt(repo)
-	return "Publish branch " .. (repo.branch or "HEAD") .. " in " .. repo.name .. "?"
 end
 
 local function clear_repo_job_errors(repo_root)
@@ -333,6 +336,9 @@ local function finish_repo_job(state, repo, spec, result, err, raw)
 	end
 
 	session_state.clear_repo_job(repo.root)
+	if repo.vcs == "svn" and spec.action == "commit" and not (result and (result.stdout or ""):find("%S")) then
+		util.notify("No revision was created.", vim.log.levels.WARN)
+	end
 	if
 		spec.clear_draft
 		and (repo.vcs ~= "svn" or spec.action ~= "commit" or (result and (result.stdout or ""):find("%S")))
@@ -403,6 +409,8 @@ local read_only_commands = {
 	git_current_branch = true,
 	git_upstream = true,
 	git_remotes = true,
+	git_push_policy = true,
+	git_upstream_target = true,
 	git_fetch = true,
 	svn_discard_info = true,
 }
@@ -428,7 +436,7 @@ local function start_command(repo, kind, args, on_done, opts)
 		or opts.git_untracked_delete
 	then
 		process_start = function(command, process_opts, on_exit)
-			local signs, change, blame_change
+			local signs, change, blame_change, live_change
 			local guards = vim.tbl_extend("force", {}, opts)
 			if base_mutation then
 				local paths
@@ -452,6 +460,10 @@ local function start_command(repo, kind, args, on_done, opts)
 						remote_snapshots.invalidate(repo.root)
 					end
 					change = signs.begin_base_change(repo.root, paths)
+					local actions = package.loaded["lazyvcs.actions"]
+					if actions and actions.begin_base_change then
+						live_change = actions.begin_base_change(repo.root, paths)
+					end
 					if
 						kind == "git_commit"
 						or kind == "svn_commit"
@@ -464,6 +476,11 @@ local function start_command(repo, kind, args, on_done, opts)
 				end
 			end
 			local function settle_base()
+				if live_change then
+					local settled = live_change
+					live_change = nil
+					util.safe_callback(require("lazyvcs.actions").finish_base_change)(settled)
+				end
 				if change then
 					local settled = change
 					change = nil
@@ -681,6 +698,124 @@ local function git_push_args(remote, refspec, set_upstream)
 	return args
 end
 
+local function confirm_git_intent(repo, branch, upstream, label, on_ready, on_done)
+	local push_intent = require("lazyvcs.source_control.push_intent")
+	start_command(repo, "git_push_policy", push_intent.policy_args(), function(result, err, raw)
+		if err then
+			return on_done(nil, err, raw)
+		end
+		if result.stdout_truncated then
+			return on_done(nil, "Cannot verify push.default; refresh and retry.", raw)
+		end
+		local policy = util.trim(result.stdout or "")
+		local target = upstream.missing and "refs/heads/" .. branch or upstream.branch
+		local failure = push_intent.policy_error(branch, target, policy)
+		if failure then
+			return on_done(nil, failure)
+		end
+		local intent = {
+			branch = branch,
+			remote = upstream.remote,
+			target = target,
+			full = upstream.full,
+			missing = upstream.missing,
+			policy = policy,
+		}
+		local owner = current_repo_job(repo.root)
+		return confirm.mutation({
+			prompt = label
+				.. " refs/heads/"
+				.. branch
+				.. " -> "
+				.. intent.remote
+				.. " "
+				.. target
+				.. " in "
+				.. repo.name
+				.. "?",
+		}, function()
+			if current_repo_job(repo.root) ~= owner then
+				return
+			end
+			on_ready(intent)
+		end, function()
+			on_done(nil, "Cancelled", { code = 130, stdout = "", stderr = "Cancelled", cancelled = true })
+		end)
+	end)
+end
+
+local function push_with_intent(repo, branch, upstream, on_done)
+	return confirm_git_intent(repo, branch, upstream, upstream.missing and "Publish" or "Push", function(intent)
+		start_command(
+			repo,
+			upstream.missing and "git_publish" or "git_push",
+			git_push_args(intent.remote, "refs/heads/" .. branch .. ":" .. intent.target, upstream.missing),
+			on_done,
+			{
+				branch_ref = "refs/heads/" .. branch,
+				git_remote_intent = intent,
+			}
+		)
+	end, on_done)
+end
+
+local function start_git_fast_forward(repo, branch, upstream, ask, on_done)
+	local plan = require("lazyvcs.source_control.push_intent")
+	local intent = {
+		kind = "fast_forward",
+		branch = branch,
+		remote = upstream.remote,
+		target = upstream.branch,
+		full = upstream.full,
+	}
+	start_command(repo, "git_upstream_target", plan.target_args(intent), function(result, err, raw)
+		if err then
+			return on_done(nil, err, raw)
+		end
+		local oid = util.trim(result.stdout or "")
+		if result.stdout_truncated or not plan.valid_oid(oid) then
+			return on_done(nil, "Cannot verify fetched upstream commit; refresh and retry.", raw)
+		end
+		intent.oid = oid
+		local owner = current_repo_job(repo.root)
+		local function start()
+			if current_repo_job(repo.root) ~= owner then
+				return
+			end
+			if ask then
+				close_sessions_for_repo(repo.root)
+			end
+			start_command(repo, "git_merge", { "git", "merge", "--ff-only", oid }, on_done, {
+				guard_modified_buffers = true,
+				branch_ref = "refs/heads/" .. branch,
+				git_remote_intent = intent,
+			})
+		end
+		if not ask then
+			return start()
+		end
+		return confirm.mutation(
+			{
+				prompt = "Fast-forward refs/heads/"
+					.. branch
+					.. " from "
+					.. upstream.remote
+					.. " "
+					.. upstream.branch
+					.. " ("
+					.. oid:sub(1, 12)
+					.. ") in "
+					.. repo.name
+					.. "?",
+			},
+			start,
+			function()
+				on_done(nil, "Cancelled", { code = 130, stdout = "", stderr = "Cancelled", cancelled = true })
+			end
+		)
+	end)
+end
+
 local function start_git_publish(repo, on_done, expected_branch)
 	start_command(repo, "git_remotes", { "git", "remote" }, function(remote_result, remote_err, raw)
 		if remote_err then
@@ -710,27 +845,14 @@ local function start_git_publish(repo, on_done, expected_branch)
 			if expected_branch and branch ~= expected_branch then
 				return on_done(nil, "Branch changed while preparing to publish; retry the action.")
 			end
-			local guards = expected_branch and { branch_ref = "refs/heads/" .. expected_branch } or nil
 			start_git_upstream(repo, branch, function(upstream, upstream_err, upstream_raw)
 				if upstream_err then
 					return on_done(nil, upstream_err, upstream_raw)
 				end
-				if not upstream.missing then
-					return start_command(
-						repo,
-						"git_push",
-						git_push_args(upstream.remote, "refs/heads/" .. branch .. ":" .. upstream.branch),
-						on_done,
-						guards
-					)
+				if upstream.missing then
+					upstream.remote = remote
 				end
-				start_command(
-					repo,
-					"git_publish",
-					git_push_args(remote, "refs/heads/" .. branch .. ":refs/heads/" .. branch, true),
-					on_done,
-					guards
-				)
+				return push_with_intent(repo, branch, upstream, on_done)
 			end)
 		end)
 	end)
@@ -749,29 +871,7 @@ local function start_git_push(repo, on_done)
 				return start_git_publish(repo, on_done)
 			end
 
-			start_git_current_branch(repo, function(current, current_err, current_raw)
-				if current_err then
-					return on_done(nil, current_err, current_raw)
-				end
-				if current ~= branch then
-					return on_done(
-						nil,
-						string.format(
-							"Branch changed from %s to %s while preparing to push %s; retry the action.",
-							branch,
-							current,
-							repo.name
-						),
-						current_raw
-					)
-				end
-				start_command(
-					repo,
-					"git_push",
-					git_push_args(upstream.remote, "refs/heads/" .. current .. ":" .. upstream.branch),
-					on_done
-				)
-			end)
+			return push_with_intent(repo, branch, upstream, on_done)
 		end)
 	end)
 end
@@ -781,7 +881,6 @@ local function start_git_integrate(repo, sync, on_done)
 		if branch_err then
 			return on_done(nil, branch_err, branch_raw)
 		end
-		local branch_ref = "refs/heads/" .. branch
 		start_git_upstream(repo, branch, function(upstream, upstream_err, upstream_raw)
 			if upstream_err then
 				return on_done(nil, upstream_err, upstream_raw)
@@ -792,59 +891,45 @@ local function start_git_integrate(repo, sync, on_done)
 				end
 				return on_done(nil, "Branch " .. branch .. " has no upstream to fast-forward from.")
 			end
-			start_command(
-				repo,
-				"git_fetch",
-				{ "git", "fetch", "--prune", "--quiet", "--", upstream.remote },
-				function(_, fetch_err, fetch_raw)
-					if fetch_err then
-						return on_done(nil, fetch_err, fetch_raw)
-					end
-					start_git_current_branch(repo, function(current, current_err, current_raw)
-						if current_err then
-							return on_done(nil, current_err, current_raw)
+			local function integrate()
+				start_command(
+					repo,
+					"git_fetch",
+					{ "git", "fetch", "--prune", "--quiet", "--", upstream.remote },
+					function(_, fetch_err, fetch_raw)
+						if fetch_err then
+							return on_done(nil, fetch_err, fetch_raw)
 						end
-						if current ~= branch then
-							return on_done(nil, "Branch changed while fetching; retry the action.")
-						end
-						start_git_status(repo, function(branch_state, status_err, status_raw)
-							if status_err then
-								return on_done(nil, status_err, status_raw)
+						start_git_current_branch(repo, function(current, current_err, current_raw)
+							if current_err then
+								return on_done(nil, current_err, current_raw)
 							end
-							if branch_state.ahead > 0 and branch_state.behind > 0 then
-								return on_done(
-									nil,
-									"Branch has both incoming and outgoing commits. Use explicit pull/push actions."
-								)
+							if current ~= branch then
+								return on_done(nil, "Branch changed while fetching; retry the action.")
 							end
-							if branch_state.behind > 0 then
-								return start_command(
-									repo,
-									"git_merge",
-									{ "git", "merge", "--ff-only", upstream.full },
-									on_done,
-									{
-										guard_modified_buffers = true,
-										branch_ref = branch_ref,
-									}
-								)
-							end
-							if sync and branch_state.ahead > 0 then
-								return start_command(
-									repo,
-									"git_push",
-									git_push_args(upstream.remote, branch_ref .. ":" .. upstream.branch),
-									on_done,
-									{
-										branch_ref = branch_ref,
-									}
-								)
-							end
-							on_done({ code = 0, stdout = "", stderr = "" }, nil)
+							start_git_status(repo, function(branch_state, status_err, status_raw)
+								if status_err then
+									return on_done(nil, status_err, status_raw)
+								end
+								if branch_state.ahead > 0 and branch_state.behind > 0 then
+									return on_done(
+										nil,
+										"Pull and Sync only fast-forward. This branch has diverged; explicitly merge or rebase, then retry Sync."
+									)
+								end
+								if branch_state.behind > 0 then
+									return start_git_fast_forward(repo, branch, upstream, sync, on_done)
+								end
+								if sync and branch_state.ahead > 0 then
+									return push_with_intent(repo, branch, upstream, on_done)
+								end
+								on_done({ code = 0, stdout = "", stderr = "" }, nil)
+							end)
 						end)
-					end)
-				end
-			)
+					end
+				)
+			end
+			return integrate()
 		end)
 	end)
 end
@@ -881,6 +966,7 @@ function M.load_repo_details(state, root)
 	}, function(args, opts, on_done)
 		jobs.command(repo, opts.kind, args, {
 			timeout_ms = opts.timeout_ms,
+			output_limit_bytes = opts.output_limit_bytes,
 			generation = generation,
 			-- Use a per-repository scope; one repository generation must not mark another
 			-- repository stale.
@@ -922,24 +1008,27 @@ function M.load_repo_details(state, root)
 end
 
 function M.refresh(state, remote_refresh)
-	require("lazyvcs.backends").resolve_async(state.path, function() end, { force_resolve = true })
+	require("lazyvcs.backends").invalidate(state.path)
 	clear_repo_job_errors()
 	restart_source(state, remote_refresh)
 end
 
 function M.toggle_show_clean(state)
+	persist.mark(state, "show_clean")
 	state.lazyvcs_show_clean = not state.lazyvcs_show_clean
 	persist.save_state(state)
 	navigate(state)
 end
 
 function M.toggle_changes_view_mode(state)
+	persist.mark(state, "changes_view_mode")
 	state.lazyvcs_changes_view_mode = state.lazyvcs_changes_view_mode == "tree" and "list" or "tree"
 	persist.save_state(state)
 	navigate(state)
 end
 
 function M.cycle_changes_sort(state)
+	persist.mark(state, "changes_sort")
 	local current = state.lazyvcs_changes_sort or config.get().source_control.changes_sort
 	local order = { "path", "name", "status" }
 	local next_index = 1
@@ -983,20 +1072,40 @@ function M.generate_commit_message(state, node)
 		return notify_repo_busy(repo, job)
 	end
 	local ticket = begin_commit_generation(state, repo.root)
-	local ok, task, err = pcall(ai.generate, repo, function(message, generate_err)
-		if not finish_commit_generation(ticket, message) then
+	if state.lazyvcs_repaint then
+		state.lazyvcs_repaint(state)
+	end
+	local function finish(message, err)
+		local record = draft_record(state, repo.root)
+		if not ticket.active or record.current ~= ticket or record.revision ~= ticket.revision then
 			return
 		end
-		if generate_err then
-			util.notify((tostring(generate_err):gsub("[\r\n]+", " ")), vim.log.levels.WARN)
-		elseif message and util.trim(message) ~= "" then
-			navigate(state)
+		if err then
+			if finish_commit_generation(ticket) then
+				ai.notify_error(repo.root, err)
+			end
+			return
 		end
-	end, { owner = state })
+		local draft = util.trim((state.lazyvcs_commit_drafts or {})[repo.root] or "")
+		if message and util.trim(message) ~= "" and draft ~= "" and draft ~= message then
+			return picker.select({ "Replace", "Keep" }, { prompt = "Replace existing commit draft?" }, function(choice)
+				if
+					finish_commit_generation(ticket, choice == "Replace" and message or nil) and state.lazyvcs_repaint
+				then
+					state.lazyvcs_repaint(state)
+				end
+			end)
+		end
+		finish_commit_generation(ticket, message)
+	end
+	local ok, task, err = pcall(ai.generate, repo, finish, {
+		owner = state,
+		on_cancel = function()
+			finish_commit_generation(ticket)
+		end,
+	})
 	if not ok or not task then
-		if finish_commit_generation(ticket) then
-			util.notify((tostring(ok and err or task):gsub("[\r\n]+", " ")), vim.log.levels.WARN)
-		end
+		finish(nil, ok and err or task)
 		return
 	end
 	ticket.task = task
@@ -1035,6 +1144,15 @@ function M.open_change(state, node)
 		return
 	end
 
+	if (node.extra or {}).change_kind == "untracked" then
+		local stat = vim.uv.fs_lstat(node.path)
+		if stat and stat.type == "directory" then
+			return util.notify(
+				"Directory changes cannot open as file diffs; open the directory's repository or select a file.",
+				vim.log.levels.INFO
+			)
+		end
+	end
 	local backends = require("lazyvcs.backends")
 	local target = vim.tbl_extend("force", vim.deepcopy(node.extra or {}), {
 		vcs = repo.vcs,
@@ -1196,6 +1314,12 @@ function M.revert_file(state, node)
 	local section = node.extra.section
 	local change_kind = node.extra.change_kind
 	local status = node.extra.status or ""
+	if repo.vcs == "git" and (node.extra.intent_to_add or status == " A") then
+		return util.notify(
+			"Discard refuses intent-to-add content not stored in Git; unstage or delete it explicitly.",
+			vim.log.levels.WARN
+		)
+	end
 	local relpaths = repo.vcs == "git" and section == "staged" and git_index_paths(node) or { relpath }
 	local paths = { node.path }
 	for index = 2, #relpaths do
@@ -1283,6 +1407,12 @@ function M.revert_file(state, node)
 						or nil,
 					git_conflict = repo.vcs == "git" and section == "merge" and relpath or nil,
 					git_rename_source = #relpaths > 1 and relpaths[2] or nil,
+					git_intent_guard = repo.vcs == "git" and action == "discard_unstaged" and relpath or nil,
+					git_head_restore = repo.vcs == "git"
+							and action == "discard_staged"
+							and status:sub(1, 1) ~= "A"
+							and relpaths
+						or nil,
 					tracked_discard = action ~= "delete_untracked" and vim.tbl_map(function(index)
 						return {
 							path = paths[index],
@@ -1311,12 +1441,16 @@ function M.revert_file(state, node)
 			if not info or not info.kind or not info.schedule then
 				return util.notify("Unable to classify SVN discard target; refresh and retry.", vim.log.levels.WARN)
 			end
-			local recursive = info.kind == "dir" and info.schedule == "delete"
+			local recursive = info.kind == "dir"
+				and (info.schedule == "delete" or info.schedule == "add" or info.schedule == "replace")
 			if recursive then
-				prompt = "Discard deleted SVN directory " .. relpath .. " and its descendants in " .. repo.name .. "?"
+				prompt = "Discard SVN directory " .. relpath .. " and its descendants in " .. repo.name .. "?"
 				args = { "svn", "revert", "--depth", "infinity", "--", util.svn_target(relpath) }
 			end
-			discard(recursive and paths or nil, { relpath = relpath, recursive = recursive, kind = info.kind })
+			discard(
+				recursive and paths or nil,
+				{ relpath = relpath, recursive = recursive, kind = info.kind, schedule = info.schedule }
+			)
 		end
 	)
 end
@@ -1336,43 +1470,95 @@ function M.commit_repo(state, node)
 		return notify_repo_busy(repo, job)
 	end
 
-	confirm_mutation(state, "Commit changes in " .. repo.name .. "?", function()
-		if repo.vcs == "git" then
-			if repo.counts.staged == 0 and repo.counts.local_changes > 0 then
-				picker.select({
-					"Stage all and commit",
-					"Cancel",
-				}, {
-					prompt = "No staged changes in " .. repo.name,
-					snacks = {
-						layout = "select",
-						matcher = { sort_empty = true },
-					},
-				}, function(choice)
-					if choice ~= "Stage all and commit" then
-						return
-					end
-					start_repo_job(state, repo, {
-						action = "commit",
-						label = "Committing...",
-						sync_text = "Commit",
-						remote_refresh = true,
-						clear_draft = true,
-						start = function(resolve, reject)
-							start_command(repo, "git_stage_all", { "git", "add", "-A" }, function(_, add_err, add_raw)
-								if add_err then
-									return reject(add_err, add_raw)
-								end
-								start_commit_command(repo, message, function(result, commit_err, commit_raw)
-									if commit_err then
-										return reject(commit_err, commit_raw)
-									end
-									resolve(result, commit_raw)
-								end)
-							end)
-						end,
-					})
-				end)
+	local preparing = { status = "running", action = "commit", label = "Preparing commit..." }
+	session_state.set_repo_job(repo.root, preparing)
+	preparing = session_state.get_repo_job(repo.root)
+
+	model.load_repo_summary_async(repo, { remote_refresh = false }, function(args, opts, done)
+		return jobs.command(repo, "commit_preflight", args, {
+			owner = state,
+			scope = "commit_preflight",
+			priority = 100,
+			timeout_ms = config.get().source_control.background.status_timeout_ms,
+			output_limit_bytes = opts.output_limit_bytes,
+		}, done)
+	end, function(fresh, err)
+		if session_state.get_repo_job(repo.root) ~= preparing then
+			return
+		end
+		session_state.clear_repo_job(repo.root)
+		if not fresh or fresh.incomplete or fresh.error then
+			return util.notify(
+				"Commit status failed; refresh and retry: " .. tostring(err or fresh and fresh.error),
+				vim.log.levels.WARN
+			)
+		end
+		repo = fresh
+		confirm_mutation(state, "Commit changes in " .. repo.name .. "?", function()
+			if repo.vcs == "git" then
+				if repo.counts.staged == 0 and repo.counts.local_changes > 0 then
+					picker.select({
+						"Stage all and commit",
+						"Cancel",
+					}, {
+						prompt = "No staged changes in " .. repo.name,
+						snacks = {
+							layout = "select",
+							matcher = { sort_empty = true },
+						},
+					}, function(choice)
+						if choice ~= "Stage all and commit" then
+							return
+						end
+						start_repo_job(state, repo, {
+							action = "commit",
+							label = "Committing...",
+							sync_text = "Commit",
+							remote_refresh = true,
+							clear_draft = true,
+							start = function(resolve, reject)
+								start_command(
+									repo,
+									"git_stage_all",
+									{ "git", "add", "-A" },
+									function(_, add_err, add_raw)
+										if add_err then
+											return reject(add_err, add_raw)
+										end
+										start_commit_command(repo, message, function(result, commit_err, commit_raw)
+											if commit_err then
+												return reject(commit_err, commit_raw)
+											end
+											resolve(result, commit_raw)
+										end)
+									end,
+									{ git_require_resolved = true }
+								)
+							end,
+						})
+					end)
+					return
+				end
+				start_repo_job(state, repo, {
+					action = "commit",
+					label = "Committing...",
+					sync_text = "Commit",
+					remote_refresh = true,
+					clear_draft = true,
+					start = function(resolve, reject)
+						start_commit_command(repo, message, function(result, err, raw)
+							if err then
+								return reject(err, raw)
+							end
+							resolve(result, raw)
+						end)
+					end,
+				})
+				return
+			end
+
+			if repo.counts.local_changes == 0 then
+				util.notify("No local SVN changes to commit", vim.log.levels.WARN)
 				return
 			end
 			start_repo_job(state, repo, {
@@ -1390,28 +1576,7 @@ function M.commit_repo(state, node)
 					end)
 				end,
 			})
-			return
-		end
-
-		if repo.counts.local_changes == 0 then
-			util.notify("No local SVN changes to commit", vim.log.levels.WARN)
-			return
-		end
-		start_repo_job(state, repo, {
-			action = "commit",
-			label = "Committing...",
-			sync_text = "Commit",
-			remote_refresh = true,
-			clear_draft = true,
-			start = function(resolve, reject)
-				start_commit_command(repo, message, function(result, err, raw)
-					if err then
-						return reject(err, raw)
-					end
-					resolve(result, raw)
-				end)
-			end,
-		})
+		end)
 	end)
 end
 
@@ -1512,23 +1677,33 @@ end
 local function repo_actions(repo)
 	local actions = {
 		{ label = "Compare against base...", action = "compare" },
-		{ label = "Commit", action = "commit" },
+		{ label = "Commit", action = "commit", enabled = not repo.incomplete },
 		{ label = "Generate Commit Message", action = "generate", enabled = ai.available() },
 		{ label = "Refresh", action = "refresh" },
 	}
 
 	local job = current_repo_job(repo.root)
-	if job and job.status == "error" and job.error then
+	if
+		job and job.status == "error" and job.error
+		or repo.error
+		or repo.detail_error
+		or repo.remote_error
+		or ai.last_error(repo.root)
+	then
 		actions[#actions + 1] = { label = "Show Last Error", action = "show_error" }
 	end
 
 	if repo.vcs == "git" then
-		actions[#actions + 1] = { label = "Sync Changes", action = "sync" }
+		if repo.upstream or repo.has_remotes ~= false then
+			actions[#actions + 1] = { label = "Sync Changes", action = "sync" }
+			actions[#actions + 1] = { label = "Pull", action = "pull" }
+			actions[#actions + 1] = { label = "Push", action = "push" }
+		end
+		if repo.has_remotes ~= false then
+			actions[#actions + 1] = { label = "Fetch", action = "fetch" }
+		end
 		actions[#actions + 1] = { label = "Checkout Branch or Tag...", action = "switch" }
-		actions[#actions + 1] = { label = "Fetch", action = "fetch" }
-		actions[#actions + 1] = { label = "Pull", action = "pull" }
-		actions[#actions + 1] = { label = "Push", action = "push" }
-		actions[#actions + 1] = { label = "Stage All", action = "stage_all" }
+		actions[#actions + 1] = { label = "Stage All", action = "stage_all", enabled = not repo.incomplete }
 	else
 		actions[#actions + 1] = { label = "Switch...", action = "switch" }
 		actions[#actions + 1] = { label = "Update", action = "update" }
@@ -1623,10 +1798,22 @@ end
 local function execute_repo_action(state, repo, action, node)
 	if action == "show_error" then
 		local job = current_repo_job(repo.root)
-		if job and job.error then
+		local errors = {}
+		for _, err in pairs({
+			job and job.error,
+			repo.error,
+			repo.detail_error,
+			repo.remote_error,
+			ai.last_error(repo.root),
+		}) do
+			if err then
+				errors[#errors + 1] = tostring(err):gsub("\n$", "")
+			end
+		end
+		if #errors > 0 then
 			return util.show_text(
 				"LazyVCS: Last Error",
-				vim.split(tostring(job.error):gsub("\n$", ""), "\n", { plain = true })
+				vim.split(table.concat(errors, "\n\n"), "\n", { plain = true })
 			)
 		end
 		return
@@ -1660,9 +1847,8 @@ local function execute_repo_action(state, repo, action, node)
 		stage_all = "Stage all changes in " .. repo.name .. "?",
 		fetch = "Fetch " .. repo.name .. "?",
 		pull = "Pull " .. repo.name .. "?",
-		push = repo_needs_publish(repo) and publish_prompt(repo) or "Push " .. repo.name .. "?",
 		update = "Update " .. repo.name .. "?",
-		sync = repo_needs_publish(repo) and publish_prompt(repo) or "Sync " .. repo.name .. "?",
+		sync = repo.vcs == "svn" and ("Sync " .. repo.name .. "?") or nil,
 	}
 	if mutation_labels[action] then
 		return confirm_mutation(state, mutation_labels[action], function()
@@ -1673,16 +1859,31 @@ local function execute_repo_action(state, repo, action, node)
 		action = action:sub(2)
 	end
 	if action == "stage_all" then
+		local current = state.lazyvcs_repo_cache and state.lazyvcs_repo_cache[repo.root] or repo
+		if repo.incomplete or current.incomplete then
+			return util.notify("Status incomplete; refresh before Stage All.", vim.log.levels.WARN)
+		end
 		if repo.vcs ~= "git" then
 			util.notify("Stage all is only supported for Git", vim.log.levels.WARN)
 			return
 		end
-		return start_simple_repo_job(state, repo, {
-			action = "stage_all",
-			label = "Staging all changes...",
-			sync_text = "Stage All",
-			remote_refresh = false,
-		}, "git_stage_all", { "git", "add", "-A" })
+		return start_simple_repo_job(
+			state,
+			repo,
+			{
+				action = "stage_all",
+				label = "Staging all changes...",
+				sync_text = "Stage All",
+				remote_refresh = false,
+			},
+			"git_stage_all",
+			{ "git", "add", "-A" },
+			{
+				status_complete = function()
+					return not ((state.lazyvcs_repo_cache or {})[repo.root] or repo).incomplete
+				end,
+			}
+		)
 	end
 	if action == "switch" then
 		return M.switch_repo(state, node)
@@ -1782,7 +1983,6 @@ local function execute_repo_action(state, repo, action, node)
 				sync_text = publishing and "Publish" or "Sync",
 				remote_refresh = true,
 				checktime = true,
-				close_sessions = true,
 				start = function(resolve, reject)
 					start_git_integrate(repo, true, function(result, err, raw)
 						if err then

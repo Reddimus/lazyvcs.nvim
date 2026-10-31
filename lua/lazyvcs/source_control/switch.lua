@@ -751,7 +751,7 @@ local function git_create_branch(repo, base_ref, context, opts)
 			return
 		end
 
-		local args = { "git", "switch", "-c", name }
+		local args = { "git", "switch", "--no-track", "-c", name }
 		if base_ref and base_ref.refname then
 			args[#args + 1] = "--"
 			args[#args + 1] = base_ref.refname

@@ -187,10 +187,17 @@ function M.open_text(opts, on_submit)
 				generating = false
 				set_footer(winid, bufnr, opts, false)
 				if err then
-					util.notify(err, vim.log.levels.WARN)
+					if opts.on_error then
+						opts.on_error(err)
+					else
+						require("lazyvcs.source_control.ai").notify_error(nil, err)
+					end
 					return
 				end
 				if message and util.trim(message) ~= "" then
+					if opts.on_success then
+						opts.on_success()
+					end
 					apply_generated(message, current_generation)
 				end
 			end),
@@ -233,6 +240,12 @@ function M.open(_state, repo, default_value, on_submit)
 		title = title,
 		default_value = default_value or "",
 		can_generate = ai.available(),
+		on_success = function()
+			ai.clear_error(repo.root)
+		end,
+		on_error = function(err)
+			ai.notify_error(repo.root, err)
+		end,
 		on_generate = function(done, on_cancel)
 			-- Popups outlive sidebar states and cancel through their repository root.
 			local ok, start_err =

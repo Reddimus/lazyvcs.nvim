@@ -595,7 +595,7 @@ return function(ctx)
 						s.lazyvcs_expanded[f.root .. "::section::changes"] = true
 						native.render(s)
 						local text = table.concat(api.nvim_buf_get_lines(s.bufnr, 0, -1, false), "\n")
-						assert(not text:find("Status failed:", 1, true), "failed commit was labelled a status failure")
+						assert(not text:find("Retry <CR>:", 1, true), "failed commit was labelled a status failure")
 						assert(text:find("sample.txt", 1, true), "mutation error hid loaded changes")
 						for _, row in ipairs(s.lazyvcs_line_nodes) do
 							assert(
@@ -640,7 +640,7 @@ return function(ctx)
 					return table.concat(api.nvim_buf_get_lines(s.bufnr, 0, -1, false), "\n")
 				end
 				assert(
-					text():find("Status failed:", 1, true) and text():find("sample.txt", 1, true),
+					text():find("Retry <CR>:", 1, true) and text():find("sample.txt", 1, true),
 					"error hid cached changes"
 				)
 				repo.sections = {}
@@ -652,14 +652,14 @@ return function(ctx)
 					assert(not text():find("No changes", 1, true), "failed empty details claimed clean")
 					repo.loading_details = true
 					native.render(s)
-					assert(text():find("Loading repository status...", 1, true), "retry lost loading feedback")
+					assert(text():find("Loading", 1, true), "retry lost loading feedback")
 					repo.loading_details = false
 				end
 				repo.error, repo.detail_error = nil, nil
 				repo.remote_error = "remote unavailable"
 				native.render(s)
 				assert(
-					text():find("No changes", 1, true) and not text():find("Status failed:", 1, true),
+					text():find("No changes", 1, true) and not text():find("Retry <CR>:", 1, true),
 					"remote-only error invalidated local clean status"
 				)
 			end,

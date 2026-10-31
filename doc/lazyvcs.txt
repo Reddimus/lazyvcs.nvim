@@ -389,7 +389,8 @@ Source-control sidebar mappings. Unlike the live-diff mappings above, these are
 buffer-local and fixed; `config.keymaps` does not reach them.
 
     q            close the sidebar
-    <CR>, l      focus repo, toggle Changes repo rows, run action, or open file
+    <CR>, l, double-click
+                 focus repo, toggle Changes repo rows, run action, or open file
                  diff
     h            collapse node, including Changes repository rows
     C            compare the selected repository against a base
@@ -665,12 +666,59 @@ type, size, and contents. POSIX opens are nonblocking, so even a FIFO swapped in
 after the path check loads defaults without blocking the editor. An atomic
 replacement by another editor does not truncate a valid document.
 
+Standalone <Space> waits for 'timeoutlen' so Space-leader mappings can resolve.
+`toggle [path]` switches an open sidebar to a different path. With no path, or
+an equivalent path, it closes the sidebar. X cancels work for the selected
+repository. The sidebar cancel command and API can also stop discovery.
+
+Sidebar status commands allow 32 MiB of stdout and 32 MiB of stderr. Output
+beyond that limit retains repository identity and available branch metadata, with
+an Incomplete badge and a retry action. Counts show ? and retained groups begin
+with Cached. Truncated file records are never treated as complete status.
+Stage All is disabled while status is incomplete, and commit preflight refuses
+incomplete status. SVN reads branch metadata through a separate local info read.
+Commit rereads local status before choosing its scope. Automatic stage-all and
+commit refuses unresolved conflicts. Resolve and stage those files explicitly.
+Pull and Sync only fast-forward. If branches diverge, merge or rebase explicitly
+before retrying. Branch creation uses --no-track, including remote starting refs.
+Same-name pushes use an explicit refspec under any push.default policy. Pushing
+to a differently named upstream requires explicit push.default=upstream.
+Sync checks push policy only when it will push. Behind-only Sync confirms the
+fast-forward target without consulting push policy. No-op Sync needs no mutation
+confirmation, and diverged branches refuse integration.
+Confirmations name the source branch, remote, and destination ref. Push startup
+rechecks that destination, the branch, and push.default. Fast-forward startup
+rechecks the upstream and captured commit, then merges that immutable commit.
+
+Saving a file refreshes its repository's local rows after a short delay. It
+preserves incoming SVN metadata and waits for pending remote reads. R forces
+rediscovery and a remote check.
+
+Discard refuses intent-to-add Git files because Git does not store their content.
+Unstage or delete those files explicitly. Restoring HEAD also refuses untracked
+or ignored files at a restore path, including staged deletions and rename sources.
+Move the independent file before retrying. Added, replaced, and deleted SVN
+directories discard scheduled descendants recursively. Ordinary directory
+property changes retain shallow behavior.
+
+Sidebar highlights use default links that colorschemes can override:
+    LazyVcsFile       Normal
+    LazyVcsSection    Title
+    LazyVcsSecondary  Comment
+    LazyVcsDisabled   Comment
+    LazyVcsBusy       DiagnosticInfo
+
 Sidebar preferences are stored per project in
 `stdpath('state')/lazyvcs/source_control/<sha256(normalized-root)>.json`.
 The legacy `lazyvcs/source_control.json` is read when no project file exists.
-Saving migrates only that project and leaves the legacy file unchanged.
+Saving preference changes migrates only that project and leaves the legacy file unchanged.
 Different projects save independently. Concurrent saves of the same project
-use the last completed write. Invalid preference fields are ignored.
+merge only changed fields. Two changes to the same field use the last completed
+write. Visibility changes merge per repository. Unchanged lifecycle saves do not
+write preferences. Defaults follow configuration until explicitly overridden;
+selection_mode always follows configuration. Existing saved view preferences
+remain explicit overrides because older files have no provenance. Remove the
+project preference file to reset those overrides. Invalid fields are ignored.
 
 Git and SVN commits read messages from private temporary files, which are deleted
 when the commit process exits. Message length does not consume process argument
@@ -1255,6 +1303,12 @@ Compatibility is tested with CopilotChat client 1e06be9 and Plenary b9fd522.
 CLI diff context reaches providers over stdin, or as a private 0600 attachment
 that is deleted on completion, so it never appears in process arguments or
 task listings. Codex runs with a read-only sandbox and approval disabled.
+
+Sidebar generation shows a Generating label. Replacing a nonempty draft asks
+Replace or Keep. Failure notices fit one screen row, and Show Last Error in the
+repository actions displays full diagnostics. Invalid UTF-8 context bytes become
+ASCII byte escapes before the context limit applies. SVN-generated diff and
+status paths are relative to the working copy.
 
 New sidebar generation cancels the previous request for that repository. Submitted
 drafts and successful commits invalidate pending results, even when submitted
