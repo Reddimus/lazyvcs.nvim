@@ -2,6 +2,20 @@ local diff = require("lazyvcs.diff")
 local util = require("lazyvcs.util")
 local M = {}
 
+local function panes_owned(s)
+	for _, side in ipairs({ { s.leftwin, s.left }, { s.rightwin, s.right }, { s.sidewin, s.sidebar } }) do
+		if
+			not side[1]
+			or not vim.api.nvim_win_is_valid(side[1])
+			or vim.api.nvim_win_get_tabpage(side[1]) ~= s.tab
+			or vim.api.nvim_win_get_buf(side[1]) ~= side[2]
+		then
+			return false
+		end
+	end
+	return true
+end
+
 function M.owns(s)
 	local win = vim.api.nvim_get_current_win()
 	return s and not s.closed and (win == s.sidewin or win == s.leftwin or win == s.rightwin)
@@ -70,8 +84,16 @@ function M.restore(s, saved, stamp)
 end
 
 function M.load(s, result, item, computed)
-	s.navigation =
-		{ base = {}, saved = {}, reviewed = false, documents = { result.left_document, result.right_document } }
+	s.navigation = {
+		base = {},
+		saved = {},
+		reviewed = false,
+		documents = { result.left_document, result.right_document },
+		tick = s.worktree and vim.api.nvim_buf_get_changedtick(s.worktree.buf),
+		version = s.worktree and s.worktree.version,
+		diffopt = vim.o.diffopt,
+		epoch = s.pane_epoch,
+	}
 	if
 		(result.loaded and not result.loaded.text)
 		or item.kind == "dir"
@@ -80,6 +102,51 @@ function M.load(s, result, item, computed)
 		or result.right_label == "SUBMODULE / DIRECTORY"
 	then
 		return
+	end
+	if not computed and result.left_document and result.right_document then
+		local text = require("lazyvcs.compare_text")
+		local left, right = text.serialize(result.left_document), text.serialize(result.right_document)
+		if #left + #right > 32768 and left ~= right then
+			local pending = s.navigation
+			pending.pending = true
+			s.navigation_diff = s.navigation_diff or require("lazyvcs.diff_work").latest()
+			s.navigation_diff:request(left, right, function(raw, failure)
+				if
+					s.closed
+					or s.panes_invalid
+					or s.pane_epoch ~= pending.epoch
+					or s.navigation ~= pending
+					or s.preview_result ~= result
+					or not vim.api.nvim_win_is_valid(s.leftwin)
+					or not vim.api.nvim_win_is_valid(s.rightwin)
+					or not vim.api.nvim_win_is_valid(s.sidewin)
+				then
+					return
+				end
+				if
+					s.worktree
+					and (
+						not vim.api.nvim_buf_is_valid(s.worktree.buf)
+						or vim.api.nvim_buf_get_changedtick(s.worktree.buf) ~= pending.tick
+						or s.worktree.version ~= pending.version
+					)
+				then
+					return
+				end
+				if vim.o.diffopt ~= pending.diffopt then
+					M.load(s, result, item)
+					return
+				end
+				if not raw then
+					pending.pending = nil
+					return util.notify(failure or "Could not update comparison hunks", vim.log.levels.WARN)
+				end
+				M.load(s, result, item, diff.text_hunks(raw, result.left_document, result.right_document))
+				s.navigation.reviewed = pending.reviewed
+				M.complete(s, s.navigation_intent)
+			end)
+			return
+		end
 	end
 	local hunks = computed
 		or (
@@ -126,8 +193,41 @@ local function focus(s, index, win)
 	}
 end
 
+local function current_navigation(s)
+	local nav, record = s.navigation, s.worktree
+	if nav and nav.diffopt ~= vim.o.diffopt and s.preview_result and s.shown_item then
+		local reviewed = nav.reviewed
+		M.load(s, s.preview_result, s.shown_item)
+		s.navigation.reviewed = reviewed
+		nav = s.navigation
+	end
+	if
+		record
+		and vim.api.nvim_buf_is_valid(record.buf)
+		and (not nav or nav.tick ~= vim.api.nvim_buf_get_changedtick(record.buf) or nav.version ~= record.version)
+	then
+		local current = require("lazyvcs.compare_worktree").capture(record)
+		if not current then
+			return nil
+		end
+		local result = require("lazyvcs.compare_worktree").result(record, s.preview_result, current)
+		if not result then
+			return nil
+		end
+		local reviewed = nav and nav.reviewed
+		s.preview_result = result
+		M.load(s, result, s.shown_item)
+		s.navigation.reviewed = reviewed == true
+	end
+	return s.navigation
+end
+
 function M.complete(s, intent)
-	if s.navigation_intent ~= intent or not intent then
+	if s.navigation_intent ~= intent or not intent or not panes_owned(s) then
+		return
+	end
+	local navigation = current_navigation(s)
+	if navigation and navigation.pending then
 		return
 	end
 	M.cancel(s)
@@ -140,7 +240,6 @@ function M.complete(s, intent)
 	then
 		return
 	end
-	local navigation = s.navigation
 	if intent.kind == "native" and intent.position and s.mode == "text" then
 		local win = intent.side == "base" and s.leftwin or s.rightwin
 		local buf = vim.api.nvim_win_get_buf(win)
@@ -167,11 +266,29 @@ function M.complete(s, intent)
 		vim.api.nvim_set_current_win(win)
 		return
 	end
+	local supported, why = diff.native_hunks_supported()
+	if not supported then
+		util.notify(why, vim.log.levels.WARN)
+		vim.api.nvim_set_current_win(win)
+		return
+	end
 	focus(s, intent.kind == "last" and #navigation.saved or 1, win)
 end
 
 function M.jump(s, direction)
-	local navigation = s.navigation
+	if not panes_owned(s) then
+		util.notify("Comparison panes changed; hunk navigation is unavailable", vim.log.levels.WARN)
+		return
+	end
+	local supported, why = diff.native_hunks_supported()
+	if not supported then
+		util.notify(why, vim.log.levels.WARN)
+		return
+	end
+	local navigation = current_navigation(s)
+	if navigation and navigation.pending then
+		return
+	end
 	if not navigation or #navigation.saved == 0 then
 		util.notify("No text hunks in this preview", vim.log.levels.INFO)
 		return
@@ -191,6 +308,7 @@ function M.jump(s, direction)
 			end
 		end
 	end
+	vim.cmd("normal! m'")
 	focus(s, index, win)
 end
 

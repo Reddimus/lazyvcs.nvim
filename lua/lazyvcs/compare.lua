@@ -55,6 +55,9 @@ end
 local function sidebar_shown(s)
 	return valid(s.sidewin) and vim.api.nvim_win_get_buf(s.sidewin) == s.sidebar
 end
+local function is_shown(s, item)
+	return item and s.shown_item and item.relpath == s.shown_item.relpath and item.old_path == s.shown_item.old_path
+end
 local function selected(s)
 	return sidebar_shown(s) and s.rows and s.rows[vim.api.nvim_win_get_cursor(s.sidewin)[1]] or nil
 end
@@ -141,7 +144,10 @@ local function resize(s, manual_event)
 		and vim.api.nvim_win_get_width(s.sidewin) ~= s.applied_width
 		and not s.auto_width
 	then
-		s.manual_width = vim.api.nvim_win_get_width(s.sidewin)
+		local width = vim.api.nvim_win_get_width(s.sidewin)
+		if vim.api.nvim_get_current_win() == s.sidewin or width >= math.min(20, s.applied_width) then
+			s.manual_width = width
+		end
 	end
 	s.resizing = true
 	local width, stacked, err = view.layout(
@@ -157,6 +163,7 @@ local function resize(s, manual_event)
 	end
 	local focused = vim.api.nvim_get_current_win()
 	local left_view, right_view = capture(s.leftwin), capture(s.rightwin)
+	local side_view = capture(s.sidewin)
 	local right_focused = focused == s.rightwin
 	if stacked ~= s.stacked then
 		-- Move the existing windows so their native jump histories survive.
@@ -180,6 +187,7 @@ local function resize(s, manual_event)
 	s.resizing = false
 	restore(s.leftwin, left_view)
 	restore(s.rightwin, right_view)
+	restore(s.sidewin, side_view)
 	if right_focused then
 		vim.api.nvim_set_current_win(s.rightwin)
 	end
@@ -390,15 +398,27 @@ local function set_panes(s, next_display)
 			and result
 			and not (item.kind == "dir" or item.property_only or result.right_label == "SUBMODULE / DIRECTORY")
 		then
-			next_worktree = worktree.acquire(s, item, result, function(kind, record)
+			local acquire_error
+			next_worktree, acquire_error = worktree.acquire(s, item, result, function(kind, record)
 				worktree_event(s, kind, record)
 			end)
+			if not next_worktree and type(acquire_error) == "string" then
+				s.worktree_errors = s.worktree_errors or {}
+				if s.worktree_errors[item.relpath] ~= acquire_error then
+					s.worktree_errors[item.relpath] = acquire_error
+					util.notify(acquire_error, vim.log.levels.WARN)
+				end
+			end
 			acquired_worktree = next_worktree
 			if next_worktree then
 				result = assert(worktree.result(next_worktree, result))
 			end
 			local pair = buffers.store(s, item, next_worktree and result or result.disk_result or result)
 			left, right = pair.left, next_worktree and next_worktree.buf or pair.right
+			if next_worktree then
+				vim.bo[left].tabstop = vim.bo[right].tabstop
+				vim.bo[left].vartabstop = vim.bo[right].vartabstop
+			end
 		end
 		for _, slot in ipairs({ { s.leftwin, left }, { s.rightwin, right } }) do
 			release_pane_buffer(s, slot[1], slot[2])
@@ -694,10 +714,27 @@ local function update_worktree(s, record)
 	if record.unloading then
 		return
 	end
-	local current = worktree.capture(record)
+	local current, why = worktree.capture(record)
 	if not current then
-		return worktree_event(s, "deleted", record)
+		if not vim.api.nvim_buf_is_valid(record.buf) or record.deleted then
+			return worktree_event(s, "deleted", record)
+		end
+		if s.worktree_diff then
+			s.worktree_diff:close()
+			s.worktree_diff = nil
+		end
+		s.navigation = { base = {}, saved = {}, reviewed = false, pending = true }
+		s.right_label = display(
+			"WORKTREE (unsaved) | " .. s.shown_item.relpath .. " | hunks unavailable: " .. (why or "unsupported text")
+		):gsub("%%", "%%%%")
+		set_label(s.rightwin, s.right_label, s.right)
+		if record.capture_error ~= why then
+			record.capture_error = why
+			util.notify(why or "Working buffer hunks are unavailable", vim.log.levels.WARN)
+		end
+		return
 	end
+	record.capture_error = nil
 	local result = assert(worktree.result(record, s.preview_result, current))
 	if result.profile_key ~= s.preview_result.profile_key then
 		if set_panes(s, result_display(s, result, s.shown_item, "text")) ~= "installed" then
@@ -708,7 +745,7 @@ local function update_worktree(s, record)
 	s.preview_result = result
 	-- Clear stale navigation immediately. A single worker coalesces subsequent
 	-- edits, so neither VCS subprocesses nor histogram diff block each keystroke.
-	s.navigation = { base = {}, saved = {}, reviewed = false }
+	s.navigation = { base = {}, saved = {}, reviewed = s.navigation and s.navigation.reviewed or false, pending = true }
 	s.worktree_diff = s.worktree_diff or require("lazyvcs.diff_work").latest()
 	local tick, item, version = vim.api.nvim_buf_get_changedtick(record.buf), s.shown_item, record.version
 	local text = require("lazyvcs.compare_text")
@@ -727,7 +764,9 @@ local function update_worktree(s, record)
 			return util.notify(failure or "Could not update comparison hunks", vim.log.levels.WARN)
 		end
 		local hunks = require("lazyvcs.diff").text_hunks(raw, result.left_document, current)
+		local reviewed = s.navigation and s.navigation.reviewed
 		navigation.load(s, result, item, hunks)
+		s.navigation.reviewed = reviewed == true
 	end)
 	labels(
 		s,
@@ -757,6 +796,12 @@ local function refresh_worktree_list(s, record)
 		end
 		local chosen = selected(s)
 		s.items = items
+		for _, item in ipairs(items) do
+			if is_shown(s, item) then
+				s.shown_item = item
+				break
+			end
+		end
 		buffers.reconcile(s, snapshot, items)
 		navigation.reconcile(s, snapshot, items)
 		local added, deleted = 0, 0
@@ -777,10 +822,12 @@ worktree_event = function(s, kind, record)
 		return
 	end
 	if kind == "unloading" then
+		s.reload_reviewed = s.navigation and s.navigation.reviewed
 		s.navigation = nil
 		return
 	end
 	if kind == "deleted" then
+		s.reload_reviewed = nil
 		local item = s.shown_item
 		if not item then
 			return
@@ -821,14 +868,17 @@ worktree_event = function(s, kind, record)
 		-- A native reload invalidates both text bindings and encoding metadata.
 		record.retained = true
 		local views = { capture(s.leftwin), capture(s.rightwin) }
-		return preview(s, s.shown_item, "text", views)
+		local reviewed = s.reload_reviewed
+		s.reload_reviewed = nil
+		return preview(s, s.shown_item, "text", views, nil, reviewed)
 	end
 	if kind == "saved" then
 		update_worktree(s, record)
 		refresh_worktree_list(s, record)
 	else
 		if s.mode == "text" then
-			s.navigation = { base = {}, saved = {}, reviewed = false }
+			s.navigation =
+				{ base = {}, saved = {}, reviewed = s.navigation and s.navigation.reviewed or false, pending = true }
 		end
 		s.worktree_update_record = record
 		if s.worktree_update_pending then
@@ -858,7 +908,7 @@ local function request_preview(s, kind)
 		s.worktree_deleted = nil
 		return preview(s, item, "text", nil, intent)
 	end
-	if item == s.shown_item and s.preview_result then
+	if is_shown(s, item) and s.preview_result then
 		if s.preview_result.loaded and not s.preview_result.loaded.text then
 			preview(s, item, "text", nil, intent)
 			return true
@@ -867,7 +917,7 @@ local function request_preview(s, kind)
 			show_result(s, "text")
 		end
 		navigation.complete(s, intent)
-	elseif item == s.shown_item and s.preview_job then
+	elseif is_shown(s, item) and s.preview_job then
 		s.preview_mode = "text"
 	else
 		preview(s, item, "text", nil, intent)
@@ -879,7 +929,7 @@ local function choose_base(s)
 	end
 	s.prompting = true
 	vim.ui.input({
-		prompt = s.vcs == "git" and "Comparison base (branch or commit): " or "SVN base URL@revision:",
+		prompt = s.vcs == "git" and "Comparison base (branch or commit): " or "SVN base URL@revision: ",
 		default = s.base or s.context.suggestion or "",
 	}, function(value)
 		s.prompting = false
@@ -1067,7 +1117,7 @@ function M.refresh(s, context_checked)
 					end
 				end
 				local shown = saved and saved.shown and s.rows_cache.by_path[saved.shown]
-				preview(s, shown and items[shown] or item, "text", saved and saved.views, nil, saved and saved.reviewed)
+				preview(s, shown and items[shown] or item, "text", shown and saved.views, nil, shown and saved.reviewed)
 			else
 				set_panes(
 					s,
@@ -1138,7 +1188,7 @@ function M.navigate_file(direction, count)
 	local step = direction == "next" and count or -count
 	index = index and (index - 1 + step % #s.items) % #s.items + 1 or (direction == "next" and 1 or #s.items)
 	item = s.items[index]
-	if item == s.shown_item and vim.api.nvim_get_current_win() ~= s.sidewin and (s.preview_result or s.preview_job) then
+	if is_shown(s, item) and vim.api.nvim_get_current_win() ~= s.sidewin and (s.preview_result or s.preview_job) then
 		return true
 	end
 	if
@@ -1158,7 +1208,7 @@ function M.navigate_file(direction, count)
 		vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[item.relpath], 0 })
 	end
 	local intent = navigation.intent(s, item, "file")
-	if item == s.shown_item and s.preview_result then
+	if is_shown(s, item) and s.preview_result then
 		if s.preview_result.loaded and not s.preview_result.loaded.text then
 			preview(s, item, "text", nil, intent)
 			return true
@@ -1167,7 +1217,7 @@ function M.navigate_file(direction, count)
 			show_result(s, "text")
 		end
 		navigation.complete(s, intent)
-	elseif item == s.shown_item and s.preview_job then
+	elseif is_shown(s, item) and s.preview_job then
 		s.preview_mode = "text"
 	else
 		preview(s, item, "text", nil, intent)
@@ -1257,6 +1307,9 @@ function M.close(s, return_focus)
 	if s.worktree_diff then
 		s.worktree_diff:close()
 	end
+	if s.navigation_diff then
+		s.navigation_diff:close()
+	end
 	sessions[s.tab] = nil
 	if s.augroup then
 		vim.api.nvim_del_augroup_by_id(s.augroup)
@@ -1289,8 +1342,8 @@ function M.close(s, return_focus)
 		end
 	end
 	if vim.api.nvim_tabpage_is_valid(s.tab) and not replaced then
-		vim.api.nvim_set_current_tabpage(s.tab)
 		if #vim.api.nvim_list_tabpages() == 1 then
+			vim.api.nvim_set_current_tabpage(s.tab)
 			origin_window(s, true)
 		end
 		if vim.api.nvim_get_current_tabpage() == s.tab then
@@ -1321,7 +1374,8 @@ end
 local function edit_buffer(s, buf, position)
 	local win = origin_window(s, true, buf)
 	vim.api.nvim_set_current_win(win)
-	if vim.wo.winfixbuf or (vim.bo.modified and not vim.o.hidden) then
+	local can_hide = vim.bo.bufhidden == "hide" or (vim.bo.bufhidden == "" and vim.o.hidden)
+	if vim.wo.winfixbuf or (vim.bo.modified and not can_hide) then
 		vim.cmd("rightbelow split")
 		s.origin_edit_win = vim.api.nvim_get_current_win()
 		util.editor_window(s.origin_edit_win)
@@ -1343,13 +1397,25 @@ local function edit_buffer(s, buf, position)
 		end
 		copied = worktree.copies_pane(editor, buf, panes)
 	end
-	vim.api.nvim_win_set_buf(editor, buf)
+	if vim.api.nvim_buf_is_loaded(buf) then
+		vim.api.nvim_win_set_buf(editor, buf)
+	else
+		vim.api.nvim_win_call(editor, function()
+			vim.cmd({ cmd = "buffer", args = { tostring(buf) } })
+		end)
+	end
 	-- An autocommand may have shown another buffer; its options are its own.
 	if valid(editor) and vim.api.nvim_win_get_buf(editor) == buf then
 		if before then
 			worktree.reset_editor(editor, before, copied)
 		end
 		worktree.reset_label(editor)
+	end
+	if not valid(editor) or vim.api.nvim_win_get_buf(editor) ~= buf or not vim.api.nvim_buf_is_loaded(buf) then
+		error("File loading was cancelled")
+	end
+	if type(position) == "function" then
+		position = position()
 	end
 	if position then
 		local line = math.min(position[1], vim.api.nvim_buf_line_count(buf))
@@ -1360,7 +1426,9 @@ end
 local function map_position(from, to, position)
 	local line, column = position[1], position[2]
 	local delta = 0
-	for _, hunk in ipairs(require("lazyvcs.diff").compute_hunks(from, to)) do
+	for _, hunk in
+		ipairs(require("lazyvcs.diff").compute_hunks(from, to, { algorithm = "histogram", result_type = "indices" }))
+	do
 		if hunk.base_count > 0 and line >= hunk.base_start and line < hunk.base_start + hunk.base_count then
 			return { math.max(1, hunk.current_start), 0 }
 		end
@@ -1393,10 +1461,11 @@ local function edit(s)
 			end
 		end
 	end
+	local created = buf < 0 and vim.fn.bufnr(path) < 0
 	buf = buf < 0 and vim.fn.bufadd(path) or buf
+	local previous_listed = vim.bo[buf].buflisted
 	vim.bo[buf].buflisted = true
-	vim.fn.bufload(buf)
-	local position = { 1, 0 }
+	local position, saved_lines = { 1, 0 }, nil
 	local win = vim.api.nvim_get_current_win()
 	if s.mode == "text" and s.preview_result and (win == s.leftwin or win == s.rightwin) then
 		position = vim.api.nvim_win_get_cursor(win)
@@ -1405,14 +1474,32 @@ local function edit(s)
 			if win == s.leftwin then
 				position = map_position(s.preview_result.left, saved, position)
 			end
+			saved_lines = saved
+		end
+	end
+	local ok, err = pcall(edit_buffer, s, buf, function()
+		if saved_lines then
 			if vim.api.nvim_buf_get_offset(buf, vim.api.nvim_buf_line_count(buf)) <= common.max_file_bytes then
-				position = map_position(saved, vim.api.nvim_buf_get_lines(buf, 0, -1, false), position)
+				position = map_position(saved_lines, vim.api.nvim_buf_get_lines(buf, 0, -1, false), position)
 			else
 				util.notify("Large editing buffer: review position is clamped to its line count", vim.log.levels.INFO)
 			end
 		end
+		return position
+	end)
+	if not ok then
+		if vim.api.nvim_buf_is_valid(buf) then
+			vim.bo[buf].buflisted = previous_listed
+			if
+				created
+				and #vim.fn.win_findbuf(buf) == 0
+				and (not vim.api.nvim_buf_is_loaded(buf) or not vim.bo[buf].modified and util.buffer_size(buf) <= 1)
+			then
+				pcall(vim.api.nvim_buf_delete, buf, { force = true })
+			end
+		end
+		util.notify("Could not edit selected file: " .. tostring(err):gsub("%s+", " "), vim.log.levels.WARN)
 	end
-	edit_buffer(s, buf, position)
 end
 local function help(s)
 	if valid(s.helpwin) then
@@ -1465,6 +1552,7 @@ local function help(s)
 		height = math.max(1, math.min(#lines, vim.o.lines - 5)),
 	})
 	util.unbind_window(s.helpwin)
+	util.set_win_option(s.helpwin, "foldenable", false)
 	vim.w[s.helpwin].lazyvcs_compare = true
 	for _, key in ipairs({ "q", "?", "<Esc>" }) do
 		compat.keymap_set("n", key, function()
@@ -1562,7 +1650,7 @@ local function construct_session(s)
 		metadata = function()
 			navigation.cancel(s)
 			local item = target(s)
-			if s.preview_result and item == s.shown_item then
+			if s.preview_result and is_shown(s, item) then
 				show_result(s, s.mode == "metadata" and "text" or "metadata")
 			else
 				preview(s, item, "metadata")
@@ -1795,12 +1883,25 @@ local function construct_session(s)
 			end
 		end,
 	})
+	autocmd("OptionSet", {
+		group = s.augroup,
+		pattern = "diffopt",
+		callback = function()
+			if alive(s) and s.preview_result and s.shown_item and s.mode == "text" then
+				local reviewed = s.navigation and s.navigation.reviewed
+				navigation.load(s, s.preview_result, s.shown_item)
+				s.navigation.reviewed = reviewed == true
+			end
+		end,
+	})
 	autocmd("TabClosed", {
 		group = s.augroup,
 		callback = function()
-			if not vim.api.nvim_tabpage_is_valid(s.tab) then
-				M.close(s, false)
-			end
+			schedule(function()
+				if not vim.api.nvim_tabpage_is_valid(s.tab) then
+					M.close(s, false)
+				end
+			end)
 		end,
 	})
 	autocmd({ "VimResized", "TabEnter", "WinResized" }, {
@@ -1842,7 +1943,7 @@ local function construct_session(s)
 					if record and record.deleted and alive(s) and s.worktree == record then
 						worktree_event(s, "deleted", record)
 					elseif not valid(s.rightwin) or not valid(s.leftwin) or not valid(s.sidewin) then
-						M.close(s)
+						M.close(s, vim.api.nvim_get_current_tabpage() == s.tab)
 					end
 				end)
 			end
@@ -1855,7 +1956,7 @@ end
 local function open_session(opts, origin)
 	local current_buf = vim.api.nvim_get_current_buf()
 	local path = opts.path or (util.is_real_file_buffer(current_buf) and util.buf_path(current_buf)) or vim.fn.getcwd()
-	path = util.canonical_path(vim.fn.fnamemodify(path, ":p"))
+	path = util.canonical_path(path)
 	for _, existing in pairs(sessions) do
 		if
 			alive(existing)

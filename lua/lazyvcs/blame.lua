@@ -49,7 +49,7 @@ local function supported_blame_buffer(bufnr)
 	if not util.is_real_file_buffer(bufnr) then
 		return nil
 	end
-	local path = util.buf_path(bufnr)
+	local path = context.path(util.buf_path(bufnr))
 	if not path or math.max(util.file_size(path), util.buffer_size(bufnr)) > config.get().signs.max_file_bytes then
 		return nil
 	end
@@ -333,8 +333,9 @@ local function load_inline(bufnr, path, backend)
 					live.entries = nil
 					live.error = (not err or not err:match("^Cancelled")) and (err or true) or nil
 					pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns_id, 0, -1)
-					if err and not err:match("^Cancelled") then
-						notify(err, vim.log.levels.DEBUG)
+					if err and not err:match("^Cancelled") and live.warned_error ~= err then
+						live.warned_error = err
+						notify(err, vim.log.levels.WARN)
 					end
 					return
 				end
@@ -350,6 +351,16 @@ local function load_inline(bufnr, path, backend)
 			}
 		)
 	end, failed)()
+end
+
+local function shown_in_window(bufnr)
+	-- bufload() uses a temporary autocommand window and fires BufWinEnter too.
+	for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
+		if vim.fn.win_gettype(win) ~= "autocmd" then
+			return true
+		end
+	end
+	return false
 end
 
 local invalidate_inline
@@ -404,6 +415,9 @@ local function update_inline(bufnr)
 						return
 					end
 					live.backend = resolved
+					if not shown_in_window(bufnr) then
+						return
+					end
 					load_inline(bufnr, path, resolved)
 				end, function()
 					clear_inline(bufnr)
@@ -454,6 +468,9 @@ local function update_inline(bufnr)
 			end
 			if not current_backend or current_path ~= path then
 				update_inline(bufnr)
+				return
+			end
+			if not shown_in_window(bufnr) then
 				return
 			end
 			if not live.entries and not live.loading then
@@ -604,8 +621,21 @@ local function pad_split(view, rows)
 	end
 end
 
+local function winbar_rows(win)
+	local info = vim.fn.getwininfo(win)[1]
+	return info and info.winbar or 0
+end
+
+local function match_winbar(view)
+	local value = winbar_rows(view.source_winid) > 0 and " " or ""
+	if util.get_win_option(view.winid, "winbar") ~= value then
+		util.set_win_option(view.winid, "winbar", value)
+	end
+end
+
 local function align_split_view(view)
 	local source, blame = view.source_winid, view.winid
+	match_winbar(view)
 	pad_split(view, virtual_rows(vim.api.nvim_win_get_buf(source), source))
 	source_options.apply(view.source_lease, { scrollbind = false, cursorbind = false })
 	apply_win_options(blame, { scrollbind = false, cursorbind = false })
@@ -657,7 +687,10 @@ vim.api.nvim_set_decoration_provider(padding_ns_id, {
 				and util.win_is_valid(view.winid)
 				and vim.api.nvim_win_get_buf(view.winid) == view.bufnr
 			then
-				if not vim.deep_equal(view.virtual_rows, virtual_rows(source_bufnr, view.source_winid)) then
+				if
+					winbar_rows(view.source_winid) ~= winbar_rows(view.winid)
+					or not vim.deep_equal(view.virtual_rows, virtual_rows(source_bufnr, view.source_winid))
+				then
 					schedule_split_alignment(source_bufnr, view)
 				end
 			end
@@ -711,6 +744,15 @@ local function observe_source(view, bufnr, close, changed)
 end
 
 function M.blame_split()
+	local current = vim.api.nvim_get_current_buf()
+	for owner, existing in pairs(blame_views) do
+		if existing.bufnr == current then
+			if util.win_is_valid(existing.source_winid) then
+				vim.api.nvim_set_current_win(existing.source_winid)
+			end
+			return close_blame(owner, existing)
+		end
+	end
 	local source_bufnr, source_win = vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()
 	if close_blame(source_bufnr) then
 		return true
@@ -775,6 +817,7 @@ function M.blame_split()
 		syncing = false
 	end)
 	local function render(lines, entries)
+		view.raw_lines, view.entries = vim.deepcopy(lines), entries
 		local blame_opts, width = config.get().blame, 0
 		for _, line in ipairs(lines) do
 			width = math.max(width, vim.fn.strdisplaywidth(line))
@@ -782,9 +825,11 @@ function M.blame_split()
 		local max_width = math.min(blame_opts.split_max_width, math.max(blame_opts.split_min_width, vim.o.columns - 10))
 		width = view.winid and vim.api.nvim_win_get_width(view.winid)
 			or math.min(math.max(width + 2, blame_opts.split_min_width), max_width)
+		view.formatted_width = width
 		for i, entry in ipairs(entries) do
-			if entry.backend == "git" and not entry.uncommitted then
-				local revision, date = entry.revision, entry.date
+			if not entry.uncommitted then
+				local revision, date =
+					entry.backend == "svn" and string.format("%6s", entry.revision) or entry.revision, entry.date
 				local budget = width - vim.fn.strdisplaywidth(revision .. "  " .. date)
 				if budget >= 0 then
 					local author = util.truncate_display(entry.author, budget)
@@ -820,6 +865,7 @@ function M.blame_split()
 			view.winid = vim.api.nvim_get_current_win()
 		end)
 		util.show_win_buffer(view.winid, view.bufnr)
+		match_winbar(view)
 		util.unbind_window(view.winid)
 		util.set_win_option(view.winid, "number", false)
 		util.set_win_option(view.winid, "relativenumber", false)
@@ -844,10 +890,13 @@ function M.blame_split()
 		)
 		pcall(vim.api.nvim_win_set_width, view.winid, width)
 		view.source_lease = source_options.acquire(source_bufnr, source_win)
-		source_options.apply(
-			view.source_lease,
-			{ scrollbind = false, cursorbind = false, wrap = false, foldenable = false }
-		)
+		source_options.apply(view.source_lease, {
+			scrollbind = false,
+			cursorbind = false,
+			wrap = false,
+			foldenable = false,
+			conceallevel = math.min(vim.wo[source_win].conceallevel, 1),
+		})
 
 		if util.win_is_valid(callback_win) then
 			vim.api.nvim_set_current_win(callback_win)
@@ -869,6 +918,16 @@ function M.blame_split()
 		vim.api.nvim_create_autocmd({ "WinScrolled", "WinResized" }, {
 			group = view.augroup,
 			pattern = { tostring(source_win), tostring(view.winid) },
+			callback = safe(function()
+				if view.formatted_width ~= vim.api.nvim_win_get_width(view.winid) then
+					render(vim.deepcopy(view.raw_lines), view.entries)
+				end
+				schedule_split_alignment(source_bufnr, view)
+			end),
+		})
+		vim.api.nvim_create_autocmd("OptionSet", {
+			group = view.augroup,
+			pattern = "winbar",
 			callback = safe(function()
 				schedule_split_alignment(source_bufnr, view)
 			end),
@@ -910,6 +969,12 @@ function M.blame_split()
 		if not captured then
 			return close()
 		end
+		local target_path, target_err = context.path(captured.name)
+		if not target_path then
+			close()
+			notify(target_err, vim.log.levels.WARN)
+			return
+		end
 		local contents, capture_err, capture = context.contents(captured, config.get().signs.max_file_bytes)
 		if not contents or not capture then
 			close()
@@ -926,7 +991,7 @@ function M.blame_split()
 				close()
 				return false
 			end
-			return context.valid(captured, true)
+			return context.valid(captured, true) and context.path(captured.name) == target_path
 		end
 		local function resolved(backend, root, err)
 			if not valid() then
@@ -939,7 +1004,7 @@ function M.blame_split()
 				return
 			end
 			view.handle = backend.blame_lines_async(
-				captured.name,
+				target_path,
 				safe(function(raw, blame_err)
 					if not valid() then
 						return
@@ -965,11 +1030,11 @@ function M.blame_split()
 				{ contents = contents, text = capture.text, profile = capture.profile, root = root }
 			)
 		end
-		local backend, root = backends.resolve_cached(captured.name)
+		local backend, root = backends.resolve_cached(target_path)
 		if backend then
 			resolved(backend, root)
 		else
-			view.handle = backends.resolve_async(captured.name, safe(resolved))
+			view.handle = backends.resolve_async(target_path, safe(resolved))
 		end
 	end)
 	view.reload = reload
@@ -1064,6 +1129,7 @@ function M.line_log()
 		end)
 		view.winid = win
 		util.unbind_window(win)
+		util.set_win_option(win, "foldenable", false)
 		view.loading = false
 		view.handle = nil
 
@@ -1153,7 +1219,7 @@ function M.begin_history_change(root)
 		end
 	end
 	for buf, view in pairs(blame_views) do
-		local path = util.buf_path(buf)
+		local path = context.path(util.buf_path(buf))
 		if path and belongs_to_root(path, root) then
 			view.generation = view.generation + 1
 			if view.handle then
@@ -1186,24 +1252,15 @@ function M.finish_history_change(change)
 		end
 	end
 	for buf, view in pairs(blame_views) do
-		local path = util.buf_path(buf)
+		local path = context.path(util.buf_path(buf))
 		if path and belongs_to_root(path, root) then
 			view.reload()
 		end
 	end
 end
 
-local function shown_in_window(bufnr)
-	-- bufload() uses a temporary autocommand window and fires BufWinEnter too.
-	for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
-		if vim.fn.win_gettype(win) ~= "autocmd" then
-			return true
-		end
-	end
-	return false
-end
-
 function M.setup()
+	local restore = vim.tbl_keys(inline_views)
 	if augroup then
 		pcall(vim.api.nvim_del_augroup_by_id, augroup)
 		augroup = nil
@@ -1239,7 +1296,12 @@ function M.setup()
 		{
 			group = augroup,
 			callback = protect(function(args)
-				local hidden_load = (args.event == "BufReadPost" or args.event == "BufModifiedSet")
+				local hidden_load = (
+					args.event == "BufReadPost"
+					or args.event == "BufModifiedSet"
+					or args.event == "BufWritePost"
+					or args.event == "BufFilePost"
+				)
 					and not inline_views[args.buf]
 					and not shown_in_window(args.buf)
 				if inline_enabled and not hidden_load then
@@ -1265,9 +1327,22 @@ function M.setup()
 	})
 
 	if inline_enabled then
-		local bufnr = vim.api.nvim_get_current_buf()
+		local current = vim.api.nvim_get_current_buf()
+		for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+			restore[#restore + 1] = vim.api.nvim_win_get_buf(win)
+		end
+		restore[#restore + 1] = current
 		vim.schedule(protect(function()
-			update_inline(bufnr)
+			local seen = {}
+			for _, bufnr in ipairs(restore) do
+				if bufnr ~= current and not seen[bufnr] and util.buf_is_valid(bufnr) and shown_in_window(bufnr) then
+					seen[bufnr] = true
+					update_inline(bufnr)
+				end
+			end
+			if util.buf_is_valid(current) and shown_in_window(current) then
+				update_inline(current)
+			end
 		end))
 	end
 end

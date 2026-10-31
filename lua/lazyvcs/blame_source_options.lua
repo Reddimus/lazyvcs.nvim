@@ -2,7 +2,7 @@ local util = require("lazyvcs.util")
 local M = {}
 local records = {}
 local group, donor
-local keys = { "wrap", "foldenable", "scrollbind", "cursorbind" }
+local keys = { "wrap", "foldenable", "scrollbind", "cursorbind", "conceallevel" }
 
 local function protect(callback)
 	return function(...)
@@ -152,6 +152,11 @@ function M.apply(lease, values)
 		return
 	end
 	for name, value in pairs(values) do
+		local installed = lease.source.installed[name]
+		local current = util.get_win_option(lease.source.win, name)
+		if installed ~= nil and current ~= installed then
+			lease.source.baseline[name] = current
+		end
 		lease.source.installed[name] = value
 	end
 	util.set_win_options(lease.source.win, values)

@@ -55,7 +55,11 @@ return function(ctx)
 			end, "SVN split absent", 15000)
 			local split = blame._test_blame_views()[buf]
 			local text = t.api.nvim_buf_get_lines(split.bufnr, 0, 1, false)[1]
-			assert(text:find(author, 1, true) and text:find(date, 1, true), "split SVN metadata was corrupted")
+			local budget = t.api.nvim_win_get_width(split.winid)
+				- vim.fn.strdisplaywidth(string.format("%6s  %s", entry.revision, date))
+			local expected_author = require("lazyvcs.util").truncate_display(author, budget)
+			assert(text:find(expected_author, 1, true) and text:sub(-#date) == date, "split SVN metadata was corrupted")
+			assert(vim.fn.strdisplaywidth(text) <= t.api.nvim_win_get_width(split.winid), "SVN date clipped")
 			blame.blame_split()
 			t.api.nvim_set_current_win(win)
 			local report = assert(require("lazyvcs.blame_selection").open(1, 1))

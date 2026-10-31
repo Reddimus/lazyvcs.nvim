@@ -92,6 +92,40 @@ local function display(text)
 	)
 end
 
+local function source_text(line, tabstop, vartabstop)
+	local stops = {}
+	for width in vartabstop:gmatch("%d+") do
+		stops[#stops + 1] = tonumber(width)
+	end
+	local column, out = 0, {}
+	for _, character in ipairs(vim.fn.split(line, "\\zs")) do
+		if character == "\t" then
+			local next_stop = 0
+			if #stops == 0 then
+				next_stop = column + tabstop - column % tabstop
+			else
+				for _, width in ipairs(stops) do
+					next_stop = next_stop + width
+					if next_stop > column then
+						break
+					end
+				end
+				if next_stop <= column then
+					local width = stops[#stops]
+					next_stop = next_stop + (math.floor((column - next_stop) / width) + 1) * width
+				end
+			end
+			out[#out + 1] = string.rep(" ", next_stop - column)
+			column = next_stop
+		else
+			local rendered = display(character)
+			out[#out + 1] = rendered
+			column = column + vim.fn.strdisplaywidth(rendered)
+		end
+	end
+	return table.concat(out)
+end
+
 function M.open(first, last)
 	local source, source_win = vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()
 	local mode = vim.fn.mode()
@@ -118,10 +152,15 @@ function M.open(first, last)
 		if target_err or not util.is_real_file_buffer(source) then
 			return util.notify(target_err or "Selection blame requires a file buffer", vim.log.levels.INFO)
 		end
-		target = { path = util.buf_path(source) }
+		local path, err = context.path(util.buf_path(source))
+		if not path then
+			return util.notify(err, vim.log.levels.INFO)
+		end
+		target = { path = path }
 	end
 	target.first, target.last = first, last
 	local path = target.path
+	local tabstop, vartabstop = vim.bo[source].tabstop, vim.bo[source].vartabstop
 	local bytes = target.snapshot and util.buffer_size(source)
 		or math.max(util.file_size(path), util.buffer_size(source))
 	if bytes > math.min(config.get().signs.max_file_bytes, 1024 * 1024) then
@@ -246,7 +285,7 @@ function M.open(first, last)
 					or vim.api.nvim_buf_get_changedtick(source) ~= request.tick
 					or (captured and not context.valid(captured))
 					or (target.valid and not target.valid())
-					or (not target.snapshot and util.buf_path(source) ~= path)
+					or (not target.snapshot and context.path(util.buf_path(source)) ~= path)
 				then
 					write(request, { "Source changed while loading. Select the lines again." })
 					return
@@ -276,7 +315,8 @@ function M.open(first, last)
 								"  "
 							)
 					end
-					out[#out + 1] = string.format("%d  %s | %s", number, metadata, display(lines[number]))
+					out[#out + 1] =
+						string.format("%d  %s | %s", number, metadata, source_text(lines[number], tabstop, vartabstop))
 				end
 				if not write(request, out) then
 					return

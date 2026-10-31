@@ -2,7 +2,21 @@ local util = require("lazyvcs.util")
 local text = require("lazyvcs.compare_text")
 local M = {}
 
-M.options = { "fileencoding", "fileformat", "bomb", "endofline", "fixendofline", "binary" }
+-- Blame follows the text Neovim read through a filesystem link.
+function M.path(path)
+	local stat = path and vim.uv.fs_lstat(path)
+	if not stat or stat.type ~= "link" then
+		return path
+	end
+	local resolved = vim.uv.fs_realpath(path)
+	local target = resolved and vim.uv.fs_stat(resolved)
+	if not target or target.type ~= "file" then
+		return nil, "Symlink target is not a tracked file"
+	end
+	return util.normalize_literal_path(assert(resolved))
+end
+
+M.options = { "fileencoding", "fileformat", "bomb", "endofline", "endoffile", "fixendofline", "binary" }
 
 ---@class lazyvcs.BlameContext
 ---@field bufnr integer

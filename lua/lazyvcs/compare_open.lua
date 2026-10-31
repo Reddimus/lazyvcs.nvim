@@ -72,13 +72,7 @@ function M.setup(s, actions)
 		callback = protected(function(args)
 			local win, buf = vim.api.nvim_get_current_win(), args.buf
 			local owned = slots()[win]
-			if
-				not valid()
-				or s.resizing
-				or (s.swapping or 0) > 0
-				or not owned
-				or not vim.api.nvim_buf_is_valid(owned)
-			then
+			if not valid() or s.resizing or (s.swapping or 0) > 0 or not owned then
 				return
 			end
 			if buf == owned then
@@ -114,16 +108,17 @@ function M.setup(s, actions)
 					actions.resume()
 					return
 				end
-				local expected = slots()[win]
-				if expected and not vim.api.nvim_buf_is_loaded(expected) then
-					pending[win] = nil
-					actions.resume()
-					return
-				end
-				-- Buffer removal can replace the pane before the worktree's deferred
-				-- reconciliation. Do not route that alternate buffer as a picker result.
 				if s.worktree and (s.worktree.unloading or s.worktree.deleted) then
 					pending[win] = nil
+					return
+				end
+				local expected = slots()[win]
+				if
+					expected and (not vim.api.nvim_buf_is_valid(expected) or not vim.api.nvim_buf_is_loaded(expected))
+				then
+					pending[win] = nil
+					require("lazyvcs.compare").close(s, false)
+					actions.resume()
 					return
 				end
 				local focused = vim.api.nvim_get_current_win() == win
@@ -148,6 +143,21 @@ function M.setup(s, actions)
 						error(status)
 					end
 					if status ~= "installed" or not focused then
+						return
+					end
+					if
+						s.worktree
+						and buf == s.worktree.buf
+						and buf == s.right
+						and win ~= s.rightwin
+						and vim.api.nvim_win_is_valid(s.rightwin)
+					then
+						vim.api.nvim_set_current_win(s.rightwin)
+						vim.cmd("normal! m'")
+						local line = math.min(position[1], vim.api.nvim_buf_line_count(buf))
+						local text = vim.api.nvim_buf_get_lines(buf, line - 1, line, false)[1] or ""
+						vim.api.nvim_win_set_cursor(s.rightwin, { line, math.min(position[2], #text) })
+						vim.cmd("normal! zv")
 						return
 					end
 					if buffers.is_presentation(buf) or buf == s.left or buf == s.right then

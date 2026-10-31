@@ -29,6 +29,8 @@ local pending_opens = {}
 local pending_open_windows = setmetatable({}, { __mode = "k" })
 local source_attachments = {}
 local transfer
+local base_changes = {}
+local base_reads = require("lazyvcs.live_build_reads").new(base_changes)
 
 -- Collapse an error (often a multi-line Lua traceback) into a single short line.
 -- Multi-line messages overflow the command area and make interactive Neovim wait
@@ -47,7 +49,7 @@ end
 
 -- Build sessions asynchronously; Git/SVN processes and working-copy locks must not block
 -- navigation.
-local function build_session_async(bufnr, on_done)
+local function build_session_async(bufnr, on_done, winid)
 	if not util.is_real_file_buffer(bufnr) then
 		return on_done(nil, "lazyvcs only opens on normal file buffers", { code = "special_buffer" })
 	end
@@ -65,7 +67,7 @@ local function build_session_async(bufnr, on_done)
 	if not profile then
 		return on_done(nil, profile_err)
 	end
-	return backends.load_async(
+	return base_reads.load_async(
 		path,
 		util.safe_callback(function(result, err, rejection)
 			if not result then
@@ -97,14 +99,16 @@ local function build_session_async(bufnr, on_done)
 				base_identity = result.base_identity,
 				opts = vim.deepcopy(config.get()),
 			})
-		end)
+		end),
+		{ bufnr = bufnr, winid = winid, tabpage = winid and vim.api.nvim_win_get_tabpage(winid), profile = profile.key }
 	)
 end
 
 -- Return a session or nil, err. Catch failures so autocmds cannot trigger a hit-enter
 -- prompt.
 local function open_session(session)
-	local owner = state.for_window(session.editable_win or vim.api.nvim_get_current_win())
+	local target_win = session.editable_win or vim.api.nvim_get_current_win()
+	local owner = state.for_window(target_win)
 	local prior = state.get(session.editable_bufnr)
 	if (owner and owner.closing) or (prior and prior.closing) then
 		return nil, "Previous live diff cleanup is unfinished"
@@ -114,6 +118,31 @@ local function open_session(session)
 	end
 	if prior then
 		return nil, "Buffer already has a live diff session"
+	end
+	local target_tab = vim.api.nvim_win_get_tabpage(target_win)
+	local conflict = false
+	for _, existing in ipairs(state.list()) do
+		if existing.tabpage == target_tab then
+			conflict = true
+		end
+	end
+	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(target_tab)) do
+		if win ~= target_win and util.get_win_option(win, "diff") then
+			conflict = true
+		end
+	end
+	if conflict then
+		local function isolate()
+			vim.cmd("tab split")
+			session.editable_win = vim.api.nvim_get_current_win()
+			-- This is a new editor, not the original native diff owner.
+			util.unbind_window(session.editable_win)
+		end
+		vim.api.nvim_win_call(target_win, isolate)
+		if session.original_bufnr and util.buf_is_valid(session.original_bufnr) then
+			util.show_win_buffer(target_win, session.original_bufnr)
+		end
+		vim.api.nvim_set_current_win(session.editable_win)
 	end
 	session_sequence = session_sequence + 1
 	session.id = session_sequence
@@ -166,6 +195,10 @@ close_session = function(session, opts, automatic_retry)
 		return
 	end
 
+	if session.diff_queue then
+		session.diff_queue:close()
+		session.diff_queue = nil
+	end
 	session.close_running = true
 	session.closing = true
 	session.phase = "closing"
@@ -255,6 +288,10 @@ local function commit_transfer(old, replacement)
 	if old.refresh_job and type(old.refresh_job.kill) == "function" then
 		pcall(old.refresh_job.kill, old.refresh_job, 15)
 	end
+	if old.diff_queue then
+		old.diff_queue:close()
+		old.diff_queue = nil
+	end
 	require("lazyvcs.align").clear(old)
 	editor.restore_buffer(old.editor_state)
 	old.editor_state = nil
@@ -263,14 +300,12 @@ local function commit_transfer(old, replacement)
 	old.phase, old.closing = "closed", true
 	set_session_maps(replacement)
 	attach_session(replacement)
-	local current, err = compare_text.capture(replacement.editable_bufnr, TEXT_LIMIT)
-	if current then
-		replacement.hunks = diff.compute_text_hunks(replacement.base_text, current)
-	else
-		replacement.hunks = {}
-		replacement.capture_error = err
-		util.notify(err, vim.log.levels.WARN)
-	end
+	replacement.hunks = {}
+	vim.schedule(util.safe_callback(function()
+		if state.get(replacement.editable_bufnr) == replacement then
+			refresh(replacement.editable_bufnr)
+		end
+	end))
 end
 
 local function pause_transfer(old, target, path, reason)
@@ -394,7 +429,7 @@ end
 
 refresh = function(bufnr, reuse)
 	local session = state.get(bufnr)
-	if not session or session.closing or session.phase ~= "active" then
+	if not session or session.closing or session.phase ~= "active" or session.base_changing then
 		return
 	end
 
@@ -421,6 +456,7 @@ refresh = function(bufnr, reuse)
 		end
 	end
 	local identity = compare_text.identity(session.editable_bufnr)
+	local diffopt = vim.o.diffopt
 	local cache = session.hunk_cache
 	if
 		reuse
@@ -432,6 +468,7 @@ refresh = function(bufnr, reuse)
 		and cache.generation == session.base_generation
 		and cache.hunks == session.hunks
 		and cache.current == session.current_text
+		and cache.diffopt == diffopt
 		and vim.deep_equal(cache.identity, identity)
 	then
 		return
@@ -449,6 +486,45 @@ refresh = function(bufnr, reuse)
 		end
 		session.capture_error = nil
 		session.current_text = current
+		local base, generation = session.base_text, session.base_generation
+		local left, right = compare_text.serialize(base), compare_text.serialize(current)
+		if #left + #right > 32768 and left ~= right then
+			session.hunks, session.hunks_pending = {}, true
+			session.diff_queue = session.diff_queue or require("lazyvcs.diff_work").latest()
+			session.diff_queue:request(left, right, function(raw, failure)
+				if
+					state.get(bufnr) ~= session
+					or session.closing
+					or session.base_text ~= base
+					or session.base_generation ~= generation
+					or not util.buf_is_valid(bufnr)
+					or not vim.deep_equal(compare_text.identity(bufnr), identity)
+				then
+					return
+				end
+				if vim.o.diffopt ~= diffopt then
+					return refresh(bufnr)
+				end
+				session.hunks_pending = nil
+				if not raw then
+					return util.notify(failure or "Could not update live diff hunks", vim.log.levels.WARN)
+				end
+				session.hunks = diff.text_hunks(raw, base, current)
+				session.hunk_cache = {
+					bufnr = bufnr,
+					path = session.source_path,
+					base = base,
+					generation = generation,
+					identity = identity,
+					diffopt = diffopt,
+					current = current,
+					hunks = session.hunks,
+				}
+				layout.refresh(session)
+			end)
+			return
+		end
+		session.hunks_pending = nil
 		session.hunks = diff.compute_text_hunks(session.base_text, current)
 	elseif session.base_text and session.current_text then
 		session.hunks = diff.compute_text_hunks(session.base_text, session.current_text)
@@ -461,10 +537,71 @@ refresh = function(bufnr, reuse)
 		base = session.base_text or session.base_lines,
 		generation = session.base_generation,
 		identity = identity,
+		diffopt = diffopt,
 		current = session.current_text,
 		hunks = session.hunks,
 	}
 	layout.refresh(session)
+end
+
+local function path_identity(path, entry)
+	local canonical = entry and util.canonical_entry_path(path) or util.canonical_path(path)
+	return vim.o.fileignorecase and canonical:lower() or canonical
+end
+
+local function change_matches(change, session)
+	return not session.readonly_comparison
+		and path_identity(session.root) == change.root
+		and (not change.paths or change.paths[path_identity(session.source_path, true)])
+end
+
+function M.begin_base_change(root, paths)
+	local change = { root = path_identity(root) }
+	if paths then
+		change.paths = {}
+		for _, path in ipairs(paths) do
+			change.paths[path_identity(path, true)] = true
+		end
+	end
+	base_changes[change] = true
+	base_reads.begin(change)
+	for _, session in ipairs(state.list()) do
+		if change_matches(change, session) then
+			session.base_changing = true
+			session.base_generation = (session.base_generation or 0) + 1
+			session.hunks, session.hunk_cache, session.base_invalid = {}, nil, true
+			if session.diff_queue then
+				session.diff_queue:close()
+				session.diff_queue = nil
+			end
+			if session.refresh_job then
+				pcall(session.refresh_job.kill, session.refresh_job, 15)
+				session.refresh_job = nil
+			end
+		end
+	end
+	return change
+end
+
+function M.finish_base_change(change)
+	if not base_changes[change] then
+		return
+	end
+	base_changes[change] = nil
+	base_reads.finish(change)
+	for _, session in ipairs(state.list()) do
+		if change_matches(change, session) then
+			session.base_changing = nil
+			for pending in pairs(base_changes) do
+				if change_matches(pending, session) then
+					session.base_changing = true
+				end
+			end
+			if not session.base_changing then
+				reload_session(session)
+			end
+		end
+	end
 end
 
 function M.resume_session_save(session)
@@ -698,7 +835,7 @@ attach_session = function(session)
 
 	vim.api.nvim_create_autocmd("OptionSet", {
 		group = session.augroup,
-		pattern = { "fileencoding", "fileformat", "bomb", "binary", "endofline", "fixendofline" },
+		pattern = { "fileencoding", "fileformat", "bomb", "binary", "endofline", "endoffile", "fixendofline" },
 		callback = safe_callback(function()
 			if vim.api.nvim_get_current_buf() == session.editable_bufnr then
 				if session.paused then
@@ -730,6 +867,15 @@ attach_session = function(session)
 				if not util.win_is_valid(pane) or vim.api.nvim_win_get_buf(pane) ~= buf then
 					return
 				end
+			end
+			if args.match == "diffopt" then
+				session.hunk_cache = nil
+				schedule_refresh(session.editable_bufnr)
+			elseif
+				(args.match == "tabstop" or args.match == "vartabstop")
+				and vim.api.nvim_get_current_buf() == session.editable_bufnr
+			then
+				vim.bo[session.base_bufnr][args.match] = vim.bo[session.editable_bufnr][args.match]
 			end
 			local win = vim.api.nvim_get_current_win()
 			if
@@ -951,10 +1097,13 @@ function M.open(opts)
 			notify_open_error(open_err, opts)
 			return
 		end
+		if opened.editable_win ~= invoking_win and vim.api.nvim_get_current_win() == invoking_win then
+			vim.api.nvim_set_current_win(opened.editable_win)
+		end
 		if type(opts.on_open) == "function" then
 			opts.on_open(opened)
 		end
-	end)
+	end, invoking_win)
 	if pending_opens[bufnr] == request then
 		pending_opens[bufnr] = task
 		if task then
@@ -1014,11 +1163,11 @@ local function comparison_buffer(comparison, side, editor_win, failure_context)
 		vim.bo[bufnr].endofline = side.document.eol
 		vim.bo[bufnr].fixendofline = false
 	end
-	local extension = vim.fn.fnamemodify(comparison.path or comparison.relpath or "", ":e")
 	if comparison.property_only or comparison.kind == "git_submodule" then
 		vim.bo[bufnr].filetype = "diff"
-	elseif extension ~= "" then
-		vim.bo[bufnr].filetype = vim.filetype.match({ filename = comparison.path or comparison.relpath }) or ""
+	else
+		vim.bo[bufnr].filetype = vim.filetype.match({ buf = bufnr, filename = comparison.path or comparison.relpath })
+			or ""
 	end
 	vim.bo[bufnr].modifiable = false
 	vim.bo[bufnr].readonly = true
@@ -1248,6 +1397,20 @@ local function hunk_window(session)
 	return session.editable_win
 end
 
+local function hunk_pane(session)
+	local win = vim.api.nvim_get_current_win()
+	if vim.api.nvim_win_get_tabpage(win) ~= session.tabpage then
+		return nil
+	end
+	local buf = vim.api.nvim_win_get_buf(win)
+	if win == session.base_win and buf == session.base_bufnr then
+		return "base"
+	end
+	if buf == session.editable_bufnr and util.get_win_option(win, "diff") then
+		return "editable"
+	end
+end
+
 function M.revert_hunk()
 	if require("lazyvcs.compare_navigation").owns(require("lazyvcs.compare").current()) then
 		util.notify("Hunk revert is unavailable in Compare", vim.log.levels.WARN)
@@ -1262,11 +1425,49 @@ function M.revert_hunk()
 		return false
 	end
 
+	if session.paused then
+		util.notify(
+			"Hunk revert is unavailable while the live diff is paused; select a supported file to resume",
+			vim.log.levels.WARN
+		)
+		return false
+	end
+	if not vim.bo[session.editable_bufnr].modifiable then
+		util.notify("Buffer is not modifiable; nothing was reverted", vim.log.levels.WARN)
+		return false
+	end
+	local supported, unsupported = diff.native_hunks_supported()
+	if not supported then
+		util.notify(unsupported, vim.log.levels.WARN)
+		return false
+	end
+	local pane = hunk_pane(session)
+	if not pane then
+		util.notify("Live diff panes changed; hunk revert is unavailable", vim.log.levels.WARN)
+		return false
+	end
 	local action_win = hunk_window(session)
+	local base_line = pane == "base" and vim.api.nvim_win_get_cursor(session.base_win)[1] or nil
+	local function at_cursor(hunks, line)
+		if not base_line then
+			return diff.find_current_hunk(hunks, line)
+		end
+		for _, h in ipairs(hunks) do
+			local first = math.max(h.base_start, 1)
+			if base_line >= first and base_line <= first + math.max(h.base_count - 1, 0) then
+				return h
+			end
+		end
+	end
 	local function can_mutate()
 		return state.get(session.editable_bufnr) == session
 			and not session.closing
 			and session.phase == "active"
+			and vim.bo[session.editable_bufnr].modifiable
+			and not session.base_changing
+			and (not base_line or (util.win_is_valid(session.base_win) and vim.api.nvim_win_get_buf(session.base_win) == session.base_bufnr and vim.api.nvim_win_get_tabpage(
+				session.base_win
+			) == session.tabpage))
 			and util.win_is_valid(action_win)
 			and vim.api.nvim_win_get_buf(action_win) == session.editable_bufnr
 			and util.get_win_option(action_win, "diff")
@@ -1278,9 +1479,13 @@ function M.revert_hunk()
 		return false
 	end
 
-	refresh(session.editable_bufnr)
+	refresh(session.editable_bufnr, true)
+	if session.hunks_pending then
+		util.notify("Updating diff hunks; try again shortly", vim.log.levels.INFO)
+		return false
+	end
 	local line = vim.api.nvim_win_get_cursor(action_win)[1]
-	local hunk = diff.find_current_hunk(session.hunks or {}, line)
+	local hunk = at_cursor(session.hunks or {}, line)
 	if not hunk then
 		util.notify("No modified hunk at the cursor", vim.log.levels.WARN)
 		return
@@ -1292,6 +1497,11 @@ function M.revert_hunk()
 	local confirmed_base = vim.deepcopy(session.base_text)
 	local confirmed_hunk = vim.deepcopy(hunk)
 	local function context_is_unchanged()
+		local supported_now, why = diff.native_hunks_supported()
+		if not supported_now then
+			util.notify(why, vim.log.levels.WARN)
+			return false
+		end
 		if not can_mutate() or context.bufnr ~= session.editable_bufnr then
 			return false
 		end
@@ -1299,11 +1509,11 @@ function M.revert_hunk()
 			util.notify("Hunk context changed while confirmation was open; nothing was reverted", vim.log.levels.WARN)
 			return false
 		end
-		refresh(session.editable_bufnr)
+		refresh(session.editable_bufnr, true)
 		if session.base_invalid then
 			return false
 		end
-		local current_hunk = diff.find_current_hunk(session.hunks or {}, context.cursor[1])
+		local current_hunk = at_cursor(session.hunks or {}, context.cursor[1])
 		if
 			not vim.deep_equal(session.base_text, confirmed_base) or not vim.deep_equal(current_hunk, confirmed_hunk)
 		then
@@ -1321,12 +1531,17 @@ function M.revert_hunk()
 			if not context_is_unchanged() then
 				return false
 			end
-			return vim.api.nvim_win_call(action_win, function()
+			local ok, result = pcall(vim.api.nvim_win_call, action_win, function()
 				diff.reset_text_hunk(session.editable_bufnr, confirmed_base, session.current_text, confirmed_hunk)
 
 				schedule_refresh(session.editable_bufnr)
 				return true
 			end)
+			if not ok then
+				util.notify("Could not revert hunk: " .. tostring(result):gsub("[\r\n]+", " "), vim.log.levels.WARN)
+				return false
+			end
+			return result
 		end
 		if not session.base_identity then
 			return reset()
@@ -1359,7 +1574,23 @@ function M.jump_to_hunk(direction)
 		return require("lazyvcs.signs").jump_to_hunk(direction)
 	end
 
+	local supported, why = diff.native_hunks_supported()
+	if not supported then
+		util.notify(why, vim.log.levels.WARN)
+		return
+	end
+
+	local pane = hunk_pane(session)
+	if not pane then
+		util.notify("Live diff panes changed; hunk navigation is unavailable", vim.log.levels.WARN)
+		return
+	end
+
 	refresh(session.editable_bufnr, true)
+	if session.hunks_pending then
+		util.notify("Updating diff hunks; try again shortly", vim.log.levels.INFO)
+		return
+	end
 	local action_win = hunk_window(session)
 	local hunks = session.hunks or {}
 	if #hunks == 0 then
@@ -1368,7 +1599,25 @@ function M.jump_to_hunk(direction)
 	end
 
 	local line = vim.api.nvim_win_get_cursor(action_win)[1]
+	local base = pane == "base"
+	if base then
+		line = vim.api.nvim_win_get_cursor(session.base_win)[1]
+		local ranges = {}
+		for _, h in ipairs(hunks) do
+			ranges[#ranges + 1] = { current_start = h.base_start, current_count = h.base_count, original = h }
+		end
+		local target = diff.find_neighbor_hunk(ranges, line, direction)
+		if target then
+			vim.cmd("normal! m'")
+			diff.focus_hunk(session.base_win, session.base_bufnr, target)
+			diff.focus_hunk(action_win, session.editable_bufnr, target.original)
+		end
+		return
+	end
 	local hunk = diff.find_neighbor_hunk(hunks, line, direction)
+	vim.api.nvim_win_call(action_win, function()
+		vim.cmd("normal! m'")
+	end)
 	diff.focus_hunk(action_win, session.editable_bufnr, hunk)
 end
 

@@ -101,6 +101,8 @@ return function(ctx)
 					)
 				end
 				assert(vim.wo[peer].diff, "teardown changed the peer diff")
+				-- Stop this fixture-owned native peer before cleanup can hide it.
+				api.nvim_win_call(peer, vim.cmd.diffoff)
 				h.cleanup()
 				vim.cmd("silent! tabonly!")
 				vim.cmd("silent! only!")

@@ -248,6 +248,9 @@ function M.new(lifecycle)
 				end
 				p.phase, s.phase = "committing", "committing"
 				replacement.editor_state = p.guards[target] or editor.guard_markdown_buffer(target, p.target_path)
+				if editor.refresh_guard then
+					editor.refresh_guard(replacement.editor_state)
+				end
 				p.guards[target] = nil
 				local ok, commit_err = pcall(function()
 					lifecycle.commit(s, replacement)
@@ -269,7 +272,7 @@ function M.new(lifecycle)
 					error(commit_err)
 				end
 			end)
-		end)
+		end, s.editable_win)
 		if valid() and p.phase == "loading" then
 			p.handle = handle
 		else

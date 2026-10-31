@@ -280,7 +280,9 @@ local function test_diff_reset()
 
 	local buf = vim.api.nvim_create_buf(false, true)
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, current)
-	diff.reset_hunk(buf, base, hunks[1])
+	local base_doc = { lines = base, eol = true, empty = #base == 0 }
+	local current_doc = assert(require("lazyvcs.compare_text").capture(buf, 1024 * 1024))
+	diff.reset_text_hunk(buf, base_doc, current_doc, diff.compute_text_hunks(base_doc, current_doc)[1])
 	eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), base, "reset_hunk should restore base lines")
 end
 
@@ -294,7 +296,9 @@ local function test_diff_reset_for_insertion()
 
 	local buf = vim.api.nvim_create_buf(false, true)
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, current)
-	diff.reset_hunk(buf, base, hunks[1])
+	local base_doc = { lines = base, eol = true, empty = #base == 0 }
+	local current_doc = assert(require("lazyvcs.compare_text").capture(buf, 1024 * 1024))
+	diff.reset_text_hunk(buf, base_doc, current_doc, diff.compute_text_hunks(base_doc, current_doc)[1])
 	eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), base, "reset_hunk should remove inserted lines")
 end
 
@@ -308,7 +312,9 @@ local function test_diff_reset_for_deletion()
 
 	local buf = vim.api.nvim_create_buf(false, true)
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, current)
-	diff.reset_hunk(buf, base, hunks[1])
+	local base_doc = { lines = base, eol = true, empty = #base == 0 }
+	local current_doc = assert(require("lazyvcs.compare_text").capture(buf, 1024 * 1024))
+	diff.reset_text_hunk(buf, base_doc, current_doc, diff.compute_text_hunks(base_doc, current_doc)[1])
 	eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), base, "reset_hunk should restore deleted lines")
 end
 
@@ -322,7 +328,9 @@ local function test_diff_reset_for_top_deletion()
 
 	local buf = vim.api.nvim_create_buf(false, true)
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, current)
-	diff.reset_hunk(buf, base, hunks[1])
+	local base_doc = { lines = base, eol = true, empty = #base == 0 }
+	local current_doc = assert(require("lazyvcs.compare_text").capture(buf, 1024 * 1024))
+	diff.reset_text_hunk(buf, base_doc, current_doc, diff.compute_text_hunks(base_doc, current_doc)[1])
 	eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), base, "reset_hunk should restore top-of-file deletions")
 end
 
@@ -4663,12 +4671,13 @@ local function test_live_diff_async_open_does_not_reclaim_navigated_window()
 			return deferred
 		end
 
-		local task = actions.open({ silent = true })
-		eq(task, deferred)
+		local task = assert(actions.open({ silent = true }))
+		assert(task ~= deferred and task:is_active(), "open should own its backend read")
 		vim.cmd.edit(vim.fn.fnameescape(second))
 		local second_bufnr = vim.api.nvim_get_current_buf()
 
-		assert(deferred:finish(fake_git_load_result(first, root)))
+		deferred:finish(fake_git_load_result(first, root))
+		assert(not task:is_active() and not deferred:is_active(), "obsolete open should cancel its read owner")
 		eq(vim.api.nvim_get_current_buf(), second_bufnr, "async completion must not restore the source buffer")
 		eq(state.get(first_bufnr), nil, "navigation must prevent the stale diff session from opening")
 		eq(diff_window_count(), 0)
@@ -4764,10 +4773,11 @@ local function test_live_diff_close_during_inflight_transfer_does_not_reopen()
 		wait_for(function()
 			return pending ~= nil
 		end, "transfer should start a deferred backend request")
-		eq(state.peek_pending_transfer(session.editable_win).handle, pending)
+		local owner = state.peek_pending_transfer(session.editable_win).handle
+		assert(owner ~= pending and owner:is_active(), "transfer should own its backend read")
 
 		actions.close()
-		assert(pending.killed, "closing the session must cancel its in-flight transfer")
+		assert(owner.cancelled and pending.killed, "closing the session must cancel its owner and in-flight transfer")
 		eq(state.get(session.editable_bufnr), nil)
 		eq(state.peek_pending_transfer(session.editable_win), nil)
 		eq(diff_window_count(), 0)
@@ -7289,6 +7299,7 @@ vim.list_extend(cases, require("spec_revert_context")({ helpers = helpers, wait_
 vim.list_extend(cases, require("spec_revert_paths")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_literal_paths")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_split_labels")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_blame_a3")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_pending_history")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_window_options")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_selection_changes")({ helpers = helpers, wait_for = wait_for }))
@@ -7372,6 +7383,10 @@ vim.list_extend(cases, require("spec_compare_worktree_windows")({ helpers = help
 vim.list_extend(cases, require("spec_repository_audit")())
 vim.list_extend(cases, require("spec_compare_worktree_state")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_compare_user_state")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_compare_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_views_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_views_review_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_live_build_a3")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_backend_a3")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_git_intent")({ helpers = helpers, wait_for = wait_for }))

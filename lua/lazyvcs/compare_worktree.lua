@@ -61,6 +61,7 @@ local function changed(record)
 		vim.api.nvim_buf_get_changedtick(record.buf),
 		profile and profile.key or "",
 		tostring(bo.endofline),
+		tostring(bo.endoffile),
 		tostring(bo.fixendofline),
 		tostring(bo.modified),
 	}, ":")
@@ -185,6 +186,7 @@ local function setup()
 			"bomb",
 			"binary",
 			"endofline",
+			"endoffile",
 			"fixendofline",
 			"modified",
 		},
@@ -318,11 +320,19 @@ function M.acquire(s, item, result, callback)
 	-- Register the intended destination before filetype/autocmd code can display it.
 	record.owners[s] = callback
 	record.loading = true
+	local shortmess = vim.o.shortmess
+	vim.o.shortmess = shortmess .. "A"
 	local ok, err = pcall(vim.fn.bufload, buf)
+	vim.o.shortmess = shortmess
 	record.loading = nil
 	if not ok then
 		M.release(s, record)
 		return nil, tostring(err)
+	end
+	local swap = vim.fn.swapname(buf)
+	if swap ~= "" and swap:match("%.sw[a-o]$") then
+		M.release(s, record)
+		return nil, "Working file has another swap file; showing the saved snapshot"
 	end
 	if not record.retained and not record.tick then
 		record.tick = vim.api.nvim_buf_get_changedtick(buf)
@@ -559,6 +569,20 @@ function M.release(s, record, release_jump)
 	end
 	if records[record.buf] == record then
 		records[record.buf] = nil
+	end
+	if valid(record) and not record.retained then
+		for _, mark in ipairs(vim.fn.getmarklist()) do
+			if mark.pos[1] == record.buf and mark.mark:match("^'[A-Z]$") then
+				record.retained = true
+				break
+			end
+		end
+		for _, mark in ipairs(vim.fn.getmarklist(record.buf)) do
+			if mark.mark:match("^'[a-z]$") then
+				record.retained = true
+				break
+			end
+		end
 	end
 	if valid(record) and vim.bo[record.buf].bufhidden == "hide" then
 		vim.bo[record.buf].bufhidden = record.hidden

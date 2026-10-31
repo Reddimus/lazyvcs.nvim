@@ -148,14 +148,25 @@ end
 ---Lines currently on screen, widened by a margin so a scroll of a few rows does
 ---not immediately fall off the computed range.
 local function visible_range(winid, bufnr, margin)
-	local first = vim.api.nvim_win_call(winid, function()
-		return vim.fn.line("w0")
+	local range = vim.api.nvim_win_call(winid, function()
+		local first, count = vim.fn.line("w0"), vim.api.nvim_buf_line_count(bufnr)
+		local segments, line = {}, first
+		local budget = vim.api.nvim_win_get_height(winid) + margin * 2
+		for _ = 1, budget do
+			if line > count then
+				break
+			end
+			local closed = vim.wo[winid].foldenable and vim.fn.foldclosed(line) or -1
+			if closed == -1 then
+				segments[#segments + 1] = line
+				line = line + 1
+			else
+				line = vim.fn.foldclosedend(line) + 1
+			end
+		end
+		return { first, math.min(line - 1, count), segments }
 	end)
-	local last = vim.api.nvim_win_call(winid, function()
-		return vim.fn.line("w$")
-	end)
-	local count = vim.api.nvim_buf_line_count(bufnr)
-	return math.max(first - margin, 1), math.min(last + margin, count)
+	return unpack(range)
 end
 
 local function overlaps(range, first, last)
@@ -177,6 +188,33 @@ local function rendered_rows(win, range, anchor)
 			end)
 	end
 	return rows
+end
+
+-- Linematch can split one replacement into adjacent insertion/change ranges.
+-- Wrapped-row padding measures their combined block, including native filler.
+local function alignment_hunks(hunks)
+	local blocks = {}
+	for _, h in ipairs(hunks or {}) do
+		local b = h.base_count == 0 and h.base_start or h.base_start - 1
+		local c = h.current_count == 0 and h.current_start or h.current_start - 1
+		local last = blocks[#blocks]
+		if last and b <= last.b_end and c <= last.c_end then
+			last.b_end, last.c_end = math.max(last.b_end, b + h.base_count), math.max(last.c_end, c + h.current_count)
+		else
+			blocks[#blocks + 1] = { b = b, c = c, b_end = b + h.base_count, c_end = c + h.current_count }
+		end
+	end
+	local result = {}
+	for _, block in ipairs(blocks) do
+		local bc, cc = block.b_end - block.b, block.c_end - block.c
+		result[#result + 1] = {
+			base_start = block.b + (bc > 0 and 1 or 0),
+			base_count = bc,
+			current_start = block.c + (cc > 0 and 1 or 0),
+			current_count = cc,
+		}
+	end
+	return result
 end
 
 ---@return boolean applied
@@ -215,23 +253,39 @@ function M.apply(session)
 
 	-- Padding extmarks appear in every window showing the buffer. Skip alignment when
 	-- another window shows this file.
-	if #vim.fn.win_findbuf(edit_buf) > 1 then
+	if #vim.fn.win_findbuf(edit_buf) > 1 or #vim.fn.win_findbuf(base_buf) > 1 then
 		M.clear(session)
 		return false
 	end
 
-	local base_first, base_last = visible_range(base_win, base_buf, 10)
-	local edit_first, edit_last = visible_range(edit_win, edit_buf, 10)
-
-	local units = M.pair_units(
-		session.hunks or {},
-		vim.api.nvim_buf_line_count(base_buf),
-		vim.api.nvim_buf_line_count(edit_buf),
-		base_last,
-		edit_last,
-		base_first,
-		edit_first
-	)
+	local base_first, base_last, base_segments = visible_range(base_win, base_buf, 10)
+	local edit_first, edit_last, edit_segments = visible_range(edit_win, edit_buf, 10)
+	local units, seen = {}, {}
+	local hunks = alignment_hunks(session.hunks)
+	local base_count, edit_count = vim.api.nvim_buf_line_count(base_buf), vim.api.nvim_buf_line_count(edit_buf)
+	for _, side in ipairs({ { base_segments, true }, { edit_segments, false } }) do
+		for _, line in ipairs(side[1]) do
+			for _, unit in
+				ipairs(
+					M.pair_units(
+						hunks,
+						base_count,
+						edit_count,
+						side[2] and line or 0,
+						side[2] and 0 or line,
+						side[2] and line or 1,
+						side[2] and 1 or line
+					)
+				)
+			do
+				local key = vim.inspect(unit)
+				if not seen[key] then
+					seen[key] = true
+					units[#units + 1] = unit
+				end
+			end
+		end
+	end
 
 	-- Build the whole plan before touching the buffers. Measuring is read-only,
 	-- so the heights below are all taken against one consistent screen state.
@@ -349,12 +403,36 @@ function M.clear(session)
 	-- Drop the plan too, or a session reopened on the same table would compare
 	-- equal to the stale plan and skip re-applying padding it no longer has.
 	session.align_plan = nil
+	session.align_geometry = nil
 	for _, bufnr in ipairs({ session.base_bufnr, session.editable_bufnr }) do
 		if bufnr and util.buf_is_valid(bufnr) then
 			pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns, 0, -1)
 		end
 	end
 end
+
+-- Sign/fold columns settle at the end of a redraw, after TextChanged hooks.
+vim.api.nvim_set_decoration_provider(ns, {
+	on_end = function()
+		for _, session in ipairs(require("lazyvcs.state").list()) do
+			if
+				M.is_active(session)
+				and #vim.fn.win_findbuf(session.editable_bufnr) == 1
+				and #vim.fn.win_findbuf(session.base_bufnr) == 1
+			then
+				local geometry = {}
+				for _, win in ipairs({ session.base_win, session.editable_win }) do
+					local info = vim.fn.getwininfo(win)[1]
+					geometry[#geometry + 1] = info and { info.width, info.textoff } or {}
+				end
+				if not vim.deep_equal(geometry, session.align_geometry) then
+					session.align_geometry = geometry
+					M.schedule(session)
+				end
+			end
+		end
+	end,
+})
 
 function M.namespace()
 	return ns

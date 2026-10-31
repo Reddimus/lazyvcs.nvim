@@ -5,11 +5,13 @@ local M = {}
 ---@field fileformat "unix"|"dos"|"mac"
 ---@field bomb boolean
 ---@field binary boolean
+---@field preview? boolean
 ---@field key string
 
 ---@class LazyVcsText
 ---@field lines string[]
 ---@field eol boolean
+---@field eof_marker? boolean
 ---@field empty boolean
 ---@field encoding string
 ---@field bom boolean
@@ -19,6 +21,7 @@ local M = {}
 ---@field changedtick integer
 ---@field profile_key string
 ---@field endofline boolean
+---@field endoffile boolean
 ---@field fixendofline boolean
 ---@field modified boolean
 ---@field binary boolean
@@ -43,6 +46,9 @@ function M.setup()
 				return
 			end
 			local bo = vim.bo[args.buf]
+			if bo.fixendofline and not bo.binary then
+				bo.endoffile = false
+			end
 			if bo.fixendofline and not bo.binary and not bo.endofline then
 				bo.endofline = true
 			end
@@ -210,6 +216,13 @@ function M.decode(bytes, profile, limit_bytes)
 	if decoded:find("\0", 1, true) then
 		return nil, "Binary VCS bases do not support editable hunks"
 	end
+	local eof_marker = profile.fileformat == "dos"
+		and not profile.binary
+		and not profile.preview
+		and decoded:sub(-1) == "\26"
+	if eof_marker then
+		decoded = decoded:sub(1, -2)
+	end
 	local separator = profile.fileformat == "mac" and "\r" or "\n"
 	if profile.fileformat == "dos" then
 		decoded = decoded:gsub("\r\n", "\n")
@@ -224,7 +237,15 @@ function M.decode(bytes, profile, limit_bytes)
 			lines[i] = line:gsub("\n", "\r")
 		end
 	end
-	return { lines = lines, eol = eol, empty = empty, encoding = source, bom = bom, profile_key = profile.key }
+	return {
+		lines = lines,
+		eol = eol,
+		eof_marker = eof_marker,
+		empty = empty,
+		encoding = source,
+		bom = bom,
+		profile_key = profile.key,
+	}
 end
 
 ---@param bytes string
@@ -271,6 +292,7 @@ function M.decode_preview(bytes, opts, limit_bytes)
 			bomb = false,
 			binary = false,
 			key = encoding .. ":preview-lf",
+			preview = true,
 		}
 		local document, err = M.decode(bytes, profile, limit_bytes)
 		if document then
@@ -332,6 +354,7 @@ function M.capture(bufnr, limit_bytes)
 	local result = {
 		lines = lines,
 		eol = not empty and (bo.endofline or write_eol),
+		eof_marker = bo.endoffile and not profile.binary and (not bo.modified or not bo.fixendofline),
 		empty = empty,
 		encoding = profile.fileencoding,
 		bom = profile.bomb,
@@ -359,6 +382,7 @@ function M.identity(bufnr)
 		changedtick = vim.api.nvim_buf_get_changedtick(bufnr),
 		profile_key = profile.key,
 		endofline = vim.bo[bufnr].endofline,
+		endoffile = vim.bo[bufnr].endoffile,
 		fixendofline = vim.bo[bufnr].fixendofline,
 		modified = vim.bo[bufnr].modified,
 		binary = profile.binary,
@@ -397,7 +421,8 @@ function M.encode_file(text, profile, limit_bytes)
 			lines[i] = line:gsub("\r", "\n")
 		end
 	end
-	local decoded = text.empty and "" or table.concat(lines, separator) .. (text.eol and separator or "")
+	local decoded = (text.empty and "" or table.concat(lines, separator) .. (text.eol and separator or ""))
+		.. (text.eof_marker and "\26" or "")
 	if not M.valid_utf8(decoded) or decoded:find("\0", 1, true) then
 		return nil, "Buffer contains unsupported text"
 	end

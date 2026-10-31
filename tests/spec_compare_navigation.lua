@@ -197,6 +197,7 @@ return function(ctx)
 	cases[#cases + 1] = {
 		"test_comparison_base_command_prompts_from_editor_and_recovers_cancel",
 		function()
+			require("lazyvcs.commands").setup()
 			local f, s = fixture("git")
 			keys("<CR><leader>vf")
 			vim.api.nvim_set_current_tabpage(s.origin_tab)
