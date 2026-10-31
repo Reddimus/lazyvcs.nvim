@@ -69,7 +69,7 @@ function M.collect(repo, path, opts, callback)
 			if not opts.include_untracked then
 				return finish()
 			end
-			-- util.system_start sets GIT_LITERAL_PATHSPECS=1, including for glob bytes.
+			-- The process wrapper passes each pathspec literally, including glob bytes.
 			git({ "ls-files", "-z", "--others", "--exclude-standard", "--", relative }, function(raw)
 				local files = vim.split(raw, "\0", { plain = true, trimempty = true })
 				table.sort(files)
@@ -149,8 +149,8 @@ function M.collect(repo, path, opts, callback)
 			end
 			local paths, switched = {}, {}
 			for _, entry in ipairs(xml.parse_status(raw)) do
-				if entry.switched then
-					switched[#switched + 1] = entry.path
+				if entry.switched or entry.wc_item == "external" then
+					switched[#switched + 1] = entry
 				end
 				if entry.wc_item == "unversioned" then
 					paths[#paths + 1] = util.normalize_literal_path(repo.root .. "/" .. entry.path)

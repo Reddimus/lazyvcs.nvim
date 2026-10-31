@@ -28,101 +28,111 @@ function M.section(rel, text)
 end
 
 function M.read(task, file, limit, guard, done)
-	uv.fs_open(file, "r", 438, function(open_err, fd)
-		if not fd then
-			return vim.schedule(guard(function()
-				task:finish(nil, open_err)
-			end))
+	local function fail(err)
+		vim.schedule(guard(function()
+			task:finish(nil, err)
+		end))
+	end
+	local function identified(stat)
+		return stat
+			and stat.type == "file"
+			and type(stat.dev) == "number"
+			and stat.dev >= 0
+			and type(stat.ino) == "number"
+			and stat.ino > 0
+	end
+	if not task:is_active() then
+		return
+	end
+	-- The walker may have classified this path long before its turn to read.
+	uv.fs_lstat(file, function(stat_err, entry)
+		if not task:is_active() then
+			return
 		end
-		-- Every path closes the descriptor, including a cancelled pending read.
-		local chunks, size = {}, 0
-		local read
-		read = function()
-			uv.fs_read(fd, math.min(65536, limit - size), size, function(err, bytes)
-				local binary = bytes and size == 0 and bytes:sub(1, 8192):find("\0", 1, true)
-				if bytes then
-					chunks[#chunks + 1], size = bytes, size + #bytes
-				end
-				if task:is_active() and not err and bytes ~= "" and size < limit and not binary then
-					return read()
-				end
-				uv.fs_close(fd, function()
+		if not identified(entry) then
+			return fail(stat_err or "Patch requires a regular file with a verifiable identity")
+		end
+		local constants = uv.constants
+		-- Nonblocking protects a late FIFO; no-follow rejects late symlinks where
+		-- supported. The descriptor identity check also protects portable fallbacks.
+		local flags = bit.bor(constants.O_RDONLY, constants.O_NONBLOCK or 0, constants.O_NOFOLLOW or 0)
+		uv.fs_open(file, flags, 438, function(open_err, fd)
+			if not fd then
+				return fail(open_err)
+			end
+			local chunks, size = {}, 0
+			local function close(err, binary)
+				-- Only the current I/O callback closes its descriptor. Cancellation must
+				-- not close it while libuv still owns an in-flight operation.
+				uv.fs_close(fd, function(close_err)
 					vim.schedule(guard(function()
-						if err then
-							return task:finish(nil, err)
+						if err or close_err then
+							return task:finish(nil, err or close_err)
 						end
 						done(table.concat(chunks), not binary and size >= limit)
 					end))
 				end)
+			end
+			if not task:is_active() then
+				return close()
+			end
+			uv.fs_fstat(fd, function(fd_err, stat)
+				if not task:is_active() then
+					return close()
+				end
+				if not identified(stat) or stat.dev ~= entry.dev or stat.ino ~= entry.ino then
+					return close(fd_err or "Patch file changed before it could be read")
+				end
+				local read
+				read = function()
+					if size >= limit then
+						return close()
+					end
+					uv.fs_read(fd, math.min(65536, limit - size), size, function(err, bytes)
+						local binary = bytes and size == 0 and bytes:sub(1, 8192):find("\0", 1, true)
+						if bytes then
+							chunks[#chunks + 1], size = bytes, size + #bytes
+						end
+						if task:is_active() and not err and bytes and bytes ~= "" and size < limit and not binary then
+							return read()
+						end
+						close(err, binary)
+					end)
+				end
+				read()
 			end)
-		end
-		read()
+		end)
 	end)
 end
 
 function M.files(task, repo, paths, guard, done, switched)
-	require("lazyvcs.backends.svn_ignore").load(
+	-- The shared walker bounds discovered children; also bound a flat initial list.
+	if #paths > 10000 then
+		return task:finish(nil, "Too many unversioned paths; narrow the patch path")
+	end
+	local entries = {}
+	for _, path in ipairs(paths) do
+		entries[#entries + 1] = { path = path, wc_item = "unversioned" }
+	end
+	for _, boundary in ipairs(switched or {}) do
+		entries[#entries + 1] = type(boundary) == "table" and boundary or { path = boundary, switched = true }
+	end
+	require("lazyvcs.backends.svn_untracked").expand(
 		task,
 		repo,
-		guard(function(ignored, err)
-			if not ignored then
+		entries,
+		guard(function(files, err)
+			if not files then
 				return task:finish(nil, err)
 			end
-			local files, visited, scanned = {}, 0, 0
-			local visit
-			visit = guard(function()
-				local current = table.remove(paths)
-				if not current then
-					table.sort(files)
-					return done(files)
-				end
-				visited = visited + 1
-				if visited > 10000 then
-					return task:finish(nil, "Too many unversioned paths; narrow the patch path")
-				end
-				uv.fs_lstat(current, function(stat_err, stat)
-					vim.schedule(guard(function()
-						if stat_err then
-							return task:finish(nil, stat_err)
-						end
-						if stat.type == "file" then
-							files[#files + 1] = current
-							return visit()
-						end
-						-- Do not follow directory symlinks out of the requested subtree.
-						if stat.type ~= "directory" then
-							return visit()
-						end
-						uv.fs_scandir(current, function(scan_err, scanner)
-							local consume
-							consume = guard(function()
-								if scan_err then
-									return task:finish(nil, scan_err)
-								end
-								for _ = 1, 128 do
-									local name = uv.fs_scandir_next(scanner)
-									if not name then
-										return visit()
-									end
-									scanned = scanned + 1
-									local child = util.normalize_literal_path(current .. "/" .. name)
-									if name ~= ".svn" and name ~= ".git" and not ignored(child, name) then
-										paths[#paths + 1] = child
-									end
-									if #paths + visited > 10000 or scanned > 100000 then
-										return task:finish(nil, "Too many unversioned paths; narrow the patch path")
-									end
-								end
-								vim.schedule(consume)
-							end)
-							vim.schedule(consume)
-						end)
-					end))
-				end)
-			end)
-			visit()
+			local absolute = {}
+			for _, path in ipairs(files) do
+				absolute[#absolute + 1] = util.normalize_literal_path(repo.root .. "/" .. path)
+			end
+			table.sort(absolute)
+			done(absolute)
 		end),
-		switched
+		{ files_only = true, missing_is_error = true }
 	)
 end
 

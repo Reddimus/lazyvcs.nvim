@@ -16,7 +16,8 @@ local function schedule(task, callback)
 end
 
 -- Expand only native unversioned rows. lstat keeps directory symlinks as entries.
-function M.expand(task, repo, entries, callback)
+function M.expand(task, repo, entries, callback, opts)
+	opts = opts or {}
 	local items, seen = {}, {}
 	local pending, switched = {}, {}
 	for _, entry in ipairs(entries) do
@@ -43,7 +44,7 @@ function M.expand(task, repo, entries, callback)
 					return
 				end
 				if stat_err then
-					if tostring(stat_err):match("ENOENT") then
+					if not opts.missing_is_error and tostring(stat_err):match("ENOENT") then
 						visit()
 						return
 					end
@@ -59,7 +60,7 @@ function M.expand(task, repo, entries, callback)
 									return
 								end
 								if not handle then
-									if tostring(scan_err):match("ENOENT") then
+									if not opts.missing_is_error and tostring(scan_err):match("ENOENT") then
 										visit()
 										return
 									end
@@ -105,6 +106,9 @@ function M.expand(task, repo, entries, callback)
 						end)
 					end)
 					return
+				end
+				if opts.files_only and stat.type ~= "file" then
+					return visit()
 				end
 				local relpath = path:sub(#repo.root + 2)
 				if not seen[relpath] then

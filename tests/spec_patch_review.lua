@@ -1,6 +1,7 @@
 -- Regressions for the independent patch review. Exercise delivered bytes and UI actions.
 return function(ctx)
 	local h, patch = ctx.helpers, require("lazyvcs.patch")
+	local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
 	local cases = {}
 	local function write(path, text)
 		local fd = assert(io.open(path, "wb"))
@@ -232,7 +233,7 @@ return function(ctx)
 		assert(third.cancelled and not vim.api.nvim_buf_is_valid(buf))
 	end)
 	case("changelog_unreleased_added", function()
-		local text = read("CHANGELOG.md")
+		local text = read(root .. "/CHANGELOG.md")
 		local added = assert(text:match("## %[Unreleased%](.-)\n## %[%d")):match("### Added(.*)")
 		assert(added and added:find(":LazyVCS patch [path]", 1, true), "patch missing from Unreleased / Added")
 		local released = assert(text:match("## %[0%.12%.0%](.-)\n## %["))
