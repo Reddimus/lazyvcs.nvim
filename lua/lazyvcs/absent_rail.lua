@@ -72,13 +72,18 @@ local function resume(r)
 			and api.nvim_win_is_valid(r.win)
 			and api.nvim_win_get_buf(r.win) == r.buf
 	end
-	if r.suspended and current() then
+	if not r.suspended or r.resuming or not current() then
+		return
+	end
+	r.resuming = true
+	local ok, err = pcall(function()
 		local function apply_value(name, value)
 			if not current() then
 				return false
 			end
+			-- A previous setter may have changed a not-yet-collapsed preference.
+			r.before[name] = util.get_win_option(r.win, name)
 			write(r.win, name, value)
-			-- A setter can release this rail, replace its owner, or leave its buffer.
 			if not current() then
 				if r.session.rail == r and windows[r.win] == r then
 					M.release(r.session)
@@ -99,6 +104,10 @@ local function resume(r)
 		if current() then
 			r.suspended = nil
 		end
+	end)
+	r.resuming = nil
+	if not ok then
+		error(err, 0)
 	end
 end
 

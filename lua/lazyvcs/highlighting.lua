@@ -808,9 +808,10 @@ local function resettle(win, state)
 	local saved = state.suspension
 	state.suspension = nil
 	if saved and unchanged(win, state, saved, saved.raw, saved.suspended_ns, saved.user) then
-		write_filler(win, saved.filler.written)
-		if unchanged(win, state, saved, saved.filler.written, saved.suspended_ns, saved.user) then
-			write_mapping(win, saved.overlay)
+		-- Native copies need the owner mapping before injected filler can escape.
+		write_mapping(win, saved.overlay)
+		if unchanged(win, state, saved, saved.raw, saved.active_ns, saved.overlay) then
+			write_filler(win, saved.filler.written)
 			if unchanged(win, state, saved, saved.filler.written, saved.active_ns, saved.overlay) then
 				saved.filler.suspended = nil
 				return
