@@ -797,8 +797,10 @@ uses the same literal-path escaping as the sidebar command. A path inside a
 working copy limits the patch to that subtree, with repository-relative paths.
 A path above working copies uses source_control.scan_depth to discover them.
 Each nonempty repository section starts with "# Repository: <root>", in path
-order. Multi-repository output is for reading or splitting into separate patches
-before application.
+order. Roots containing control bytes use JSON quoting in these headers.
+Multi-repository output is for reading or splitting into separate patches before
+application. An unreadable discovery subtree stops collection; resolve the
+reported error or select a narrower path and retry.
 
 Git compares staged and unstaged changes against HEAD, or the empty tree for an
 unborn branch. SVN includes working-copy changes and scheduled additions.

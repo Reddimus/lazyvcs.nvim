@@ -115,7 +115,12 @@ local function index_text(text, default_root, saved, schedule, done)
 			local prefix = line:sub(1, 1)
 			if line:match("^# Repository: ") then
 				close_file()
-				root, file, hunk = line:sub(15), nil, nil
+				local header = line:sub(15)
+				if header:sub(1, 1) == '"' then
+					local ok, decoded = pcall(vim.json.decode, header)
+					header = ok and type(decoded) == "string" and decoded or nil
+				end
+				root, file, hunk = header, nil, nil
 			elseif line:match("^diff %-%-git ") or line:match("^Index: ") then
 				close_file()
 				file = {
@@ -325,7 +330,12 @@ local function collect(path, opts, done)
 			if not repo or truncated then
 				return finish()
 			end
-			local pending_header = multiple and ("# Repository: " .. repo.root .. "\n") or nil
+			local header_root = repo.root
+			if multiple and header_root:find("%c") then
+				header_root = vim.json.encode(header_root)
+			end
+			---@type string?
+			local pending_header = multiple and ("# Repository: " .. header_root .. "\n") or nil
 			task:add(backends.patch_repository_async(
 				repo,
 				multiple and repo.root or path,
@@ -366,9 +376,16 @@ local function collect(path, opts, done)
 				require("lazyvcs.source_control.model").discover_async(
 					path,
 					require("lazyvcs.config").get().source_control.scan_depth,
-					checked(function(repos, err)
+					checked(function(repos, err, problems)
 						if not repos then
 							return finish(err)
+						end
+						if problems and problems.incomplete and #problems.incomplete > 0 then
+							return finish(
+								"Repository discovery incomplete: "
+									.. problems.incomplete[1]
+									.. "; resolve the error or narrow the patch path"
+							)
 						end
 						repositories(repos, true)
 					end)
@@ -423,7 +440,7 @@ end
 local function open_file(view)
 	local item = row_position(view, api.nvim_win_get_cursor(0)[1])
 	local file = item and item.file
-	if not item or not file or not file.path then
+	if not item or not file or not file.root or not file.path then
 		return
 	end
 	local rel = file.path == "/dev/null" and file.old or file.path
@@ -529,7 +546,7 @@ function M.open(opts)
 		and (mods.tab or -1) < 0
 	then
 		if destination.fallback then
-			mods.tab = 0
+			mods.tab = api.nvim_tabpage_get_number(api.nvim_get_current_tabpage())
 		else
 			api.nvim_set_current_win(destination.winid)
 			mods.split = "aboveleft"
