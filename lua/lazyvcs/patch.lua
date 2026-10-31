@@ -505,8 +505,34 @@ local function position(view)
 end
 
 local function rerun(view)
-	if view.task then
-		view.task:cancel()
+	local previous, previous_generation, buf = view.task, view.generation, view.buf
+	local function current()
+		return views[view.path] == view
+			and view.task == previous
+			and view.generation == previous_generation
+			and view.buf == buf
+			and api.nvim_buf_is_valid(buf)
+	end
+	local function cancelled()
+		local task = Task.new()
+		task:cancel()
+		return task
+	end
+	if not current() then
+		return cancelled()
+	end
+	local name, tick = api.nvim_buf_get_name(buf), api.nvim_buf_get_changedtick(buf)
+	if previous then
+		previous:cancel()
+	end
+	-- Cancellation can synchronously install a newer request or retain user data.
+	if not current() then
+		return cancelled()
+	end
+	if api.nvim_buf_get_name(buf) ~= name or api.nvim_buf_get_changedtick(buf) ~= tick then
+		views[view.path] = nil
+		view.text, view.index = nil, nil
+		return cancelled()
 	end
 	view.generation = view.generation + 1
 	local generation, saved = view.generation, position(view)
