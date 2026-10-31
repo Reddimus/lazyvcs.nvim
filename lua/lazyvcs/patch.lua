@@ -396,14 +396,22 @@ local function collect(path, opts, done)
 					end)
 				)
 			)
-		end)
+		end),
+		{ revalidate = true }
 	))
 	return task
 end
 
 local function position(view)
-	local row = row_position(view, api.nvim_win_get_cursor(0)[1])
-	return row and row.file and { root = row.file.root, path = row.file.path, line = row.line, kind = row.kind } or nil
+	local win = api.nvim_get_current_win()
+	if api.nvim_win_get_buf(win) ~= view.buf then
+		return
+	end
+	local row = row_position(view, api.nvim_win_get_cursor(win)[1])
+	return row
+			and row.file
+			and { win = win, root = row.file.root, path = row.file.path, line = row.line, kind = row.kind }
+		or nil
 end
 
 local function rerun(view)
@@ -442,8 +450,17 @@ local function rerun(view)
 				if err then
 					util.notify(err, vim.log.levels.ERROR)
 				end
-				local win = visible(view)
-				if closest and win then
+				local win = saved and saved.win
+				if
+					closest
+					and win
+					and view.task == task
+					and view.generation == generation
+					and views[view.path] == view
+					and task:is_active()
+					and api.nvim_win_is_valid(win)
+					and api.nvim_win_get_buf(win) == view.buf
+				then
 					api.nvim_win_set_cursor(win, { closest, 0 })
 				end
 				task:finish()
