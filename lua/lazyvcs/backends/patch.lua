@@ -107,17 +107,19 @@ function M.collect(repo, path, opts, callback)
 					paths.check(task, absolute, nil, guard, function(entry)
 						-- Run at the repository root with a relative operand. Git then writes
 						-- root-relative headers itself, including C quoting when necessary.
+						local dash = file == "-"
 						git({
 							"diff",
 							"--no-ext-diff",
 							"--no-color",
 							"--no-textconv",
-							"--src-prefix=a/",
-							"--dst-prefix=b/",
+							"--src-prefix=" .. (dash and "" or "a/"),
+							"--dst-prefix=" .. (dash and "" or "b/"),
 							"--no-index",
 							"--",
 							"/dev/null",
-							file,
+							-- A bare dash is stdin; empty prefixes keep ./- applicable.
+							dash and "./-" or file,
 						}, function(text, truncated)
 							-- Validate before publication; the native child may have read
 							-- a replacement, so this is not a filesystem read sandbox.

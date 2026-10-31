@@ -69,6 +69,70 @@ return function(ctx)
 	local function child(args)
 		return args[1] == "git" and vim.tbl_contains(args, "--no-index")
 	end
+	for _, bytes in ipairs({ "dash filename bytes\nlast", "" }) do
+		for _, selected in ipairs({ false, true }) do
+			add("dash_filename_" .. tostring(selected) .. (bytes == "" and "_empty" or ""), function()
+				local f = fixture()
+				write(f.root .. "/-", bytes)
+				local out = collect(selected and f.root .. "/-" or f.root)
+				wait(function()
+					return out.done
+				end)
+				assert(out.text and out.text:find("diff --git ./- ./-", 1, true), out.err or "dash file omitted")
+				if bytes ~= "" then
+					assert(out.text:find("+dash filename bytes", 1, true), "dash file content omitted")
+				end
+				if selected then
+					assert(not out.text:find("+original owned entry", 1, true), "selected dash file widened scope")
+				end
+				local destination = h.tempdir() .. "/wc"
+				h.exec({ "git", "clone", f.root, destination }, vim.fs.dirname(destination))
+				local patchfile = h.tempdir() .. "/dash.patch"
+				write(patchfile, out.text)
+				h.exec({ "git", "apply", "--check", patchfile }, destination)
+				h.exec({ "git", "apply", patchfile }, destination)
+				local file = assert(io.open(destination .. "/-", "rb"))
+				assert(file:read("*a") == bytes, "native apply changed the dash file")
+				assert(file:close())
+				if selected then
+					vim.cmd.edit(vim.fn.fnameescape(f.file))
+					local task = patch.open({ path = f.root .. "/-" })
+					wait(function()
+						return task.done
+					end)
+					local api = vim.api
+					local win, buf = api.nvim_get_current_win(), api.nvim_get_current_buf()
+					local ok, err = xpcall(function()
+						local row
+						for index, line in ipairs(api.nvim_buf_get_lines(buf, 0, -1, false)) do
+							if line == "diff --git ./- ./-" then
+								row = index
+								break
+							end
+						end
+						api.nvim_win_set_cursor(win, { assert(row), 0 })
+						local opened = false
+						for _, map in ipairs(api.nvim_buf_get_keymap(buf, "n")) do
+							if map.lhs == "<CR>" then
+								map.callback()
+								opened = true
+								break
+							end
+						end
+						assert(
+							opened and api.nvim_buf_get_name(0) == f.root .. "/-",
+							"dash header navigation lost its file"
+						)
+						assert(vim.bo.buftype == "" and vim.bo.modifiable, "dash jump did not use a normal buffer")
+					end, debug.traceback)
+					if api.nvim_win_is_valid(win) then
+						api.nvim_win_close(win, true)
+					end
+					assert(ok, err)
+				end
+			end)
+		end
+	end
 	for _, timing in ipairs({ "before_check", "before_child", "after_child" }) do
 		for _, kind in ipairs({ "parent", "file" }) do
 			add(kind .. "_replacement_" .. timing, function()

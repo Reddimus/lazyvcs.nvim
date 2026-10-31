@@ -46,6 +46,9 @@ local function git_path(path)
 end
 
 local function git_header_path(header)
+	if header == "./- ./-" then
+		return "-"
+	end
 	if header:sub(1, 1) == '"' then
 		return git_path(header)
 	end
