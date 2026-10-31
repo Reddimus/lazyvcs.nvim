@@ -18,7 +18,8 @@ and this project adheres to
   `base_window.collapse_absent` to keep normal pane sizes.
 
 - `:LazyVCS patch [path]` opens a copyable Git or SVN patch, with untracked
-  files and a Lua callback API.
+  files and a Lua callback API. Windows SVN requires ASCII patch filenames to
+  avoid native encoding changes; file content remains unchanged.
 
 ## [0.12.2] - 2026-10-31
 

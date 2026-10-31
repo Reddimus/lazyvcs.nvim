@@ -811,6 +811,15 @@ payloads. SVN unversioned text files use added-file sections, including missing
 final-newline markers. Unversioned binary files use SVN's binary diagnostic.
 Binary diagnostics do not contain the bytes needed to apply binary changes.
 
+Use a UTF-8 native-client environment to export and apply SVN patches with
+Unicode filenames. Windows SVN export currently requires ASCII repository-
+relative filenames: supported native clients can narrow Unicode
+arguments or decode UTF-8 headers into a different filename. Unsupported names
+report an error without publishing a patch. Unicode content and repository-root
+names remain supported; Git and other platforms retain Unicode filenames.
+There is no locale override or encoding conversion. For Unicode SVN filenames
+on Windows, use an external client verified to round-trip UTF-8 patch names.
+
 The buffer opens in a horizontal split above an eligible editor window. From
 the sidebar, it uses the sidebar's editor window. If only plugin windows exist,
 such as in a Compare tab, it opens in a new tab. Command

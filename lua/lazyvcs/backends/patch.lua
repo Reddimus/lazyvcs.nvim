@@ -172,13 +172,39 @@ function M.collect(repo, path, opts, callback)
 			end)
 		))
 	else
+		local filenames = vim.fn.has("win32") == 1 and require("lazyvcs.backends.patch_svn_filenames") or nil
+		if filenames and not filenames.path(repo, relative) then
+			task:finish(nil, filenames.error)
+			return task
+		end
+		local function status_entries(raw)
+			local entries = xml.parse_status(raw)
+			if filenames then
+				for _, entry in ipairs(entries) do
+					local item, props = entry.wc_item, entry.wc_props
+					local unused = item == "ignored"
+						or item == "external"
+						or (item == "unversioned" and not opts.include_untracked)
+						or ((item == "normal" or item == "none") and (props == "normal" or props == "none"))
+					if not unused and not filenames.path(repo, entry.path) then
+						task:finish(nil, filenames.error)
+						return nil
+					end
+				end
+			end
+			return entries
+		end
 		local target = util.svn_target(relative)
 		local function untracked(raw, selected_path)
 			if not opts.include_untracked then
 				return finish()
 			end
+			local entries = status_entries(raw)
+			if not entries then
+				return
+			end
 			local paths, switched = {}, {}
-			for _, entry in ipairs(xml.parse_status(raw)) do
+			for _, entry in ipairs(entries) do
 				if entry.switched or entry.wc_item == "external" then
 					switched[#switched + 1] = entry
 				end
@@ -191,6 +217,13 @@ function M.collect(repo, path, opts, callback)
 			end
 			local svn = require("lazyvcs.backends.patch_svn")
 			svn.files(task, repo, paths, guard, function(files, identities)
+				if filenames then
+					for _, file in ipairs(files) do
+						if not filenames.path(repo, file) then
+							return task:finish(nil, filenames.error)
+						end
+					end
+				end
 				local index = 0
 				local next_file
 				next_file = guard(function()
@@ -214,10 +247,16 @@ function M.collect(repo, path, opts, callback)
 			-- Keep this no-revision working-copy path literal. Adding status's empty
 			-- peg suffix changes the filename in this diff form.
 			command({ "svn", "diff", "--internal-diff", "--", relative }, function(text, truncated)
-				if not append(text, truncated) then
-					return finish()
+				local function publish()
+					if not append(text, truncated) then
+						return finish()
+					end
+					untracked(raw)
 				end
-				untracked(raw)
+				if filenames then
+					return filenames.headers(repo, task, text, guard, publish)
+				end
+				publish()
 			end)
 		end
 		local function classify_selected(raw)
@@ -247,8 +286,12 @@ function M.collect(repo, path, opts, callback)
 					ancestor = ancestor ~= "." and vim.fs.dirname(ancestor) or nil
 				end
 				command(args, function(status)
+					local returned = status_entries(status)
+					if not returned then
+						return
+					end
 					local entries = {}
-					for _, entry in ipairs(xml.parse_status(status)) do
+					for _, entry in ipairs(returned) do
 						entries[util.normalize_literal_path(repo.root .. "/" .. entry.path)] = entry
 					end
 					-- A child of an unversioned directory has no native status row.
@@ -275,8 +318,12 @@ function M.collect(repo, path, opts, callback)
 		-- SVN rejects an unversioned operand to diff. Inspect status first so
 		-- selected loose files and directories can use the addition collector.
 		command({ "svn", "status", "--xml", "--ignore-externals", "--", target }, function(raw)
+			local entries = status_entries(raw)
+			if not entries then
+				return
+			end
 			local exact = false
-			for _, entry in ipairs(xml.parse_status(raw)) do
+			for _, entry in ipairs(entries) do
 				local entry_path = util.normalize_literal_path(repo.root .. "/" .. entry.path)
 				if entry_path == path then
 					exact = true

@@ -244,6 +244,7 @@ return function(ctx)
 					unicode_stop = diagnostics.trace()
 					vim.fn.mkdir(f.root .. "/" .. parent)
 					write(f.root .. "/" .. rel, bytes)
+					local sample_before = read(f.root .. "/sample.txt")
 					local out = {}
 					unicode_diagnostic.result = out
 					open({
@@ -255,6 +256,10 @@ return function(ctx)
 					wait(function()
 						return out.done
 					end)
+					if vcs == "svn" and vim.fn.has("win32") == 1 then
+						require("patch_svn_encoding_controls").check(h, f, parent, rel, bytes, out, sample_before)
+						return
+					end
 					assert(out.text and out.text:find("+Unicode parent bytes", 1, true), out.err)
 					assert(not out.text:find("+changed", 1, true), "selected Unicode leaf widened its scope")
 					local destination = h.tempdir() .. "/wc"
