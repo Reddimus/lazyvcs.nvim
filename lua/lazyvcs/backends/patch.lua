@@ -211,6 +211,8 @@ function M.collect(repo, path, opts, callback)
 			end, { switched = switched, ignorecase = ignorecase, selected_path = selected_path })
 		end
 		local function diff(raw)
+			-- Keep this no-revision working-copy path literal. Adding status's empty
+			-- peg suffix changes the filename in this diff form.
 			command({ "svn", "diff", "--internal-diff", "--", relative }, function(text, truncated)
 				if not append(text, truncated) then
 					return finish()
