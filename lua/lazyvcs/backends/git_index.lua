@@ -18,6 +18,10 @@ function M.intent_commands(relpath)
 			"--no-color",
 			"--no-ext-diff",
 			"--no-textconv",
+			-- A file replacing a HEAD directory also deletes its old children.
+			-- Exclude those D records from both views, retaining one exact file:
+			-- ITA is visible as A/M/T and invisible as absent/deleted.
+			"--diff-filter=d",
 			"-z",
 			"--ita-" .. visibility .. "-in-index",
 			"--",

@@ -588,17 +588,6 @@ function M.start(repo, args, opts, guards, on_exit)
 					return git_preflight()
 				end
 				local commands, budget = index.intent_commands(path), index.intent_output_limit(path)
-				for _, command in ipairs(commands) do
-					-- A file replacing a HEAD directory also deletes its old children.
-					-- Exclude those D records from both views, retaining an exact file
-					-- record: ITA is visible as A/M/T and invisible as absent/deleted.
-					for position, argument in ipairs(command) do
-						if argument == "--" then
-							table.insert(command, position, "--diff-filter=d")
-							break
-						end
-					end
-				end
 				return spawn(commands[1], function(visible)
 					if visible.stdout_truncated or visible.stderr_truncated then
 						return reject("Cannot verify complete Git index intent; refusing Discard.")

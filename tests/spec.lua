@@ -7437,6 +7437,7 @@ vim.list_extend(cases, require("spec_live_transfer_settlement")({ helpers = help
 
 vim.list_extend(cases, require("spec_backend_a3")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_git_intent")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_git_intent_tree")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_backend_review_a3")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_svn_external_scope")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_svn_admin_links")({ helpers = helpers, wait_for = wait_for }))
