@@ -6237,7 +6237,8 @@ local function test_source_control_svn_commit_and_update()
 	commit_state.lazyvcs_commit_drafts[commit_fixture.root] = "svn fixture commit"
 	ops.commit_repo(commit_state, commit_repo_node)
 	wait_for(function()
-		return util.trim(helpers.exec({ "svn", "status" }, commit_fixture.root)) == ""
+		return commit_state.lazyvcs_commit_drafts[commit_fixture.root] == ""
+			and require("lazyvcs.state").get_repo_job(commit_fixture.root) == nil
 	end, "svn commit should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(util.trim(helpers.exec({ "svn", "status" }, commit_fixture.root)), "")
 	assert(
@@ -6269,7 +6270,9 @@ local function test_source_control_svn_commit_and_update()
 	ops.sync_repo(update_state, update_node)
 	wait_for(function()
 		local ok, lines = pcall(vim.fn.readfile, update_fixture.file)
-		return ok and vim.deep_equal(lines, { "one", "updated", "three" })
+		return ok
+			and vim.deep_equal(lines, { "one", "updated", "three" })
+			and require("lazyvcs.state").get_repo_job(update_fixture.root) == nil
 	end, "svn update should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(vim.fn.readfile(update_fixture.file), { "one", "updated", "three" })
 end
