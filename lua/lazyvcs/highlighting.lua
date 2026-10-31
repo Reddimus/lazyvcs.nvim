@@ -11,6 +11,11 @@ local owner_source, owner_prefix = "LazyVcsDiffOwner", "LazyVcsDiffOwner"
 local write_mapping, user_mappings, strip_unowned, release_filler
 local derived = {}
 
+local function invalidate(state)
+	state.revision = (state.revision or 0) + 1
+	state.suspension = nil
+end
+
 local function marker_record(value, buf)
 	local found
 	for from, to in value:gmatch("([^,:]+):([^,]+)") do
@@ -72,7 +77,8 @@ local function apply_filler(win, state, style)
 	local previous_slot = state.filler and state.filler.slot
 	release_filler(win, state)
 	local raw = local_filler(win)
-	local effective = raw ~= "" and raw or api.nvim_get_option_value("fillchars", { scope = "global" })
+	local global = api.nvim_get_option_value("fillchars", { scope = "global" })
+	local effective = raw ~= "" and raw or global
 	local has_diff = ("," .. effective):find(",diff:", 1, true)
 	if style.filler == "auto" and has_diff then
 		return
@@ -107,7 +113,21 @@ local function apply_filler(win, state, style)
 		filler_slots[id] = slot
 	end
 	state.owner_tag = owner_prefix .. id
-	state.filler = { raw = raw, written = value, win = win, buf = state.buf, state = state, slot = slot }
+	state.filler = {
+		raw = raw,
+		written = value,
+		win = win,
+		buf = state.buf,
+		state = state,
+		slot = slot,
+		-- Prove which inputs built this active filler, including changes made before
+		-- the next suspension rather than while its resume callback is pending.
+		global_ns = api.nvim_get_hl_ns({}),
+		global_filler = global,
+		style = vim.deepcopy(style),
+		policy = state.policy,
+		role = state.role,
+	}
 	slot.record = state.filler
 	-- Equal fillchars writes do not identify their raw origin. This inert mapping
 	-- follows native clones even when WinNew regenerates their namespace ID.
@@ -442,6 +462,9 @@ end
 
 function M.refresh(win)
 	local state = windows[win]
+	if state then
+		invalidate(state)
+	end
 	if not state or not owned(win, state) then
 		return
 	end
@@ -573,6 +596,7 @@ function M.release(win)
 	if not state then
 		return
 	end
+	invalidate(state)
 	release_filler(win, state)
 	windows[win] = nil
 	if state.native then
@@ -610,6 +634,44 @@ end
 -- A hidden buffer can restore owned values from Neovim's saved window options
 -- after the last view closes. Keep its cleanup records until BufWipeout.
 local cleanup_group = api.nvim_create_augroup("LazyVCSDiffHighlightCleanup", { clear = true })
+-- Filler suspension changes window options, not the semantic highlight graph.
+-- Reuse only an exact native overlay or already-owned pooled slot.
+local function unchanged(win, state, saved, filler, namespace, mapping)
+	return windows[win] == state
+		and api.nvim_win_is_valid(win)
+		and api.nvim_win_get_buf(win) == state.buf
+		and ((saved.native and state.native) or (saved.slot and not state.native and not state.preserved and state.slot == saved.slot))
+		and state.filler == saved.filler
+		and state.filler.suspended
+		and not state.pending
+		and state.revision == saved.revision
+		and state.overlay == saved.graph_overlay
+		and state.policy == saved.policy
+		and state.role == saved.role
+		and vim.deep_equal(state.style, saved.style)
+		and api.nvim_get_hl_ns({ winid = win }) == namespace
+		and api.nvim_get_hl_ns({}) == saved.global_ns
+		and local_filler(win) == filler
+		and api.nvim_get_option_value("fillchars", { scope = "global" }) == saved.global_filler
+		and util.get_win_option(win, "winhighlight") == mapping
+end
+
+local function resettle(win, state)
+	local saved = state.suspension
+	state.suspension = nil
+	if saved and unchanged(win, state, saved, saved.raw, saved.suspended_ns, saved.user) then
+		util.set_win_option(win, "fillchars", saved.filler.written)
+		if unchanged(win, state, saved, saved.filler.written, saved.suspended_ns, saved.user) then
+			write_mapping(win, saved.overlay)
+			if unchanged(win, state, saved, saved.filler.written, saved.active_ns, saved.overlay) then
+				saved.filler.suspended = nil
+				return
+			end
+		end
+	end
+	M.refresh(win)
+end
+
 local function resume_filler(win, state)
 	if state.resume_pending then
 		return
@@ -624,7 +686,7 @@ local function resume_filler(win, state)
 			and state.filler
 			and state.filler.suspended
 		then
-			M.refresh(win)
+			resettle(win, state)
 		end
 	end))
 end
@@ -634,7 +696,28 @@ api.nvim_create_autocmd("BufLeave", {
 		local win = api.nvim_get_current_win()
 		local state = windows[win]
 		if state and state.buf == event.buf and state.filler then
+			local record = state.filler
 			local current = util.get_win_option(win, "winhighlight")
+			local namespace = api.nvim_get_hl_ns({ winid = win })
+			local native = state.native and current == state.overlay and namespace == state.native_ns
+			local slot = not state.preserved and state.slot and current == record.mapping and namespace == state.slot.ns
+			local saved
+			if (native or slot) and local_filler(win) == record.written and not state.pending then
+				saved = {
+					native = native,
+					slot = slot and state.slot or nil,
+					filler = record,
+					overlay = current,
+					graph_overlay = state.overlay,
+					active_ns = namespace,
+					global_ns = record.global_ns,
+					global_filler = record.global_filler,
+					revision = state.revision,
+					policy = record.policy,
+					role = record.role,
+					style = record.style,
+				}
+			end
 			local user = user_mappings(current, state)
 			state.restored_mapping = user
 			if local_filler(win) == state.filler.written then
@@ -643,7 +726,12 @@ api.nvim_create_autocmd("BufLeave", {
 			if current ~= user then
 				write_mapping(win, user)
 			end
-			state.filler.suspended = true
+			record.suspended = true
+			if saved and windows[win] == state and state.filler == record and state.revision == saved.revision then
+				saved.user, saved.raw = user, record.raw
+				saved.suspended_ns = api.nvim_get_hl_ns({ winid = win })
+				state.suspension = saved
+			end
 			resume_filler(win, state)
 		end
 	end),
@@ -656,7 +744,7 @@ api.nvim_create_autocmd("WinLeave", {
 		-- A focus move leaves this buffer visible. Settle before synchronous
 		-- callers such as session save capture its active overlay.
 		if state and state.filler and state.filler.suspended and api.nvim_win_get_buf(win) == state.buf then
-			M.refresh(win)
+			resettle(win, state)
 		end
 	end),
 })
@@ -675,6 +763,9 @@ api.nvim_create_autocmd({ "BufWinEnter", "WinEnter", "WinNew" }, {
 api.nvim_create_autocmd("ColorScheme", {
 	group = cleanup_group,
 	callback = protected(function()
+		for _, state in pairs(windows) do
+			invalidate(state)
+		end
 		defaults(true)
 	end),
 })
@@ -692,6 +783,7 @@ local function listen()
 	group = api.nvim_create_augroup("LazyVCSDiffHighlighting", { clear = true })
 	api.nvim_create_autocmd({ "WinEnter", "WinNew" }, { group = group, callback = protected(strip_unowned) })
 	local function schedule(win, state, mapping_changed)
+		invalidate(state)
 		state.mapping_changed = state.mapping_changed or mapping_changed
 		if state.pending then
 			return
@@ -772,6 +864,9 @@ local function listen()
 				return
 			end
 			for win, state in pairs(windows) do
+				if api.nvim_win_is_valid(win) and api.nvim_win_get_buf(win) == event.buf then
+					invalidate(state)
+				end
 				if
 					state.policy ~= "editor"
 					and not state.preserved
@@ -790,6 +885,12 @@ local function listen()
 		group = group,
 		callback = protected(function(event)
 			for win, state in pairs(windows) do
+				if
+					event.event == "ColorScheme"
+					or (api.nvim_win_is_valid(win) and api.nvim_win_get_buf(win) == event.buf)
+				then
+					invalidate(state)
+				end
 				if
 					event.event == "BufWinEnter"
 					and api.nvim_win_is_valid(win)
