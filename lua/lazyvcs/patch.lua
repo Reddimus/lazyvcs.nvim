@@ -796,6 +796,7 @@ function M.open(opts)
 	end
 	local anchor = opts.anchor_winid or api.nvim_get_current_win()
 	local destination = require("lazyvcs.editor_target").capture(opts.editor_winid or anchor, anchor)
+	local initial_view, initial_task, initial_generation = view, view and view.task, view and view.generation
 	-- :new avoids briefly duplicating a wipe-on-hide patch buffer when opening
 	-- another view. Use the structured modifiers received from :LazyVCS.
 	local mods = vim.tbl_extend("force", {}, opts.smods or {})
@@ -812,10 +813,54 @@ function M.open(opts)
 			mods.split = "aboveleft"
 		end
 	end
+	local task = Task.new()
+	local function unchanged_owner()
+		return views[path] == initial_view
+			and (
+				not initial_view
+				or initial_view.task == initial_task and initial_view.generation == initial_generation
+			)
+	end
+	if not unchanged_owner() then
+		task:cancel()
+		return task
+	end
+	local prior_windows, prior_buffers = {}, {}
+	for _, existing in ipairs(api.nvim_list_wins()) do
+		prior_windows[existing] = true
+	end
+	for _, existing in ipairs(api.nvim_list_bufs()) do
+		prior_buffers[existing] = true
+	end
 	api.nvim_cmd({ cmd = "new", mods = mods }, {})
 	win = api.nvim_get_current_win()
 	local buf = api.nvim_get_current_buf()
-	local task = Task.new()
+	local created, ambiguous
+	for _, candidate in ipairs(api.nvim_list_wins()) do
+		if not prior_windows[candidate] and api.nvim_win_get_config(candidate).relative == "" then
+			ambiguous, created = created ~= nil, candidate
+			if ambiguous then
+				break
+			end
+		end
+	end
+	-- Native :new dispatches user hooks before returning. Claim only its sole
+	-- fresh normal window and a pristine new buffer; redirected or initialized
+	-- user buffers and nested Patch requests retain their own intent and data.
+	if
+		not unchanged_owner()
+		or ambiguous
+		or created ~= win
+		or prior_buffers[buf]
+		or api.nvim_buf_get_name(buf) ~= ""
+		or vim.bo[buf].buftype ~= ""
+		or vim.bo[buf].modified
+		or api.nvim_buf_line_count(buf) ~= 1
+		or api.nvim_buf_get_lines(buf, 0, 1, false)[1] ~= ""
+	then
+		task:cancel()
+		return task
+	end
 	view =
 		{ path = path, buf = buf, editor = destination.winid, opts = opts, generation = 0, winbars = {}, task = task }
 	views[path] = view
