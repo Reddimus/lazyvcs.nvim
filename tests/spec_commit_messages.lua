@@ -48,6 +48,9 @@ return function(ctx)
 			end, debug.traceback)
 			picker.select, util.system_start, util.notify = select, start, notify
 			jobs.command = command
+			if not ok and type(err) == "table" and err.lazyvcs_skip then
+				error(err, 0)
+			end
 			assert(ok, tostring(err) .. "\nNotifications: " .. vim.inspect(notices))
 		end
 	end

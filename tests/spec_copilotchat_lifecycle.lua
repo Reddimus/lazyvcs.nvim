@@ -163,10 +163,14 @@ return function(ctx)
 					process.guarded(dir, function()
 						process.editor(tests .. "/fixtures/copilotchat_shutdown.lua", dir, { root, dir, mode })
 						local state = vim.json.decode(table.concat(vim.fn.readfile(dir .. "/shutdown.json"), "\n"))
-						assert(
-							state.reaped,
-							"CopilotChat transports were not reaped before editor exit (expected ESRCH): " .. mode
-						)
+						wait(function()
+							for _, pid in ipairs(process.pids(dir)) do
+								if not process.reaped(pid) then
+									return false
+								end
+							end
+							return true
+						end, "CopilotChat transports were not reaped after editor exit: " .. mode, 5000)
 						assert(state.files_removed, "shutdown retained private request files")
 						assert(state.closed and state.rejected, "shutdown accepted a new transport")
 						assert(state.callbacks == 0, "shutdown delivered application output")

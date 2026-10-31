@@ -1,3 +1,13 @@
+local test_state_dir = vim.fs.normalize(vim.fn.tempname())
+vim.env.XDG_STATE_HOME = test_state_dir
+vim.env.XDG_CACHE_HOME = test_state_dir .. "/cache"
+vim.api.nvim_create_autocmd("VimLeave", {
+	once = true,
+	callback = function()
+		vim.fn.delete(test_state_dir, "rf")
+	end,
+})
+
 local run_file = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p")
 local repo_root = vim.fn.fnamemodify(run_file, ":h:h")
 

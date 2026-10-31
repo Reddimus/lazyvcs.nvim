@@ -4,6 +4,7 @@ local health = vim.health
 
 function M.check()
 	health.start("lazyvcs.nvim")
+	health.info("Running Neovim " .. tostring(vim.version()))
 
 	-- Requirements ----------------------------------------------------------
 	if vim.fn.has("nvim-0.11") == 1 then

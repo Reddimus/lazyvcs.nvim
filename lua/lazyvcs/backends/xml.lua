@@ -119,6 +119,8 @@ function M.parse_info(raw)
 		kind = entry.kind,
 		schedule = child_text(block, "schedule"),
 		copy_from_url = child_text(block, "copy-from-url"),
+		copy_from_revision = child_text(block, "copy-from-rev"),
+		checksum = child_text(block, "checksum"),
 	}
 end
 
@@ -150,6 +152,7 @@ function M.parse_status(raw)
 				revision = wc.revision,
 				tree_conflicted = wc["tree-conflicted"] == "true",
 				switched = wc.switched == "true",
+				copied = wc.copied == "true",
 				file_external = wc["file-external"] == "true",
 			}
 		end

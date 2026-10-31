@@ -155,10 +155,22 @@ local function uses_git_work_tree(environment, cwd)
 			work_tree = value
 		end
 	end
-	if git_work_tree_cache.git_dir ~= git_dir or git_work_tree_cache.work_tree ~= work_tree then
-		git_work_tree_cache = { git_dir = git_dir, work_tree = work_tree }
+	local base = vim.uv.cwd()
+	if
+		git_work_tree_cache.git_dir ~= git_dir
+		or git_work_tree_cache.work_tree ~= work_tree
+		or git_work_tree_cache.base ~= base
+	then
+		git_work_tree_cache = { git_dir = git_dir, work_tree = work_tree, base = base }
 		if type(git_dir) == "string" and git_dir ~= "" and type(work_tree) == "string" and work_tree ~= "" then
-			git_work_tree_cache.canonical = M.canonical_path(work_tree)
+			local function absolute(path)
+				if path:match("^/") or path:match("^%a:[/\\]") then
+					return path
+				end
+				return base .. "/" .. path
+			end
+			git_work_tree_cache.canonical = M.canonical_path(absolute(work_tree))
+			git_work_tree_cache.directory = M.normalize_literal_path(absolute(git_dir))
 		end
 	end
 	local root = git_work_tree_cache.canonical
@@ -166,7 +178,7 @@ local function uses_git_work_tree(environment, cwd)
 		return false
 	end
 	local relative = relative_normalized_path(root, M.canonical_path(cwd), vim.fn.has("win32") == 1)
-	return relative ~= nil and not inside_nested_repository(root, relative)
+	return relative ~= nil and not inside_nested_repository(root, relative), git_work_tree_cache.directory, root
 end
 
 local function command_options(args, opts)
@@ -178,11 +190,15 @@ local function command_options(args, opts)
 		local environment = vim.tbl_extend(
 			"force",
 			opts.clear_env and {} or vim.uv.os_environ(),
-			{ GIT_TERMINAL_PROMPT = "0" },
+			{ GIT_TERMINAL_PROMPT = "0", GIT_OPTIONAL_LOCKS = "0" },
 			opts.env or {}
 		)
-		local keep_work_tree = uses_git_work_tree(environment, opts.cwd)
+		local keep_work_tree, git_dir, work_tree = uses_git_work_tree(environment, opts.cwd)
 		local selectors = {
+			GIT_LITERAL_PATHSPECS = true,
+			GIT_GLOB_PATHSPECS = true,
+			GIT_NOGLOB_PATHSPECS = true,
+			GIT_ICASE_PATHSPECS = true,
 			GIT_DIR = not keep_work_tree,
 			GIT_WORK_TREE = not keep_work_tree,
 			GIT_COMMON_DIR = true,
@@ -198,16 +214,87 @@ local function command_options(args, opts)
 		for key in pairs(environment) do
 			if selectors[key:upper()] then
 				environment[key] = nil
+			elseif keep_work_tree and key:upper() == "GIT_DIR" then
+				environment[key] = git_dir
+			elseif keep_work_tree and key:upper() == "GIT_WORK_TREE" then
+				environment[key] = work_tree
 			end
 		end
 		opts.clear_env = true
-		opts.env = vim.tbl_extend("force", environment, {
-			GIT_LITERAL_PATHSPECS = "1",
-			GIT_GLOB_PATHSPECS = "0",
-			GIT_NOGLOB_PATHSPECS = "0",
-			GIT_ICASE_PATHSPECS = "0",
-			LC_ALL = "C",
-		})
+		-- Preserve the effective character locale for hooks and filters, but keep
+		-- diagnostics stable for the few Git errors parsed by the backend.
+		local all = environment.LC_ALL
+		environment.LC_ALL = nil
+		if all and all ~= "" then
+			for _, category in ipairs({
+				"CTYPE",
+				"NUMERIC",
+				"TIME",
+				"COLLATE",
+				"MONETARY",
+				"PAPER",
+				"NAME",
+				"ADDRESS",
+				"TELEPHONE",
+				"MEASUREMENT",
+				"IDENTIFICATION",
+			}) do
+				environment["LC_" .. category] = all
+			end
+		end
+		environment.LC_MESSAGES = "C"
+		opts.env = environment
+		-- Git's global literal flag exports GIT_LITERAL_PATHSPECS to hooks.
+		-- Use pathspec magic only for commands that accept pathspecs. Other
+		-- commands (blame/check-attr/hash-object) already accept literal paths.
+		local pathspec_commands = {
+			add = true,
+			rm = true,
+			restore = true,
+			checkout = true,
+			reset = true,
+			status = true,
+			diff = true,
+			["ls-files"] = true,
+			log = true,
+			show = true,
+		}
+		local subcommand
+		local position = 2
+		while position <= #args do
+			local argument = args[position]
+			if argument == "-c" or argument == "-C" or argument == "--git-dir" or argument == "--work-tree" then
+				position = position + 2
+			elseif argument:sub(1, 1) == "-" then
+				position = position + 1
+			else
+				subcommand = pathspec_commands[argument] and argument
+				break
+			end
+		end
+		if subcommand == "diff" then
+			for index = position + 1, #args do
+				if args[index] == "--" then
+					break
+				end
+				if args[index] == "--no-index" then
+					subcommand = nil
+					break
+				end
+			end
+		end
+		if subcommand then
+			local literal, rewritten = false, {}
+			for _, argument in ipairs(args) do
+				if literal or argument ~= "--literal-pathspecs" then
+					rewritten[#rewritten + 1] = literal and (":(literal)" .. argument) or argument
+				end
+				if argument == "--" then
+					literal = true
+				end
+			end
+			args = rewritten
+		end
 	end
 	if args[1] == "svn" and not vim.tbl_contains(args, "--non-interactive") then
 		args = vim.list_extend({ "svn", "--non-interactive" }, vim.list_slice(args, 2))
@@ -232,6 +319,7 @@ function M.show_text(title, lines)
 	local win = vim.api.nvim_get_current_win()
 	M.show_win_buffer(win, vim.api.nvim_create_buf(false, true))
 	M.unbind_window(win)
+	M.set_win_options(win, { foldenable = false, foldcolumn = "0" })
 	local buf = vim.api.nvim_get_current_buf()
 	vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
@@ -442,6 +530,7 @@ function M.system_start(args, opts, on_exit)
 		end
 		return { done = true, cancel = finished, kill = finished, force = finished, shutdown = finished }
 	end
+	local mutation = args[1] == "git" and opts and opts.scope == "mutation"
 	local tree_termination = cancel_tree(args, opts and opts.scope)
 	opts, args = command_options(args, opts)
 	opts.scope = nil
@@ -466,12 +555,13 @@ function M.system_start(args, opts, on_exit)
 	local kill_timer
 	local reap_timer
 	local forced_result
+	local hint_pending = false
 	local exited_result
 	local force_sent = false
 	local taskkill_running = false
 	local group_gone = false
 	local complete_exit
-	local reap_windows
+	local reap_retained_pipes
 	local windows = vim.fn.has("win32") == 1
 	local owned_windows_tree = windows and (preserve_on_shutdown or tree_termination)
 	local wrapper = {}
@@ -557,9 +647,6 @@ function M.system_start(args, opts, on_exit)
 		end
 		if signal == 9 then
 			force_sent = true
-			if windows and forced_result then
-				reap_windows()
-			end
 		end
 	end
 
@@ -580,7 +667,7 @@ function M.system_start(args, opts, on_exit)
 	-- period, discard those pipes only once the direct process has really exited.
 	-- Both supported Neovim versions keep these handles in SystemObj._state;
 	-- there is no public method for closing its output pipes.
-	reap_windows = function()
+	reap_retained_pipes = function()
 		if done or reap_timer or not process or not process.is_closing then
 			return
 		end
@@ -606,7 +693,7 @@ function M.system_start(args, opts, on_exit)
 		reap_timer = vim.defer_fn(
 			M.safe_callback(function()
 				reap_timer = nil
-				reap_windows()
+				reap_retained_pipes()
 			end),
 			10
 		)
@@ -664,7 +751,17 @@ function M.system_start(args, opts, on_exit)
 			value = value:gsub("\r\n", "\n")
 		end
 		if stream.omitted > 0 then
-			value = value .. string.format("\n... [truncated at least %d bytes]", stream.omitted)
+			local keep = #value
+			local marker
+			repeat
+				marker = string.format("\n... [truncated at least %d bytes]", stream.omitted + #value - keep)
+				local available = math.max(0, limit - #marker)
+				if keep <= available then
+					break
+				end
+				keep = available
+			until false
+			return value:sub(1, keep) .. marker
 		end
 		return bounded_text(value, limit)
 	end
@@ -702,6 +799,9 @@ function M.system_start(args, opts, on_exit)
 		end
 		if kill_grace_ms <= 0 then
 			signal_scope(9)
+			if forced_result then
+				reap_retained_pipes()
+			end
 			return
 		end
 		kill_timer = vim.defer_fn(
@@ -709,6 +809,9 @@ function M.system_start(args, opts, on_exit)
 				kill_timer = nil
 				if not done then
 					signal_scope(9)
+					if forced_result then
+						reap_retained_pipes()
+					end
 					if exited_result then
 						complete_exit(exited_result)
 					end
@@ -755,6 +858,11 @@ function M.system_start(args, opts, on_exit)
 				cancelled = true,
 				reason = cancel_reason or "cancelled",
 			}
+		end
+		if windows and mutation then
+			message = message
+				.. "; Windows forced Git termination may leave index or ref locks. After all Git processes stop, remove stale locks before retrying."
+			raw.stderr = message
 		end
 		tree_termination = tree_termination or kind == "timeout" or reason == "editor shutdown"
 		forced_result = {
@@ -816,7 +924,14 @@ function M.system_start(args, opts, on_exit)
 		if done then
 			return false
 		end
+		if process and process.is_closing and process:is_closing() and not forced_result then
+			reap_retained_pipes()
+			return true
+		end
 		signal_scope(9)
+		if forced_result then
+			reap_retained_pipes()
+		end
 		if exited_result then
 			complete_exit(exited_result)
 		end
@@ -853,7 +968,7 @@ function M.system_start(args, opts, on_exit)
 	end
 
 	complete_exit = function(result)
-		if done then
+		if done or hint_pending then
 			return
 		end
 		exited_result = result
@@ -866,6 +981,22 @@ function M.system_start(args, opts, on_exit)
 			forced_result.raw.signal = bounded_raw and bounded_raw.signal or nil
 			forced_result.raw.stdout_truncated = bounded_raw and bounded_raw.stdout_truncated or false
 			forced_result.raw.stderr_truncated = false
+			if windows and mutation and not runtime.is_shutting_down() then
+				hint_pending = true
+				local command = { "git", "rev-parse", "--path-format=absolute", "--git-path", "index.lock" }
+				M.system_start(command, { cwd = opts.cwd, timeout_ms = 2000 }, function(location)
+					local path = location and M.trim(location.stdout)
+					if path and path ~= "" and vim.uv.fs_lstat(path) then
+						local hint = "; Git lock remains at "
+							.. path
+							.. ". After all Git processes stop, remove this lock before retrying."
+						forced_result.err = forced_result.err .. hint
+						forced_result.raw.stderr = forced_result.err
+					end
+					complete(forced_result.result, forced_result.err, forced_result.raw)
+				end)
+				return
+			end
 			complete(forced_result.result, forced_result.err, forced_result.raw)
 			return
 		end
@@ -903,7 +1034,11 @@ function M.system_start(args, opts, on_exit)
 				if done then
 					return
 				end
-				begin_termination("timeout", 15)
+				if process and process.is_closing and process:is_closing() then
+					reap_retained_pipes()
+				else
+					begin_termination("timeout", 15)
+				end
 			end),
 			timeout_ms
 		)
@@ -1211,7 +1346,13 @@ function M.is_real_file_buffer(bufnr)
 	end
 
 	local name = vim.api.nvim_buf_get_name(bufnr)
-	if name == "" then
+	if
+		name == ""
+		or name:match("^%a[%a-]*://")
+		or name:match("^%a[%a-]*:\\\\")
+		or vim.b[bufnr].tarfile
+		or vim.b[bufnr].zipfile
+	then
 		return false
 	end
 

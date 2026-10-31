@@ -163,7 +163,10 @@ return function(ctx)
 						}
 					)
 						:wait(30000)
-					assert(result.code == 0, (result.stdout or "") .. (result.stderr or ""))
+					assert(
+						result.code == 0 and (result.signal or 0) == 0,
+						(result.stdout or "") .. (result.stderr or "")
+					)
 					return
 				end
 				local capability = api.nvim_create_namespace("lazyvcs-test-link-capability")

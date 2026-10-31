@@ -49,6 +49,9 @@ function M.shutdown()
 	end
 	vim.wait(200, settled, 5)
 	for handle in pairs(live) do
+		if type(handle.abandon) == "function" then
+			protected(handle.abandon, handle)
+		end
 		protected(handle.close_timers, handle)
 	end
 end

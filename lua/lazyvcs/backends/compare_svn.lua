@@ -105,7 +105,7 @@ local function property_lines(raw)
 end
 
 local function load_property_patch(task, snapshot, item, done)
-	if item.kind == "dir" or item.status == "R" then
+	if item.kind == "dir" or item.status == "R" or item.status == "D" then
 		return require("lazyvcs.backends.svn_properties").load_directory_patch(task, snapshot, item, done)
 	end
 	local path = snapshot.root .. "/" .. item.relpath
@@ -114,7 +114,7 @@ local function load_property_patch(task, snapshot, item, done)
 		"diff",
 		"--properties-only",
 		"--depth",
-		item.kind == "dir" and "empty" or "files",
+		"files",
 		"--old",
 		url .. "@" .. snapshot.revision,
 		"--new",
@@ -197,7 +197,7 @@ function M.list(snapshot, include_untracked, callback)
 		if not raw then
 			return task:finish(nil, err)
 		end
-		local items, seen, missing = {}, {}, {}
+		local items, seen, missing, obstructed = {}, {}, {}, {}
 		for attributes, value in raw:gmatch("<path%s+([^>]+)>(.-)</path>") do
 			local attrs = xml.attributes(attributes)
 			local path = xml.decode(value)
@@ -229,7 +229,9 @@ function M.list(snapshot, include_untracked, callback)
 			local merged, paths = {}, {}
 			for _, item in ipairs(items) do
 				local previous = paths[item.relpath]
-				if previous then
+				if previous and previous.status == item.status and previous.kind == item.kind then
+					previous.properties = previous.properties or item.properties
+				elseif previous then
 					if
 						not (
 							(previous.status == "D" and item.status == "A")
@@ -255,6 +257,7 @@ function M.list(snapshot, include_untracked, callback)
 					-- An added row has no base side to read.
 					item.base_absent = item.status == "A" or nil
 					item.status = "!"
+					item.obstructed = obstructed[item.relpath]
 				end
 			end
 			local cursor, retained = 0, {}
@@ -332,8 +335,15 @@ function M.list(snapshot, include_untracked, callback)
 					end
 					if entry.file_external then
 						externals[relpath] = true
-					elseif entry.wc_item == "missing" then
+					elseif entry.wc_item == "missing" or entry.wc_item == "obstructed" then
 						missing[relpath] = true
+						obstructed[relpath] = entry.wc_item == "obstructed" or nil
+						if obstructed[relpath] then
+							local stat = vim.uv.fs_lstat(snapshot.root .. "/" .. relpath)
+							if stat and stat.type == "directory" then
+								entry.wc_item = "unversioned"
+							end
+						end
 					end
 				end
 				local retained, unseen = {}, {}
@@ -384,8 +394,13 @@ function M.list(snapshot, include_untracked, callback)
 							return task:finish(nil, "SVN returned no node kind for a missing path")
 						end
 						-- Directories take the property path, like other SVN directory rows.
-						items[#items + 1] =
-							{ relpath = relpath, status = "!", kind = kind, property_only = kind == "dir" }
+						items[#items + 1] = {
+							relpath = relpath,
+							status = "!",
+							kind = kind,
+							property_only = kind == "dir",
+							obstructed = obstructed[relpath],
+						}
 						seen[relpath] = true
 					end
 					untracked()
@@ -406,8 +421,11 @@ function M.preview(snapshot, item, callback, opts)
 		loaded = { text = not (opts and opts.mode == "metadata"), metadata = true },
 	}
 	if item.status == "!" then
-		result.right_label = "MISSING FROM WORKTREE"
-		result.details = { "Versioned path is missing from disk; no SVN deletion is scheduled." }
+		result.right_label = item.obstructed and "OBSTRUCTED WORKTREE" or "MISSING FROM WORKTREE"
+		result.details = {
+			item.obstructed and "Versioned path is obstructed by a different node kind; no SVN change is scheduled."
+				or "Versioned path is missing from disk; no SVN deletion is scheduled.",
+		}
 	end
 	if item.property_check_error then
 		result.details = { "Property validation failed: " .. tostring(item.property_check_error):gsub("%s+", " ") }
@@ -454,6 +472,12 @@ function M.preview(snapshot, item, callback, opts)
 	local right_options = vim.deepcopy(left_options)
 	left_options.hint = nil
 	local function right()
+		if item.obstructed then
+			local stat = vim.uv.fs_lstat(path)
+			result.right =
+				{ "Obstructing " .. (stat and stat.type or "missing path") .. ": " .. vim.fn.strtrans(item.relpath) }
+			return finish()
+		end
 		if item.kind_after == "dir" then
 			result.right = { "Directory: " .. vim.fn.strtrans(item.relpath) }
 			return finish()
@@ -462,13 +486,14 @@ function M.preview(snapshot, item, callback, opts)
 			common.decode_side(result, "right", "", { encoding = "utf-8" })
 			return finish()
 		end
-		common.read_file(task, path, function(data, err)
+		common.read_file(task, path, function(data, err, kind)
 			if not data then
-				return task:finish(nil, err)
+				return task:finish(nil, "Saved preview: " .. tostring(err))
 			end
-			local stat = vim.uv.fs_lstat(path)
-			if stat and stat.type == "link" then
+			local stat = kind == "link"
+			if stat then
 				data = "link " .. data
+				right_options.hint = nil
 			end
 			local decoded, line_err = common.decode_side(result, "right", data, right_options)
 			if not decoded then
@@ -490,7 +515,10 @@ function M.preview(snapshot, item, callback, opts)
 				task,
 				snapshot,
 				{ "cat", "-r", snapshot.revision, url .. "@" .. snapshot.revision },
-				function(raw, err)
+				function(raw, err, output)
+					if output and output.stdout_truncated then
+						return task:finish(nil, "Base preview: File exceeds the 1 MiB preview limit")
+					end
 					if not raw then
 						return task:finish(nil, err)
 					end
@@ -499,7 +527,8 @@ function M.preview(snapshot, item, callback, opts)
 						return task:finish(nil, line_err)
 					end
 					right()
-				end
+				end,
+				{ output_limit_bytes = 2 * common.max_file_bytes }
 			)
 		end
 		if opts and opts.editable then

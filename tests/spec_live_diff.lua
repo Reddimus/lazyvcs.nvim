@@ -769,6 +769,10 @@ return function(ctx)
 		actions.close(b)
 		s = nil
 		vim.wait(120)
+		-- JIT traces can retain the open-completion closure.
+		if jit then
+			jit.flush()
+		end
 		collectgarbage("collect")
 		collectgarbage("collect")
 		assert(weak[1] == nil, "buffer attachment retained closed session")

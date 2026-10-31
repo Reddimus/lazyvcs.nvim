@@ -22,7 +22,8 @@ function M.root(args, opts, callback)
 	opts = vim.tbl_extend("force", {}, opts)
 	opts.root = nil
 	if not root then
-		return M.bytes(args, opts, function(bytes, err, raw)
+		local probe_opts = vim.tbl_extend("force", opts, { probe = true })
+		return M.bytes(args, probe_opts, function(bytes, err, raw)
 			if not bytes then
 				return callback(nil, err, raw)
 			end
@@ -50,6 +51,10 @@ function M.start(args, opts, callback)
 	opts = vim.tbl_extend("force", {}, opts or {})
 	if vim.tbl_contains(args, "-z") then
 		opts.text = false
+	end
+	if opts.probe then
+		opts.probe = nil
+		return util.system_start(args, opts, callback)
 	end
 	local task = Task.new(callback, {
 		cancel_id = function(id)
@@ -82,7 +87,14 @@ function M.bytes(args, opts, callback)
 			return callback(nil, err, raw)
 		end
 		if result.stdout_truncated or result.stderr_truncated then
-			return callback(nil, "Command output was truncated; refusing incomplete contents", raw)
+			local message = args[1] == "git"
+					and args[2] == "blame"
+					and string.format(
+						"Blame output exceeded the %d MiB limit",
+						math.floor((opts.output_limit_bytes or opts.output_limit or 4 * 1024 * 1024) / 2 / 1024 / 1024)
+					)
+				or "Command output was truncated; refusing incomplete contents"
+			return callback(nil, message, raw)
 		end
 		callback(result.stdout or "", nil, raw)
 	end)
@@ -94,7 +106,14 @@ function M.lines(args, opts, callback)
 			return callback(nil, err, raw)
 		end
 		if result.stdout_truncated or result.stderr_truncated then
-			return callback(nil, "Command output was truncated; refusing incomplete contents", raw)
+			local message = args[1] == "git"
+					and args[2] == "blame"
+					and string.format(
+						"Blame output exceeded the %d MiB limit",
+						math.floor((opts.output_limit_bytes or opts.output_limit or 4 * 1024 * 1024) / 2 / 1024 / 1024)
+					)
+				or "Command output was truncated; refusing incomplete contents"
+			return callback(nil, message, raw)
 		end
 		callback(util.split_lines(result.stdout), nil, raw)
 	end)

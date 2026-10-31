@@ -125,15 +125,10 @@ jobs:
           for script in tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh; do bash -n "$script" || exit "$?"; done
 
       - name: Check whitespace
-        # PR checkout is a merge commit. Check its first-parent diff; --cc omits changes
-        # identical to the PR head parent.
+        # Check HEAD against its first parent, including push and release merges.
         run: |
           set -euo pipefail
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            git diff --check "HEAD^1" HEAD
-          else
-            git diff-tree --check --no-commit-id --root -r HEAD
-          fi
+          git diff-tree --check --no-commit-id --root -r --diff-merges=first-parent HEAD
 
   linux:
     name: Linux / Neovim ${{ matrix.version }}
@@ -183,8 +178,8 @@ jobs:
 
       - name: Help and health
         run: |
-          nvim --headless -u NONE -c "helptags doc" -c "quitall"
-          nvim --headless -u NONE -c "set rtp+=." -c "runtime plugin/lazyvcs.lua" -c "checkhealth lazyvcs" -c "quitall"
+          nvim --headless -u NONE -c "helptags doc" -c "if !empty(v:errmsg) | cquit 1 | endif" -c "quitall"
+          nvim --headless -u NONE -c "set rtp+=." -c "runtime plugin/lazyvcs.lua" -c "checkhealth lazyvcs" -c "if !empty(v:errmsg) || search('ERROR', 'nw') > 0 | cquit 1 | endif" -c "quitall"
 
   windows:
     name: Windows / Neovim ${{ matrix.version }} / ${{ matrix.group }}
@@ -313,9 +308,9 @@ jobs:
         if: matrix.group == 'core'
         shell: pwsh
         run: |
-          nvim --headless -u NONE -c "helptags doc" -c "quitall"
+          nvim --headless -u NONE -c "helptags doc" -c "if !empty(v:errmsg) | cquit 1 | endif" -c "quitall"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          nvim --headless -u NONE -c "set rtp+=." -c "runtime plugin/lazyvcs.lua" -c "checkhealth lazyvcs" -c "quitall"
+          nvim --headless -u NONE -c "set rtp+=." -c "runtime plugin/lazyvcs.lua" -c "checkhealth lazyvcs" -c "if !empty(v:errmsg) || search('ERROR', 'nw') > 0 | cquit 1 | endif" -c "quitall"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   macos:
@@ -352,8 +347,8 @@ jobs:
           nvim --headless -u NONE -l tests/native_smoke.lua
           nvim --headless -u NONE -l tests/run.lua
           MINI_TEST_PATH="${RUNNER_TEMP}/mini.nvim-v0.18.0" tests/minitest.sh
-          nvim --headless -u NONE -c "helptags doc" -c "quitall"
-          nvim --headless -u NONE -c "set rtp+=." -c "runtime plugin/lazyvcs.lua" -c "checkhealth lazyvcs" -c "quitall"
+          nvim --headless -u NONE -c "helptags doc" -c "if !empty(v:errmsg) | cquit 1 | endif" -c "quitall"
+          nvim --headless -u NONE -c "set rtp+=." -c "runtime plugin/lazyvcs.lua" -c "checkhealth lazyvcs" -c "if !empty(v:errmsg) || search('ERROR', 'nw') > 0 | cquit 1 | endif" -c "quitall"
 
       - name: Native macOS terminal E2E
         run: |

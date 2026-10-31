@@ -466,7 +466,7 @@ return function(ctx)
 			end,
 		}
 		local report = {}
-		for _, name in ipairs({ "start", "ok", "warn", "error" }) do
+		for _, name in ipairs({ "start", "info", "ok", "warn", "error" }) do
 			report[name] = function(message)
 				messages[#messages + 1] = message
 			end
@@ -479,6 +479,10 @@ return function(ctx)
 		vim.health, package.loaded.gitsigns = health, loaded
 		package.loaded["lazyvcs.health"] = nil
 		assert(ok, err)
+		assert(
+			table.concat(messages, "\n"):find("Running Neovim " .. tostring(vim.version()), 1, true),
+			"health omits actual version"
+		)
 		assert(
 			table.concat(messages, "\n"):find("unattached buffers use native", 1, true),
 			"health claims unconditional delegation"

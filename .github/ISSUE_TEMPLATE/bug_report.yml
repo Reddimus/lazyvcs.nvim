@@ -9,6 +9,23 @@ body:
         which backends are available, and how signs and blame are configured.
 
   - type: textarea
+    id: neovim-version
+    attributes:
+      label: Neovim version
+      description: Paste the first lines of `nvim --version`.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: LazyVCS version or commit
+      description: Copy the installed version from your plugin manager.
+    validations:
+      required: true
+
+  - type: textarea
     id: what-happened
     attributes:
       label: What happened
@@ -59,5 +76,5 @@ body:
     attributes:
       label: Anything else
       description: |
-        If Neovim froze, note roughly how long for — a stall of exactly 30s or 60s
-        points at a VCS command timing out rather than a logic bug.
+        If Neovim froze or an action hung, say roughly how long, and paste any
+        "Timed out after ...ms" message from :messages.

@@ -113,7 +113,7 @@ return function(ctx)
 			assert(cleanup_ok, cleanup_err)
 		end
 	end
-	local function lazy_open(specs, expected)
+	local function lazy_open(specs)
 		local integration = require("lazyvcs.integrations.resession")
 		integration.teardown()
 		local stub, preload = package.loaded.resession, package.preload.resession
@@ -129,18 +129,13 @@ return function(ctx)
 			require("lazyvcs").setup({ use_gitsigns = false, signs = { enabled = false } })
 			assert(loads == 0, "setup loaded lazy Resession")
 			local s = open(false)
-			assert(loads == expected, "live diff loaded Resession " .. loads .. " times; expected " .. expected)
-			assert(#hooks.pre_save == expected and #hooks.post_save == expected, "live diff did not attach hooks")
-			if expected == 1 then
-				integration.setup()
-				assert(loads == 1 and #hooks.pre_save == 1, "repeated setup duplicated load or hooks")
-			else
-				-- Without a known lazy spec, a later open attaches an externally loaded plugin.
-				package.loaded.resession = stub
-			end
+			assert(loads == 1, "live diff should load Resession once")
+			assert(#hooks.pre_save == 1 and #hooks.post_save == 1, "live diff did not attach hooks")
+			integration.setup()
+			assert(loads == 1 and #hooks.pre_save == 1, "repeated setup duplicated load or hooks")
 			require("lazyvcs.actions").close(s.editable_bufnr)
 			s = open(false)
-			assert(loads == expected and #hooks.pre_save == 1, "next open did not attach exactly once")
+			assert(loads == 1 and #hooks.pre_save == 1, "next open did not attach exactly once")
 			require("lazyvcs.actions").close(s.editable_bufnr)
 		end, debug.traceback)
 		integration.teardown()
@@ -185,16 +180,16 @@ return function(ctx)
 					{ name = "renamed", main = "resession" },
 					{ name = "renamed", module = "resession" },
 				}) do
-					lazy_open({ [spec.name] = spec }, 1)
+					lazy_open({ [spec.name] = spec })
 				end
 			end,
 		},
 		{
 			"test_live_diff_resession_open_loads_without_lazy_spec",
 			function()
-				lazy_open(nil, 1)
-				lazy_open({}, 1)
-				lazy_open({ other = { name = "another.nvim", main = "another" } }, 1)
+				lazy_open(nil)
+				lazy_open({})
+				lazy_open({ other = { name = "another.nvim", main = "another" } })
 			end,
 		},
 		{

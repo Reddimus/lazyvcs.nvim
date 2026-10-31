@@ -41,21 +41,35 @@ function M.select(lines, opts, policy)
 	if not M.full_file(opts) and not (policy and policy.validate) then
 		return lines
 	end
-	local records, record = {}, nil
+	policy = policy or M.git_policy(opts, {})
+	local records, record, metadata = {}, nil, {}
 	for _, line in ipairs(lines) do
 		local oid, number = line:match("^(%x+)%s+%d+%s+(%d+)")
 		if oid and (#oid == 40 or #oid == 64) then
-			record = { number = tonumber(number), lines = {} }
+			record = { number = tonumber(number), lines = {}, metadata = vim.deepcopy(metadata[oid] or {}) }
+			metadata[oid] = record.metadata
 			records[#records + 1] = record
 		end
 		if record then
 			record.lines[#record.lines + 1] = line
+			if
+				line:match("^author[%s-]")
+				or line:match("^summary ")
+				or line:match("^filename ")
+				or line:match("^previous ")
+			then
+				local key = line:match("^(%S+)")
+				record.metadata[key] = line
+			end
 		end
 	end
 	if not opts.text or #records ~= #opts.text.lines then
 		return nil, "Unsupported blame line format: Git and the editor use different lines"
 	end
 	local validated_source_lines
+	if opts.profile and opts.profile.fileformat == "mac" and not policy.validate and #records > 1 then
+		return nil, "Unsupported blame line format: Git and the editor use different lines"
+	end
 	if policy and policy.validate then
 		local source = {}
 		for _, item in ipairs(records) do
@@ -89,7 +103,22 @@ function M.select(lines, opts, policy)
 			return nil, "Unsupported blame line format: Git and the editor use different lines"
 		end
 		if not (opts.line_start and opts.line_end) or (number >= opts.line_start and number <= opts.line_end) then
-			vim.list_extend(selected, item.lines)
+			if opts.line_start and opts.line_end then
+				selected[#selected + 1] = item.lines[1]
+				local keys = vim.tbl_keys(item.metadata)
+				table.sort(keys)
+				for _, key in ipairs(keys) do
+					selected[#selected + 1] = item.metadata[key]
+				end
+				for index = 2, #item.lines do
+					local line = item.lines[index]
+					if not item.metadata[line:match("^(%S+)")] then
+						selected[#selected + 1] = line
+					end
+				end
+			else
+				vim.list_extend(selected, item.lines)
+			end
 		end
 	end
 	return selected, nil, validated_source_lines

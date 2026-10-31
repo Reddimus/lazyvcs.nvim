@@ -725,7 +725,7 @@ local function test_svn_xml_parses_info_status_list_and_entities()
 	local status = xml.parse_status([[
 		<status><target path=".">
 		  <entry path="src/a&amp;b.txt">
-		    <wc-status item="modified" props="modified" revision="7" tree-conflicted="true" switched="true"/>
+		    <wc-status item="modified" props="modified" revision="7" tree-conflicted="true" switched="true" copied="true"/>
 		    <repos-status item="deleted" props="none"/>
 		  </entry>
 		</target></status>
@@ -740,6 +740,7 @@ local function test_svn_xml_parses_info_status_list_and_entities()
 		revision = "7",
 		tree_conflicted = true,
 		switched = true,
+		copied = true,
 		file_external = false,
 	})
 
@@ -1132,7 +1133,12 @@ local function test_svn_async_blame_cancels_active_child_process()
 		eq(#handles, 2)
 		callbacks[2]({ stdout = "", code = 0 })
 		eq(#handles, 3)
-		assert(vim.tbl_contains(handles[3].args, "blame"), "fixture did not reach svn blame")
+		callbacks[3]({
+			stdout = '<info><entry kind="file" revision="1"><url>file:///fixture/sample.txt</url><wc-info><schedule>normal</schedule></wc-info></entry></info>',
+			code = 0,
+		})
+		eq(#handles, 4)
+		assert(vim.tbl_contains(handles[4].args, "blame"), "fixture did not reach svn blame")
 		-- Other buffers share this single worker and can already be queued when
 		-- cancellation completes. The mock must not capture their real processes.
 		local other_done, other_started = false, false
@@ -1146,9 +1152,9 @@ local function test_svn_async_blame_cancels_active_child_process()
 			other_done = true
 		end)
 		job:kill()
-		assert(handles[3].killed, "active svn blame child process should be killed")
+		assert(handles[4].killed, "active svn blame child process should be killed")
 		assert(not other_started, "worker released before physical completion")
-		callbacks[3]({ stdout = "     1 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line\n", code = 0 })
+		callbacks[4]({ stdout = "     1 alice        2026-04-01 12:34:56 +0000 (Wed, 01 Apr 2026) line\n", code = 0 })
 		eq(completed, false)
 		local released = false
 		jobs.command({ root = vim.fs.dirname(path), vcs = "svn" }, "buffer", { "worker-probe" }, {
@@ -3725,37 +3731,46 @@ local function test_svn_blame_split_is_fixed_width_and_muted()
 	local source_buf = vim.api.nvim_get_current_buf()
 	require("lazyvcs.util").set_win_option(source_win, "scrollbind", false)
 	require("lazyvcs.util").set_win_option(source_win, "cursorbind", false)
-	require("lazyvcs.blame").blame_split()
+	local previous_statuscolumn = vim.o.statuscolumn
+	local previous_local_statuscolumn = vim.wo[source_win].statuscolumn
+	vim.o.statuscolumn = "%l "
+	local ok, err = xpcall(function()
+		require("lazyvcs.blame").blame_split()
 
-	wait_for(function()
+		wait_for(function()
+			local view = require("lazyvcs.blame")._test_blame_views()[source_buf]
+			return view and not view.loading and vim.api.nvim_win_is_valid(view.winid)
+		end, "split blame should open", 5000)
+
 		local view = require("lazyvcs.blame")._test_blame_views()[source_buf]
-		return view and not view.loading and vim.api.nvim_win_is_valid(view.winid)
-	end, "split blame should open", 5000)
-
-	local view = require("lazyvcs.blame")._test_blame_views()[source_buf]
-	eq(vim.api.nvim_get_current_win(), source_win)
-	assert(vim.wo[view.winid].winfixwidth, "split blame should use fixed width")
-	assert(vim.api.nvim_win_get_width(view.winid) <= 24, "split blame should respect max width")
-	assert(vim.wo[view.winid].winhighlight:match("LazyVcsBlame"), "split blame should use muted highlights")
-	eq(vim.wo[view.winid].number, false)
-	eq(vim.wo[view.winid].relativenumber, false)
-	eq(vim.wo[view.winid].signcolumn, "no")
-	eq(vim.wo[view.winid].foldcolumn, "0")
-	eq(vim.wo[view.winid].wrap, false)
-	eq(vim.wo[view.winid].list, false)
-	eq(vim.wo[view.winid].spell, false)
-	eq(vim.wo[view.winid].scrollbind, true)
-	eq(vim.wo[view.winid].cursorbind, true)
-	eq(vim.wo[source_win].scrollbind, true)
-	eq(vim.wo[source_win].cursorbind, true)
-	pcall(function()
+		eq(vim.api.nvim_get_current_win(), source_win)
+		assert(vim.wo[view.winid].winfixwidth, "split blame should use fixed width")
+		assert(vim.api.nvim_win_get_width(view.winid) <= 24, "split blame should respect max width")
+		assert(vim.wo[view.winid].winhighlight:match("LazyVcsBlame"), "split blame should use muted highlights")
+		eq(vim.wo[view.winid].number, false)
+		eq(vim.wo[view.winid].relativenumber, false)
+		eq(vim.wo[view.winid].signcolumn, "no")
+		eq(vim.wo[view.winid].foldcolumn, "0")
+		eq(vim.wo[view.winid].wrap, false)
+		eq(vim.wo[view.winid].list, false)
+		eq(vim.wo[view.winid].spell, false)
+		eq(vim.wo[view.winid].scrollbind, true)
+		eq(vim.wo[view.winid].cursorbind, true)
+		eq(vim.wo[source_win].scrollbind, true)
+		eq(vim.wo[source_win].cursorbind, true)
 		eq(vim.wo[view.winid].statuscolumn, "")
-	end)
-	local blame_lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
-	assert(vim.tbl_contains(blame_lines, "Uncommitted line"), "split blame should label uncommitted rows")
-	require("lazyvcs.blame").blame_split()
-	eq(vim.wo[source_win].scrollbind, false)
-	eq(vim.wo[source_win].cursorbind, false)
+		eq(vim.wo[source_win].statuscolumn, "%l ")
+		local blame_lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
+		assert(vim.tbl_contains(blame_lines, "Uncommitted line"), "split blame should label uncommitted rows")
+		require("lazyvcs.blame").blame_split()
+		eq(vim.wo[source_win].scrollbind, false)
+		eq(vim.wo[source_win].cursorbind, false)
+	end, debug.traceback)
+	vim.o.statuscolumn = previous_statuscolumn
+	if vim.api.nvim_win_is_valid(source_win) then
+		vim.wo[source_win].statuscolumn = previous_local_statuscolumn
+	end
+	assert(ok, err)
 end
 
 local function test_live_diff_places_base_window_on_the_left()
@@ -7356,6 +7371,11 @@ vim.list_extend(cases, require("spec_compare_worktree_windows")({ helpers = help
 vim.list_extend(cases, require("spec_repository_audit")())
 vim.list_extend(cases, require("spec_compare_worktree_state")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_compare_user_state")({ helpers = helpers, wait_for = wait_for }))
+
+vim.list_extend(cases, require("spec_backend_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_git_intent")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_backend_review_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_snapshot_boundaries_a3")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,

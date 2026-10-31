@@ -315,9 +315,9 @@ local function index_entry(task, snapshot, path, done)
 end
 
 local function load_saved_side(task, snapshot, item, done)
-	common.read_file(task, snapshot.root .. "/" .. item.relpath, function(data, err)
+	common.read_file(task, snapshot.root .. "/" .. item.relpath, function(data, err, kind)
 		if data or not tostring(err):match("^ENOENT[:%s]") then
-			return done(data, nil, err)
+			return done(data, nil, err, kind)
 		end
 		local missing = err
 		index_entry(task, snapshot, item.relpath, function(entry, entry_err)
@@ -411,7 +411,7 @@ function M.preview(snapshot, item, callback, opts)
 			task:finish(result)
 		end, { output_limit_bytes = 2 * common.max_file_bytes })
 	end
-	if stat and stat.type == "directory" then
+	if stat and stat.type == "directory" and item.status ~= "D" then
 		submodule()
 		return task
 	end
@@ -424,12 +424,16 @@ function M.preview(snapshot, item, callback, opts)
 			common.decode_side(result, "right", "", { encoding = "utf-8" })
 			return finish()
 		end
-		load_saved_side(task, snapshot, item, function(data, source, err)
+		load_saved_side(task, snapshot, item, function(data, source, err, kind)
 			if not data then
-				return task:finish(nil, err)
+				return task:finish(nil, "Saved preview: " .. tostring(err))
 			end
-			local decoded, line_err =
-				common.decode_side(result, "right", data, source and blob_options or right_options)
+			local decoded, line_err = common.decode_side(
+				result,
+				"right",
+				data,
+				kind == "link" and { fileencodings = vim.o.fileencodings } or source and blob_options or right_options
+			)
 			if not decoded then
 				return task:finish(nil, line_err)
 			end
@@ -450,16 +454,25 @@ function M.preview(snapshot, item, callback, opts)
 				task,
 				snapshot,
 				{ "show", "--no-ext-diff", snapshot.revision .. ":" .. (item.old_path or item.relpath) },
-				function(data, err)
+				function(data, err, raw)
+					if raw and raw.stdout_truncated then
+						return task:finish(nil, "Base preview: File exceeds the 1 MiB preview limit")
+					end
 					if not data then
 						return task:finish(nil, err)
 					end
-					local decoded, line_err = common.decode_side(result, "left", data, left_options)
+					local decoded, line_err = common.decode_side(
+						result,
+						"left",
+						data,
+						result.left_kind == "symlink" and { fileencodings = vim.o.fileencodings } or left_options
+					)
 					if not decoded then
 						return task:finish(nil, line_err)
 					end
 					right()
-				end
+				end,
+				{ output_limit_bytes = 2 * common.max_file_bytes }
 			)
 		end
 	end

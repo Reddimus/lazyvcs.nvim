@@ -8,7 +8,9 @@ return function(ctx)
 		end))
 	end
 	local function fixture(name, project, suffix)
-		assert(vim.fn.executable("svnadmin") == 1, "svnadmin is required")
+		if vim.fn.executable("svnadmin") ~= 1 or vim.fn.executable("svn") ~= 1 then
+			error({ lazyvcs_skip = "svn or svnadmin unavailable" }, 0)
+		end
 		local dir = h.tempdir()
 		local repository = dir .. "/" .. name
 		h.exec({ "svnadmin", "create", repository }, dir)

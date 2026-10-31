@@ -164,31 +164,50 @@ function M.load(task, repo, callback, switched)
 			-- every versioned file and URL-encoding differences in boundary detection.
 			local boundaries = {}
 			for _, path in ipairs(switched or {}) do
-				boundaries[#boundaries + 1] = local_path(path)
+				boundaries[#boundaries + 1] = type(path) == "table"
+						and { path = local_path(path.path), recursive = path.recursive }
+					or { path = local_path(path) }
 			end
 			local index = 0
 			local function next_boundary()
 				index = index + 1
-				local path = boundaries[index]
-				if not path then
+				local boundary = boundaries[index]
+				if not boundary then
 					return finish_properties()
 				end
-				common.command(task, repo, {
+				local path = boundary.path
+				local args = {
 					"svn",
 					"propget",
 					"--xml",
 					"--show-inherited-props",
 					"svn:global-ignores",
 					util.svn_target(path),
-				}, function(props, props_err)
+				}
+				if boundary.recursive then
+					table.insert(args, 5, "-R")
+				end
+				common.command(task, repo, args, function(props, props_err)
 					if not props then
 						return callback(nil, props_err)
 					end
-					local values, decode_err = property_values(props)
-					if not values then
-						return callback(nil, decode_err)
+					local root_values = {}
+					for attrs, body in props:gmatch("<target%s+([^>]+)>(.-)</target>") do
+						local target = xml.attributes(attrs).path
+						local values, decode_err = property_values(body)
+						if not values then
+							return callback(nil, decode_err)
+						end
+						if target and target:match("^%a[%w+.-]*://") then
+							vim.list_extend(root_values, values)
+						elseif target then
+							inherited[local_path(target)] = table.concat(values, "\n")
+						end
 					end
-					inherited[path] = table.concat(values, "\n")
+					if inherited[path] then
+						root_values[#root_values + 1] = inherited[path]
+					end
+					inherited[path] = table.concat(root_values, "\n")
 					boundaries_at[path] = true
 					next_boundary()
 				end)

@@ -187,7 +187,15 @@ return function(ctx)
 		{
 			"test_core_security_supports_current_plugin_minor",
 			function()
-				assert(read("SECURITY.md"):find("| 0.12.x  | Yes", 1, true), "security table omits 0.12.x")
+				local minor = assert(read("CHANGELOG.md"):match("\n## %[(%d+%.%d+)%.%d+%]"), "no release heading")
+				assert(
+					read("SECURITY.md"):match("|%s*" .. vim.pesc(minor) .. "%.x%s*|%s*Yes%s*|"),
+					"security table omits current minor"
+				)
+				assert(
+					read("SECURITY.md"):match("|%s*<%s*" .. vim.pesc(minor) .. "%s*|%s*No%s*|"),
+					"security table retains old range"
+				)
 			end,
 		},
 		{

@@ -226,11 +226,15 @@ return function(ctx)
 					return handle.process:is_closing() and not kill(-pid, 0)
 				end, "leader or original group still alive")
 				ctx.wait_for(function()
-					return timed_out
-				end, "timeout did not fire")
+					return calls == 1
+				end, "exited process did not settle at its deadline")
+				assert(not timed_out, "exited process reported a timeout")
 				assert(#signals == 0, "timeout signalled an empty group")
 			end
-			assert(calls == 0 and p.alive(p.pid(dir .. "/helper.pid")), "pipes closed before regression probe")
+			ctx.wait_for(function()
+				return calls == 1
+			end, "held pipes retained the worker")
+			assert(p.alive(p.pid(dir .. "/helper.pid")), "escaped helper was killed")
 			local count = #signals
 			-- Pretend the now-free group id has been reused after the first observation.
 			---@diagnostic disable-next-line: duplicate-set-field
@@ -1007,11 +1011,16 @@ vim.cmd("qa!")
 						"Git terminal prompts remain enabled"
 					)
 					assert(env_value(captured[3].opts.env, "CUSTOM") == "yes")
-					util.system_result({ "git", "status" }, { env = { GIT_TERMINAL_PROMPT = "1" } })
+					assert(env_value(captured[3].opts.env, "GIT_OPTIONAL_LOCKS") == "0")
+					util.system_result(
+						{ "git", "status" },
+						{ env = { GIT_TERMINAL_PROMPT = "1", GIT_OPTIONAL_LOCKS = "1" } }
+					)
 					assert(
 						env_value(captured[4].opts.env, "GIT_TERMINAL_PROMPT") == "1",
 						"explicit environment overridden"
 					)
+					assert(env_value(captured[4].opts.env, "GIT_OPTIONAL_LOCKS") == "1")
 				end)
 				vim.system = original
 				vim.wait(20)

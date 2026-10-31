@@ -136,10 +136,7 @@ function M.new(on_done, opts)
 		for _, callback in ipairs(callbacks) do
 			pcall(callback, self)
 		end
-		if opts.callback_on_cancel and type(on_done) == "function" then
-			self.done = true
-			on_done(nil, opts.cancel_error or "Cancelled")
-		end
+
 		return true
 	end
 

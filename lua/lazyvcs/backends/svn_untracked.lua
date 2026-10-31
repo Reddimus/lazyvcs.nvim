@@ -20,8 +20,8 @@ function M.expand(task, repo, entries, callback)
 	local items, seen = {}, {}
 	local pending, switched = {}, {}
 	for _, entry in ipairs(entries) do
-		if entry.switched then
-			switched[#switched + 1] = entry.path
+		if entry.switched or entry.wc_item == "external" then
+			switched[#switched + 1] = { path = entry.path, recursive = entry.wc_item == "external" }
 		end
 		if entry.wc_item == "unversioned" then
 			pending[#pending + 1] = util.normalize_literal_path(
@@ -51,41 +51,58 @@ function M.expand(task, repo, entries, callback)
 					return
 				end
 				if stat.type == "directory" then
-					vim.uv.fs_scandir(path, function(scan_err, handle)
-						local consume
-						consume = function()
-							if not task:is_active() then
-								return
-							end
-							if not handle then
-								if tostring(scan_err):match("ENOENT") then
-									visit()
+					local function scan()
+						vim.uv.fs_scandir(path, function(scan_err, handle)
+							local consume
+							consume = function()
+								if not task:is_active() then
 									return
 								end
-								callback(nil, scan_err)
-								return
-							end
-							for _ = 1, 128 do
-								local name = vim.uv.fs_scandir_next(handle)
-								if not name then
-									visit()
+								if not handle then
+									if tostring(scan_err):match("ENOENT") then
+										visit()
+										return
+									end
+									callback(nil, scan_err)
 									return
 								end
-								scanned = scanned + 1
-								if name ~= ".svn" and name ~= ".git" and not ignored(path .. "/" .. name, name) then
-									pending[#pending + 1] = path .. "/" .. name
+								for _ = 1, 128 do
+									local name = vim.uv.fs_scandir_next(handle)
+									if not name then
+										visit()
+										return
+									end
+									scanned = scanned + 1
+									if name ~= ".svn" and name ~= ".git" and not ignored(path .. "/" .. name, name) then
+										pending[#pending + 1] = path .. "/" .. name
+									end
+									if #pending > 10000 or scanned > 100000 then
+										callback(
+											nil,
+											"Untracked discovery exceeded its path limit; exclude untracked files or narrow the working copy"
+										)
+										return
+									end
 								end
-								if #pending > 10000 or scanned > 100000 then
-									callback(
-										nil,
-										"Untracked discovery exceeded its path limit; exclude untracked files or narrow the working copy"
-									)
-									return
-								end
+								schedule(task, consume)
 							end
 							schedule(task, consume)
-						end
-						schedule(task, consume)
+						end)
+					end
+					-- Nested repositories own their contents, including .git-file worktrees.
+					vim.uv.fs_lstat(path .. "/.svn", function(_, svn)
+						vim.uv.fs_lstat(path .. "/.git", function(_, git)
+							schedule(task, function()
+								if
+									(svn and svn.type == "directory")
+									or (git and (git.type == "file" or git.type == "directory"))
+								then
+									visit()
+								else
+									scan()
+								end
+							end)
+						end)
 					end)
 					return
 				end

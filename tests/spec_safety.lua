@@ -1504,6 +1504,10 @@ return function(ctx)
 			end, "async process callback should complete")
 
 			assert(callback_result.stdout_truncated == true, "stdout truncation should be explicit")
+			for _, value in ipairs({ callback_result.stdout, callback_result.stderr }) do
+				assert(#value <= 128)
+				assert(tonumber(value:match("truncated at least (%d+) bytes")) >= 272, "incorrect omitted byte count")
+			end
 			assert(callback_result.stderr_truncated == true, "stderr truncation should be explicit")
 			assert(callback_raw.stdout_truncated == true, "raw result should preserve stdout truncation")
 			assert(callback_raw.stderr_truncated == true, "raw result should preserve stderr truncation")
