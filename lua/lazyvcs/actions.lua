@@ -1660,12 +1660,13 @@ reload_session = function(session)
 			return
 		end
 		local current_profile = compare_text.profile(live.editable_bufnr)
-		if
-			not current_profile
-			or not profile
-			or current_profile.key ~= profile.key
-			or util.buf_path(live.editable_bufnr) ~= source_path
-		then
+		if not current_profile or not profile or util.buf_path(live.editable_bufnr) ~= source_path then
+			return
+		end
+		if current_profile.key ~= profile.key then
+			if live.phase == "active" then
+				return reload_session(live)
+			end
 			return
 		end
 		if not result then
