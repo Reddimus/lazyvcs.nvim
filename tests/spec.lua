@@ -7432,6 +7432,7 @@ vim.list_extend(cases, require("spec_views_a3")({ helpers = helpers, wait_for = 
 vim.list_extend(cases, require("spec_views_review_a3")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_live_build_a3")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_case_policy_a3")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_worker_profile_a3")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_live_transfer_settlement")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_backend_a3")({ helpers = helpers, wait_for = wait_for }))

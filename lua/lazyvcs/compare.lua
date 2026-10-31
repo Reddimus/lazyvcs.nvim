@@ -747,7 +747,8 @@ local function update_worktree(s, record)
 	-- edits, so neither VCS subprocesses nor histogram diff block each keystroke.
 	s.navigation = { base = {}, saved = {}, reviewed = s.navigation and s.navigation.reviewed or false, pending = true }
 	s.worktree_diff = s.worktree_diff or require("lazyvcs.diff_work").latest()
-	local tick, item, version = vim.api.nvim_buf_get_changedtick(record.buf), s.shown_item, record.version
+	local tick, item, version, diffopt =
+		vim.api.nvim_buf_get_changedtick(record.buf), s.shown_item, record.version, vim.o.diffopt
 	local text = require("lazyvcs.compare_text")
 	s.worktree_diff:request(text.serialize(result.left_document), text.serialize(current), function(raw, failure)
 		if
@@ -759,6 +760,9 @@ local function update_worktree(s, record)
 			or vim.api.nvim_buf_get_changedtick(record.buf) ~= tick
 		then
 			return
+		end
+		if vim.o.diffopt ~= diffopt then
+			return update_worktree(s, record)
 		end
 		if not raw then
 			return util.notify(failure or "Could not update comparison hunks", vim.log.levels.WARN)

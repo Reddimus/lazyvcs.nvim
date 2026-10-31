@@ -501,9 +501,11 @@ refresh = function(bufnr, reuse)
 					or session.base_text ~= base
 					or session.base_generation ~= generation
 					or not util.buf_is_valid(bufnr)
-					or not vim.deep_equal(compare_text.identity(bufnr), identity)
 				then
 					return
+				end
+				if not vim.deep_equal(compare_text.identity(bufnr), identity) then
+					return refresh(bufnr)
 				end
 				if vim.o.diffopt ~= diffopt then
 					return refresh(bufnr)
