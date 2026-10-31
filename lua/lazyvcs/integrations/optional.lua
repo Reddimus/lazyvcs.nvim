@@ -5,7 +5,7 @@ local integrations = {
 		key = "gitsigns",
 		label = "gitsigns.nvim",
 		module = "gitsigns",
-		feature = "Git signs, navigation and previews; live resets stay native",
+		feature = "Git signs, navigation and large-file previews; live resets stay native",
 		fallback = "native signs, navigation and previews",
 	},
 	{
