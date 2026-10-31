@@ -89,9 +89,9 @@ function M.expand(task, repo, entries, callback)
 							schedule(task, consume)
 						end)
 					end
-					-- Nested repositories own their contents, including .git-file worktrees.
-					vim.uv.fs_lstat(path .. "/.svn", function(_, svn)
-						vim.uv.fs_lstat(path .. "/.git", function(_, git)
+					-- Follow administrative markers only; directory entries above stay literal.
+					vim.uv.fs_stat(path .. "/.svn", function(_, svn)
+						vim.uv.fs_stat(path .. "/.git", function(_, git)
 							schedule(task, function()
 								if
 									(svn and svn.type == "directory")
