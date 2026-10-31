@@ -23,26 +23,31 @@ function M.prepare(task, comparison, timeout, callback)
 		end))
 	end
 	local function index()
-		command({ "git", "ls-files", "--stage", "-z", "--", path }, function(bytes, err)
-			if not bytes then
-				return callback(nil, err)
-			end
-			if bytes == "" then
-				result.right = false
-			else
-				local mode, object, stage, entry_path = bytes:match("^(%d+) (%x+) (%d+)\t([^%z]+)%z$")
-				if
-					entry_path ~= path
-					or stage ~= "0"
-					or not oid(object)
-					or not (mode == "100644" or mode == "100755" or mode == "120000")
-				then
-					return callback(nil, "Cannot verify exact staged index entry; refresh and retry")
+		-- Both operands carry their own literal magic. Omit -- so util preserves
+		-- the exclusion, bounding output to the exact entry rather than children.
+		command(
+			{ "git", "ls-files", "--stage", "-z", ":(literal)" .. path, ":(exclude,literal)" .. path .. "/" },
+			function(bytes, err)
+				if not bytes then
+					return callback(nil, err)
 				end
-				result.right = { oid = object, object = ":0:" .. path }
+				if bytes == "" then
+					result.right = false
+				else
+					local mode, object, stage, entry_path = bytes:match("^(%d+) (%x+) (%d+)\t([^%z]+)%z$")
+					if
+						entry_path ~= path
+						or stage ~= "0"
+						or not oid(object)
+						or not (mode == "100644" or mode == "100755" or mode == "120000")
+					then
+						return callback(nil, "Cannot verify exact staged index entry; refresh and retry")
+					end
+					result.right = { oid = object, object = ":0:" .. path }
+				end
+				callback(result)
 			end
-			callback(result)
-		end)
+		)
 	end
 	local function tree(revision)
 		command({ "git", "--literal-pathspecs", "ls-tree", "-z", revision, "--", old_path }, function(bytes, err)
@@ -55,13 +60,19 @@ function M.prepare(task, comparison, timeout, callback)
 				local mode, kind, object, entry_path = bytes:match("^(%d+) (%S+) (%x+)\t([^%z]+)%z$")
 				if
 					entry_path ~= old_path
-					or kind ~= "blob"
 					or not oid(object)
-					or not (mode == "100644" or mode == "100755" or mode == "120000")
+					or not (
+						kind == "tree" and mode == "040000"
+						or kind == "blob" and (mode == "100644" or mode == "100755" or mode == "120000")
+					)
 				then
 					return callback(nil, "Cannot verify exact staged HEAD entry; refresh and retry")
 				end
-				result.left = { oid = object, object = revision .. ":" .. old_path }
+				if kind == "tree" then
+					result.left = false
+				else
+					result.left = { oid = object, object = revision .. ":" .. old_path }
+				end
 			end
 			index()
 		end)
