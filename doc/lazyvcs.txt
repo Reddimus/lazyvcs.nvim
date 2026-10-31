@@ -810,6 +810,8 @@ untracked files. Git retains its binary-file diagnostics without binary
 payloads. SVN unversioned text files use added-file sections, including missing
 final-newline markers. Unversioned binary files use SVN's binary diagnostic.
 Binary diagnostics do not contain the bytes needed to apply binary changes.
+Untracked SVN filenames containing ASCII control bytes are refused before file
+contents are read; SVN cannot version these names. File content is unchanged.
 
 Use a UTF-8 native-client environment to export and apply SVN patches with
 Unicode filenames. Windows SVN export currently requires ASCII repository-

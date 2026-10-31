@@ -1,11 +1,20 @@
 -- Windows SVN clients can narrow argv and decode patch headers in a legacy
 -- codepage. Keep this boundary about filenames; hunk and property bytes are raw.
 local util = require("lazyvcs.util")
-local M = { error = "Windows SVN patch filenames must be ASCII; native filename encoding is not lossless" }
+local M = {
+	error = "Windows SVN patch filenames must be ASCII; native filename encoding is not lossless",
+	control_error = "SVN patch filenames cannot contain ASCII control bytes",
+}
 
 function M.path(repo, path)
 	local relative = util.relative_literal_path(repo.root, path, false) or path
 	return not relative:find("[\128-\255]")
+end
+
+-- Match svn_path_check_valid's fixed ASCII control class, not locale ctype.
+function M.untracked_path(repo, path)
+	local relative = util.relative_literal_path(repo.root, path, false) or path
+	return not relative:find("[%z\1-\31\127]")
 end
 
 function M.headers(repo, task, text, guard, done, truncated)

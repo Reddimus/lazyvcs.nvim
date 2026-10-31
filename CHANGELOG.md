@@ -19,7 +19,8 @@ and this project adheres to
 
 - `:LazyVCS patch [path]` opens a copyable Git or SVN patch, with untracked
   files and a Lua callback API. Windows SVN requires ASCII patch filenames to
-  avoid native encoding changes; file content remains unchanged.
+  avoid native encoding changes; file content remains unchanged. SVN also
+  refuses untracked filenames containing ASCII control bytes.
 
 ## [0.12.2] - 2026-10-31
 

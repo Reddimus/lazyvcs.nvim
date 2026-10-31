@@ -2,6 +2,7 @@
 local uv = vim.uv
 local util = require("lazyvcs.util")
 local paths = require("lazyvcs.backends.patch_path")
+local filenames = require("lazyvcs.backends.patch_svn_filenames")
 local fs = require("lazyvcs.backends.patch_io")
 local M = {}
 
@@ -144,6 +145,9 @@ function M.files(task, repo, paths, guard, done, opts)
 			end
 			local absolute, expected = {}, {}
 			for _, path in ipairs(files) do
+				if not filenames.untracked_path(repo, path) then
+					return task:finish(nil, filenames.control_error)
+				end
 				local file = util.normalize_literal_path(repo.root .. "/" .. path)
 				local identity = identities and identities[path]
 				if not identity then
