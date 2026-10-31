@@ -355,6 +355,9 @@ transfer = require("lazyvcs.live_transfer").new({
 	attach_source = function(session)
 		attach_source(session, true)
 	end,
+	refresh = function(session)
+		refresh(session.editable_bufnr)
+	end,
 })
 
 local function safe_callback(fn)

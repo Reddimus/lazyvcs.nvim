@@ -171,8 +171,8 @@ function M.new(lifecycle)
 			end
 			if p then
 				local view, detached = p.view, p.detached
-				s.base_lines, s.base_text, s.base_identity, s.hunks =
-					p.base_lines, p.base_text, p.base_identity, p.hunks
+				s.base_lines, s.base_text, s.base_identity = p.base_lines, p.base_text, p.base_identity
+				s.hunks = s.base_invalid and {} or p.hunks
 				state.clear_pending_transfer(s.editable_win)
 				s.phase = "active"
 				if detached then
@@ -186,6 +186,8 @@ function M.new(lifecycle)
 				if p.refresh_completion then
 					p.refresh_completion()
 				end
+				-- Retained sources can change while their refreshes are suspended.
+				lifecycle.refresh(s)
 				-- Leaving installed close-only controls; restore the hunk maps.
 				require("lazyvcs.window_controls").sync()
 			end
