@@ -1034,6 +1034,12 @@ function M.open(opts)
 			dispose_pristine()
 		end),
 	})
+	-- File hooks such as EditorConfig must see a scratch buffer when the URI is named.
+	if not setup(function()
+		set_buffer_option(view, "buftype", "nofile")
+	end) then
+		return stop()
+	end
 	if
 		not setup(function()
 			expected_name = reserved_name
@@ -1062,7 +1068,6 @@ function M.open(opts)
 		end
 	end
 	for _, option in ipairs({
-		{ "buftype", "nofile" },
 		{ "bufhidden", "wipe" },
 		{ "swapfile", false },
 		{ "buflisted", false },

@@ -8,6 +8,12 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-10-31
+
+### Fixed
+
+- Fix empty Patch views when EditorConfig is enabled, including in AstroNvim.
+
 ## [0.13.0] - 2026-10-31
 
 ### Added
@@ -946,5 +952,6 @@ First tagged release.
 [0.12.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.7...v0.12.0
 [0.12.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.0...v0.12.1
 [0.12.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.1...v0.12.2
+[0.13.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.2...v0.13.0
-[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.1...HEAD

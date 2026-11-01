@@ -65,12 +65,36 @@ return function(ctx)
 			pattern = option,
 			nested = true,
 			callback = function()
-				if api.nvim_buf_get_name(0):match("^lazyvcs://patch/") then
+				local name = api.nvim_buf_get_name(0)
+				if
+					name:match("^lazyvcs://patch/")
+					or (event == "OptionSet" and option == "buftype" and name == "" and vim.bo.buftype == "nofile")
+				then
 					fn()
 				end
 			end,
 		})
 	end
+	case("editorconfig_does_not_initialize_patch_as_a_file", function()
+		local f, cwd = fixture(), vim.fn.getcwd()
+		h.write_file(f.root .. "/.editorconfig", "root = true\n[*]\ncharset = utf-8\n")
+		hook("BufFilePost", "*", function()
+			require("editorconfig").config(api.nvim_get_current_buf())
+		end)
+		local ok, err = xpcall(function()
+			vim.cmd.cd(f.root)
+			local task = open({ path = f.root })
+			assert(not task.cancelled, "EditorConfig cancelled Patch initialization")
+			wait(function()
+				return task.done
+			end)
+			assert(vim.bo.buftype == "nofile" and not vim.bo.modifiable and vim.bo.filetype == "diff")
+			assert(read(0):find("+changed", 1, true), "EditorConfig prevented Patch rendering")
+			preserved(f)
+		end, debug.traceback)
+		vim.cmd.cd(cwd)
+		assert(ok, err)
+	end)
 	for _, option in ipairs({ "buftype", "bufhidden", "swapfile", "buflisted", "undolevels", "name" }) do
 		for _, close in ipairs({ false, true }) do
 			case("constructor_" .. option .. (close and "_close" or "_noop"), function()
@@ -112,6 +136,7 @@ return function(ctx)
 			end
 			fired = true
 			kept = api.nvim_get_current_buf()
+			vim.bo[kept].buftype = ""
 			api.nvim_buf_set_name(kept, f.root .. "/kept-user.txt")
 			api.nvim_buf_set_lines(kept, 0, -1, false, { "new user-owned bytes" })
 			api.nvim_win_close(0, true)
