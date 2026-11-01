@@ -3,15 +3,69 @@ local util = require("lazyvcs.util")
 local process = require("lazyvcs.backends.process")
 local xml = require("lazyvcs.backends.xml")
 local paths = require("lazyvcs.backends.patch_path")
+local fs = require("lazyvcs.backends.patch_io")
 local M = {}
 
 -- Classify only Git's untracked additions. Tracked native diff output remains
 -- authoritative even when Git explicitly tracks a file inside another repository.
 local function git_untracked_files(task, root, files, guard, done)
-	local cache, kept, index = {}, {}, 0
+	local cache, aliases, kept, index = {}, {}, {}, 0
 	local next_file
 	local function later(fn)
 		vim.schedule(guard(fn))
+	end
+	local function administration_alias(candidate, done)
+		local name = vim.fs.basename(candidate)
+		local lower = name:lower()
+		if name == lower or (lower ~= ".svn" and lower ~= ".git") then
+			return done(false)
+		end
+		if aliases[candidate] ~= nil then
+			return done(aliases[candidate])
+		end
+		local function resolved(path, callback)
+			vim.uv.fs_realpath(path, function(err, physical)
+				later(function()
+					if not physical then
+						return callback(nil, err)
+					end
+					fs.fs_lstat(util.normalize_literal_path(physical), function(stat_err, entry)
+						later(function()
+							callback(entry, stat_err)
+						end)
+					end)
+				end)
+			end)
+		end
+		local function finish(value)
+			aliases[candidate] = value
+			done(value)
+		end
+		-- Case alone does not identify administration on case-sensitive filesystems.
+		-- Resolve only these marker names, then compare authoritative provider IDs.
+		resolved(vim.fs.dirname(candidate) .. "/" .. lower, function(marker, err)
+			if err and (marker or not tostring(err):match("^ENOENT:")) then
+				return task:finish(nil, err)
+			end
+			if not marker then
+				if tostring(err):match("^ENOENT:") then
+					return finish(false)
+				end
+				return task:finish(nil, err or "Patch administration marker is unverifiable")
+			end
+			if marker.type ~= "directory" and not (lower == ".git" and marker.type == "file") then
+				return finish(false)
+			end
+			if not paths.identity(marker) then
+				return task:finish(nil, "Patch administration marker has no verifiable identity")
+			end
+			resolved(candidate, function(entry, entry_err)
+				if entry_err or not paths.identity(entry) then
+					return task:finish(nil, entry_err or "Patch administration alias has no verifiable identity")
+				end
+				finish(paths.same(marker, entry))
+			end)
+		end)
 	end
 	next_file = function()
 		index = index + 1
@@ -55,8 +109,12 @@ local function git_untracked_files(task, root, files, guard, done)
 				cursor = cursor + 1
 				directory = ancestors[cursor]
 				if not directory then
-					kept[#kept + 1] = file
-					return later(next_file)
+					return administration_alias(root .. "/" .. file, function(alias)
+						if not alias then
+							kept[#kept + 1] = file
+						end
+						later(next_file)
+					end)
 				end
 				if cache[directory] then
 					return later(next_file)
@@ -64,24 +122,30 @@ local function git_untracked_files(task, root, files, guard, done)
 			until cache[directory] == nil
 			-- Match the shared SVN walker's marker kinds, following administrative
 			-- marker links only. No recursive filesystem walk or per-file VCS spawn.
-			vim.uv.fs_stat(directory .. "/.svn", function(svn_err, svn)
-				later(function()
-					if svn_err and not tostring(svn_err):match("^ENOENT:") then
-						return task:finish(nil, svn_err)
-					end
-					vim.uv.fs_stat(directory .. "/.git", function(git_err, git)
-						later(function()
-							if git_err and not tostring(git_err):match("^ENOENT:") then
-								return task:finish(nil, git_err)
-							end
-							local boundary = (svn and svn.type == "directory")
-								or (git and (git.type == "file" or git.type == "directory"))
-								or false
-							cache[directory] = boundary
-							if boundary then
-								return later(next_file)
-							end
-							visit()
+			administration_alias(directory, function(alias)
+				if alias then
+					cache[directory] = true
+					return later(next_file)
+				end
+				vim.uv.fs_stat(directory .. "/.svn", function(svn_err, svn)
+					later(function()
+						if svn_err and not tostring(svn_err):match("^ENOENT:") then
+							return task:finish(nil, svn_err)
+						end
+						vim.uv.fs_stat(directory .. "/.git", function(git_err, git)
+							later(function()
+								if git_err and not tostring(git_err):match("^ENOENT:") then
+									return task:finish(nil, git_err)
+								end
+								local boundary = (svn and svn.type == "directory")
+									or (git and (git.type == "file" or git.type == "directory"))
+									or false
+								cache[directory] = boundary
+								if boundary then
+									return later(next_file)
+								end
+								visit()
+							end)
 						end)
 					end)
 				end)

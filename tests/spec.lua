@@ -7267,6 +7267,7 @@ vim.list_extend(cases, require("spec_patch_reads")({ helpers = helpers, wait_for
 vim.list_extend(cases, require("spec_patch_native_identity")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_patch_git_entries")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_patch_git_boundaries")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_admin_alias")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_patch_physical_case")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_patch_bundle")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_patch_context")({ helpers = helpers, wait_for = wait_for }))
