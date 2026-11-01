@@ -88,10 +88,28 @@ return function()
 					)
 					return value
 				end
+				local installed = evaluate(readme_spec, "README")
 				assert(
-					vim.deep_equal(evaluate(readme_spec, "README"), evaluate(doc_spec, "lazyvcs.txt")),
+					vim.deep_equal(installed, evaluate(doc_spec, "lazyvcs.txt")),
 					"README.md and doc/lazyvcs.txt install specs differ"
 				)
+				local _, mappings = assert(doc:find("*lazyvcs-mappings*", 1, true))
+				local documented = {}
+				for line in vim.gsplit(doc:sub(mappings + 1), "\n", { plain = true }) do
+					local key, command = line:match("^    (%S+)%s+(.+)")
+					if key then
+						documented[#documented + 1] = { key, (command:gsub("%s+$", "")) }
+					elseif #documented > 0 then
+						break
+					end
+				end
+				local expected = {}
+				for _, mapping in ipairs(installed.keys) do
+					local command =
+						assert(mapping[2]:match("^<[cC][mM][dD]>(.-)<[cC][rR]>$"), "install key must invoke a command")
+					expected[#expected + 1] = { mapping[1], ":" .. command }
+				end
+				assert(vim.deep_equal(documented, expected), "documented global mappings differ from install spec.keys")
 			end,
 		},
 		{

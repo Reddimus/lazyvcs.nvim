@@ -344,15 +344,11 @@ MAPPINGS                                                     *lazyvcs-mappings*
 
 Suggested global mappings, as in the |lazyvcs-configuration| install spec:
 
-    <leader>vs   toggle source-control sidebar
-    <leader>vo   open live diff
-    <leader>vq   close live diff
-    <leader>vr   revert current hunk
-    <leader>vb   toggle inline blame
-    <leader>vc   open or refresh comparison
-    <leader>vC   choose comparison base
-    ]v           next hunk
-    [v           previous hunk
+    <leader>vs   :LazyVCS
+    <leader>vo   :LazyVCS diff open
+    <leader>vc   :LazyVCS compare
+    <leader>vC   :LazyVCS compare base
+    <leader>vb   :LazyVCS blame toggle
 
 Live diff buffer-local mappings (hunk keys apply in the editable pane):
 
@@ -362,7 +358,8 @@ Live diff buffer-local mappings (hunk keys apply in the editable pane):
     ]v           next hunk
     [v           previous hunk
 
-From the base pane, use :LazyVCS hunk next/prev/revert or global mappings.
+From the base pane, use :LazyVCS hunk next, :LazyVCS hunk prev, or
+:LazyVCS hunk revert.
 
 The left/base pane always maps <leader>q as a close alias, in addition to
 keymaps.close, because that pane is read-only. It is not configurable;
@@ -391,8 +388,8 @@ Splits of the editable window share its diff while the session is active and
 leave diff mode when it closes or moves to another buffer, including a move
 that is abandoned before it completes.
 
-Source-control sidebar mappings. Unlike the live-diff mappings above, these are
-buffer-local and fixed; `config.keymaps` does not reach them.
+Source-control sidebar mappings are buffer-local and fixed;
+`config.keymaps` does not reach them.
 
     q            close the sidebar
     <CR>, l, double-click
