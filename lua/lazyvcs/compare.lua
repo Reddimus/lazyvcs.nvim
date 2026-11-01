@@ -835,8 +835,7 @@ local function update_worktree(s, record)
 		result = s.preview_result
 	end
 	s.preview_result = result
-	-- Clear stale navigation immediately. A single worker coalesces subsequent
-	-- edits, so neither VCS subprocesses nor histogram diff block each keystroke.
+	-- Clear stale navigation while one worker coalesces edits off the UI thread.
 	s.navigation = { base = {}, saved = {}, reviewed = s.navigation and s.navigation.reviewed or false, pending = true }
 	s.worktree_diff = s.worktree_diff or require("lazyvcs.diff_work").latest()
 	local tick, item, version, diffopt =

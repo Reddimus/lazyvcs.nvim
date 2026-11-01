@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-31
+
 ### Added
 
 - Subdued hatched filler in Compare and live diff, directional removal colors,
@@ -18,9 +20,16 @@ and this project adheres to
   `base_window.collapse_absent` to keep normal pane sizes.
 
 - `:LazyVCS patch [path]` opens a copyable Git or SVN patch, with untracked
-  files and a Lua callback API. Windows SVN requires ASCII patch filenames to
-  avoid native encoding changes; file content remains unchanged. SVN also
-  refuses untracked filenames containing ASCII control bytes.
+  files and a Lua callback API. Windows SVN requires ASCII repository-relative
+  paths to avoid native encoding changes; file content remains unchanged.
+  Untracked SVN paths with ASCII control bytes report an error.
+
+### Fixed
+
+- Discover SVN working copies under Unicode roots and load their ignore rules
+  using relative paths.
+- Keep SVN paths beginning `^/` local when loading ignores and exporting
+  patches.
 
 ## [0.12.2] - 2026-10-31
 
@@ -937,4 +946,5 @@ First tagged release.
 [0.12.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.11.7...v0.12.0
 [0.12.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.0...v0.12.1
 [0.12.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.1...v0.12.2
-[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.2...HEAD
+[0.13.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.2...v0.13.0
+[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.0...HEAD

@@ -1571,9 +1571,6 @@ function M.preview_diff()
 	return dispatch_command("preview")
 end
 
--- Whole-buffer revert lives in `lazyvcs.buffer_ops`, which dispatches through the
--- backend registry instead of shelling out to `svn` directly.
-
 function M.setup()
 	setup_highlights()
 	if augroup then

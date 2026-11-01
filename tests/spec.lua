@@ -6855,9 +6855,7 @@ local function test_transfer_to_unsupported_buffer_closes_session()
 	eq(#vim.api.nvim_tabpage_list_wins(0), 1, "base window should close on unsupported buffer transfer")
 end
 
--- Test registry. Each test runs in isolation via xpcall so one failing or
--- skipped test no longer aborts the whole suite (previously the missing-svnadmin
--- assert in make_svn_fixture killed every test that followed it).
+-- Run each test with xpcall so failures and skips do not abort later cases.
 local cases = {
 	{ "test_diff_reset", test_diff_reset },
 	{ "test_diff_reset_for_insertion", test_diff_reset_for_insertion },

@@ -411,7 +411,7 @@ function M.system_result(args, opts)
 		return { code = 127, stdout = "", stderr = M.spawn_error(args, proc) }
 	end
 
-	-- On timeout `wait()` kills the process and returns nil rather than raising.
+	-- Handle a failed wait separately from a completed timeout result (code 124).
 	local completed, result = pcall(proc.wait, proc, timeout_ms)
 	if not completed or result == nil then
 		pcall(proc.kill, proc, "sigkill")
@@ -1466,10 +1466,7 @@ end
 
 ---Truncate to a terminal-cell budget, appending an ellipsis when it does not fit.
 ---
----`M.truncate` counts bytes, so `blame.max_width = 80` against a CJK author
----name or an emoji in a commit subject produced virtual text roughly twice the
----configured width, and could split a multi-byte character in the process.
----Screen width is what a wrapped or right-aligned label actually needs.
+---Unlike M.truncate's byte budget, this measures screen cells.
 function M.truncate_display(text, max_width)
 	text = text or ""
 	max_width = max_width or 0
