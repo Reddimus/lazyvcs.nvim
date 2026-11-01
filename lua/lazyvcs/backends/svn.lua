@@ -9,6 +9,8 @@ local M = {
 }
 
 local ASYNC_TIMEOUT_MS = 30000
+local ROOT_INFO_LIMIT = 2 * 1024 * 1024
+local ROOT_INFO_ARGS = { "svn", "info", "--xml", "--", "." }
 
 local literal_target = util.svn_target
 
@@ -35,6 +37,53 @@ local function is_unversioned_error(err, raw)
 		or err:match("W155010") ~= nil
 end
 
+local function xml_root(bytes)
+	if #bytes > ROOT_INFO_LIMIT then
+		return nil, "SVN root XML exceeded the output limit"
+	end
+	local root, err = svn_xml.wcroot_abspath(bytes)
+	if not root then
+		return nil, err
+	end
+	if root:sub(1, 1) ~= "/" and not (vim.fn.has("win32") == 1 and root:match("^%a:/")) then
+		return nil, "SVN returned a non-absolute working-copy root"
+	end
+	return util.canonical_path(root)
+end
+
+local function root_result(cwd)
+	local buffers, lengths, seen, invalid = { {}, {} }, { 0, 0 }, {}, false
+	local function capture(index)
+		return function(err, bytes)
+			invalid = invalid or err ~= nil
+			if bytes then
+				seen[index] = true
+				local room = ROOT_INFO_LIMIT - lengths[index]
+				invalid = invalid or #bytes > room
+				if room > 0 then
+					buffers[index][#buffers[index] + 1] = bytes:sub(1, room)
+					lengths[index] = lengths[index] + math.min(#bytes, room)
+				end
+			end
+		end
+	end
+	local result = util.system_result(ROOT_INFO_ARGS, {
+		cwd = cwd,
+		text = false,
+		stdout = capture(1),
+		stderr = capture(2),
+	})
+	result.stdout = seen[1] and table.concat(buffers[1]) or (result.stdout or "")
+	result.stderr = seen[2] and table.concat(buffers[2]) or (result.stderr or "")
+	if invalid or #result.stdout > ROOT_INFO_LIMIT or #result.stderr > ROOT_INFO_LIMIT then
+		return nil, "SVN root XML was incomplete or exceeded the output limit", result
+	end
+	if result.code ~= 0 or (result.signal or 0) ~= 0 then
+		return nil, util.system_error(result), result
+	end
+	return result
+end
+
 local function get_root(path)
 	if not svn_available() then
 		return nil, "svn executable not found"
@@ -44,12 +93,9 @@ local function get_root(path)
 		return nil, cwd_err
 	end
 	while cwd do
-		local result, err, raw = util.system(
-			{ "svn", "info", "--show-item", "wc-root", literal_target(cwd) },
-			{ cwd = cwd, text = false }
-		)
+		local result, err, raw = root_result(cwd)
 		if result then
-			return process.root_output(result.stdout)
+			return xml_root(result.stdout)
 		end
 		local parent = vim.fs.dirname(cwd)
 		if not is_unversioned_error(err, raw) or parent == cwd then
@@ -73,11 +119,7 @@ local function discover_root_async(path, opts, callback)
 		if remaining <= 0 then
 			return task:finish(nil, "SVN root discovery timed out")
 		end
-		task:add(process.root({ "svn", "info", "--show-item", "wc-root", literal_target(dir) }, {
-			cwd = dir,
-			root = opts.root,
-			timeout = remaining,
-		}, function(root, err, raw)
+		local function completed(root, err, raw)
 			if root then
 				return task:finish(root)
 			end
@@ -86,7 +128,20 @@ local function discover_root_async(path, opts, callback)
 				return probe(parent)
 			end
 			task:finish(nil, err)
-		end))
+		end
+		local command_opts = { cwd = dir, timeout = remaining, probe = true, output_limit_bytes = 2 * ROOT_INFO_LIMIT }
+		if opts.root then
+			command_opts.root = opts.root
+			task:add(process.root(ROOT_INFO_ARGS, command_opts, completed))
+		else
+			task:add(process.bytes(ROOT_INFO_ARGS, command_opts, function(bytes, err, raw)
+				if not bytes then
+					return completed(nil, err, raw)
+				end
+				local root, decode_err = xml_root(bytes)
+				completed(root, decode_err, raw)
+			end))
+		end
 	end
 	if opts.root then
 		vim.schedule(util.safe_callback(function()

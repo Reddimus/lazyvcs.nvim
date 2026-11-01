@@ -47,6 +47,19 @@ function M.refresh()
 	return require("lazyvcs.actions").refresh_current()
 end
 
+---@class lazyvcs.PatchOptions
+---@field path? string Literal directory or file path; defaults to the current window's cwd.
+---@field include_untracked? boolean Include nonignored untracked files (default: config.patch.include_untracked).
+---@field on_done? fun(text: string?, err: string?) Receive raw patch bytes without opening a window.
+---@field smods? table Structured command modifiers.
+
+---Read the working directory's Git or SVN patch asynchronously.
+---@param opts? lazyvcs.PatchOptions
+---@return table handle Cancellable request with a cancel() method.
+function M.patch(opts)
+	return require("lazyvcs.patch").open(opts)
+end
+
 function M.compare(opts)
 	return require("lazyvcs.compare").open(opts)
 end

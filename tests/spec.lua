@@ -1142,7 +1142,13 @@ local function test_svn_async_blame_cancels_active_child_process()
 		wait_for(function()
 			return callbacks[1] ~= nil
 		end, "SVN discovery did not start", ASYNC_TIMEOUT_MS)
-		callbacks[1]({ stdout = vim.fs.dirname(path) .. "\n", code = 0 })
+		assert(vim.tbl_contains(handles[1].args, "--xml") and handles[1].args[#handles[1].args] == ".")
+		callbacks[1]({
+			stdout = '<info><entry kind="dir"><wc-info><wcroot-abspath>'
+				.. vim.fs.dirname(path):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+				.. "</wcroot-abspath></wc-info></entry></info>",
+			code = 0,
+		})
 		eq(#handles, 2)
 		callbacks[2]({ stdout = "", code = 0 })
 		eq(#handles, 3)
@@ -6237,7 +6243,8 @@ local function test_source_control_svn_commit_and_update()
 	commit_state.lazyvcs_commit_drafts[commit_fixture.root] = "svn fixture commit"
 	ops.commit_repo(commit_state, commit_repo_node)
 	wait_for(function()
-		return util.trim(helpers.exec({ "svn", "status" }, commit_fixture.root)) == ""
+		return commit_state.lazyvcs_commit_drafts[commit_fixture.root] == ""
+			and require("lazyvcs.state").get_repo_job(commit_fixture.root) == nil
 	end, "svn commit should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(util.trim(helpers.exec({ "svn", "status" }, commit_fixture.root)), "")
 	assert(
@@ -6269,7 +6276,9 @@ local function test_source_control_svn_commit_and_update()
 	ops.sync_repo(update_state, update_node)
 	wait_for(function()
 		local ok, lines = pcall(vim.fn.readfile, update_fixture.file)
-		return ok and vim.deep_equal(lines, { "one", "updated", "three" })
+		return ok
+			and vim.deep_equal(lines, { "one", "updated", "three" })
+			and require("lazyvcs.state").get_repo_job(update_fixture.root) == nil
 	end, "svn update should finish in the background", ASYNC_TIMEOUT_MS)
 	eq(vim.fn.readfile(update_fixture.file), { "one", "updated", "three" })
 end
@@ -7251,6 +7260,35 @@ vim.list_extend(
 	cases,
 	require("spec_live_regressions")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
 )
+vim.list_extend(cases, require("spec_patch")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_review")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_ownership")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_reads")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_native_identity")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_git_entries")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_git_boundaries")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_admin_alias")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_physical_case")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_bundle")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_context")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_directory")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_lifecycle_paths")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_svn_descendant")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_svn_peg")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_svn_encoding")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_svn_control_names")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_svn_truncation")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_reload_owners")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_reuse_lifetime")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_setup_lifetime")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_cancel_ownership")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_fill_precondition")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_rerun_cancel")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_cancel_display")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_constructor_claim")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_active_ownership")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_clone_cancel")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_patch_parent_alias")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(
 	cases,
 	require("spec_discovery")({
@@ -7420,6 +7458,8 @@ vim.list_extend(cases, require("spec_backend_paths")({ helpers = helpers, wait_f
 vim.list_extend(cases, require("spec_backend_resolution")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_svn_ignores")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_svn_ignore_targets")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_svn_unicode_roots")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_commands_config")({ helpers = helpers, wait_for = wait_for }))
 

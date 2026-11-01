@@ -58,6 +58,7 @@ Open a file inside a Git or SVN working copy:
 | ----------------------- | -------------------------------------------------- |
 | `:LazyVCS`              | Browse repositories, changes, and actions          |
 | `:LazyVCS diff open`    | Edit beside the Git index or SVN BASE              |
+| `:LazyVCS patch [path]` | Read, copy, or save a Git or SVN patch             |
 | `:LazyVCS compare`      | Review total saved changes against a chosen base   |
 | `:LazyVCS hunk next`    | Jump to the next hunk; `hunk prev` moves back      |
 | `:LazyVCS hunk revert`  | Revert the current hunk; normal undo still works   |
