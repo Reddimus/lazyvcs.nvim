@@ -38,7 +38,7 @@ return function(ctx)
 					else
 						boundaries = boundaries + 1
 						assert(
-							args[#args - 1] == "--" and args[#args] == "sub/nested@",
+							args[#args - 1] == "--" and args[#args] == "./sub/nested@",
 							"Windows switch boundary was not relative"
 						)
 						cb([[<properties>

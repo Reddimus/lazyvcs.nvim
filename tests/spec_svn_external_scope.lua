@@ -173,7 +173,7 @@ return function(ctx)
 				local entries = status(f, true)
 				local common = require("lazyvcs.backends.comparison")
 				local run = common.command
-				local target = require("lazyvcs.util").svn_target("ext")
+				local target = require("lazyvcs.util").svn_target("./ext")
 				for _, failure in ipairs({
 					"SVN property access denied",
 					"Comparison output was truncated; narrow the comparison",

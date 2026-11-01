@@ -286,7 +286,9 @@ function M.collect(repo, path, opts, callback)
 			end
 			return entries
 		end
-		local target = util.svn_target(relative)
+		-- Keep local paths local even when their spelling starts with ^/.
+		local operand = relative == "." and relative or ("./" .. relative)
+		local target = util.svn_target(operand)
 		local function untracked(raw, selected_path)
 			if not opts.include_untracked then
 				return finish()
@@ -338,7 +340,7 @@ function M.collect(repo, path, opts, callback)
 		local function diff(raw)
 			-- Keep this no-revision working-copy path literal. Adding status's empty
 			-- peg suffix changes the filename in this diff form.
-			command({ "svn", "diff", "--internal-diff", "--", relative }, function(text, truncated)
+			command({ "svn", "diff", "--internal-diff", "--", operand }, function(text, truncated)
 				local function publish()
 					if not append(text, truncated) then
 						return finish()
@@ -369,12 +371,13 @@ function M.collect(repo, path, opts, callback)
 				}
 				local paths, bytes = {}, 0
 				while ancestor and #paths < 64 do
-					if #paths > 0 and bytes + #ancestor + 1 > 32768 then
+					local candidate = util.svn_target(ancestor == "." and ancestor or ("./" .. ancestor))
+					if #paths > 0 and bytes + #candidate > 32768 then
 						break
 					end
 					paths[#paths + 1] = ancestor
-					args[#args + 1] = util.svn_target(ancestor)
-					bytes = bytes + #ancestor + 1
+					args[#args + 1] = candidate
+					bytes = bytes + #candidate
 					ancestor = ancestor ~= "." and vim.fs.dirname(ancestor) or nil
 				end
 				command(args, function(status)

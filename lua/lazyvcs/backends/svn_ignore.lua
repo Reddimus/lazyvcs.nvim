@@ -215,7 +215,8 @@ function M.load(task, repo, callback, switched)
 					"--show-inherited-props",
 					"svn:global-ignores",
 					"--",
-					util.svn_target(relative),
+					-- SVN still recognizes ^/ URLs after --; qualify this local path.
+					util.svn_target("./" .. relative),
 				}
 				if boundary.recursive then
 					table.insert(args, 5, "-R")
