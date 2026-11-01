@@ -159,6 +159,38 @@ the GitHub release.
   copy. XML transport has an 8 MiB stdout limit, separate from each decoded
   property map's 1 MiB limit and the rendered patch's 1 MiB limit, including
   headers.
+- `patch.lua` owns repository discovery, raw patch collection, the patch buffer,
+  file and hunk indexing, copy mappings, and refresh positions. Request and view
+  generations reject superseded results and reentrant UI changes. Native
+  text/tick observers and name/option checks retire changed buffers. Adopt only
+  the tick from the owned native write; defer cancellation outside textlock.
+- `backends/patch.lua` collects native Git and SVN output under one cancellable
+  comparison task and a shared content budget. Git untracked entries are checked
+  before each child and again before accepting its output. A request-local
+  ancestor cache excludes nested Git/SVN administration boundaries from Git
+  untracked additions; tracked diff remains native.
+- `backends/patch_svn.lua` adapts the shared `svn_untracked.lua` walker with
+  files-only selection and strict leaf identities. Its regular-file reader
+  validates the descriptor before reading and closes it after pending I/O,
+  including cancellation. The walker's default behavior remains unchanged.
+- `backends/patch_path.lua` shares entry identity and physical-parent checks. A
+  different physical spelling requires matching directory identities at every
+  differing prefix, without traversing links. These checks reject changed
+  results; they do not freeze filesystem changes or sandbox native child reads.
+- `backends/patch_io.lua` uses libuv on POSIX. On Windows,
+  `patch_windows_worker.lua` owns read-only Win32 HANDLEs and exact file IDs in
+  bounded workers. Cancellation waits for pending I/O before closing; shutdown
+  suppresses application callbacks while workers settle.
+- `backends/patch_svn_filenames.lua` rejects ASCII control bytes in unversioned
+  paths and non-ASCII Windows SVN patch paths. Content and property bytes stay
+  raw.
+- `absent_rail.lua` owns window presentation and copied-option cleanup. Compare
+  and live diff decide eligibility and geometry. Publish ownership and the
+  provenance marker before other option writes, then recheck after setters.
+- `diff_work.lua` owns native diff workers. Indices requests default to native
+  diff options. Its `latest()` queue keeps one running worker and one
+  replaceable pending request per owner. Closing or superseding suppresses
+  delivery; running libxdiff work still settles physically.
 - `source_control/jobs.lua` bounds and profiles repository/comparison commands.
 - `backends/svn_summary.lua` recovers SVN's E145001 replacement-summary failure
   by comparing the pinned base with BASE and reconciling changed working paths.
@@ -278,10 +310,8 @@ the GitHub release.
   windows. Folds stay native, with no `zE` and no fold restore. A pane is reset
   only for the buffer Compare set it up for, so a picker preview, also during
   deletion recovery, keeps its state, and closing Compare leaves other windows
-  in its tab alone. Do not try to recognize copies in windows Compare does not
-  open: three designs (window records, then marks in 'winhighlight',
-  'foldnestmax', and 'foldignore') each failed review. That work is planned
-  separately; see the README's known limits.
+  in its tab alone. For windows that Compare does not create, Neovim copies
+  window options normally. See `:help lazyvcs-comparison`.
 - `compare_navigation.lua` owns hunk navigation and per-path review positions.
 - `compare_open.lua` routes file-opening actions without replacing review panes.
 - `compare_buffers.lua` owns snapshot identity, reload guards, and bounded
@@ -382,14 +412,15 @@ the GitHub release.
   mutations retry suspended records without retaining their contents. Hunk
   computation and gutter rendering have separate caches. Sign updates reuse
   marks. Rendering and removal yield to input after at most 500 operations per
-  batch. Large sign comparisons and native previews share a histogram diff
-  worker, which prefers `vim.text.diff` and falls back to `vim.diff` on Neovim
-  0.11. Signs fall back synchronously if neither is available in the worker;
-  large previews report the limitation. Preview cancellation releases command
-  ownership while retaining physical-worker bookkeeping until completion.
-  Results must match the state object, buffer text identity, and base
-  generation. Index and SVN BASE mutation hooks run after preflight at process
-  startup and settlement. Logical cancellation does not release base ownership.
+  batch. Large sign comparisons and native previews share `diff_work.lua`, which
+  prefers `vim.text.diff` and falls back to `vim.diff` on Neovim 0.11. Sign
+  indices use native diff options; unified previews default to histogram. Signs
+  fall back synchronously if neither is available in the worker; large previews
+  report the limitation. Preview cancellation releases command ownership while
+  retaining physical-worker bookkeeping until completion. Results must match the
+  state object, buffer text identity, and base generation. Index and SVN BASE
+  mutation hooks run after preflight at process startup and settlement. Logical
+  cancellation does not release base ownership.
 - New regression cases belong in sibling `tests/spec_*.lua` modules. The main
   spec is near LuaJIT's local-variable limit.
 
@@ -416,16 +447,19 @@ concurrent probes for one directory. Positive resolutions do not expire on
 cursor paths. Explicit refresh forces discovery. BufEnter and BufWritePost
 revalidate asynchronously at most once per directory every five seconds. Failed
 repository reads invalidate ownership and retry once, excluding cancellation,
-timeouts, and output limits. Root command output loses exactly one record
-terminator; supplied root hints retain every pathname byte. SVN ignore patterns
-are compiled once per discovery and matched in O(pattern tokens times filename
-bytes) with bounded row storage. Git retained-file reconciliation batches at
-most 128 paths and 24 KB of argument budget per command, preserving per-path
-clean filters. Wrapped alignment takes O(log hunks + visible units) time and
-O(visible units) space. The scheduler uses a priority heap with O(log queued)
-enqueue/dequeue and a 4096-job limit per queue. Editor commands have separate
-queues with two Git workers and one SVN worker, so background operations cannot
-consume their capacity. Sidebar cancellation leaves editor requests running.
+timeouts, and output limits. Git root output loses exactly one record
+terminator; SVN root discovery decodes UTF-8 info XML at `.` with a 2 MiB limit
+per stream. Supplied root hints retain every pathname byte. SVN ignore queries
+pass peg-protected targets relative to the working copy after `--`. Ignore
+patterns are compiled once per discovery and matched in O(pattern tokens times
+filename bytes) with bounded row storage. Git retained-file reconciliation
+batches at most 128 paths and 24 KB of argument budget per command, preserving
+per-path clean filters. Wrapped alignment takes O(log hunks + visible units)
+time and O(visible units) space. The scheduler uses a priority heap with O(log
+queued) enqueue/dequeue and a 4096-job limit per queue. Editor commands have
+separate queues with two Git workers and one SVN worker, so background
+operations cannot consume their capacity. Sidebar cancellation leaves editor
+requests running.
 
 Use disposable repositories for mutation tests. For live terminal validation,
 exercise keyboard and mouse actions in both vanilla Neovim and AstroNvim; verify

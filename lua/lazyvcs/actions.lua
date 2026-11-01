@@ -105,8 +105,7 @@ local function build_session_async(bufnr, on_done, winid)
 	)
 end
 
--- Return a session or nil, err. Catch failures so autocmds cannot trigger a hit-enter
--- prompt.
+-- Catch failures so autocmds cannot trigger a hit-enter prompt.
 local function open_session(session)
 	local target_win = session.editable_win or vim.api.nvim_get_current_win()
 	local owner = state.for_window(target_win)

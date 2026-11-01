@@ -11,9 +11,10 @@ CONTENTS                                                   *lazyvcs-contents*
 6. Inline signs ........................................ |lazyvcs-inline-signs|
 7. Source control ................................... |lazyvcs-source-control|
 8. Selected-line blame .............................. |lazyvcs-blame-selection|
-9. Configuration ..................................... |lazyvcs-configuration|
-10. Testing ................................................. |lazyvcs-testing|
-11. Notes ..................................................... |lazyvcs-notes|
+9. Patch ................................................... |lazyvcs-patch|
+10. Configuration .................................... |lazyvcs-configuration|
+11. Testing ................................................. |lazyvcs-testing|
+12. Notes ..................................................... |lazyvcs-notes|
 
 ==============================================================================
 INTRODUCTION                                                   *lazyvcs-intro*
@@ -132,15 +133,16 @@ lazyvcs exposes a single command with subcommand completion. Press <Tab> after
 
 :LazyVCS health       Run |:checkhealth| for lazyvcs.
 
-All subcommands work in both Git and SVN working copies; the backend is
-detected from the current file. See |lazyvcs-notes| for the base each backend
-compares against.
+Subcommands support both Git and SVN working copies. Repository selection
+follows each command's path rules above. See |lazyvcs-notes| for the base each
+backend compares against.
 
 Repository filenames and roots are literal: $NAME text does not expand to an
 environment variable when selecting, opening, saving, or reverting a file.
-Lua API path options are literal too. Paths typed as :LazyVCS sidebar arguments
-expand environment variables and ~ before repository discovery. Use $$ for a
-literal dollar. Completion protects every dollar in a literal directory name.
+Lua API path options are literal too. Paths typed as :LazyVCS sidebar or
+:LazyVCS patch arguments expand environment variables and ~ before repository
+discovery. Use $$ for a literal dollar. Completion protects every dollar in
+a literal directory name.
 Expansion runs once: $$ becomes $, $NAME expands from the environment, and
 undefined names stay unchanged. Environment values are never expanded again.
 Backslashes and whitespace keep their existing command argument escaping.
@@ -342,15 +344,11 @@ MAPPINGS                                                     *lazyvcs-mappings*
 
 Suggested global mappings, as in the |lazyvcs-configuration| install spec:
 
-    <leader>vs   toggle source-control sidebar
-    <leader>vo   open live diff
-    <leader>vq   close live diff
-    <leader>vr   revert current hunk
-    <leader>vb   toggle inline blame
-    <leader>vc   open or refresh comparison
-    <leader>vC   choose comparison base
-    ]v           next hunk
-    [v           previous hunk
+    <leader>vs   :LazyVCS
+    <leader>vo   :LazyVCS diff open
+    <leader>vc   :LazyVCS compare
+    <leader>vC   :LazyVCS compare base
+    <leader>vb   :LazyVCS blame toggle
 
 Live diff buffer-local mappings (hunk keys apply in the editable pane):
 
@@ -360,7 +358,8 @@ Live diff buffer-local mappings (hunk keys apply in the editable pane):
     ]v           next hunk
     [v           previous hunk
 
-From the base pane, use :LazyVCS hunk next/prev/revert or global mappings.
+From the base pane, use :LazyVCS hunk next, :LazyVCS hunk prev, or
+:LazyVCS hunk revert.
 
 The left/base pane always maps <leader>q as a close alias, in addition to
 keymaps.close, because that pane is read-only. It is not configurable;
@@ -389,8 +388,8 @@ Splits of the editable window share its diff while the session is active and
 leave diff mode when it closes or moves to another buffer, including a move
 that is abandoned before it completes.
 
-Source-control sidebar mappings. Unlike the live-diff mappings above, these are
-buffer-local and fixed; `config.keymaps` does not reach them.
+Source-control sidebar mappings are buffer-local and fixed;
+`config.keymaps` does not reach them.
 
     q            close the sidebar
     <CR>, l, double-click
@@ -810,23 +809,22 @@ untracked files. Git retains its binary-file diagnostics without binary
 payloads. SVN unversioned text files use added-file sections, including missing
 final-newline markers. Unversioned binary files use SVN's binary diagnostic.
 Binary diagnostics do not contain the bytes needed to apply binary changes.
-Untracked SVN filenames containing ASCII control bytes are refused before file
-contents are read; SVN cannot version these names. File content is unchanged.
+Untracked SVN paths containing ASCII control bytes report an error because SVN
+cannot version those names.
 
-Use a UTF-8 native-client environment to export and apply SVN patches with
-Unicode filenames. Windows SVN export currently requires ASCII repository-
-relative filenames: supported native clients can narrow Unicode
-arguments or decode UTF-8 headers into a different filename. Unsupported names
-report an error without publishing a patch. Unicode content and repository-root
-names remain supported; Git and other platforms retain Unicode filenames.
-There is no locale override or encoding conversion. For Unicode SVN filenames
-on Windows, use an external client verified to round-trip UTF-8 patch names.
+Windows SVN patches currently require ASCII repository-relative filenames.
+Native clients can change Unicode arguments or patch filenames during encoding.
+Unsupported names report an error without publishing a patch; file content is
+unchanged. Git and other platforms retain Unicode filename support. For Unicode
+SVN filenames on Windows, use an external client verified to round-trip them.
 
 The buffer opens in a horizontal split above an eligible editor window. From
 the sidebar, it uses the sidebar's editor window. If only plugin windows exist,
 such as in a Compare tab, it opens in a new tab. Command
 modifiers such as :tab LazyVCS patch, :vertical LazyVCS patch, :botright, and
 :topleft select another layout. A visible patch for the same path is reused.
+Patch stops updating a buffer after external changes to its text, name, or
+protected options.
 The winbar shows loading state, file counts, added and deleted line counts,
 and key hints. No changes produces "No changes under <path>".
 
@@ -842,8 +840,9 @@ Patch buffer mappings:
                their old path if it still exists.
     ]v, [v     Next or previous @@ hunk. Counts work, such as 3]v.
 
-:w /path/to/changes.patch saves the patch bytes. The buffer has LF separators,
-no extra empty last line, and a final newline. VCS content bytes are retained.
+:w /path/to/changes.patch saves the patch bytes. Nonempty patches use LF
+separators and a final newline without an extra empty last line. Empty output
+saves zero bytes. VCS content bytes are retained.
 Commands run asynchronously with cancellation, timeouts, and bounded output.
 Total patch content is limited to 16 MiB. Once exceeded, collection stops and
 appends "# lazyvcs: output truncated at 16 MiB". A truncated patch may end
@@ -886,19 +885,16 @@ Minimal lazy.nvim or AstroNvim spec, matching the README:
 >lua
   {
     "Reddimus/lazyvcs.nvim",
+    version = "^0.13",
     main = "lazyvcs",
-    event = { "BufReadPost", "BufNewFile", "BufReadCmd lazyvcs://compare/*" },
     cmd = "LazyVCS",
+    event = { "BufReadPost", "BufNewFile", "BufReadCmd lazyvcs://compare/*" },
     keys = {
-      { "<leader>vs", "<cmd>LazyVCS<cr>", desc = "Toggle VCS sidebar" },
-      { "<leader>vo", "<cmd>LazyVCS diff open<cr>", desc = "Open VCS diff" },
-      { "<leader>vq", "<cmd>LazyVCS diff close<cr>", desc = "Close VCS diff" },
-      { "<leader>vr", "<cmd>LazyVCS hunk revert<cr>", desc = "Revert VCS hunk" },
-      { "<leader>vb", "<cmd>LazyVCS blame toggle<cr>", desc = "Toggle VCS blame" },
-      { "<leader>vc", "<cmd>LazyVCS compare<cr>", desc = "Compare against base" },
-      { "<leader>vC", "<cmd>LazyVCS compare base<cr>", desc = "Choose comparison base" },
-      { "]v", "<cmd>LazyVCS hunk next<cr>", desc = "Next VCS hunk" },
-      { "[v", "<cmd>LazyVCS hunk prev<cr>", desc = "Previous VCS hunk" },
+      { "<leader>vs", "<cmd>LazyVCS<cr>", desc = "VCS sidebar" },
+      { "<leader>vo", "<cmd>LazyVCS diff open<cr>", desc = "Live diff" },
+      { "<leader>vc", "<cmd>LazyVCS compare<cr>", desc = "Compare branches" },
+      { "<leader>vC", "<cmd>LazyVCS compare base<cr>", desc = "Choose base" },
+      { "<leader>vb", "<cmd>LazyVCS blame toggle<cr>", desc = "Toggle blame" },
     },
     opts = {},
   }
@@ -906,6 +902,9 @@ Minimal lazy.nvim or AstroNvim spec, matching the README:
 
 This install has no required plugin dependencies. LazyVCS detects installed
 integrations and AI CLIs at runtime.
+
+Native package users can follow |packages|, then call require("lazyvcs").setup().
+For an optional package, run :packadd lazyvcs.nvim before setup().
 
 For AstroNvim, wrap the spec in `return { ... }` in `lua/plugins/lazyvcs.lua`.
 Keep the `BufReadPost` and `BufNewFile` events so SVN signs attach when files

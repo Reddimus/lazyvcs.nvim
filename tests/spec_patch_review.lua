@@ -232,12 +232,28 @@ return function(ctx)
 		end, 1)
 		assert(third.cancelled and not vim.api.nvim_buf_is_valid(buf))
 	end)
-	case("changelog_unreleased_added", function()
+	case("changelog_added_release", function()
 		local text = read(root .. "/CHANGELOG.md")
-		local added = assert(text:match("## %[Unreleased%](.-)\n## %[%d")):match("### Added(.*)")
-		assert(added and added:find(":LazyVCS patch [path]", 1, true), "patch missing from Unreleased / Added")
-		local released = assert(text:match("## %[0%.12%.0%](.-)\n## %["))
-		assert(not released:find(":LazyVCS patch", 1, true), "patch changed released history")
+		local version, category, added, historical = nil, nil, false, false
+		for line in vim.gsplit(text, "\n", { plain = true }) do
+			local heading = line:match("^## %[(.-)%]")
+			if heading then
+				version, category = heading, nil
+				historical = historical or version == "0.12.0"
+			end
+			if version == "0.12.0" then
+				assert(not line:find(":LazyVCS patch", 1, true), "patch changed released history")
+			end
+			if not heading then
+				if line:match("^### ") then
+					category = line:match("^### (.-)%s*$")
+				elseif (version == "Unreleased" or version == "0.13.0") and category == "Added" then
+					added = added or line:find(":LazyVCS patch [path]", 1, true) ~= nil
+				end
+			end
+		end
+		assert(historical, "0.12.0 history section missing")
+		assert(added, "patch missing from Unreleased / Added or 0.13.0 / Added")
 	end)
 	return cases
 end

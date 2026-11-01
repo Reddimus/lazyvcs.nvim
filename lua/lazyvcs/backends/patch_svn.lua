@@ -62,8 +62,8 @@ function M.read(task, file, limit, guard, done, expected)
 				end
 				local chunks, size = {}, 0
 				local function close(err, binary)
-					-- Only the current I/O callback closes its descriptor. Cancellation must
-					-- not close it while libuv still owns an in-flight operation.
+					-- Close only from the current I/O callback.
+					-- Cancellation waits for pending I/O.
 					fs.fs_close(fd, function(close_err)
 						vim.schedule(guard(function()
 							if err or close_err then

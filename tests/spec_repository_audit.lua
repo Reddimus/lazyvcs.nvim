@@ -64,20 +64,52 @@ return function()
 			"test_core_readme_and_help_install_specs_match",
 			function()
 				local readme, doc = read("README.md"), read("doc/lazyvcs.txt")
-				local _, intro = readme:find("With lazy.nvim:\n\n```lua\n", 1, true)
-				assert(intro, "README install spec not found")
-				local readme_spec = readme:sub(intro + 1, assert(readme:find("\n```", intro, true)))
+				local _, intro = readme:find("\n## Install[ \t]*\n")
+				assert(intro, "README Install section not found")
+				local finish = readme:find("\n## ", intro + 1, true) or (#readme + 1)
+				local install = readme:sub(intro + 1, finish - 1)
+				local readme_spec = assert(
+					("\n" .. install):match("\n```lua[ \t]*\n(.-)\n```[ \t]*\n"),
+					"README Install Lua fence not found"
+				)
 				local _, start = doc:find("Minimal lazy.nvim or AstroNvim spec", 1, true)
 				assert(start, "help install spec not found")
 				local _, open = assert(doc:find("\n>lua\n", start, true))
 				local doc_spec = doc:sub(open + 1, assert(doc:find("\n<\n", open, true)))
 				local function evaluate(text, name)
-					return assert(load("return " .. text, "=" .. name))()
+					local chunk = load(text, "=" .. name) or assert(load("return " .. text, "=" .. name))
+					local value = chunk()
+					if type(value) == "table" and vim.islist(value) and #value == 1 and type(value[1]) == "table" then
+						value = value[1]
+					end
+					assert(
+						type(value) == "table" and value[1] == "Reddimus/lazyvcs.nvim",
+						name .. " must contain the LazyVCS plugin spec"
+					)
+					return value
 				end
+				local installed = evaluate(readme_spec, "README")
 				assert(
-					vim.deep_equal(evaluate(readme_spec, "README"), evaluate(doc_spec, "lazyvcs.txt")),
+					vim.deep_equal(installed, evaluate(doc_spec, "lazyvcs.txt")),
 					"README.md and doc/lazyvcs.txt install specs differ"
 				)
+				local _, mappings = assert(doc:find("*lazyvcs-mappings*", 1, true))
+				local documented = {}
+				for line in vim.gsplit(doc:sub(mappings + 1), "\n", { plain = true }) do
+					local key, command = line:match("^    (%S+)%s+(.+)")
+					if key then
+						documented[#documented + 1] = { key, (command:gsub("%s+$", "")) }
+					elseif #documented > 0 then
+						break
+					end
+				end
+				local expected = {}
+				for _, mapping in ipairs(installed.keys) do
+					local command =
+						assert(mapping[2]:match("^<[cC][mM][dD]>(.-)<[cC][rR]>$"), "install key must invoke a command")
+					expected[#expected + 1] = { mapping[1], ":" .. command }
+				end
+				assert(vim.deep_equal(documented, expected), "documented global mappings differ from install spec.keys")
 			end,
 		},
 		{
