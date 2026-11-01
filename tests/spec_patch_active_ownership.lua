@@ -286,7 +286,14 @@ return function(ctx)
 				nested = true,
 				callback = function()
 					local buf = api.nvim_get_current_buf()
-					if f.claim_fired == 0 and api.nvim_buf_get_name(buf):match("^lazyvcs://patch/") then
+					local name = api.nvim_buf_get_name(buf)
+					if
+						f.claim_fired == 0
+						and (
+							name:match("^lazyvcs://patch/")
+							or (event == "OptionSet" and name == "" and vim.bo[buf].buftype == "nofile")
+						)
+					then
 						f.claim_fired = f.claim_fired + 1
 						vim.bo[buf].buftype = ""
 						vim.bo[buf].modifiable = true
