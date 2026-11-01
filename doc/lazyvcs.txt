@@ -888,19 +888,16 @@ Minimal lazy.nvim or AstroNvim spec, matching the README:
 >lua
   {
     "Reddimus/lazyvcs.nvim",
+    version = "^0.13",
     main = "lazyvcs",
-    event = { "BufReadPost", "BufNewFile", "BufReadCmd lazyvcs://compare/*" },
     cmd = "LazyVCS",
+    event = { "BufReadPost", "BufNewFile", "BufReadCmd lazyvcs://compare/*" },
     keys = {
-      { "<leader>vs", "<cmd>LazyVCS<cr>", desc = "Toggle VCS sidebar" },
-      { "<leader>vo", "<cmd>LazyVCS diff open<cr>", desc = "Open VCS diff" },
-      { "<leader>vq", "<cmd>LazyVCS diff close<cr>", desc = "Close VCS diff" },
-      { "<leader>vr", "<cmd>LazyVCS hunk revert<cr>", desc = "Revert VCS hunk" },
-      { "<leader>vb", "<cmd>LazyVCS blame toggle<cr>", desc = "Toggle VCS blame" },
-      { "<leader>vc", "<cmd>LazyVCS compare<cr>", desc = "Compare against base" },
-      { "<leader>vC", "<cmd>LazyVCS compare base<cr>", desc = "Choose comparison base" },
-      { "]v", "<cmd>LazyVCS hunk next<cr>", desc = "Next VCS hunk" },
-      { "[v", "<cmd>LazyVCS hunk prev<cr>", desc = "Previous VCS hunk" },
+      { "<leader>vs", "<cmd>LazyVCS<cr>", desc = "VCS sidebar" },
+      { "<leader>vo", "<cmd>LazyVCS diff open<cr>", desc = "Live diff" },
+      { "<leader>vc", "<cmd>LazyVCS compare<cr>", desc = "Compare branches" },
+      { "<leader>vC", "<cmd>LazyVCS compare base<cr>", desc = "Choose base" },
+      { "<leader>vb", "<cmd>LazyVCS blame toggle<cr>", desc = "Toggle blame" },
     },
     opts = {},
   }

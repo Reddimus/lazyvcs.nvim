@@ -55,6 +55,7 @@ Start Neovim in your project's working directory and open a file:
 Press `<Tab>` after `:LazyVCS ` for completion and `?` in the sidebar for keys.
 The sidebar uses `c` to commit, `b` to switch branches or SVN targets, `C` to
 compare the selected repository, `R` to refresh, and `.` for repository actions.
+After a failed action, press `.` and choose **Show Last Error**.
 
 ## Review and edit
 
