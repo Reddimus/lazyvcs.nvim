@@ -1,6 +1,6 @@
 return function(ctx)
 	local h, uv, util = ctx.helpers, vim.uv, require("lazyvcs.util")
-	local fs, identity = require("lazyvcs.backends.patch_io"), require("lazyvcs.backends.patch_path")
+	local fs, identity = require("lazyvcs.file_io"), require("lazyvcs.backends.patch_path")
 	local cases, links = {}, {}
 	local function metadata(path)
 		local value, failure, done

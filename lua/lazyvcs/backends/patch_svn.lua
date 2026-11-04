@@ -3,7 +3,7 @@ local uv = vim.uv
 local util = require("lazyvcs.util")
 local paths = require("lazyvcs.backends.patch_path")
 local filenames = require("lazyvcs.backends.patch_svn_filenames")
-local fs = require("lazyvcs.backends.patch_io")
+local fs = require("lazyvcs.file_io")
 local M = {}
 
 function M.section(rel, text)

@@ -1,5 +1,6 @@
 local util = require("lazyvcs.util")
 local runtime = require("lazyvcs.process_runtime")
+local fs = require("lazyvcs.file_io")
 
 local M = {}
 
@@ -11,8 +12,9 @@ function M.new()
 		abandoned = true
 		for _, paths in ipairs({ owned, releasing }) do
 			for path, identity in pairs(paths) do
-				local stat = vim.uv.fs_lstat(path)
-				if stat and stat.type == identity.type and stat.dev == identity.dev and stat.ino == identity.ino then
+				---@type table?
+				local stat = fs.fs_lstat(path)
+				if fs.same(stat, identity) then
 					pcall(vim.uv.fs_unlink, path)
 				end
 			end
@@ -30,7 +32,8 @@ function M.new()
 			local path = opts and opts[key]
 			if type(path) == "string" and names[path] and not owned[path] then
 				-- Capture identity before the leaf can return or another request can replace it.
-				local stat = vim.uv.fs_lstat(path)
+				---@type table?
+				local stat = fs.fs_lstat(path)
 				if stat and stat.type == "file" then
 					owned[path] = stat
 				end
@@ -53,6 +56,13 @@ function M.new()
 		return path
 	end
 	function registry:release(done)
+		if runtime.is_shutting_down() then
+			self:abandon()
+			if done then
+				done()
+			end
+			return
+		end
 		local paths = owned
 		names, owned = {}, {}
 		runtime.track(self)
@@ -74,7 +84,7 @@ function M.new()
 		for path, identity in pairs(paths) do
 			releasing[path] = identity
 			pending = pending + 1
-			vim.uv.fs_lstat(
+			fs.fs_lstat(
 				path,
 				util.safe_callback(function(err, stat)
 					if abandoned then
@@ -82,7 +92,7 @@ function M.new()
 					elseif err then
 						releasing[path] = nil
 						complete(err)
-					elseif stat.type == identity.type and stat.dev == identity.dev and stat.ino == identity.ino then
+					elseif fs.same(stat, identity) then
 						vim.uv.fs_unlink(
 							path,
 							util.safe_callback(function(unlink_err)

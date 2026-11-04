@@ -90,7 +90,11 @@ test("rejects symbolic links to targets outside the repository", (t) => {
 	t.after(() => rmSync(outside, { recursive: true, force: true }));
 	writeFileSync(join(outside, "present.md"), "outside");
 	const result = check(t, "[linked](linked/present.md)", [], (root) =>
-		symlinkSync(outside, join(root, "linked"), "dir"),
+		symlinkSync(
+			outside,
+			join(root, "linked"),
+			process.platform === "win32" ? "junction" : "dir",
+		),
 	);
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /outside the repository/);

@@ -1,4 +1,5 @@
--- Executed only in a libuv worker. HANDLE bytes stay opaque outside this module;
+-- Runs in filesystem workers or synchronously for request-file ownership.
+-- HANDLE bytes stay opaque outside this module;
 -- no CRT descriptor table or libuv path-stat device number participates.
 return function(operation, packed)
 	local outer_ok, outer_result = pcall(function()
@@ -41,7 +42,7 @@ return function(operation, packed)
 		local function info()
 			local basic, id = ffi.new("lazyvcs_patch_info[1]"), ffi.new("lazyvcs_patch_id[1]")
 			if kernel.GetFileType(handle) ~= 1 then
-				error("Patch requires a disk file or directory", 0)
+				error("File I/O requires a disk file or directory", 0)
 			end
 			if kernel.GetFileInformationByHandle(handle, basic) == 0 then
 				failure("GetFileInformationByHandle")
@@ -76,7 +77,7 @@ return function(operation, packed)
 		end
 		local function open(path, access)
 			if type(path) ~= "string" or path:find("\0", 1, true) then
-				error("Invalid Patch path", 0)
+				error("Invalid file path", 0)
 			end
 			path = path:gsub("/", "\\")
 			if path:sub(1, 4) ~= "\\\\?\\" then
@@ -85,12 +86,12 @@ return function(operation, packed)
 				elseif path:match("^%a:\\") then
 					path = "\\\\?\\" .. path
 				else
-					error("Patch requires an absolute Windows path", 0)
+					error("File I/O requires an absolute Windows path", 0)
 				end
 			end
 			local count = kernel.MultiByteToWideChar(65001, 8, path, #path, nil, 0)
 			if count == 0 or count >= 32767 then
-				error("Cannot encode Windows Patch path", 0)
+				error("Cannot encode Windows file path", 0)
 			end
 			local wide = ffi.new("uint16_t[?]", count + 1)
 			if kernel.MultiByteToWideChar(65001, 8, path, #path, wide, count) ~= count then
@@ -115,7 +116,7 @@ return function(operation, packed)
 				return ffi.string(pointer, ffi.sizeof(pointer))
 			end
 			if type(args.token) ~= "string" or #args.token ~= ffi.sizeof("void *") then
-				error("Invalid owned Patch HANDLE", 0)
+				error("Invalid owned file HANDLE", 0)
 			end
 			local pointer = ffi.new("void *[1]")
 			ffi.copy(pointer, args.token, #args.token)
@@ -140,11 +141,11 @@ return function(operation, packed)
 				end
 				return true
 			end
-			error("Invalid Patch I/O operation", 0)
+			error("Invalid File I/O operation", 0)
 		end)
 		if handle ~= nil and not retained then
 			if kernel.CloseHandle(handle) == 0 and ok then
-				ok, result = false, "Could not close Patch metadata HANDLE"
+				ok, result = false, "Could not close File metadata HANDLE"
 			end
 		end
 		return vim.mpack.encode({ ok = ok, value = result })

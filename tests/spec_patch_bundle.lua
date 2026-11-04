@@ -1,7 +1,7 @@
 -- Intentional Patch-provider fault injection is restored after each case.
 ---@diagnostic disable: duplicate-set-field
 return function(ctx)
-	local fs = require("lazyvcs.backends.patch_io")
+	local fs = require("lazyvcs.file_io")
 	local h, uv, api = ctx.helpers, vim.uv, vim.api
 	local patch, reader, util = require("lazyvcs.patch"), require("lazyvcs.backends.patch_svn"), require("lazyvcs.util")
 	local function write(path, bytes)

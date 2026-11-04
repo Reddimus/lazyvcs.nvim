@@ -1,5 +1,5 @@
 return function(ctx)
-	local fs = require("lazyvcs.backends.patch_io")
+	local fs = require("lazyvcs.file_io")
 	local paths = require("lazyvcs.backends.patch_path")
 	local cases = {}
 	local function wait(fn)
@@ -99,7 +99,7 @@ return function(ctx)
 							[[
 vim.opt.runtimepath:prepend(%q)
 require("lazyvcs.util")
-local fs = require("lazyvcs.backends.patch_io")
+local fs = require("lazyvcs.file_io")
 local handle, failure
 fs.fs_open(%q, 0, 0, function(err, value) failure, handle = err, value end)
 assert(vim.wait(10000, function() return handle ~= nil or failure ~= nil end, 10))
@@ -138,6 +138,7 @@ io.stdout:write("NATIVE_PATCH_SHUTDOWN_OK\n")
 				end
 				local function read_once()
 					local initial = call(fs.fs_lstat, path)
+					assert(fs.same(initial, fs.fs_lstat(path)), "sync and async metadata used different identities")
 					assert(paths.identified(initial) and initial.identity == "windows-file-id-128")
 					local handle = call(fs.fs_open, path, 0, 0)
 					local ok, err = xpcall(function()

@@ -12,6 +12,8 @@ and this project adheres to
 
 ### Fixed
 
+- Preserve replaced request files on Windows by comparing exact file IDs.
+
 - Refresh comparison counts and recreated-file state after saves and reloads.
 - Preserve hidden repository selections and locks held by another view.
 - Skip stale queued work when cancellation starts a newer request.

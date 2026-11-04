@@ -1,6 +1,6 @@
 return function(ctx)
 	local uv, h = vim.uv, ctx.helpers
-	local fs = require("lazyvcs.backends.patch_io")
+	local fs = require("lazyvcs.file_io")
 	local paths = require("lazyvcs.backends.patch_path")
 	local parent = require("lazyvcs.backends.patch_path").parent
 	local Task = require("lazyvcs.backends.task")

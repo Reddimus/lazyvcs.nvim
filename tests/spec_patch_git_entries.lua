@@ -1,5 +1,5 @@
 return function(ctx)
-	local fs, identity = require("lazyvcs.backends.patch_io"), require("lazyvcs.backends.patch_path")
+	local fs, identity = require("lazyvcs.file_io"), require("lazyvcs.backends.patch_path")
 	local function metadata(path)
 		local value, failure, done
 		fs.fs_lstat(path, function(err, entry)
