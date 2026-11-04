@@ -501,3 +501,17 @@ headless suite.
 Repository probes run outside read queues to avoid worker deadlocks. At equal
 Git and SVN roots, Git wins. SVN blame caches network results by URL, revision
 and pristine checksum, then maps local edits without repeating that read.
+
+## Review fallback
+
+Greptile reviews ready PRs and new pushes first. When its App posts a credit
+refusal, the Review fallback workflow requests CodeRabbit using
+`review:greptile-quota-fallback`. CodeRabbit does not automatically review
+subsequent pushes; each needs another Greptile credit refusal.
+
+The label means a review was requested, not completed. Check feedback against
+the latest commit before merging. If CodeRabbit is rate-limited, rerun Review
+fallback from Actions with the PR number after its allowance refills. No paid
+review overages are enabled by this workflow.
+
+Test the helper with `node --test .github/scripts/review-fallback.test.cjs`.
