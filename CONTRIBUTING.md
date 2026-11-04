@@ -179,10 +179,12 @@ the GitHub release.
   different physical spelling requires matching directory identities at every
   differing prefix, without traversing links. These checks reject changed
   results; they do not freeze filesystem changes or sandbox native child reads.
-- `backends/patch_io.lua` uses libuv on POSIX. On Windows,
-  `patch_windows_worker.lua` owns read-only Win32 HANDLEs and exact file IDs in
-  bounded workers. Cancellation waits for pending I/O before closing; shutdown
-  suppresses application callbacks while workers settle.
+- `file_io.lua` shares exact metadata and reads for patches and request-file
+  cleanup. It uses libuv on POSIX; `windows_file_worker.lua` provides exact file
+  IDs and read-only Win32 HANDLEs on Windows. Reads use bounded workers;
+  cancellation waits for I/O before closing. Shutdown suppresses application
+  callbacks while workers settle. Request-file adoption and final cleanup use
+  synchronous identity checks.
 - `backends/patch_svn_filenames.lua` rejects ASCII control bytes in unversioned
   paths and non-ASCII Windows SVN patch paths. Content and property bytes stay
   raw.
