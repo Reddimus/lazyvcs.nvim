@@ -22,7 +22,7 @@ resolve_nvim_artifact() {
 }
 
 install_nvim() {
-	resolve_nvim_artifact || return
+	resolve_nvim_artifact "$(uname -m)" || return
 	local base="https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}"
 	local archive=/tmp/nvim.tar.gz
 	curl --fail --location --retry 5 --retry-all-errors --silent --show-error \
