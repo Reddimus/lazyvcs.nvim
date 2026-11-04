@@ -82,7 +82,8 @@ function M.read_file_async(task, path, limit, done)
 			end)
 		end)
 	end
-	uv.fs_open(path, "r", 0, function(err, opened)
+	local flags = vim.fn.has("win32") == 1 and "r" or uv.constants.O_RDONLY + uv.constants.O_NONBLOCK
+	uv.fs_open(path, flags, 0, function(err, opened)
 		fd = opened
 		vim.schedule(function()
 			if not task:is_active() or not fd then

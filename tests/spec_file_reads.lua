@@ -115,5 +115,27 @@ return function(ctx)
 		end)
 		assert(not out.done)
 	end)
+	case("rejects_fifos_without_waiting_for_a_writer", function()
+		if vim.fn.has("win32") == 1 then
+			error({ lazyvcs_skip = "POSIX FIFO" }, 0)
+		end
+		local path = ctx.helpers.tempdir() .. "/pipe"
+		ctx.helpers.exec({ "mkfifo", path })
+		local out = load(path, 64)
+		local settled = vim.wait(5000, function()
+			return out.done
+		end, 10)
+		-- Release an old blocking reader before asserting, so failures cannot hang shutdown.
+		local writer = uv.fs_open(path, uv.constants.O_WRONLY + uv.constants.O_NONBLOCK, 0)
+		if writer then
+			uv.fs_close(writer)
+		end
+		wait(function()
+			return out.done
+		end)
+		assert(settled, "asynchronous open waited for a FIFO writer")
+		assert(not out.bytes and out.err:find("regular file", 1, true), out.err)
+	end)
+
 	return cases
 end

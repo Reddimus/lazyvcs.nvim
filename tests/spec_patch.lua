@@ -294,7 +294,7 @@ return function(ctx)
 		contains(vim.wo.winbar, "+1 -1")
 		local row
 		for i, line in ipairs(rows) do
-			if line == "+property value" then
+			if line:gsub("\r$", "") == "+property value" then
 				row = i
 			end
 		end

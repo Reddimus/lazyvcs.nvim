@@ -95,3 +95,9 @@ test("rejects symbolic links to targets outside the repository", (t) => {
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /outside the repository/);
 });
+
+test("checks Windows drive-qualified paths instead of skipping them as schemes", (t) => {
+	const result = check(t, "[drive](Z:/unavailable.md)");
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /Z:\/unavailable.md/);
+});

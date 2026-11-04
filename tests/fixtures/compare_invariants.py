@@ -42,9 +42,10 @@ class Inject(ast.NodeTransformer):
 
 
 tree = ast.fix_missing_locations(Inject().visit(ast.parse(source.read_text())))
+sys.path.insert(0, str(source.parent))
 sys.argv = [str(source), str(scratch / "artifacts")]
 try:
-    exec(compile(tree, str(source), "exec"), {"__name__": "__main__"})
+    exec(compile(tree, str(source), "exec"), {"__name__": "__main__", "__file__": str(source)})
 except AssertionError as error:
     if mode == "normal" or "invariant" not in str(error):
         raise

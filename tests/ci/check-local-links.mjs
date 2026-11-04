@@ -45,7 +45,8 @@ for (const file of markdownFiles) {
 		if (
 			destination.startsWith("#") ||
 			destination.startsWith("//") ||
-			/^[a-z][a-z0-9+.-]*:/i.test(destination)
+			(/^[a-z][a-z0-9+.-]*:/i.test(destination) &&
+				!/^[a-z]:[\\/]/i.test(destination))
 		) {
 			continue;
 		}
