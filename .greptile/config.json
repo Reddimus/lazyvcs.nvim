@@ -7,7 +7,10 @@
   "ignorePatterns": "package-lock.json",
   "statusCheck": true,
   "shouldUpdateDescription": false,
-  "hideFooter": true,
-  "autoApprove": { "enabled": false },
-  "instructions": "Follow AGENTS.md and .github/review-policy.md. Reviews are read-only and advisory."
+  "hideFooter": false,
+  "autoApprove": {
+    "enabled": false
+  },
+  "instructions": "Follow AGENTS.md and .github/review-policy.md. Reviews are read-only and advisory.",
+  "statusCommentsEnabled": true
 }

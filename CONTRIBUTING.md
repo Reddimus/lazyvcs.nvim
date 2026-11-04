@@ -107,9 +107,10 @@ A green run on an svn-less machine therefore covers less than CI does.
 
 Greptile reviews each pull request when it opens and after each push, following
 [the review policy](.github/review-policy.md) and
-[its settings](.greptile/config.json). Greptile and the Claude review workflow
-are advisory; required CI and CodeQL gate merges. Resolve every review thread
-before merging.
+[its settings](.greptile/config.json). Reviews are advisory; required CI and
+CodeQL gate merges. Resolve every review thread before merging. The legacy
+Claude workflow runs only when `CLAUDE_REVIEW_ENABLED` is explicitly set to
+`true`; leave it disabled when using the primary and backup reviewers.
 
 ## Commands
 
@@ -501,3 +502,30 @@ headless suite.
 Repository probes run outside read queues to avoid worker deadlocks. At equal
 Git and SVN roots, Git wins. SVN blame caches network results by URL, revision
 and pristine checksum, then maps local edits without repeating that read.
+
+## Review fallback
+
+Greptile reviews ready PRs and new pushes first. Only its authenticated App's
+credit-refusal message on a default-branch PR enables CodeRabbit through the
+Review fallback workflow and `review:greptile-quota-fallback` label.
+CodeRabbit's open and push reviews are disabled; each backup request needs a
+Greptile credit refusal.
+
+A refusal reports exhausted organization credits, without a commit SHA. The
+workflow observes the current head; CodeRabbit may see a newer one. A completed
+Greptile review of the current head suppresses fallback and removes the opt-in
+label. Timeouts, generic failures, and an in-progress summary never enable it.
+
+The workflow records a reservation before adding the label to suppress duplicate
+automatic requests. Deduplication relies on GitHub comment-list visibility. If
+delivery fails or CodeRabbit is rate-limited, inspect the latest feedback, then
+retry Review fallback from Actions with the PR number. Historical retries stop
+after newer completed Greptile activity. The label means requested, not
+completed: verify the reviewed commit before merging. Maintainers can still
+request either reviewer manually. No paid review overages are enabled by this
+workflow.
+
+Test the helper with `node --test .github/scripts/review-fallback.test.cjs`.
+
+Greptile status comments must stay enabled: the fallback listens for its credit
+refusal. This repository enables them through `statusCommentsEnabled`.
