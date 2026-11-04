@@ -254,10 +254,10 @@ local function index_text(text, default_root, saved, schedule, done)
 			elseif file and not hunk and (line:match("^rename to ") or line:match("^copy to ")) then
 				local name = line:match("^rename to (.*)$") or line:match("^copy to (.*)$")
 				file.path = name:sub(1, 1) == '"' and git_path(name:gsub('^"', '"b/')) or name
-			elseif file and not hunk and line:match("^%-%-%- ") then
+			elseif file and not hunk and not file.properties and line:match("^%-%-%- ") then
 				file.old = file.svn and file.path or git_path(line:sub(5))
 				index.deleted = index.deleted - 1
-			elseif file and not hunk and line:match("^%+%+%+ ") then
+			elseif file and not hunk and not file.properties and line:match("^%+%+%+ ") then
 				file.path = file.svn and file.path or git_path(line:sub(5))
 				index.added = index.added - 1
 			elseif file and file.svn and line:match("^Property changes on: ") then

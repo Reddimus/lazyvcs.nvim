@@ -304,6 +304,41 @@ return function(ctx)
 		assert(vim.api.nvim_buf_get_name(0) == f.file)
 		assert(vim.api.nvim_win_get_cursor(0)[1] == 1, "property row inherited a text hunk position")
 	end)
+	case("svn_property_header_values_do_not_change_text_counts", function()
+		local f = h.make_svn_fixture()
+		h.exec({ "svn", "revert", f.file }, f.root)
+		local value_file = h.tempdir() .. "/property-value"
+		write(value_file, "-- old property\n")
+		h.exec({ "svn", "propset", "test:note", "-F", value_file, f.file }, f.root)
+		h.exec({ "svn", "commit", "-m", "property baseline", f.file }, f.root)
+		write(value_file, "++ new property\n")
+		h.exec({ "svn", "propset", "test:note", "-F", value_file, f.file }, f.root)
+		write(f.file, "one\nchanged\nthree\n")
+		local _, rows = ui(f.root)
+		contains(vim.wo.winbar, "+1 -1")
+		local old_row, new_row
+		for i, line in ipairs(rows) do
+			line = line:gsub("\r$", "")
+			if line == "--- old property" then
+				old_row = i
+			end
+			if line == "+++ new property" then
+				new_row = i
+			end
+		end
+		assert(old_row and new_row, "header-like property values missing")
+		for _, row in ipairs({ old_row, new_row }) do
+			ui(f.root)
+			vim.api.nvim_win_set_cursor(0, { row, 0 })
+			keys("<CR>")
+			assert(vim.api.nvim_buf_get_name(0) == f.file)
+			assert(vim.api.nvim_win_get_cursor(0)[1] == 1, "property value became a text header")
+		end
+		write(f.file, "one\ntwo\nthree\n")
+		ui(f.root)
+		contains(vim.wo.winbar, "+0 -0")
+	end)
+
 	case("hunk_navigation_counts", function()
 		local f = fixture()
 		local base = {}
