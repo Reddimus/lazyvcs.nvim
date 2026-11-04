@@ -79,6 +79,60 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_source_control_copilotchat_files_abandon_settles_pending_release_once",
+			function()
+				local fs = require("lazyvcs.file_io")
+				local runtime = require("lazyvcs.process_runtime")
+				for _, replace in ipairs({ false, true }) do
+					local path = h.tempdir() .. "/request"
+					h.write_file(path, "owned")
+					local files = require("lazyvcs.source_control.copilotchat_files").new()
+					files:record(path)
+					files:adopt({ body = path })
+					local lstat, untrack = fs.fs_lstat, runtime.untrack
+					local queued, original, done_count, untracked = nil, nil, 0, 0
+					---@diagnostic disable-next-line: duplicate-set-field
+					fs.fs_lstat = function(target, callback)
+						if target == path and callback then
+							queued, original = callback, lstat(target)
+							return
+						end
+						return lstat(target, callback)
+					end
+					---@diagnostic disable-next-line: duplicate-set-field
+					runtime.untrack = function(handle)
+						if handle == files then
+							untracked = untracked + 1
+						end
+						return untrack(handle)
+					end
+					local ok, err = xpcall(function()
+						files:release(function()
+							done_count = done_count + 1
+							assert((vim.uv.fs_lstat(path) ~= nil) == replace, "settled before cleanup")
+						end)
+						assert(queued and done_count == 0)
+						if replace then
+							assert(vim.uv.fs_rename(path, path .. "-old"))
+							h.write_file(path, "replacement")
+						end
+						files:abandon()
+						assert(done_count == 1 and untracked == 1, "abandoned release never settled")
+						files:abandon()
+						queued(nil, original)
+						vim.wait(30)
+						assert(done_count == 1 and untracked == 1, "late callback settled twice")
+						if replace then
+							assert(vim.fn.readfile(path)[1] == "replacement")
+						end
+					end, debug.traceback)
+					fs.fs_lstat, runtime.untrack = lstat, untrack
+					untrack(files)
+					assert(ok, err)
+				end
+			end,
+		},
+		{
 			"test_source_control_copilotchat_files_shutdown_exact_identity",
 			function()
 				exact_identity_cleanup("shutdown")

@@ -7,6 +7,7 @@ local M = {}
 function M.new()
 	local names, owned, releasing = {}, {}, {}
 	local abandoned = false
+	local finish_release
 	local registry = { shutdown = function() end, force = function() end, close_timers = function() end }
 	function registry:abandon()
 		abandoned = true
@@ -20,6 +21,10 @@ function M.new()
 			end
 		end
 		names, owned, releasing = {}, {}, {}
+		-- Shutdown can drop pending metadata callbacks.
+		if finish_release then
+			finish_release()
+		end
 	end
 	function registry:record(path)
 		if type(path) == "string" then
@@ -56,11 +61,21 @@ function M.new()
 		return path
 	end
 	function registry:release(done)
-		if runtime.is_shutting_down() then
-			self:abandon()
+		local settled = false
+		local function finish()
+			if settled then
+				return
+			end
+			settled = true
+			finish_release = nil
+			runtime.untrack(self)
 			if done then
 				done()
 			end
+		end
+		finish_release = finish
+		if runtime.is_shutting_down() then
+			self:abandon()
 			return
 		end
 		local paths = owned
@@ -68,6 +83,9 @@ function M.new()
 		runtime.track(self)
 		local pending = 1
 		local function complete(err)
+			if settled then
+				return
+			end
 			if err and not tostring(err):match("^ENOENT:") then
 				util.safe_callback(function()
 					error("CopilotChat request file cleanup failed: " .. (tostring(err):gsub("[\r\n]+", " ")), 0)
@@ -75,10 +93,7 @@ function M.new()
 			end
 			pending = pending - 1
 			if pending == 0 then
-				runtime.untrack(self)
-				if done then
-					done()
-				end
+				finish()
 			end
 		end
 		for path, identity in pairs(paths) do
