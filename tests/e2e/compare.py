@@ -8,6 +8,8 @@ import time
 
 import pexpect
 
+from lua_literal import quote
+
 
 artifacts = pathlib.Path(sys.argv[1]).resolve()
 artifacts.mkdir(parents=True, exist_ok=True)
@@ -64,7 +66,7 @@ def snapshot():
         "picker=package.loaded['snacks']~=nil,"
         "readonly=not vim.bo[s.left].modifiable,editable=vim.bo[s.right].modifiable,"
         "real=vim.bo[s.right].buftype=='',snapshot_mode=not s.editable})},"
-        + json.dumps(str(path)) + ")"
+        + quote(path) + ")"
     )
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
@@ -87,7 +89,7 @@ def check_invariants(vcs):
         "lua local ok,value=pcall(function() "
         "return {listed=fixture.listed==#vim.fn.getbufinfo({buflisted=1}),"
         "diff=fixture.before==require('helpers').exec({" + json.dumps(vcs) + ",'diff'},fixture.root)} end); "
-        "vim.fn.writefile({vim.json.encode({ok=ok,value=value})}," + json.dumps(str(path)) + ")"
+        "vim.fn.writefile({vim.json.encode({ok=ok,value=value})}," + quote(path) + ")"
     )
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
@@ -116,7 +118,7 @@ def expect_focus(kind, line=None):
 def assert_editor(name, line):
     path = artifacts / "editor-state.json"
     path.unlink(missing_ok=True)
-    ex("lua vim.fn.writefile({vim.json.encode({name=vim.api.nvim_buf_get_name(0),line=vim.api.nvim_win_get_cursor(0)[1],editable=vim.bo.modifiable and vim.bo.buftype==''})}," + json.dumps(str(path)) + ")")
+    ex("lua vim.fn.writefile({vim.json.encode({name=vim.api.nvim_buf_get_name(0),line=vim.api.nvim_win_get_cursor(0)[1],editable=vim.bo.modifiable and vim.bo.buftype==''})}," + quote(path) + ")")
     pause(0.5)
     state = json.loads(path.read_text())
     assert state["name"].endswith("/" + name) and state["line"] == line and state["editable"], state

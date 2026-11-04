@@ -1,9 +1,21 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, extname, relative, resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+	dirname,
+	extname,
+	isAbsolute,
+	relative,
+	resolve,
+	sep,
+} from "node:path";
 import process from "node:process";
 import { fromMarkdown } from "mdast-util-from-markdown";
 
 const root = process.cwd();
+const realRoot = realpathSync(root);
+function outside(base, target) {
+	const path = relative(base, target);
+	return isAbsolute(path) || path === ".." || path.startsWith(`..${sep}`);
+}
 const { spawnSync } = await import("node:child_process");
 const result = spawnSync("git", ["ls-files", "-z"], {
 	cwd: root,
@@ -48,9 +60,21 @@ for (const file of markdownFiles) {
 		}
 		if (!decoded) continue;
 		const target = resolve(dirname(absoluteFile), decoded);
+		if (outside(root, target)) {
+			failures.push(
+				`${file}:${line}: local link target outside the repository ${destination}`,
+			);
+			continue;
+		}
 		if (!existsSync(target)) {
 			failures.push(
 				`${file}:${line}: missing local link target ${destination}`,
+			);
+			continue;
+		}
+		if (outside(realRoot, realpathSync(target))) {
+			failures.push(
+				`${file}:${line}: local link target outside the repository ${destination}`,
 			);
 			continue;
 		}

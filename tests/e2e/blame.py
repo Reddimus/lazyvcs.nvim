@@ -8,6 +8,8 @@ import time
 
 import pexpect
 
+from lua_literal import quote
+
 
 artifacts = pathlib.Path(sys.argv[1]).resolve()
 artifacts.mkdir(parents=True, exist_ok=True)
@@ -76,7 +78,7 @@ def snapshot(kind="inline"):
         "split=s and vim.api.nvim_buf_get_lines(s.bufnr,0,-1,false),"
         "selection=r and vim.api.nvim_buf_get_lines(r.buf,0,-1,false),"
         "history=h and vim.api.nvim_win_get_config(h.winid).title} end); "
-        "vim.fn.writefile({vim.json.encode({ok=ok,value=value})}," + json.dumps(str(path)) + ")"
+        "vim.fn.writefile({vim.json.encode({ok=ok,value=value})}," + quote(path) + ")"
     )
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:

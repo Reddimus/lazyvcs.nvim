@@ -28,6 +28,7 @@ lua-language-server --check=. --check_format=pretty --checklevel=Warning
 actionlint                                    # workflow lint
 zizmor --offline --format plain .github       # workflow security audit
 shellcheck -x tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
+python3 -m unittest discover -s tests/e2e -p 'test_*.py'
 for script in tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh; do bash -n "$script" || exit "$?"; done
 
 nvim --headless -u NONE -l tests/native_smoke.lua   # startup smoke

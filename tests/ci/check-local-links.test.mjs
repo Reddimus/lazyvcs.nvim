@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const checker = fileURLToPath(
 	new URL("./check-local-links.mjs", import.meta.url),
 );
-function check(t, markdown, files = []) {
+function check(t, markdown, files = [], setup = () => {}) {
 	const root = mkdtempSync(join(tmpdir(), "lazyvcs-links-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const env = { ...process.env };
@@ -17,6 +17,7 @@ function check(t, markdown, files = []) {
 		if (key.startsWith("GIT_")) delete env[key];
 	writeFileSync(join(root, "README.md"), markdown);
 	for (const file of files) writeFileSync(join(root, file), "");
+	setup(root);
 	for (const args of [
 		["init", "--quiet"],
 		["add", "."],
@@ -67,4 +68,30 @@ test("skips external and protocol-relative URLs", (t) => {
 		"[web](https://example.com/x) [relative](//example.com/x) [mail](mailto:user@example.com)\n",
 	);
 	assert.equal(result.status, 0, result.stderr);
+});
+
+test("rejects existing absolute and parent targets outside the repository", (t) => {
+	const outside = mkdtempSync(join(tmpdir(), "lazyvcs-outside-"));
+	t.after(() => rmSync(outside, { recursive: true, force: true }));
+	const file = join(outside, "present.md");
+	writeFileSync(file, "outside");
+	const result = check(
+		t,
+		`[absolute](<${file.replaceAll("\\", "/")}>) [parent](../${basename(outside)}/present.md)`,
+	);
+	assert.equal(result.status, 1);
+	assert.equal(
+		(result.stderr.match(/outside the repository/g) || []).length,
+		2,
+	);
+});
+test("rejects symbolic links to targets outside the repository", (t) => {
+	const outside = mkdtempSync(join(tmpdir(), "lazyvcs-outside-"));
+	t.after(() => rmSync(outside, { recursive: true, force: true }));
+	writeFileSync(join(outside, "present.md"), "outside");
+	const result = check(t, "[linked](linked/present.md)", [], (root) =>
+		symlinkSync(outside, join(root, "linked"), "dir"),
+	);
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /outside the repository/);
 });
