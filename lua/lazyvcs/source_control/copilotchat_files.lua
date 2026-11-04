@@ -28,6 +28,13 @@ function M.new()
 	end
 	function registry:record(path)
 		if type(path) == "string" then
+			if vim.fn.has("win32") == 1 then
+				local normalized = path:gsub("\\", "/")
+				-- Windows temporary names may omit the current drive.
+				if normalized:sub(1, 1) == "/" and normalized:sub(1, 2) ~= "//" then
+					path = util.normalize_literal_path(vim.fn.fnamemodify(normalized, ":p"))
+				end
+			end
 			names[path] = true
 		end
 		return path
@@ -46,7 +53,7 @@ function M.new()
 		end
 	end
 	function registry:header()
-		local path = util.normalize_literal_path(vim.fn.tempname()) .. "-lazyvcs-headers"
+		local path = self:record(util.normalize_literal_path(vim.fn.tempname()) .. "-lazyvcs-headers")
 		local fd, err = vim.uv.fs_open(path, "wx", 384)
 		if not fd then
 			error("Could not create private CopilotChat header file: " .. tostring(err), 0)
@@ -56,7 +63,6 @@ function M.new()
 			pcall(vim.uv.fs_unlink, path)
 			error("Could not close CopilotChat header file: " .. tostring(close_err), 0)
 		end
-		self:record(path)
 		self:adopt({ dump = path })
 		return path
 	end

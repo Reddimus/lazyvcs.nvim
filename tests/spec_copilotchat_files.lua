@@ -79,6 +79,53 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_source_control_copilotchat_root_relative_tmpname_cleanup",
+			function()
+				if vim.fn.has("win32") == 0 then
+					error({ lazyvcs_skip = "Windows root-relative temporary names" }, 0)
+				end
+				local cwd = assert(vim.uv.cwd())
+				local ok, err = xpcall(function()
+					model.with_transport(ctx, function(f)
+						vim.api.nvim_set_current_dir(f.dir)
+						for index, kind in ipairs({ "cancel", "http" }) do
+							local full = require("lazyvcs.util").normalize_literal_path(f.dir .. "/" .. kind .. ".json")
+							local relative = full:gsub("^%a:", "")
+							assert(relative:sub(1, 1) == "/" and relative ~= full)
+							os.tmpname = function()
+								return relative
+							end
+							local scope = assert(require("lazyvcs.source_control.copilotchat_transport").new_scope())
+							f.async.run(function()
+								scope:run(function()
+									f.chat.post("offline://fixture", {
+										headers = { Authorization = "fixture" },
+										json_request = true,
+										body = { diff = "private" },
+										temp_source = "os",
+									})
+								end)
+							end)
+							local job = f.ready(index)
+							assert(job.options.body == full, "temporary body was not drive-qualified")
+							assert(vim.uv.fs_lstat(full), "request body was not created at the normalized path")
+							if kind == "cancel" then
+								scope:cancel()
+							else
+								job.options.http_error = true
+								h.write_file(f.jobs[index].path .. ".finish", "done")
+							end
+							wait(function()
+								return process.reaped(job.pid) and not vim.uv.fs_lstat(full)
+							end, kind .. " retained a root-relative request body", 5000)
+						end
+					end)
+				end, debug.traceback)
+				vim.api.nvim_set_current_dir(cwd)
+				assert(ok, err)
+			end,
+		},
+		{
 			"test_source_control_copilotchat_files_abandon_settles_pending_release_once",
 			function()
 				local fs = require("lazyvcs.file_io")
