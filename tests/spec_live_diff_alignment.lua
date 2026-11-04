@@ -58,9 +58,23 @@ return function(ctx)
 	end
 	local cases = {
 		{
+			"test_live_diff_alignment_is_inactive_with_a_shared_buffer",
+			guarded(function()
+				local s = open(true)
+				assert(align.is_active(s), "wrapped fixture is not aligned")
+				api.nvim_set_current_win(s.editable_win)
+				vim.cmd("belowright split")
+				local extra = api.nvim_get_current_win()
+				assert(not align.apply(s), "shared buffer unexpectedly received padding")
+				assert(not align.is_active(s), "scroll correction still considers suspended alignment active")
+				api.nvim_win_close(extra, true)
+			end),
+		},
+
+		{
 			"test_live_diff_alignment_rejects_invisible_samples",
 			function()
-				local passed = require("ui_helpers").run_case(
+				local passed, output = require("ui_helpers").run_case(
 					"live_diff",
 					"test_live_diff_align_puts_wrapped_lines_on_the_same_screen_row",
 					[[
@@ -78,6 +92,7 @@ end
 ]]
 				)
 				assert(not passed, "invisible alignment samples passed geometry check")
+				assert(output:find("alignment sample is not visible", 1, true), output)
 			end,
 		},
 		{

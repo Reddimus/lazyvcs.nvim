@@ -393,7 +393,17 @@ function M.is_active(session)
 	if not (util.win_is_valid(session.base_win) and util.win_is_valid(session.editable_win)) then
 		return false
 	end
-	return vim.wo[session.base_win].wrap or vim.wo[session.editable_win].wrap
+	local base, edit = session.base_win, session.editable_win
+	if
+		vim.api.nvim_win_get_tabpage(base) ~= vim.api.nvim_win_get_tabpage(edit)
+		or vim.api.nvim_win_get_buf(base) ~= session.base_bufnr
+		or vim.api.nvim_win_get_buf(edit) ~= session.editable_bufnr
+		or #vim.fn.win_findbuf(session.base_bufnr) > 1
+		or #vim.fn.win_findbuf(session.editable_bufnr) > 1
+	then
+		return false
+	end
+	return vim.wo[base].wrap or vim.wo[edit].wrap
 end
 
 function M.clear(session)

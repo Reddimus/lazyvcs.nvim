@@ -284,6 +284,7 @@ T["native sidebar"]["confirmation popup supports navigation and escape"] = funct
 	child.lua([[
 local state = require("lazyvcs.source_control.native")._state()
 vim.api.nvim_set_current_win(state.winid)
+vim.g.lazyvcs_confirm_test_result = nil
 require("lazyvcs.source_control.confirm").open({
   prompt = "Sync example?",
 }, function(choice)
@@ -297,6 +298,7 @@ end)
 	child.lua([[
 local state = require("lazyvcs.source_control.native")._state()
 vim.api.nvim_set_current_win(state.winid)
+vim.g.lazyvcs_confirm_test_result = nil
 require("lazyvcs.source_control.confirm").open({
   prompt = "Sync example?",
 }, function(choice)
@@ -309,6 +311,7 @@ end)
 	child.lua([[
 local state = require("lazyvcs.source_control.native")._state()
 vim.api.nvim_set_current_win(state.winid)
+vim.g.lazyvcs_confirm_test_result = nil
 require("lazyvcs.source_control.confirm").open({
   prompt = "Sync example?",
 }, function(choice)
@@ -321,14 +324,18 @@ end)
 	child.lua([[
 local state = require("lazyvcs.source_control.native")._state()
 vim.api.nvim_set_current_win(state.winid)
+vim.g.lazyvcs_confirm_test_result = nil
 require("lazyvcs.source_control.confirm").open({
   prompt = "Sync example?",
 }, function(choice)
   vim.g.lazyvcs_confirm_test_result = choice
 end)
 ]])
+	local popup = child.lua_get("vim.api.nvim_get_current_win()")
 	child.type_keys("<Esc>")
 	eq(child.lua_get("vim.g.lazyvcs_confirm_test_result"), "cancel")
+	eq(child.lua_get("vim.api.nvim_win_is_valid(...)", { popup }), false)
+	eq(child.lua_get("vim.api.nvim_get_current_win() == require('lazyvcs.source_control.native')._state().winid"), true)
 end
 
 return T

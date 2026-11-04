@@ -78,7 +78,11 @@ jobs:
           set -Eeuo pipefail
           remote_tag="$(git ls-remote --exit-code origin "refs/tags/${TAG}")"
           test "${remote_tag%%$'\t'*}" = "$(git rev-parse "${TAG}^{tag}")"
+          prerelease=()
+          if [[ "${TAG}" == *-* ]]; then
+            prerelease+=(--prerelease)
+          fi
           gh release create "${TAG}" \
             --verify-tag \
             --title "${TAG}" \
-            --notes-file release-notes.md
+            --notes-file release-notes.md "${prerelease[@]}"

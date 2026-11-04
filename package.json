@@ -5,11 +5,12 @@
     "format:md": "prettier --write \"**/*.md\"",
     "format:md:check": "prettier --check \"**/*.md\"",
     "lint:md": "node tests/ci/lint-markdown.mjs",
-    "lint:links": "node tests/ci/check-local-links.mjs",
+    "lint:links": "node --test tests/ci/check-local-links.test.mjs && node tests/ci/check-local-links.mjs",
     "audit": "npm audit --include=dev --audit-level=high"
   },
   "devDependencies": {
     "markdownlint": "0.42.0",
+    "mdast-util-from-markdown": "2.1.0",
     "prettier": "3.9.10"
   },
   "overrides": {

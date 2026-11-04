@@ -8,11 +8,19 @@ return function()
 		local first = api.nvim_get_current_win()
 		vim.cmd.vsplit()
 		local second = api.nvim_get_current_win()
-		local owner = {}
+		local owner, cleanups = {}, {}
 		local controls = require("lazyvcs.window_controls")
 		local ok, err = xpcall(function()
-			run(controls, owner, first, second, buf)
+			run(controls, owner, first, second, buf, function(fn)
+				cleanups[#cleanups + 1] = fn
+			end)
 		end, debug.traceback)
+		for i = #cleanups, 1, -1 do
+			local cleaned, cleanup_err = pcall(cleanups[i])
+			if not cleaned and ok then
+				ok, err = false, cleanup_err
+			end
+		end
 		controls.unregister(owner)
 		if api.nvim_tabpage_is_valid(tab) then
 			vim.cmd("tabclose! " .. api.nvim_tabpage_get_number(tab))
@@ -59,8 +67,16 @@ return function()
 		{
 			"test_core_window_controls_restore_global_and_native_fallbacks",
 			function()
-				scenario(function(controls, owner, first, second, buf)
+				scenario(function(controls, owner, first, second, buf, defer)
 					local previous = api.nvim_get_keymap("n")
+					defer(function()
+						pcall(vim.keymap.del, "n", "<F19>")
+						for _, map in ipairs(previous) do
+							if map.lhs == "<F19>" then
+								vim.fn.mapset("n", false, map)
+							end
+						end
+					end)
 					local global = function() end
 					vim.keymap.set("n", "<F19>", global)
 					api.nvim_set_current_win(first)
@@ -76,12 +92,6 @@ return function()
 					assert(vim.fn.maparg("<F19>", "n", false, true).callback == global)
 					for _, map in ipairs(api.nvim_buf_get_keymap(buf, "n")) do
 						assert(map.lhs ~= "q" and map.lhs ~= "<F19>", "controls leaked into ordinary editor")
-					end
-					vim.keymap.del("n", "<F19>")
-					for _, map in ipairs(previous) do
-						if map.lhs == "<F19>" then
-							vim.fn.mapset("n", false, map)
-						end
 					end
 				end)
 			end,

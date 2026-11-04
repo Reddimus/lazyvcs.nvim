@@ -6,7 +6,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 UBUNTU_IMAGE="${UBUNTU_IMAGE:-ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90}"
 NVIM_VERSION="${NVIM_VERSION:-v0.12.6}"
-NVIM_SHA256="${NVIM_SHA256-474430d53e6264f6d6dd18db42d6dc9df3a1b56ca9e88a325bbf860e1a811d87}"
+NVIM_SHA256="${NVIM_SHA256-auto}"
 
 if ! command -v docker >/dev/null 2>&1; then
 	printf 'docker is required for the native E2E test\n' >&2
@@ -38,16 +38,9 @@ apt-get update >/artifacts/apt.log
 apt-get install -y --no-install-recommends ca-certificates curl git gzip locales python3 python3-pexpect subversion tar >/artifacts/packages.log
 locale-gen en_US.UTF-8 >/dev/null
 
-archive=/tmp/nvim.tar.gz
-base="https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}"
-curl --fail --location --retry 5 --retry-all-errors --silent --show-error \
-	"${base}/nvim-linux-x86_64.tar.gz" -o "${archive}"
-if [ -n "${NVIM_SHA256}" ]; then
-	printf '%s  %s\n' "${NVIM_SHA256}" "${archive}" | sha256sum --check -
-fi
-mkdir -p /opt/nvim
-tar -C /opt/nvim --strip-components=1 -xzf "${archive}"
-ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim
+# shellcheck source=tests/e2e/neovim.sh
+source /work/lazyvcs.nvim/tests/e2e/neovim.sh
+install_nvim
 nvim --version | sed -n '1,5p' >/artifacts/nvim-version.log
 
 git --version >/artifacts/git-version.log

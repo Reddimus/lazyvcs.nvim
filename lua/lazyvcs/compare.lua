@@ -877,6 +877,19 @@ local function update_worktree(s, record)
 	end
 end
 
+local function summarize_items(s, items)
+	local added, deleted, unknown = 0, 0, 0
+	for _, item in ipairs(items) do
+		if item.added and item.deleted then
+			added, deleted = added + item.added, deleted + item.deleted
+		else
+			unknown = unknown + 1
+		end
+	end
+	s.uncounted = unknown > 0 and unknown or nil
+	message(s, #items == 0 and "No saved changes" or string.format("%d paths +%d -%d", #items, added, deleted))
+end
+
 local function refresh_worktree_list(s, record)
 	if not s.snapshot then
 		return
@@ -906,11 +919,7 @@ local function refresh_worktree_list(s, record)
 		end
 		buffers.reconcile(s, snapshot, items)
 		navigation.reconcile(s, snapshot, items)
-		local added, deleted = 0, 0
-		for _, item in ipairs(items) do
-			added, deleted = added + (item.added or 0), deleted + (item.deleted or 0)
-		end
-		message(s, #items == 0 and "No saved changes" or string.format("%d paths +%d -%d", #items, added, deleted))
+		summarize_items(s, items)
 		if chosen and s.row_by_path[chosen.relpath] and sidebar_shown(s) then
 			vim.api.nvim_win_set_cursor(s.sidewin, { s.row_by_path[chosen.relpath], 0 })
 		end
@@ -1194,16 +1203,7 @@ function M.refresh(s, context_checked)
 					util.notify(save_err, vim.log.levels.WARN)
 				end
 			end
-			local added, deleted, unknown = 0, 0, 0
-			for _, item in ipairs(items) do
-				if item.added and item.deleted then
-					added, deleted = added + item.added, deleted + item.deleted
-				else
-					unknown = unknown + 1
-				end
-			end
-			s.uncounted = unknown > 0 and unknown or nil
-			message(s, #items == 0 and "No saved changes" or string.format("%d paths +%d -%d", #items, added, deleted))
+			summarize_items(s, items)
 			resize(s)
 			local saved = s.restore
 			s.restore = nil

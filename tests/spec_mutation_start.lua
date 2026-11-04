@@ -46,6 +46,37 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_source_control_literal_glob_preflight_does_not_expand_siblings",
+			function()
+				local f = h.make_git_fixture()
+				local target, sibling = "item[1].txt", "item1.txt"
+				h.write_file(f.root .. "/" .. target, "literal file\n")
+				h.write_file(f.root .. "/" .. sibling, "sibling file\n")
+				h.exec({ "git", "add", "--", target, sibling }, f.root)
+				h.exec({ "git", "commit", "-m", "literal paths" }, f.root)
+				h.write_file(f.root .. "/" .. target, "updated literal file\n")
+				h.write_file(f.root .. "/" .. sibling, "updated sibling file\n")
+				h.exec({ "git", "add", "--", target, sibling }, f.root)
+				local failure, done
+				require("lazyvcs.source_control.mutation_start").start(
+					{ root = f.root, vcs = "git" },
+					{ "git", "--literal-pathspecs", "reset", "--", target },
+					{ cwd = f.root, timeout = 5000 },
+					{ git_unstage = { target } },
+					function(_, err)
+						failure, done = err, true
+					end
+				)
+				ctx.wait_for(function()
+					return done
+				end, "literal-path mutation did not settle", 15000)
+				assert(not failure, failure)
+				local staged = h.exec({ "git", "diff", "--cached", "--name-only" }, f.root)
+				assert(staged == sibling .. "\n", "mutation affected a wildcard-matching sibling")
+			end,
+		},
+
+		{
 			"test_source_control_mutation_timeout_during_preflight",
 			function()
 				preflight_case(false)

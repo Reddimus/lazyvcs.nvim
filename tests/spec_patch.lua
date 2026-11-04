@@ -287,6 +287,23 @@ return function(ctx)
 			assert(vim.api.nvim_buf_get_name(0) == f.file)
 		end
 	end)
+	case("svn_properties_do_not_count_as_text_or_reuse_hunk_lines", function()
+		local f = h.make_svn_fixture()
+		h.exec({ "svn", "propset", "test:note", "property value", f.file }, f.root)
+		local _, rows = ui(f.root)
+		contains(vim.wo.winbar, "+1 -1")
+		local row
+		for i, line in ipairs(rows) do
+			if line == "+property value" then
+				row = i
+			end
+		end
+		assert(row, "property change row missing")
+		vim.api.nvim_win_set_cursor(0, { row, 0 })
+		keys("<CR>")
+		assert(vim.api.nvim_buf_get_name(0) == f.file)
+		assert(vim.api.nvim_win_get_cursor(0)[1] == 1, "property row inherited a text hunk position")
+	end)
 	case("hunk_navigation_counts", function()
 		local f = fixture()
 		local base = {}

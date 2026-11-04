@@ -580,7 +580,7 @@ local function test_ai_commit_message_auto_falls_back_to_next_cli_provider()
 		assert(codex_stdin:match("diff %-%-git"), "diff context should be included")
 		eq(
 			calls[1],
-			"git -c diff.autoRefreshIndex=false diff --staged --no-ext-diff --no-color --stat --patch --unified=1"
+			"git -c diff.autoRefreshIndex=false diff --staged --no-ext-diff --no-textconv --no-color --stat --patch --unified=1"
 		)
 		assert(calls[2]:match("^claude "), "auto provider should try claude first")
 		eq(calls[3], "codex --ask-for-approval never exec --skip-git-repo-check --ephemeral --sandbox read-only -")
@@ -2433,23 +2433,17 @@ local function test_source_control_confirm_session_choice_disables_more_prompts(
 	helpers.exec({ "git", "init" }, root)
 	helpers.write_file(root .. "/changed.txt", "changed\n")
 
-	local state = {
-		lazyvcs_commit_drafts = {},
-		lazyvcs_repo_cache = {
-			[root] = {
-				root = root,
-				name = "repo",
-				vcs = "git",
-				counts = { local_changes = 1, staged = 0, remote = 0 },
-			},
-		},
-		lazyvcs_render = function() end,
-	}
+	local repo_root = require("lazyvcs.util").canonical_path(root)
+	local state = require("lazyvcs.source_control.native").open({ path = root })
+	wait_for(function()
+		local repo = state.lazyvcs_repo_cache[repo_root]
+		return not state.lazyvcs_discovering and repo and repo.vcs == "git" and repo.summary_loaded
+	end, "confirmation repository did not load", ASYNC_TIMEOUT_MS)
 	local node = {
 		type = "file",
 		path = root .. "/changed.txt",
 		extra = {
-			repo_root = root,
+			repo_root = repo_root,
 			relpath = "changed.txt",
 		},
 	}
@@ -2460,6 +2454,17 @@ local function test_source_control_confirm_session_choice_disables_more_prompts(
 		local result = vim.system({ "git", "diff", "--cached", "--name-only" }, { cwd = root, text = true }):wait()
 		return result.stdout:match("changed%.txt") ~= nil
 	end, "stage confirmation did not run git add", ASYNC_TIMEOUT_MS)
+	wait_for(function()
+		return require("lazyvcs.state").get_repo_job(repo_root) == nil
+	end, "first mutation did not settle", ASYNC_TIMEOUT_MS)
+	helpers.write_file(root .. "/second.txt", "another change\n")
+	local second = vim.deepcopy(node)
+	second.path, second.extra.relpath = root .. "/second.txt", "second.txt"
+	require("lazyvcs.source_control.ops").stage_file(state, second)
+	wait_for(function()
+		local result = vim.system({ "git", "diff", "--cached", "--name-only" }, { cwd = root, text = true }):wait()
+		return result.stdout:find("second.txt", 1, true) ~= nil
+	end, "session confirmation prompted again or skipped the second mutation", ASYNC_TIMEOUT_MS)
 end
 
 local function test_source_control_confirm_session_with_aliased_temp_root()
@@ -6929,18 +6934,21 @@ local cases = {
 	{ "test_svn_async_blame_cancels_active_child_process", test_svn_async_blame_cancels_active_child_process },
 	{ "test_git_blame_inline_virtual_text", test_git_blame_inline_virtual_text },
 	{ "test_svn_blame_inline_virtual_text", test_svn_blame_inline_virtual_text },
-	{ "test_svn_blame_inline_delays_loading_indicator", test_svn_blame_inline_delays_loading_indicator },
+	{
+		"test_svn_blame_inline_delays_loading_indicator",
+		helpers.isolate_blame(test_svn_blame_inline_delays_loading_indicator),
+	},
 	{
 		"test_svn_blame_inline_loading_indicator_and_uncommitted_line",
-		test_svn_blame_inline_loading_indicator_and_uncommitted_line,
+		helpers.isolate_blame(test_svn_blame_inline_loading_indicator_and_uncommitted_line),
 	},
 	{
 		"test_svn_blame_inline_loading_indicator_follows_cursor",
-		test_svn_blame_inline_loading_indicator_follows_cursor,
+		helpers.isolate_blame(test_svn_blame_inline_loading_indicator_follows_cursor),
 	},
 	{
 		"test_svn_blame_inline_failure_does_not_retry_on_cursor_move",
-		test_svn_blame_inline_failure_does_not_retry_on_cursor_move,
+		helpers.isolate_blame(test_svn_blame_inline_failure_does_not_retry_on_cursor_move),
 	},
 	{ "test_svn_blame_split_is_fixed_width_and_muted", test_svn_blame_split_is_fixed_width_and_muted },
 	{ "test_live_diff_places_base_window_on_the_left", test_live_diff_places_base_window_on_the_left },
@@ -7528,6 +7536,9 @@ vim.list_extend(cases, require("spec_source_control_staged_intent")({ helpers = 
 vim.list_extend(cases, require("spec_source_control_a3_v3")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_absent_rail")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff }))
+
+vim.list_extend(cases, require("spec_file_reads")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_jobs_reentrancy")({ helpers = helpers, wait_for = wait_for }))
 
 local svn_group_overrides = {
 	test_source_control_collects_dirty_nested_repos = true,

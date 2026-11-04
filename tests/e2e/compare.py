@@ -9,7 +9,7 @@ import time
 import pexpect
 
 
-artifacts = pathlib.Path(sys.argv[1])
+artifacts = pathlib.Path(sys.argv[1]).resolve()
 artifacts.mkdir(parents=True, exist_ok=True)
 env = os.environ.copy()
 env["TERM"] = "xterm-256color"

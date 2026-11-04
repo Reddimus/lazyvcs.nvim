@@ -100,6 +100,20 @@ return function(ctx)
 	end
 	return {
 		{
+			"test_svn_switch_literal_at_working_copy",
+			function()
+				local repo = fixture("repository", "", "")
+				local destination = repo.root .. "@demo"
+				assert(vim.uv.fs_rename(repo.root, destination))
+				repo.root = destination
+				local branch = copy(repo, "branches", "feature")
+				assert(pick(repo, "branch", "feature") == 1)
+				assert(current(repo) == branch)
+				assert(pick(repo, nil, nil, repo.layout .. "/trunk") == 1)
+				assert(current(repo) == repo.layout .. "/trunk")
+			end,
+		},
+		{
 			"test_source_control_svn_switch_literal_segments",
 			function()
 				local repo = fixture("repository", "project % space", "sub % space")

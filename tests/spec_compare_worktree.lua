@@ -583,5 +583,33 @@ return function(ctx)
 			assert(f.root)
 		end,
 	}
+	cases[#cases + 1] = {
+		"test_core_compare_save_clears_removed_binary_unknown_count",
+		function()
+			local function write(path, bytes)
+				local file = assert(io.open(path, "wb"))
+				assert(file:write(bytes))
+				file:close()
+			end
+			local f = h.make_git_fixture()
+			write(f.root .. "/z.bin", "old\0binary\n")
+			h.exec({ "git", "add", "z.bin" }, f.root)
+			h.exec({ "git", "commit", "-m", "binary fixture" }, f.root)
+			write(f.root .. "/z.bin", "new\0binary\n")
+			vim.cmd.edit(vim.fn.fnameescape(f.file))
+			local s = assert(compare.open({ path = f.root, base = "HEAD" }))
+			ready(s)
+			assert(s.uncounted == 1, "binary change was not marked uncounted")
+			write(f.root .. "/z.bin", "old\0binary\n")
+			api.nvim_set_current_win(s.rightwin)
+			api.nvim_buf_set_lines(s.right, 0, -1, false, { "saved text change" })
+			vim.cmd.write()
+			ctx.wait_for(function()
+				return #s.items == 1 and not s.worktree_list_job
+			end, "save did not refresh changed paths", 15000)
+			assert(not s.uncounted, "removed binary change left a stale unknown count")
+			compare.close(s)
+		end,
+	}
 	return cases
 end

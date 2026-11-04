@@ -6,7 +6,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 UBUNTU_IMAGE="${UBUNTU_IMAGE:-ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90}"
 NVIM_VERSION="${NVIM_VERSION:-v0.12.6}"
-NVIM_SHA256="${NVIM_SHA256:-474430d53e6264f6d6dd18db42d6dc9df3a1b56ca9e88a325bbf860e1a811d87}"
+NVIM_SHA256="${NVIM_SHA256-auto}"
 ASTRONVIM_TEMPLATE_REF="${ASTRONVIM_TEMPLATE_REF:-49a7161b776f8bc6c23508819ea1ad4e7b359bee}"
 ASTRONVIM_VERSION="${ASTRONVIM_VERSION:-6.1.1}"
 ASTRONVIM_COMMIT="${ASTRONVIM_COMMIT-fc95d5d331b897b1c6b46cbfa4e0251d8d9be6b7}"
@@ -67,22 +67,8 @@ run_logged() {
 	fi
 }
 
-install_nvim() {
-	local base="https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}"
-	local archive="/tmp/nvim.tar.gz"
-	local asset="nvim-linux-x86_64.tar.gz"
-
-	curl --fail --location --retry 5 --retry-all-errors --silent --show-error \
-		"${base}/${asset}" -o "${archive}"
-	if [ -n "${NVIM_SHA256}" ]; then
-		printf '%s  %s\n' "${NVIM_SHA256}" "${archive}" | sha256sum --check -
-	fi
-
-	mkdir -p /opt/nvim
-	tar -C /opt/nvim --strip-components=1 -xzf "${archive}"
-	ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim
-	nvim --version | sed -n '1,3p'
-}
+# shellcheck source=tests/e2e/neovim.sh
+source /work/lazyvcs.nvim/tests/e2e/neovim.sh
 
 log "install ubuntu packages"
 apt-get update

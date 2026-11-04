@@ -427,6 +427,30 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_source_control_single_mode_preserves_saved_hidden_repositories",
+			function()
+				require("lazyvcs").setup({
+					use_gitsigns = false,
+					signs = { enabled = false },
+					source_control = { selection_mode = "single", show_clean = true, remote_refresh = "manual" },
+				})
+				local f = h.make_git_fixture()
+				require("lazyvcs.source_control.persist").save(f.root, {
+					hidden_repos = { f.root },
+					focused_repo = f.root,
+					show_clean = true,
+				})
+				local s = open(f.root)
+				assert(s.lazyvcs_repo_visibility_overrides[f.root] == false)
+				assert(not s.lazyvcs_repo_visibility[f.root], "single-mode fallback revived a hidden repository")
+				select_node(s, function(n)
+					return n.type == "repo_selector"
+				end)
+				key(s.bufnr, "<Tab>")
+				assert(s.lazyvcs_repo_visibility[f.root], "hidden repository could not be restored")
+			end,
+		},
+		{
 			"test_source_control_hidden_single_repo_keeps_recovery_selector",
 			function()
 				local f = h.make_git_fixture()

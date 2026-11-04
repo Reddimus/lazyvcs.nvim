@@ -380,6 +380,7 @@ local function start_repo_job(state, repo, spec)
 		label = spec.label,
 		sync_text = spec.sync_text or spec.label,
 		generation = spec.generation,
+		owner = repo.root,
 	})
 
 	local completed = false
@@ -1471,7 +1472,7 @@ function M.commit_repo(state, node)
 	end
 	local draft_revision = draft_record(state, repo.root).revision
 
-	local preparing = { status = "running", action = "commit", label = "Preparing commit..." }
+	local preparing = { status = "running", action = "commit", label = "Preparing commit...", owner = state }
 	session_state.set_repo_job(repo.root, preparing)
 	preparing = session_state.get_repo_job(repo.root)
 
@@ -1760,14 +1761,17 @@ function M.cancel(path, opts)
 		end
 		return true
 	end, opts.reason or "user")
+	local function owns(job)
+		return opts.all_owners or opts.owner == nil or opts.owner == (job.owner or job.root)
+	end
 	if root then
 		local current = session_state.get_repo_job(root)
-		if current and current.status == "running" and count == 0 then
+		if current and current.status == "running" and count == 0 and owns(current) then
 			session_state.clear_repo_job(root)
 		end
 	elseif count == 0 then
 		for _, job in ipairs(session_state.list_repo_jobs()) do
-			if job.status == "running" then
+			if job.status == "running" and owns(job) then
 				session_state.clear_repo_job(job.root)
 			end
 		end
@@ -2046,6 +2050,7 @@ function M.switch_repo(state, node)
 	local marker = {}
 	set_repo_job(state, repo.root, {
 		token = marker,
+		owner = state,
 		status = "running",
 		action = "switch_targets",
 		label = "Loading targets...",

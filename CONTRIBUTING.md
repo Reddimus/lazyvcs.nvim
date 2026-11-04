@@ -27,7 +27,7 @@ stylua --check lua tests                      # Lua formatting
 lua-language-server --check=. --check_format=pretty --checklevel=Warning
 actionlint                                    # workflow lint
 zizmor --offline --format plain .github       # workflow security audit
-shellcheck tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
+shellcheck -x tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
 for script in tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh; do bash -n "$script" || exit "$?"; done
 
 nvim --headless -u NONE -l tests/native_smoke.lua   # startup smoke

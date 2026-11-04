@@ -91,10 +91,12 @@ return function(ctx)
 			end
 			for _, change in ipairs({ "cursor", "edit", "window", "rename", "unload" }) do
 				backends.invalidate()
+				local captured_cursor = s.api.nvim_win_get_cursor(0)
 				vim.cmd("LazyVCS hunk next")
 				assert(pending, "command did not resolve asynchronously")
 				if change == "cursor" then
-					s.api.nvim_win_set_cursor(0, { 2, 0 })
+					s.api.nvim_win_set_cursor(0, { captured_cursor[1] == 1 and 2 or 1, 0 })
+					assert(not vim.deep_equal(s.api.nvim_win_get_cursor(0), captured_cursor))
 				elseif change == "edit" then
 					s.edit(buf, { "edited" })
 				elseif change == "window" then
