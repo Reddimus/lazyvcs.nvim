@@ -1018,6 +1018,17 @@ function M.load_diff_target_async(target, on_done, opts)
 			end
 			local side = comparison[key]
 			local source = side.source or {}
+			if
+				key == "left"
+				and source.kind == "empty"
+				and comparison.kind == "svn_local"
+				and comparison.wc_item == "added"
+			then
+				-- Copies have a pristine base even while scheduled for addition.
+				side = svn_side("BASE", "BASE", comparison.path, false)
+				comparison.left, source = side, side.source
+				comparison.title = "BASE ↔ " .. comparison.right.label
+			end
 			if source.kind == "empty" then
 				return next_side()
 			end
@@ -1257,6 +1268,24 @@ function M.blame_lines_async(path, on_done, opts)
 		vim.schedule(function()
 			task:finish(nil, (stat_code ~= "ENOENT" and stat_code ~= "ENOTDIR") and stat_err or nil)
 		end)
+		return task
+	end
+	if opts.contents == nil and opts.text == nil then
+		task:set_deadline(opts.timeout_ms or ASYNC_TIMEOUT_MS, "SVN blame timed out")
+		require("lazyvcs.fs").read_file_async(
+			task,
+			path,
+			require("lazyvcs.backends.blame_format").decode_limit(),
+			function(bytes, read_err)
+				if not bytes or read_err then
+					return task:finish(nil, read_err)
+				end
+				local captured = vim.tbl_extend("force", opts, { contents = bytes })
+				task:add(M.blame_lines_async(path, function(...)
+					task:finish(...)
+				end, captured))
+			end
+		)
 		return task
 	end
 	task:add(discover_root_async(path, opts, function(root, err)

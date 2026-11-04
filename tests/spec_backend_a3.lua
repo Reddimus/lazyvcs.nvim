@@ -626,21 +626,23 @@ return function(ctx)
 			"test_source_control_copilotchat_deadline_sweep_removes_owned_and_releasing_files",
 			function()
 				local files = require("lazyvcs.source_control.copilotchat_files")
+				local file_io = require("lazyvcs.file_io")
 				local path = h.tempdir() .. "/private-body"
 				h.write_file(path, "PRIVATE")
 				local registry = files.new()
 				registry:record(path)
 				registry:adopt({ body = path })
 				registry:abandon()
-				assert(not vim.uv.fs_lstat(path))
+				assert(not file_io.fs_lstat(path))
 				path = h.tempdir() .. "/pending-body"
 				h.write_file(path, "PRIVATE")
 				registry = files.new()
 				registry:record(path)
 				registry:adopt({ body = path })
-				local lstat = vim.uv.fs_lstat
+				local lstat = file_io.fs_lstat
 				local pending
-				vim.uv.fs_lstat = function(name, done)
+				---@diagnostic disable-next-line: duplicate-set-field
+				file_io.fs_lstat = function(name, done)
 					if done then
 						pending = done
 						return {}
@@ -650,15 +652,16 @@ return function(ctx)
 				local finished
 				local ok, err = pcall(function()
 					registry:release(function()
-						finished = true
+						finished = (finished or 0) + 1
 					end)
 					assert(pending)
 					registry:abandon()
 					assert(not lstat(path))
+					assert(finished == 1)
 					pending("ENOENT: swept")
-					assert(finished)
+					assert(finished == 1)
 				end)
-				vim.uv.fs_lstat = lstat
+				file_io.fs_lstat = lstat
 				assert(ok, err)
 			end,
 		},

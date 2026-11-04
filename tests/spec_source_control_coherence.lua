@@ -348,7 +348,31 @@ return function(ctx)
 		model.load_repo_summary_async, util.system_start = loader, start
 		assert(ok, err)
 	end
+	local function recreated_staged_delete()
+		local f = h.make_git_fixture()
+		h.exec({ "git", "rm", "-f", "sample.txt" }, f.root)
+		local s = open(f.root)
+		local function deleted()
+			for _, node in ipairs(s.lazyvcs_line_nodes) do
+				if node.extra and node.extra.section == "staged" and node.extra.relpath == "sample.txt" then
+					return node.extra.deleted
+				end
+			end
+			error("staged deletion row missing")
+		end
+		assert(deleted(), "missing file was not marked deleted")
+		h.write_file(f.file, "recreated content\n")
+		native.refresh(false)
+		ctx.wait_for(function()
+			local repo = s.lazyvcs_repo_cache[f.root]
+			return not s.lazyvcs_discovering and repo and repo.details_loaded
+		end, "details not reloaded", 15000)
+		s.lazyvcs_expanded[f.root .. "::section::staged"] = true
+		native.render(s)
+		assert(not deleted(), "recreated staged-deletion path retained cached missing state")
+	end
 	local cases = {
+		{ "test_source_control_recreated_staged_delete_refreshes_cached_node", recreated_staged_delete },
 		{ "test_svn_source_control_sibling_revert_preserves_private_incoming", svn_private_revert },
 		{ "test_svn_source_control_cancel_rechecks_pending_sibling_summary", svn_cancel },
 		{ "test_source_control_job_overlay_preserves_repository_status", overlay },

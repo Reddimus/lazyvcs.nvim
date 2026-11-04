@@ -287,6 +287,45 @@ return function(ctx)
 
 	local cases = {
 		{
+			"test_source_control_owner_cancel_preserves_other_mutation_lock",
+			function()
+				setup()
+				local f = h.make_git_fixture()
+				local state = state_for(f.root)
+				local jobs = require("lazyvcs.source_control.jobs")
+				local marker = { status = "running", action = "pull", generation = 1, owner = f.root }
+				state_store.set_repo_job(f.root, marker)
+				local id = jobs.command({ root = f.root, vcs = "git" }, "held_mutation", { "git", "status" }, {
+					owner = f.root,
+					scope = "mutation",
+					start = function(_, _, done)
+						return {
+							cancel = function()
+								done(nil, "cancelled", { code = 130, cancelled = true })
+							end,
+						}
+					end,
+				}, function() end)
+				local ok, err = xpcall(function()
+					assert(ops.cancel(f.root, { owner = state }) == 0)
+					assert(
+						state_store.get_repo_job(f.root),
+						"owner-filtered cancellation cleared another mutation lock"
+					)
+					assert(ops.cancel(nil, { owner = state }) == 0)
+					assert(
+						state_store.get_repo_job(f.root),
+						"global owner-filtered cancellation cleared another mutation lock"
+					)
+				end, debug.traceback)
+				jobs.cancel(function(job)
+					return job.id == id
+				end, "test cleanup")
+				state_store.clear_repo_job(f.root)
+				assert(ok, err)
+			end,
+		},
+		{
 			"test_source_control_unstage_refuses_subtree_replacement",
 			function()
 				for _, rename in ipairs({ false, true }) do

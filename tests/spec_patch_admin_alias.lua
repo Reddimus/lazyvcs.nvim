@@ -1,6 +1,6 @@
 return function(ctx)
 	local h, uv = ctx.helpers, vim.uv
-	local fs, paths = require("lazyvcs.backends.patch_io"), require("lazyvcs.backends.patch_path")
+	local fs, paths = require("lazyvcs.file_io"), require("lazyvcs.backends.patch_path")
 	local cases = {}
 	local function wait(fn)
 		ctx.wait_for(fn, "administration alias check did not settle", 15000)

@@ -2,7 +2,201 @@ return function(ctx)
 	local h, wait, process = ctx.helpers, ctx.wait_for, require("process_helpers")
 	local tests = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h")
 	local model = assert(loadfile(tests .. "/fixtures/ai_transport_helpers.lua"))()
+	local function exact_identity_cleanup(kind)
+		local fs = require("lazyvcs.file_io")
+		local path = h.tempdir() .. "/request"
+		h.write_file(path, "owned")
+		local uv_lstat, exact_lstat = vim.uv.fs_lstat, fs.fs_lstat
+		local runtime = require("lazyvcs.process_runtime")
+		local shutting_down = runtime.is_shutting_down
+		local replaced = false
+		local function metadata(exact)
+			assert(uv_lstat(path))
+			if exact then
+				return {
+					type = "file",
+					identity = "windows-file-id-128",
+					dev = "0000000000000001",
+					ino = replaced and "00000000000000008000000000000002" or "00000000000000008000000000000001",
+				}
+			end
+			return { type = "file", dev = 1, ino = 9007199254740992 }
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		vim.uv.fs_lstat = function(target, callback)
+			if target ~= path then
+				return uv_lstat(target, callback)
+			end
+			if callback then
+				vim.schedule(function()
+					callback(nil, metadata(false))
+				end)
+				return
+			end
+			return metadata(false)
+		end
+		---@diagnostic disable-next-line: duplicate-set-field
+		fs.fs_lstat = function(target, callback)
+			if target ~= path then
+				return exact_lstat(target, callback)
+			end
+			if callback then
+				vim.schedule(function()
+					callback(nil, metadata(true))
+				end)
+				return
+			end
+			return metadata(true)
+		end
+		local ok, err = xpcall(function()
+			local files = require("lazyvcs.source_control.copilotchat_files").new()
+			files:record(path)
+			files:adopt({ body = path })
+			assert(vim.uv.fs_rename(path, path .. "-old"))
+			h.write_file(path, "replacement")
+			replaced = true
+			if kind == "shutdown" then
+				---@diagnostic disable-next-line: duplicate-set-field
+				runtime.is_shutting_down = function()
+					return true
+				end
+			end
+			if kind == "abandon" then
+				files:abandon()
+			else
+				local done = false
+				files:release(function()
+					done = true
+				end)
+				wait(function()
+					return done
+				end, "identity cleanup did not settle")
+			end
+			assert(vim.fn.readfile(path)[1] == "replacement", "rounded file ID deleted a replacement")
+		end, debug.traceback)
+		vim.uv.fs_lstat, fs.fs_lstat, runtime.is_shutting_down = uv_lstat, exact_lstat, shutting_down
+		assert(ok, err)
+	end
 	return {
+		{
+			"test_source_control_copilotchat_root_relative_tmpname_cleanup",
+			function()
+				if vim.fn.has("win32") == 0 then
+					error({ lazyvcs_skip = "Windows root-relative temporary names" }, 0)
+				end
+				local cwd = assert(vim.uv.cwd())
+				local ok, err = xpcall(function()
+					model.with_transport(ctx, function(f)
+						vim.api.nvim_set_current_dir(f.dir)
+						for index, kind in ipairs({ "cancel", "http" }) do
+							local full = require("lazyvcs.util").normalize_literal_path(f.dir .. "/" .. kind .. ".json")
+							local relative = full:gsub("^%a:", "")
+							assert(relative:sub(1, 1) == "/" and relative ~= full)
+							os.tmpname = function()
+								return relative
+							end
+							local scope = assert(require("lazyvcs.source_control.copilotchat_transport").new_scope())
+							f.async.run(function()
+								scope:run(function()
+									f.chat.post("offline://fixture", {
+										headers = { Authorization = "fixture" },
+										json_request = true,
+										body = { diff = "private" },
+										temp_source = "os",
+									})
+								end)
+							end)
+							local job = f.ready(index)
+							assert(job.options.body == full, "temporary body was not drive-qualified")
+							assert(vim.uv.fs_lstat(full), "request body was not created at the normalized path")
+							if kind == "cancel" then
+								scope:cancel()
+							else
+								job.options.http_error = true
+								h.write_file(f.jobs[index].path .. ".finish", "done")
+							end
+							wait(function()
+								return process.reaped(job.pid) and not vim.uv.fs_lstat(full)
+							end, kind .. " retained a root-relative request body", 5000)
+						end
+					end)
+				end, debug.traceback)
+				vim.api.nvim_set_current_dir(cwd)
+				assert(ok, err)
+			end,
+		},
+		{
+			"test_source_control_copilotchat_files_abandon_settles_pending_release_once",
+			function()
+				local fs = require("lazyvcs.file_io")
+				local runtime = require("lazyvcs.process_runtime")
+				for _, replace in ipairs({ false, true }) do
+					local path = h.tempdir() .. "/request"
+					h.write_file(path, "owned")
+					local files = require("lazyvcs.source_control.copilotchat_files").new()
+					files:record(path)
+					files:adopt({ body = path })
+					local lstat, untrack = fs.fs_lstat, runtime.untrack
+					local queued, original, done_count, untracked = nil, nil, 0, 0
+					---@diagnostic disable-next-line: duplicate-set-field
+					fs.fs_lstat = function(target, callback)
+						if target == path and callback then
+							queued, original = callback, lstat(target)
+							return
+						end
+						return lstat(target, callback)
+					end
+					---@diagnostic disable-next-line: duplicate-set-field
+					runtime.untrack = function(handle)
+						if handle == files then
+							untracked = untracked + 1
+						end
+						return untrack(handle)
+					end
+					local ok, err = xpcall(function()
+						files:release(function()
+							done_count = done_count + 1
+							assert((vim.uv.fs_lstat(path) ~= nil) == replace, "settled before cleanup")
+						end)
+						assert(queued and done_count == 0)
+						if replace then
+							assert(vim.uv.fs_rename(path, path .. "-old"))
+							h.write_file(path, "replacement")
+						end
+						files:abandon()
+						assert(done_count == 1 and untracked == 1, "abandoned release never settled")
+						files:abandon()
+						queued(nil, original)
+						vim.wait(30)
+						assert(done_count == 1 and untracked == 1, "late callback settled twice")
+						if replace then
+							assert(vim.fn.readfile(path)[1] == "replacement")
+						end
+					end, debug.traceback)
+					fs.fs_lstat, runtime.untrack = lstat, untrack
+					untrack(files)
+					assert(ok, err)
+				end
+			end,
+		},
+		{
+			"test_source_control_copilotchat_files_shutdown_exact_identity",
+			function()
+				exact_identity_cleanup("shutdown")
+			end,
+		},
+		{
+			"test_source_control_copilotchat_files_release_exact_identity",
+			function()
+				exact_identity_cleanup("release")
+			end,
+		},
+		{
+			"test_source_control_copilotchat_files_abandon_exact_identity",
+			function()
+				exact_identity_cleanup("abandon")
+			end,
+		},
 		{
 			"test_source_control_copilotchat_header_dump_uses_plenary_argument_pair",
 			function()

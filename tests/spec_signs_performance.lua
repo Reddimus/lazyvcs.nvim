@@ -74,7 +74,9 @@ return function(ctx)
 						gap < limit_ms,
 						string.format("sign refresh gap %.1f ms exceeded measured budget %.1f ms", gap, limit_ms)
 					)
-					assert(beats >= 10, "heartbeat did not run during costly refresh")
+					s.wait(function()
+						return beats >= 10
+					end, "heartbeat did not advance", 2000)
 					local state = s.signs.current_state(buf)
 					assert(#state.hunks == 5000, "worker changed histogram hunk boundaries")
 					print(

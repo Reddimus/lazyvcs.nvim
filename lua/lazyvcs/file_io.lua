@@ -1,8 +1,9 @@
--- Patch-only I/O seam. Default SVN discovery continues using libuv directly.
+-- Exact file identities for patch reads and private request-file cleanup.
+-- Default SVN discovery continues using libuv directly.
 local uv = vim.uv
 local M = {}
 local windows = vim.fn.has("win32") == 1
-local worker = require("lazyvcs.backends.patch_windows_worker")
+local worker = require("lazyvcs.windows_file_worker")
 local runtime = require("lazyvcs.process_runtime")
 local pending, running, open_count = {}, 0, 0
 -- Keep physical workers rooted until their completion callback, including cancellation.
@@ -10,6 +11,35 @@ local live, _active = {}, {}
 local pump
 local closing, tracked = runtime.is_shutting_down(), false
 local lifetime = {}
+
+function M.identity(entry)
+	if not entry then
+		return false
+	end
+	if entry.identity == "windows-file-id-128" then
+		return type(entry.dev) == "string"
+			and entry.dev:match("^%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x$") ~= nil
+			and type(entry.ino) == "string"
+			and #entry.ino == 32
+			and entry.ino:match("^%x+$") ~= nil
+			and entry.ino ~= string.rep("0", 32)
+	end
+	return entry.identity == nil
+		and type(entry.dev) == "number"
+		and entry.dev >= 0
+		and type(entry.ino) == "number"
+		and entry.ino > 0
+end
+
+function M.same(entry, expected)
+	return M.identity(entry)
+		and M.identity(expected)
+		and entry.type == expected.type
+		and entry.identity == expected.identity
+		and entry.directory_reparse == expected.directory_reparse
+		and entry.dev == expected.dev
+		and entry.ino == expected.ino
+end
 
 local function release()
 	if tracked and running == 0 and #pending == 0 and open_count == 0 then
@@ -35,7 +65,7 @@ local function deliver(handle, callback, err, value)
 	if not ok then
 		local function report()
 			require("lazyvcs.util").notify(
-				"Patch I/O callback: " .. tostring(failure):gsub("%s+", " "),
+				"File I/O callback: " .. tostring(failure):gsub("%s+", " "),
 				vim.log.levels.ERROR
 			)
 		end
@@ -49,7 +79,7 @@ end
 
 local function queue(operation, args, callback)
 	if #pending >= 128 and operation ~= "close" then
-		return later_error(callback, "Patch native I/O queue is full")
+		return later_error(callback, "Native file I/O queue is full")
 	end
 	local request = { operation = operation, args = args, callback = callback }
 	if not tracked then
@@ -74,7 +104,7 @@ pump = function()
 			request.work = nil
 			_active[request] = nil
 			local decoded, result = pcall(vim.mpack.decode, raw or "")
-			local err = (not decoded or type(result) ~= "table") and "Invalid Patch worker response"
+			local err = (not decoded or type(result) ~= "table") and "Invalid File worker response"
 				or not result.ok and tostring(result.value)
 				or nil
 			require("lazyvcs.util").safe_callback(request.callback)(err, not err and result.value or nil)
@@ -95,6 +125,13 @@ pump = function()
 end
 
 function M.fs_lstat(path, callback)
+	if windows and not callback then
+		local result = vim.mpack.decode(worker("lstat", vim.mpack.encode({ path = path })))
+		if not result.ok then
+			return nil, tostring(result.value)
+		end
+		return result.value
+	end
 	if not windows then
 		return uv.fs_lstat(path, callback)
 	end
@@ -119,7 +156,7 @@ function M.fs_open(path, flags, mode, callback)
 			if not closing then
 				callback(err)
 			end
-		end, "Too many owned Patch HANDLEs")
+		end, "Too many owned file HANDLEs")
 	end
 	open_count = open_count + 1
 	queue("open", { path = path }, function(err, token)
@@ -149,7 +186,7 @@ local function operation(name, handle, args, callback)
 			if not closing then
 				callback(err)
 			end
-		end, "Invalid or busy owned Patch HANDLE")
+		end, "Invalid or busy owned file HANDLE")
 	end
 	handle.pending = true
 	args.token = handle.token
@@ -168,7 +205,7 @@ function M.fs_fstat(handle, callback)
 		return uv.fs_fstat(handle, callback)
 	end
 	if not callback then
-		error("Patch native fstat requires a callback")
+		error("Native file fstat requires a callback")
 	end
 	operation("fstat", handle, {}, callback)
 end

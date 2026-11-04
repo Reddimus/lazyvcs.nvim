@@ -68,6 +68,20 @@ return function(ctx)
 		return result
 	end
 
+	add("test_svn_compare_recovery_omits_restored_directory_properties", function()
+		local f = h.make_svn_fixture()
+		h.exec({ "svn", "revert", f.file }, f.root)
+		vim.fn.mkdir(f.root .. "/folder")
+		h.exec({ "svn", "add", "folder" }, f.root)
+		h.exec({ "svn", "propset", "test:note", "old", "folder" }, f.root)
+		h.exec({ "svn", "commit", "-m", "directory properties" }, f.root)
+		h.exec({ "svn", "propset", "test:note", "new", "folder" }, f.root)
+		h.exec({ "svn", "commit", "-m", "changed property" }, f.root)
+		h.exec({ "svn", "update" }, f.root)
+		h.exec({ "svn", "propset", "test:note", "old", "folder" }, f.root)
+		assert(#list(f, false, "2", true) == 0, "restored properties appeared as a net change")
+	end)
+
 	add("test_live_diff_git_removed_cached_root_recovers", function()
 		setup()
 		local f = h.make_git_fixture()

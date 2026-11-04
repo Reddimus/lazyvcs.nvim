@@ -254,12 +254,14 @@ local function index_text(text, default_root, saved, schedule, done)
 			elseif file and not hunk and (line:match("^rename to ") or line:match("^copy to ")) then
 				local name = line:match("^rename to (.*)$") or line:match("^copy to (.*)$")
 				file.path = name:sub(1, 1) == '"' and git_path(name:gsub('^"', '"b/')) or name
-			elseif file and not hunk and line:match("^%-%-%- ") then
+			elseif file and not hunk and not file.properties and line:match("^%-%-%- ") then
 				file.old = file.svn and file.path or git_path(line:sub(5))
 				index.deleted = index.deleted - 1
-			elseif file and not hunk and line:match("^%+%+%+ ") then
+			elseif file and not hunk and not file.properties and line:match("^%+%+%+ ") then
 				file.path = file.svn and file.path or git_path(line:sub(5))
 				index.added = index.added - 1
+			elseif file and file.svn and line:match("^Property changes on: ") then
+				file.properties, hunk = number, nil
 			elseif file and line:match("^@@ ") then
 				local new = line:match("^@@ %-%d+[^ ]* %+(%d+)")
 				if new then
@@ -267,6 +269,10 @@ local function index_text(text, default_root, saved, schedule, done)
 						{ row = number, line = tonumber(new), next_line = tonumber(new), checks = {}, positions = {} }
 					file.hunks[#file.hunks + 1], index.hunks[#index.hunks + 1] = hunk, number
 				end
+			end
+			if file and file.properties then
+				index.added = index.added - (prefix == "+" and 1 or 0)
+				index.deleted = index.deleted - (prefix == "-" and 1 or 0)
 			end
 			local new_line = hunk and math.max(1, hunk.next_line) or 1
 			if saved and file and file.root == saved.root and file.path == saved.path then
@@ -298,7 +304,7 @@ local function row_position(view, row)
 	if not file or row > file.last then
 		return
 	end
-	local hunk = file.hunks[preceding(file.hunks, row, "row")]
+	local hunk = (not file.properties or row < file.properties) and file.hunks[preceding(file.hunks, row, "row")]
 	local line = hunk and hunk.line or 1
 	if hunk and row > hunk.row then
 		local check = preceding(hunk.checks, row)

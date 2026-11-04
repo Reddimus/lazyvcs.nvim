@@ -15,7 +15,6 @@ concurrency:
 jobs:
   neovim-nightly:
     name: Neovim nightly
-    continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -42,7 +41,6 @@ jobs:
 
   astronvim-v6:
     name: Floating AstroNvim v6
-    continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -73,9 +71,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Both canaries are continue-on-error so one broken upstream does not mask the
-  # other's result, but without this job the workflow reported green with both
-  # red -- so a nightly Neovim or AstroNvim regression stayed invisible.
+  # Always report both independent canaries, then preserve any failure.
   result:
     name: Canary result
     if: always()

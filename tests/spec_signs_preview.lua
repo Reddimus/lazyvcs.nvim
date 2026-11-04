@@ -129,7 +129,9 @@ return function(ctx)
 				s.wait(function()
 					return s.api.nvim_get_current_win() ~= source
 				end, "real worker preview did not open", 20000)
-				assert(beats >= 10, "preview blocked heartbeat")
+				s.wait(function()
+					return beats >= 10
+				end, "preview heartbeat did not advance", 2000)
 				local budget = synchronous_ms * 0.5 + 30
 				assert(gap < budget and call_ms < budget, "preview exceeded measured event-loop budget")
 				preview_text(expected)

@@ -556,4 +556,19 @@ function M.make_mixed_source_control_fixture()
 	}
 end
 
+-- Inline-blame cases must restore stubs even when fixture setup skips or fails.
+function M.isolate_blame(run)
+	return function()
+		local backend, util = require("lazyvcs.backends.svn"), require("lazyvcs.util")
+		local blame, notify = backend.blame_lines_async, util.notify
+		local ok, err = xpcall(run, function(value)
+			return type(value) == "table" and value or debug.traceback(tostring(value), 2)
+		end)
+		backend.blame_lines_async, util.notify = blame, notify
+		if not ok then
+			error(err, 0)
+		end
+	end
+end
+
 return M

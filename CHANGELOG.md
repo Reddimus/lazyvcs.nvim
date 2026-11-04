@@ -8,6 +8,27 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-11-03
+
+### Fixed
+
+- Clean up Windows request files using absolute paths and exact file IDs.
+
+- Refresh comparison counts and recreated-file state after saves and reloads.
+- Preserve hidden repository selections and locks held by another view.
+- Skip stale queued work when cancellation starts a newer request.
+- Keep SVN properties out of text counts and hunk navigation, and show copied
+  files' base content.
+- Read SVN blame files asynchronously within the byte limit; preserve supplied
+  buffer text.
+- Decode XML entities once so literal SVN filenames stay intact.
+- Disable Git text conversion helpers while collecting AI commit context.
+- Report live-diff alignment only while its windows remain eligible.
+- Report compatibility-canary failures, support ARM64 E2E installs, and publish
+  prereleases correctly.
+- Check Markdown reference links and images without treating code examples as
+  links.
+
 ## [0.13.1] - 2026-10-31
 
 ### Fixed
@@ -954,4 +975,5 @@ First tagged release.
 [0.12.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.1...v0.12.2
 [0.13.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.2...v0.13.0
-[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.2...HEAD
+[0.13.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.1...v0.13.2

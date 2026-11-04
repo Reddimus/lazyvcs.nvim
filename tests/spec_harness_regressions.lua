@@ -163,11 +163,13 @@ return function(ctx)
 					return exec(args, cwd)
 				end
 				local ok, err = pcall(function()
+					local checked = 0
 					for _, case in ipairs(require("spec_literal_paths")(ctx)) do
 						if
 							case[1] == "test_source_control_literal_paths_open_selected_file"
 							or case[1] == "test_svn_source_control_literal_paths_open_selected_file"
 						then
+							checked = checked + 1
 							local passed, reason = pcall(case[2])
 							if case[1]:find("svn", 1, true) then
 								assert(
@@ -179,6 +181,7 @@ return function(ctx)
 							end
 						end
 					end
+					assert(checked == 2, "literal-path fixture cases were not found")
 				end)
 				vim.fn.executable, h.exec = executable, exec
 				assert(ok, err)

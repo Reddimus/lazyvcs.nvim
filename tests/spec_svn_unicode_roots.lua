@@ -14,6 +14,77 @@ return function(ctx)
 			end,
 		}
 	end
+	case("xml_entities_decode_once", function()
+		local parser = require("lazyvcs.backends.xml")
+		local source = "&#38;lt;&#x26;#38;&amp;lt;"
+		local expected = "&lt;&#38;&lt;"
+		assert(parser.decode(source) == expected, "XML entities were decoded more than once")
+		local entries =
+			parser.parse_status('<status><entry path="' .. source .. '"><wc-status item="modified"/></entry></status>')
+		assert(entries[1].path == expected, "SVN filename bytes changed while parsing XML")
+	end)
+	case("copied_addition_retains_its_pristine_comparison", function()
+		local f = h.make_svn_fixture()
+		h.exec({ "svn", "copy", "sample.txt", "copied.txt" }, f.root)
+		local out = {}
+		svn.load_diff_target_async(
+			{ root = f.root, relpath = "copied.txt", section = "changes", wc_item = "added", change_kind = "added" },
+			function(value, err)
+				out.value, out.err, out.done = value, err, true
+			end
+		)
+		ctx.wait_for(function()
+			return out.done
+		end, "copied comparison did not settle", 15000)
+		local value = assert(out.value, out.err)
+		assert(value.left.bytes == "one\ntwo\nthree\n", "copy history was replaced by an empty base")
+		assert(value.right.source.kind == "worktree" and value.right.path == f.root .. "/copied.txt")
+		assert(value.presence.left == "present")
+	end)
+	case("async_blame_reads_working_bytes_without_readfile", function()
+		local f = h.make_svn_fixture()
+		local readfile = vim.fn.readfile
+		local out, sync_reads = {}, 0
+		---@diagnostic disable-next-line: duplicate-set-field
+		vim.fn.readfile = function(...)
+			sync_reads = sync_reads + 1
+			return readfile(...)
+		end
+		local ok, err = xpcall(function()
+			svn.blame_lines_async(f.file, function(value, failure)
+				out.value, out.err, out.done = value, failure, true
+			end, { root = f.root })
+			ctx.wait_for(function()
+				return out.done
+			end, "async blame did not settle", 15000)
+			assert(out.value, out.err)
+			assert(sync_reads == 0, "async blame used a synchronous unbounded working-file read")
+		end, debug.traceback)
+		vim.fn.readfile = readfile
+		assert(ok, err)
+	end)
+	case("async_blame_preserves_supplied_text_without_eol_metadata", function()
+		local f = h.make_svn_fixture()
+		local fs = require("lazyvcs.fs")
+		local read = fs.read_file_async
+		---@diagnostic disable-next-line: duplicate-set-field
+		fs.read_file_async = function()
+			error("supplied text was replaced by disk bytes")
+		end
+		local out = {}
+		local ok, err = xpcall(function()
+			svn.blame_lines_async(f.file, function(value, failure)
+				out.value, out.err, out.done = value, failure, true
+			end, { root = f.root, text = { lines = { "one", "unsaved", "three", "extra unsaved line" } } })
+			ctx.wait_for(function()
+				return out.done
+			end, "supplied-text blame did not settle", 15000)
+			assert(out.value, out.err)
+			assert(#out.value == 4, "supplied text was not used for attribution")
+		end, debug.traceback)
+		fs.read_file_async = read
+		assert(ok, err)
+	end)
 	local function write(path, bytes)
 		local fd = assert(uv.fs_open(path, "w", 384))
 		assert(uv.fs_write(fd, bytes, 0) == #bytes)

@@ -1181,6 +1181,7 @@ local function section_content_signature(repo, section, source_opts)
 			tostring(extra.change_kind or ""),
 			tostring(extra.renamed_from or ""),
 			tostring(extra.gitlink or false),
+			tostring(extra.deleted or false),
 			tostring(extra.base_revision or ""),
 			tostring(extra.wc_item or ""),
 			tostring(extra.wc_props or ""),
@@ -1549,9 +1550,9 @@ local function repo_visible(repo, show_clean)
 		or repo.counts.remote > 0
 end
 
-local function first_interesting_repo(repos, show_clean)
+local function first_interesting_repo(repos, show_clean, overrides)
 	for _, repo in ipairs(repos) do
-		if repo_visible(repo, show_clean) then
+		if overrides[repo.root] ~= false and repo_visible(repo, show_clean) then
 			return repo.root
 		end
 	end
@@ -1904,7 +1905,8 @@ local function normalize_visibility_state(state, repos, _source_opts)
 					break
 				end
 			end
-			focused = focused or first_interesting_repo(repos, state.lazyvcs_show_clean)
+			focused = focused
+				or first_interesting_repo(repos, state.lazyvcs_show_clean, state.lazyvcs_repo_visibility_overrides)
 		end
 		if not missing_focus then
 			state.lazyvcs_focused_repo = focused

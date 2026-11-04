@@ -1,26 +1,40 @@
 local util = require("lazyvcs.util")
 local runtime = require("lazyvcs.process_runtime")
+local fs = require("lazyvcs.file_io")
 
 local M = {}
 
 function M.new()
 	local names, owned, releasing = {}, {}, {}
 	local abandoned = false
+	local finish_release
 	local registry = { shutdown = function() end, force = function() end, close_timers = function() end }
 	function registry:abandon()
 		abandoned = true
 		for _, paths in ipairs({ owned, releasing }) do
 			for path, identity in pairs(paths) do
-				local stat = vim.uv.fs_lstat(path)
-				if stat and stat.type == identity.type and stat.dev == identity.dev and stat.ino == identity.ino then
+				---@type table?
+				local stat = fs.fs_lstat(path)
+				if fs.same(stat, identity) then
 					pcall(vim.uv.fs_unlink, path)
 				end
 			end
 		end
 		names, owned, releasing = {}, {}, {}
+		-- Shutdown can drop pending metadata callbacks.
+		if finish_release then
+			finish_release()
+		end
 	end
 	function registry:record(path)
 		if type(path) == "string" then
+			if vim.fn.has("win32") == 1 then
+				local normalized = path:gsub("\\", "/")
+				-- Windows temporary names may omit the current drive.
+				if normalized:sub(1, 1) == "/" and normalized:sub(1, 2) ~= "//" then
+					path = util.normalize_literal_path(vim.fn.fnamemodify(normalized, ":p"))
+				end
+			end
 			names[path] = true
 		end
 		return path
@@ -30,7 +44,8 @@ function M.new()
 			local path = opts and opts[key]
 			if type(path) == "string" and names[path] and not owned[path] then
 				-- Capture identity before the leaf can return or another request can replace it.
-				local stat = vim.uv.fs_lstat(path)
+				---@type table?
+				local stat = fs.fs_lstat(path)
 				if stat and stat.type == "file" then
 					owned[path] = stat
 				end
@@ -38,7 +53,7 @@ function M.new()
 		end
 	end
 	function registry:header()
-		local path = util.normalize_literal_path(vim.fn.tempname()) .. "-lazyvcs-headers"
+		local path = self:record(util.normalize_literal_path(vim.fn.tempname()) .. "-lazyvcs-headers")
 		local fd, err = vim.uv.fs_open(path, "wx", 384)
 		if not fd then
 			error("Could not create private CopilotChat header file: " .. tostring(err), 0)
@@ -48,16 +63,35 @@ function M.new()
 			pcall(vim.uv.fs_unlink, path)
 			error("Could not close CopilotChat header file: " .. tostring(close_err), 0)
 		end
-		self:record(path)
 		self:adopt({ dump = path })
 		return path
 	end
 	function registry:release(done)
+		local settled = false
+		local function finish()
+			if settled then
+				return
+			end
+			settled = true
+			finish_release = nil
+			runtime.untrack(self)
+			if done then
+				done()
+			end
+		end
+		finish_release = finish
+		if runtime.is_shutting_down() then
+			self:abandon()
+			return
+		end
 		local paths = owned
 		names, owned = {}, {}
 		runtime.track(self)
 		local pending = 1
 		local function complete(err)
+			if settled then
+				return
+			end
 			if err and not tostring(err):match("^ENOENT:") then
 				util.safe_callback(function()
 					error("CopilotChat request file cleanup failed: " .. (tostring(err):gsub("[\r\n]+", " ")), 0)
@@ -65,16 +99,13 @@ function M.new()
 			end
 			pending = pending - 1
 			if pending == 0 then
-				runtime.untrack(self)
-				if done then
-					done()
-				end
+				finish()
 			end
 		end
 		for path, identity in pairs(paths) do
 			releasing[path] = identity
 			pending = pending + 1
-			vim.uv.fs_lstat(
+			fs.fs_lstat(
 				path,
 				util.safe_callback(function(err, stat)
 					if abandoned then
@@ -82,7 +113,7 @@ function M.new()
 					elseif err then
 						releasing[path] = nil
 						complete(err)
-					elseif stat.type == identity.type and stat.dev == identity.dev and stat.ino == identity.ino then
+					elseif fs.same(stat, identity) then
 						vim.uv.fs_unlink(
 							path,
 							util.safe_callback(function(unlink_err)

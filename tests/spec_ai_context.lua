@@ -114,6 +114,46 @@ return function(ctx)
 			end),
 		},
 		{
+			"test_source_control_ai_git_context_disables_textconv",
+			guarded(function()
+				local f, dir = h.make_git_fixture(), h.tempdir()
+				local windows = vim.fn.has("win32") == 1
+				local marker = dir .. "/invoked"
+				local helper = dir .. (windows and "/convert.cmd" or "/convert.sh")
+				h.write_file(
+					helper,
+					windows and ('@echo off\r\necho invoked > "' .. marker .. '"\r\necho converted\r\n')
+						or ("#!/bin/sh\nprintf invoked > '" .. marker .. "'\nprintf converted\n")
+				)
+				if not windows then
+					assert(vim.uv.fs_chmod(helper, 448))
+				end
+				h.exec({ "git", "config", "diff.test.textconv", '"' .. helper .. '"' }, f.root)
+				h.write_file(f.root .. "/.gitattributes", "sample.txt diff=test\n")
+				local start = util.system_start
+				---@diagnostic disable-next-line: duplicate-set-field
+				util.system_start = function(args, opts, done)
+					if args[1] == "git" then
+						return start(args, opts, done)
+					end
+					done({ code = 0, stdout = "Summarize changes" })
+					return {}
+				end
+				for _, context in ipairs({ "staged_first", "all" }) do
+					setup(context)
+					local completed, failure
+					ai.generate({ root = f.root, vcs = "git" }, function(_, err)
+						completed, failure = true, err
+					end)
+					wait(function()
+						return completed
+					end, "Git AI context did not finish", 15000)
+					assert(not failure, failure)
+					assert(not vim.uv.fs_stat(marker), "AI context executed a text conversion helper")
+				end
+			end),
+		},
+		{
 			"test_svn_ai_context_ignores_external_diff",
 			guarded(function()
 				local f = h.make_svn_fixture()

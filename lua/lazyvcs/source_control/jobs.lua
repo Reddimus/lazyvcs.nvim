@@ -422,19 +422,26 @@ function M.command(repo, kind, args, opts, on_done)
 		queued = true,
 	}
 
-	if job.generation ~= nil then
+	local function reject_stale()
 		local latest = latest_generation(owner, scope)
-		if latest ~= nil and job.generation < latest then
-			local reason = string.format("Cancelled stale generation %s (latest is %s)", job.generation, latest)
-			finish(job, "cancelled", nil, reason, {
-				code = 130,
-				stdout = "",
-				stderr = reason,
-				cancelled = true,
-				reason = "stale",
-			})
+		if job.generation == nil or latest == nil or job.generation >= latest then
+			return false
+		end
+		local reason = string.format("Cancelled stale generation %s (latest is %s)", job.generation, latest)
+		finish(job, "cancelled", nil, reason, {
+			code = 130,
+			stdout = "",
+			stderr = reason,
+			cancelled = true,
+			reason = "stale",
+		})
+		return true
+	end
+	if job.generation ~= nil then
+		if reject_stale() then
 			return job.id
 		end
+		local latest = latest_generation(owner, scope)
 		if latest == nil or job.generation > latest then
 			set_latest_generation(owner, scope, job.generation)
 			M.cancel(function(candidate)
@@ -443,6 +450,10 @@ function M.command(repo, kind, args, opts, on_done)
 					and candidate.generation ~= nil
 					and candidate.generation < job.generation
 			end, "superseded")
+			-- Cancellation callbacks can synchronously enqueue a newer generation.
+			if reject_stale() then
+				return job.id
+			end
 		end
 	end
 

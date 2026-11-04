@@ -50,3 +50,6 @@ deps/
 
 # Node tooling for Markdown formatting
 node_modules/
+
+# Python terminal-test helpers
+__pycache__/

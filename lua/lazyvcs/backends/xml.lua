@@ -38,16 +38,14 @@ function M.decode(value)
 		return value
 	end
 	return (
-		value
-			:gsub("&#[xX]([%da-fA-F]+);", function(number)
-				return codepoint(number, 16) or ("&#x" .. number .. ";")
-			end)
-			:gsub("&#(%d+);", function(number)
-				return codepoint(number, 10) or ("&#" .. number .. ";")
-			end)
-			:gsub("&([%a]+);", function(name)
-				return entities[name] or ("&" .. name .. ";")
-			end)
+		value:gsub("&([^;]+);", function(entity)
+			local hex = entity:match("^#[xX]([%da-fA-F]+)$")
+			local decimal = entity:match("^#(%d+)$")
+			return entities[entity]
+				or (hex and codepoint(hex, 16))
+				or (decimal and codepoint(decimal, 10))
+				or ("&" .. entity .. ";")
+		end)
 	)
 end
 

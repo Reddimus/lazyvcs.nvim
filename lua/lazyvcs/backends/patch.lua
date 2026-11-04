@@ -3,7 +3,7 @@ local util = require("lazyvcs.util")
 local process = require("lazyvcs.backends.process")
 local xml = require("lazyvcs.backends.xml")
 local paths = require("lazyvcs.backends.patch_path")
-local fs = require("lazyvcs.backends.patch_io")
+local fs = require("lazyvcs.file_io")
 local M = {}
 
 -- Classify only Git's untracked additions. Tracked native diff output remains

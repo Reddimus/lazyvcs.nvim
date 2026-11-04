@@ -27,7 +27,8 @@ stylua --check lua tests                      # Lua formatting
 lua-language-server --check=. --check_format=pretty --checklevel=Warning
 actionlint                                    # workflow lint
 zizmor --offline --format plain .github       # workflow security audit
-shellcheck tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
+shellcheck -x tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh
+python3 -m unittest discover -s tests/e2e -p 'test_*.py'
 for script in tests/minitest.sh tests/ci/install-neovim.sh tests/e2e/*.sh; do bash -n "$script" || exit "$?"; done
 
 nvim --headless -u NONE -l tests/native_smoke.lua   # startup smoke
@@ -178,10 +179,12 @@ the GitHub release.
   different physical spelling requires matching directory identities at every
   differing prefix, without traversing links. These checks reject changed
   results; they do not freeze filesystem changes or sandbox native child reads.
-- `backends/patch_io.lua` uses libuv on POSIX. On Windows,
-  `patch_windows_worker.lua` owns read-only Win32 HANDLEs and exact file IDs in
-  bounded workers. Cancellation waits for pending I/O before closing; shutdown
-  suppresses application callbacks while workers settle.
+- `file_io.lua` shares exact metadata and reads for patches and request-file
+  cleanup. It uses libuv on POSIX; `windows_file_worker.lua` provides exact file
+  IDs and read-only Win32 HANDLEs on Windows. Reads use bounded workers;
+  cancellation waits for I/O before closing. Shutdown suppresses application
+  callbacks while workers settle. Request-file adoption and final cleanup use
+  synchronous identity checks.
 - `backends/patch_svn_filenames.lua` rejects ASCII control bytes in unversioned
   paths and non-ASCII Windows SVN patch paths. Content and property bytes stay
   raw.
@@ -527,5 +530,11 @@ workflow.
 
 Test the helper with `node --test .github/scripts/review-fallback.test.cjs`.
 
-Greptile status comments must stay enabled: the fallback listens for its credit
-refusal. This repository enables them through `statusCommentsEnabled`.
+`statusCommentsEnabled` enables Greptile review summaries. Enable **Post Status
+Comments** in Greptile's dashboard for error notices. The fallback needs summary
+footers and authenticated credit refusals.
+
+If Greptile shows exhausted credits only in its dashboard, no GitHub event can
+start the fallback. After verifying that refusal, comment
+`@coderabbitai full review` on the PR. Do not request a backup for timeouts or
+other errors.
