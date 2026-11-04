@@ -121,7 +121,11 @@ def wait_file(name):
             value = path.read_text(encoding="utf-8").strip()
             if value:
                 return value
-        time.sleep(0.1)
+        # Keep Neovim redrawing while the artifact is pending; macOS PTYs fill quickly.
+        try:
+            child.read_nonblocking(65536, timeout=0.05)
+        except pexpect.TIMEOUT:
+            pass
     raise AssertionError(f"missing artifact {path}")
 
 # Await the scheduled width change after a keypress. Record the actual width on timeout
