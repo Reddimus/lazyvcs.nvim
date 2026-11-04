@@ -1,20 +1,13 @@
 {
-  "autoReview": [
-    "open",
-    "push",
-    "rebase"
-  ],
+  "autoReview": ["open", "push", "rebase"],
   "triggerOnDrafts": false,
   "effort": "apex",
   "strictness": 2,
-  "commentTypes": [
-    "logic",
-    "syntax"
-  ],
+  "commentTypes": ["logic", "syntax"],
   "ignorePatterns": "package-lock.json",
   "statusCheck": true,
   "shouldUpdateDescription": false,
-  "hideFooter": true,
+  "hideFooter": false,
   "autoApprove": {
     "enabled": false
   },
