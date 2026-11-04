@@ -107,9 +107,10 @@ A green run on an svn-less machine therefore covers less than CI does.
 
 Greptile reviews each pull request when it opens and after each push, following
 [the review policy](.github/review-policy.md) and
-[its settings](.greptile/config.json). Greptile and the Claude review workflow
-are advisory; required CI and CodeQL gate merges. Resolve every review thread
-before merging.
+[its settings](.greptile/config.json). Reviews are advisory; required CI and
+CodeQL gate merges. Resolve every review thread before merging. The legacy
+Claude workflow runs only when `CLAUDE_REVIEW_ENABLED` is explicitly set to
+`true`; leave it disabled when using the primary and backup reviewers.
 
 ## Commands
 
