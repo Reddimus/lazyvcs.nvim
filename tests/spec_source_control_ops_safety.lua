@@ -688,6 +688,41 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_source_control_discard_merge_conflict_keeps_pathspec_magic_name",
+			function()
+				if vim.fn.has("win32") == 1 then
+					error({ lazyvcs_skip = "Windows filenames cannot contain ':'" }, 0)
+				end
+				setup()
+				local f = h.make_git_fixture()
+				-- Without literal pathspecs Git reads ":magic.txt" as "magic.txt",
+				-- finds nothing in HEAD, and Discard deletes the file.
+				local name = ":magic.txt"
+				local path = f.root .. "/" .. name
+				git(f.root, "restore", "sample.txt")
+				git(f.root, "branch", "-M", "main")
+				h.write_file(path, "base\n")
+				git(f.root, "add", "--", "./" .. name)
+				git(f.root, "commit", "-m", "base")
+				git(f.root, "checkout", "-b", "other")
+				h.write_file(path, "other branch\n")
+				git(f.root, "commit", "-am", "other")
+				git(f.root, "checkout", "main")
+				h.write_file(path, "head content\n")
+				git(f.root, "commit", "-am", "head")
+				local merge = vim.system({ "git", "merge", "other" }, { cwd = f.root }):wait()
+				assert(merge.code ~= 0, "fixture must conflict")
+				local state, _, node = node_for(f, "merge", name)
+				confirmed(function()
+					ops.revert_file(state, node)
+				end)
+				success(f.root)
+				assert(git(f.root, "status", "--porcelain") == "", "Discard left the conflict or staged a deletion")
+				assert(vim.fn.filereadable(path) == 1, "Discard deleted " .. name)
+				assert(vim.fn.readfile(path)[1] == "head content", "Discard did not restore HEAD content")
+			end,
+		},
+		{
 			"test_source_control_publish_branch_with_same_named_tag",
 			function()
 				setup()
