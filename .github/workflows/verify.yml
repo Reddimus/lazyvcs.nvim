@@ -178,16 +178,20 @@ jobs:
           git config --global user.email "lazyvcs-ci@example.invalid"
           git config --global init.defaultBranch main
 
-      - name: Headless and isolated Lua tests
-        run: |
-          nvim --version
-          nvim --headless -u NONE -l tests/native_smoke.lua
-          nvim --headless -u NONE -l tests/run.lua
-
+      # The spec suite also checks MiniTest's isolation, so fetch the pinned
+      # Mini.nvim first.
       - name: Native sidebar UI tests
         env:
           MINI_TEST_PATH: ${{ runner.temp }}/mini.nvim-v0.18.0
         run: tests/minitest.sh
+
+      - name: Headless and isolated Lua tests
+        env:
+          MINI_TEST_PATH: ${{ runner.temp }}/mini.nvim-v0.18.0
+        run: |
+          nvim --version
+          nvim --headless -u NONE -l tests/native_smoke.lua
+          nvim --headless -u NONE -l tests/run.lua
 
       - name: Help and health
         run: |
@@ -280,18 +284,6 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
-      - name: Headless and isolated Lua tests
-        env:
-          LAZYVCS_TEST_GROUP: ${{ matrix.group }}
-          LAZYVCS_TEST_CASE: ""
-        shell: pwsh
-        run: |
-          nvim --version
-          nvim --headless -u NONE -l tests/native_smoke.lua
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          nvim --headless -u NONE -l tests/run.lua
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       - name: Install pinned Mini.nvim
         if: matrix.group == 'core'
         shell: pwsh
@@ -309,6 +301,18 @@ jobs:
             throw "Mini.nvim checkout did not resolve to the pinned commit $expectedCommit"
           }
           "MINI_TEST_PATH=$miniPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Headless and isolated Lua tests
+        env:
+          LAZYVCS_TEST_GROUP: ${{ matrix.group }}
+          LAZYVCS_TEST_CASE: ""
+        shell: pwsh
+        run: |
+          nvim --version
+          nvim --headless -u NONE -l tests/native_smoke.lua
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          nvim --headless -u NONE -l tests/run.lua
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Native sidebar UI tests
         if: matrix.group == 'core'
@@ -357,9 +361,10 @@ jobs:
 
       - name: Test plugin
         run: |
+          export MINI_TEST_PATH="${RUNNER_TEMP}/mini.nvim-v0.18.0"
           nvim --headless -u NONE -l tests/native_smoke.lua
+          tests/minitest.sh
           nvim --headless -u NONE -l tests/run.lua
-          MINI_TEST_PATH="${RUNNER_TEMP}/mini.nvim-v0.18.0" tests/minitest.sh
           nvim --headless -u NONE -c "helptags doc" -c "if !empty(v:errmsg) | cquit 1 | endif" -c "quitall"
           nvim --headless -u NONE -c "set rtp+=." -c "runtime plugin/lazyvcs.lua" -c "checkhealth lazyvcs" -c "if !empty(v:errmsg) || search('ERROR', 'nw') > 0 | cquit 1 | endif" -c "quitall"
 
