@@ -8,6 +8,7 @@ import time
 
 import pexpect
 
+import pty_input
 from lua_literal import quote
 
 
@@ -34,15 +35,9 @@ def pause(seconds):
 
 
 def ex(command):
-    # Keep reading while writing: macOS PTY input and output queues are small,
-    # and command-line redraws can fill output while a long write is blocked.
-    data = ":" + command + "\r"
-    for offset in range(0, len(data), 128):
-        child.send(data[offset:offset + 128])
-        try:
-            child.read_nonblocking(65536, timeout=0.01)
-        except pexpect.TIMEOUT:
-            pass
+    # macOS PTY queues are small: a long command line can fill the output queue
+    # with redraws while its input is still being written.
+    pty_input.send(child, ":" + command + "\r")
 
 
 def snapshot():

@@ -658,7 +658,7 @@ function M.start(repo, args, opts, guards, on_exit)
 					if not exists then
 						return mutate()
 					end
-					spawn({ "git", "ls-tree", "-z", "HEAD", "--", path }, function(tree)
+					spawn({ "git", "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", path }, function(tree)
 						local mode, kind, previous = tree.stdout:match("^(%d+) (%w+) %x+\t([^%z]+)%z$")
 						local directory = mode == "040000" and kind == "tree" and previous == path
 						if tree.stdout_truncated or (tree.stdout ~= "" and not directory) then
@@ -692,7 +692,7 @@ function M.start(repo, args, opts, guards, on_exit)
 						end
 						remaining = rest
 					end
-					spawn({ "git", "ls-tree", "-z", "HEAD", "--", path }, function(tree)
+					spawn({ "git", "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", path }, function(tree)
 						local mode, kind, previous = tree.stdout:match("^(%d+) (%w+) %x+\t([^%z]+)%z$")
 						if
 							tree.stdout_truncated
@@ -723,15 +723,18 @@ function M.start(repo, args, opts, guards, on_exit)
 				end
 			)
 		elseif guards.git_conflict then
-			return spawn({ "git", "ls-tree", "-z", "HEAD", "--", guards.git_conflict }, function(result)
-				if result.stdout_truncated then
-					return reject("Cannot verify conflict HEAD; refresh and retry.")
+			return spawn(
+				{ "git", "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", guards.git_conflict },
+				function(result)
+					if result.stdout_truncated then
+						return reject("Cannot verify conflict HEAD; refresh and retry.")
+					end
+					if result.stdout == "" then
+						args = { "git", "rm", "-f", "--", guards.git_conflict }
+					end
+					mutate()
 				end
-				if result.stdout == "" then
-					args = { "git", "rm", "-f", "--", guards.git_conflict }
-				end
-				mutate()
-			end)
+			)
 		end
 		mutate()
 	end
@@ -810,7 +813,7 @@ function M.start(repo, args, opts, guards, on_exit)
 			"--depth",
 			plan.recursive and "infinity" or "empty",
 			"--",
-			util.svn_target(plan.relpath),
+			util.svn_wc_target(plan.relpath),
 		}, function(result)
 			local info = require("lazyvcs.backends.xml").parse_info(result.stdout)
 			local recursive = info

@@ -1,5 +1,6 @@
 -- Real buffers are borrowed, never scratch resources. A buffer created here may
 -- be discarded only until the user modifies, lists, or displays it elsewhere.
+local compat = require("lazyvcs.compat")
 local text = require("lazyvcs.compare_text")
 local util = require("lazyvcs.util")
 local M = {}
@@ -168,15 +169,17 @@ local function setup()
 	end
 	installed = true
 	local group = vim.api.nvim_create_augroup("lazyvcs_compare_worktree", { clear = true })
-	vim.api.nvim_create_autocmd({ "BufModifiedSet", "TextChanged", "TextChangedI", "BufWinEnter" }, {
+	local buffer_changed = util.safe_callback(function(args)
+		local record = records[args.buf]
+		if record then
+			changed(record)
+		end
+	end)
+	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "BufWinEnter" }, {
 		group = group,
-		callback = util.safe_callback(function(args)
-			local record = records[args.buf]
-			if record then
-				changed(record)
-			end
-		end),
+		callback = buffer_changed,
 	})
+	compat.on_modified({ group = group, callback = buffer_changed })
 	vim.api.nvim_create_autocmd("OptionSet", {
 		group = group,
 		pattern = {

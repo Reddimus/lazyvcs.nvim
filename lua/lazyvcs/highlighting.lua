@@ -755,7 +755,8 @@ function M.release(win)
 				restore_namespace(win, state)
 			end
 		end
-	elseif same_buffer and not state.preserved and owned(win, state) then
+	elseif not state.preserved and owned(win, state) then
+		-- A window namespace survives buffer switches; restore it while this slot owns it.
 		restore_namespace(win, state)
 	end
 	if state.slot then

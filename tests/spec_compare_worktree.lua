@@ -87,7 +87,7 @@ return function(ctx)
 				api.nvim_set_current_win(s.rightwin)
 				if mode == "dirty" or mode == "saved" then
 					api.nvim_buf_set_lines(buf, 0, -1, false, { "keep my edit" })
-					api.nvim_exec_autocmds("BufModifiedSet", { buffer = buf })
+					require("lazyvcs.compat").exec_modified_autocmds(buf)
 					if mode == "saved" then
 						vim.cmd.write()
 					end

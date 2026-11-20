@@ -20,7 +20,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,6 +29,10 @@ jobs:
         uses: anthropics/claude-code-action@4d75e5f390ee76b2e09c1980ecc99ff3a2e088c8 # v1.0.275
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Keep this input. Without it the action exchanges OIDC for a Claude App
+          # token with write access, which the permissions above do not limit. The
+          # allowed gh commands are prefix rules and cannot enforce read-only calls.
+          github_token: ${{ github.token }}
           prompt: |
             /pr-review
 

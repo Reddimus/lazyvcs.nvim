@@ -1,5 +1,6 @@
 return function(ctx)
 	local h = ctx.helpers
+	local lua_flag = require("lazyvcs.windows_process").lua_flag
 	local function fixture()
 		local dir = h.tempdir()
 		local script = dir .. "/echo command.lua"
@@ -39,7 +40,7 @@ os.exit(7)
 	local function run(streaming, clear_env)
 		local dir, script = fixture()
 		local values = { "space value", "", 'quote"value', "trailing\\", "é漢字", string.rep("long", 2048) }
-		local args = { vim.v.progpath, "-ll", script }
+		local args = { vim.v.progpath, lua_flag, script }
 		vim.list_extend(args, values)
 		local input = "binary\0\r\ninput"
 		local opts = {
@@ -100,7 +101,7 @@ vim.uv.sleep(30000)
 			p.guarded(dir, function()
 				local completed
 				local handle = require("lazyvcs.util").system_start(
-					{ vim.v.progpath, "-ll", dir .. "/startup.lua" },
+					{ vim.v.progpath, lua_flag, dir .. "/startup.lua" },
 					{ cwd = dir, scope = "mutation", preserve_on_shutdown = true },
 					function(_, _, raw)
 						completed = raw
@@ -145,7 +146,7 @@ local done = assert(io.open("leaf.done", "w")); done:write("done"); done:close()
 			dir .. "/background.lua",
 			[[
 local uv = vim.uv
-local child = assert(uv.spawn(arg[1], { args = { "-ll", arg[2] }, detached = true, stdio = {} }, function() end))
+local child = assert(uv.spawn(arg[1], { args = { arg[3], arg[2] }, detached = true, stdio = {} }, function() end))
 child:unref()
 local deadline = uv.hrtime() + 5000000000
 while not uv.fs_stat("leaf.pid") do assert(uv.hrtime() < deadline, "leaf did not start"); uv.sleep(10) end
@@ -154,7 +155,7 @@ os.exit(7)
 		)
 		p.guarded(dir, function()
 			local args, opts = require("lazyvcs.windows_process").wrap(
-				{ vim.v.progpath, "-ll", dir .. "/background.lua", vim.v.progpath, dir .. "/leaf.lua" },
+				{ vim.v.progpath, lua_flag, dir .. "/background.lua", vim.v.progpath, dir .. "/leaf.lua", lua_flag },
 				{ cwd = dir, detach = true, stdout = false, stderr = false }
 			)
 			local result = vim.system(args, opts):wait(10000)
@@ -206,7 +207,7 @@ os.exit(7)
 				local script = dir .. "/environment.lua"
 				h.write_file(script, 'io.stdout:write(vim.uv.os_getenv("LAZYVCS_TRANSPORT_TEST") or "missing")')
 				local args, opts = require("lazyvcs.windows_process").wrap(
-					{ vim.v.progpath, "-ll", script },
+					{ vim.v.progpath, lua_flag, script },
 					{ clear_env = true }
 				)
 				if previous then

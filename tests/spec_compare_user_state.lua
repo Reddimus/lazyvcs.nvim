@@ -129,8 +129,12 @@ return function(ctx)
 				if name == "treesitter" then
 					vim.treesitter.start(buf, "lua")
 				end
-				local before = levels(editor)
-				assert(before:find("1", 1, true), "the editor has no folds to compare")
+				-- Treesitter computes fold levels after an asynchronous parse; wait for them.
+				local before
+				ctx.wait_for(function()
+					before = levels(editor)
+					return before:find("1", 1, true) ~= nil
+				end, "the editor has no folds to compare")
 				local s = assert(compare.open({ path = f.root, base = "HEAD" }))
 				ready(s)
 				assert(s.right == buf, "Compare did not show the editor's buffer")

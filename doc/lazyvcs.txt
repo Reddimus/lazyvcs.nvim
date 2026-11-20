@@ -1375,19 +1375,19 @@ Running repository mutations (commit, update, merge, switch, stage, unstage,
 revert, push, publish, and delete untracked) are untracked without a termination
 signal. Multi-step actions (Pull, Sync, Push, Publish) are preserved only once
 they reach their mutating step. This avoids interrupting writes that could leave
-an index.lock or a locked SVN working copy. Preserved commands lose their output
-pipes at exit. On Windows, commands requiring tree cancellation use a Neovim
-Lua helper with a hidden console and a restrictive Windows job. The helper uses
-LuaJIT's built-in FFI, inherits standard streams and waits for the command. Only
-preserved commands detach from the editor. Explicit cancellation and timeouts
-terminate the helper and its owned descendants, including native shell children.
-Normal command completion releases the job so intentional background work can
-finish independently. Background helpers should close inherited output handles.
-An exited command retains its exit result; inherited pipes drain only until the
-request deadline, then close without killing intentional background work. Other
-scopes retain taskkill fallback.
-A hook or helper that writes output afterwards can fail and abort the mutation.
-Git aborts cleanly in this case without leaving an index.lock.
+an index.lock or a locked SVN working copy. At exit, a detached Neovim reader
+takes over the output pipes of each preserved command and discards later output,
+so commands and hooks that print after exit still finish. On Windows, commands
+requiring tree cancellation use a Neovim Lua helper with a hidden console and a
+restrictive Windows job. The helper uses LuaJIT's built-in FFI, inherits
+standard streams and waits for the command. Only preserved commands detach from
+the editor. Explicit cancellation and timeouts terminate the helper and its
+owned descendants, including native shell children. Normal command completion
+releases the job so intentional background work can finish independently.
+Background helpers should close inherited output handles. An exited command
+retains its exit result; inherited pipes drain only until the request deadline,
+then close without killing intentional background work. Other scopes retain
+taskkill fallback.
 Commit message files survive exit in stdpath("cache")/lazyvcs/commit, with a
 private directory (0700) and exclusive files (0600) on POSIX. Each file is removed
 when its command physically completes while Neovim runs. Logical cancellation
@@ -1486,6 +1486,15 @@ Compatibility is tested with CopilotChat client 1e06be9 and Plenary b9fd522.
 CLI diff context reaches providers over stdin, or as a private 0600 attachment
 that is deleted on completion, so it never appears in process arguments or
 task listings. Codex runs with a read-only sandbox and approval disabled.
+
+CLI providers never start inside the repository. Each one starts in a new,
+empty, private directory under stdpath("cache")/lazyvcs/ai-cwd, so agent
+settings, hooks, and tool servers supplied by a repository are not loaded.
+LazyVCS removes the directory when the provider exits or the request is
+cancelled. If the cache directory is inside the repository, such as a
+repository rooted at your home directory, or cannot be created, the CLI
+provider reports an error instead of starting. CopilotChat.nvim is unaffected.
+Each provider's own user-level settings still apply.
 
 Sidebar generation shows a Generating label. Replacing a nonempty draft asks
 Replace or Keep. Failure notices fit one screen row, and Show Last Error in the

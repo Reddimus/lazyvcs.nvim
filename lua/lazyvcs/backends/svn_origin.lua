@@ -6,6 +6,8 @@ local M = {}
 -- Children of an uncommitted directory copy have normal schedules and destination
 -- URLs. Only the copied ancestor records the repository URL that owns their BASE.
 function M.copy_async(root, path, info, start, callback, opts)
+	-- Discovery resolves the root's symlinks; spell the entry the same way.
+	path = util.canonical_entry_path(path) or path
 	local task = Task.new(callback)
 	task:set_deadline(opts.timeout or opts.timeout_ms or 30000, "SVN copy ancestry lookup timed out")
 	local visit

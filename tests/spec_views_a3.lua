@@ -242,7 +242,8 @@ return function(ctx)
 					vim.deep_equal(before, api.nvim_buf_get_lines(buf, 0, -1, false))
 						and api.nvim_win_get_cursor(0)[1] == 2
 				)
-				vim.opt.diffopt:remove("icase")
+				-- Neovim 0.13-dev vim.opt.diffopt:remove("icase") is a no-op (bare dict-option flag).
+				vim.cmd("set diffopt-=icase")
 				local confirm = require("lazyvcs.source_control.confirm")
 				local mutation = confirm.mutation
 				local entered = false

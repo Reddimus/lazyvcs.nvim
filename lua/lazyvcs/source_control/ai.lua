@@ -378,11 +378,41 @@ local function write_private_attachment(prompt)
 	return path
 end
 
+local cwd_sequence = 0
+
+-- Agent CLIs load settings, hooks, and tool servers from their working
+-- directory and its ancestors. Start them in a private empty directory under
+-- the cache directory, never inside the repository. Neovim's temporary
+-- directory is not used: a shared temporary root can hold another user's files.
+---@param repo_root string
+---@return string? path, string? err
+local function create_private_cwd(repo_root)
+	local root = util.canonical_path(repo_root)
+	local parent = vim.fn.stdpath("cache") .. "/lazyvcs/ai-cwd"
+	local inside = "the cache directory is inside the repository"
+	-- Check before creating anything, then again with every link resolved.
+	local entry = util.canonical_entry_path(parent)
+	if not entry or util.relative_literal_path(root, entry) then
+		return nil, inside
+	end
+	pcall(vim.fn.mkdir, parent, "p", 448)
+	parent = util.canonical_path(parent)
+	if util.relative_literal_path(root, parent) then
+		return nil, inside
+	end
+	cwd_sequence = cwd_sequence + 1
+	local path = string.format("%s/%d-%.0f-%d", parent, vim.fn.getpid(), vim.uv.hrtime(), cwd_sequence)
+	local created, err = vim.uv.fs_mkdir(path, 448)
+	if not created then
+		return nil, err
+	end
+	return path
+end
+
 local function run_cli_provider(request, provider, repo, prompt, callback)
 	local opts = config.get().ai.commit_message
 	local args
 	local run_opts = {
-		cwd = repo.root,
 		timeout = opts.timeout_ms,
 		stdin = prompt,
 		on_exit_during_shutdown = true,
@@ -438,7 +468,20 @@ local function run_cli_provider(request, provider, repo, prompt, callback)
 		return callback(nil, "Unsupported commit message provider: " .. provider)
 	end
 
+	local cwd, cwd_err = create_private_cwd(repo.root)
+	if not cwd then
+		return callback(nil, "Could not create private AI provider working directory: " .. tostring(cwd_err))
+	end
+	local function remove_cwd()
+		pcall(vim.fn.delete, cwd, "rf")
+	end
+	-- Cancellation removes the directory at once; the exit callback removes
+	-- anything a still-running provider wrote there afterwards.
+	request:add_cleanup(remove_cwd)
+	run_opts.cwd = cwd
+
 	local handle = util.system_start(args, run_opts, function(result, err)
+		remove_cwd()
 		if runtime.is_shutting_down() then
 			request.active = false
 			requests.release(request.registration)

@@ -48,7 +48,7 @@ return function(ctx)
 				vim.wait(100)
 				local after_load = requests
 				api.nvim_buf_set_lines(buf, 0, -1, false, { "modified" })
-				api.nvim_exec_autocmds("BufModifiedSet", { buffer = buf })
+				require("lazyvcs.compat").exec_modified_autocmds(buf)
 				vim.wait(100)
 				assert(
 					after_load == 0 and requests == 0 and not blame._test_inline_state().views[buf],

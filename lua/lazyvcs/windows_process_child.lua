@@ -1,4 +1,4 @@
--- Standalone -ll helper: no editor initialization, stdin watcher, or user config.
+-- Runs under -ll, or under -l where -ll is gone: no user config, plugins or stdin reads.
 local uv = vim.uv
 local prefix = assert(arg[1], "missing command prefix")
 -- Older luv getenv uses a fixed buffer on Windows. Enumeration preserves full
@@ -47,7 +47,16 @@ if not handle then
 	io.stderr:write("Could not start background command: " .. tostring(err) .. "\n")
 	os.exit(127)
 end
-uv.run()
+if vim.wait then
+	-- Under -l, uv.run() would also wait on the editor's own handles.
+	while exit_code == nil do
+		vim.wait(0x7fffffff, function()
+			return exit_code ~= nil
+		end)
+	end
+else
+	uv.run()
+end
 -- A normally completed command may have intentional background descendants.
 -- Release kill-on-close before teardown, preserving the actual exit status.
 if job then

@@ -2,6 +2,7 @@
 -- A Neovim helper owns that lifetime; only preserved commands detach.
 local M = {}
 local sequence = 0
+M.lua_flag = require("lazyvcs.compat").lua_flag
 local child = vim.fn
 	.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p")
 	:gsub("windows_process.lua$", "windows_process_child.lua")
@@ -41,7 +42,7 @@ function M.wrap(args, opts)
 		env = entries
 	end
 	local wrapped = vim.tbl_extend("force", opts, { env = env })
-	return { vim.v.progpath, "-ll", child, prefix }, wrapped
+	return { vim.v.progpath, M.lua_flag, child, prefix }, wrapped
 end
 
 return M

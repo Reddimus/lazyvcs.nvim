@@ -231,6 +231,17 @@ the GitHub release.
   and closes submissions during `VimLeavePre`. Application callbacks stop during
   shutdown; scheduler completion callbacks retain `on_exit_during_shutdown` for
   worker accounting. Only `release_worker` releases scheduler capacity.
+  Preserved commands spawn like other commands. At exit,
+  `process_runtime.retain_output` gives each open output pipe of a running
+  preserved command to a detached reader that discards output until every writer
+  closes it. Without it, the next write fails with EPIPE once the editor's read
+  ends close, and Git dies from SIGPIPE. POSIX readers run `cat`, which does not
+  depend on the editor's installation; a self-mounting build such as an AppImage
+  can unmount it when the editor exits. Windows readers run `process_drain.lua`
+  with `nvim -ll`, or `-l` on Neovim 0.13. On Windows the command inherits the
+  pipes of the `windows_process_child.lua` helper, so the same handoff covers
+  it. The handoff costs nothing before exit and two process spawns per running
+  preserved command at exit.
 - `source_control/mutation_start.lua` holds one scheduler worker and one
   deadline across asynchronous preflight and mutation. Recheck branch and buffer
   guards before spawning the mutation; never enqueue preflight into the same

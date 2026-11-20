@@ -52,6 +52,9 @@ return function(ctx)
 			vim.cmd("silent! only!")
 			vim.cmd("diffoff")
 			vim.o.columns, vim.o.lines, vim.o.diffopt = columns, lines, diffopt
+			-- Under nvim -l, shrinking 'lines' leaves this tab's 45-row layout in place
+			-- and the next redraw writes past the grid. Re-entering a tab lays it out again.
+			vim.cmd("noautocmd tab split | noautocmd tabclose")
 			assert(ok, err)
 		end
 	end

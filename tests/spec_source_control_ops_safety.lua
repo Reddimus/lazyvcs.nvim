@@ -514,6 +514,79 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_source_control_svn_discard_retries_after_cancelled_preflight",
+			function()
+				setup()
+				local f = h.make_svn_fixture()
+				local jobs = require("lazyvcs.source_control.jobs")
+				local state, repo = state_for(f.root, "svn")
+				-- An earlier mutation gives the repository a mutation generation.
+				action(state, repo, "update")
+				success(f.root)
+				local node
+				state, _, node = node_for(f, "changes", "sample.txt", "svn")
+				jobs.clear_history()
+				ops.revert_file(state, node)
+				assert(ops.cancel(f.root, { owner = f.root }) >= 1, "cancel did not select the Discard preflight")
+				ctx.wait_for(function()
+					for _, item in ipairs(jobs.history()) do
+						if item.kind == "svn_discard_info" and item.status == "cancelled" then
+							return true
+						end
+					end
+				end, "Discard preflight was not cancelled", 15000)
+				state, _, node = node_for(f, "changes", "sample.txt", "svn")
+				ops.revert_file(state, node)
+				ctx.wait_for(function()
+					return table.concat(vim.fn.readfile(f.file), "\n") == "one\ntwo\nthree"
+				end, "Discard after a cancelled preflight did not restore the file", 15000)
+				success(f.root)
+			end,
+		},
+		{
+			"test_source_control_svn_discard_entries_under_caret_directory",
+			function()
+				setup()
+				local f = h.make_svn_fixture()
+				-- SVN reads a leading "^/" as a repository URL, even after "--".
+				local relpath = "^/f.txt"
+				local path = f.root .. "/" .. relpath
+				vim.fn.mkdir(f.root .. "/^", "p")
+				h.write_file(path, "base\n")
+				h.exec({ "svn", "add", "--", "./^@" }, f.root)
+				h.exec({ "svn", "commit", "-m", "caret", "--", "./^@" }, f.root)
+				local backends = require("lazyvcs.backends")
+				h.write_file(path, "changed\n")
+				local versioned, versioned_err, done
+				backends.is_versioned_async(path, function(value, err)
+					versioned, versioned_err, done = value, err, true
+				end)
+				ctx.wait_for(function()
+					return done
+				end, "versioned check did not finish", 15000)
+				assert(versioned == true, "caret entry was not versioned: " .. tostring(versioned_err))
+				local reverted, revert_err
+				done = false
+				backends.revert_file_async(path, function(value, err)
+					reverted, revert_err, done = value, err, true
+				end)
+				ctx.wait_for(function()
+					return done
+				end, "backend revert did not finish", 15000)
+				assert(
+					reverted and vim.fn.readfile(path)[1] == "base",
+					"backend revert failed: " .. tostring(revert_err)
+				)
+				h.write_file(path, "changed again\n")
+				local state, _, node = node_for(f, "changes", relpath, "svn")
+				ops.revert_file(state, node)
+				ctx.wait_for(function()
+					return vim.fn.readfile(path)[1] == "base"
+				end, "sidebar Discard did not restore the caret entry", 15000)
+				success(f.root)
+			end,
+		},
+		{
 			"test_source_control_stage_allows_saved_file_and_tracked_submodule",
 			function()
 				setup()
@@ -685,6 +758,41 @@ return function(ctx)
 						assert(vim.fn.readfile(f.file)[1] == "head content")
 					end
 				end
+			end,
+		},
+		{
+			"test_source_control_discard_merge_conflict_keeps_pathspec_magic_name",
+			function()
+				if vim.fn.has("win32") == 1 then
+					error({ lazyvcs_skip = "Windows filenames cannot contain ':'" }, 0)
+				end
+				setup()
+				local f = h.make_git_fixture()
+				-- Without literal pathspecs Git reads ":magic.txt" as "magic.txt",
+				-- finds nothing in HEAD, and Discard deletes the file.
+				local name = ":magic.txt"
+				local path = f.root .. "/" .. name
+				git(f.root, "restore", "sample.txt")
+				git(f.root, "branch", "-M", "main")
+				h.write_file(path, "base\n")
+				git(f.root, "add", "--", "./" .. name)
+				git(f.root, "commit", "-m", "base")
+				git(f.root, "checkout", "-b", "other")
+				h.write_file(path, "other branch\n")
+				git(f.root, "commit", "-am", "other")
+				git(f.root, "checkout", "main")
+				h.write_file(path, "head content\n")
+				git(f.root, "commit", "-am", "head")
+				local merge = vim.system({ "git", "merge", "other" }, { cwd = f.root }):wait()
+				assert(merge.code ~= 0, "fixture must conflict")
+				local state, _, node = node_for(f, "merge", name)
+				confirmed(function()
+					ops.revert_file(state, node)
+				end)
+				success(f.root)
+				assert(git(f.root, "status", "--porcelain") == "", "Discard left the conflict or staged a deletion")
+				assert(vim.fn.filereadable(path) == 1, "Discard deleted " .. name)
+				assert(vim.fn.readfile(path)[1] == "head content", "Discard did not restore HEAD content")
 			end,
 		},
 		{

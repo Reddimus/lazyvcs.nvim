@@ -84,6 +84,12 @@ function M.svn_target(path, revision)
 	return path .. "@" .. (revision and tostring(revision) or "")
 end
 
+---Target a working-copy path relative to the working copy root. SVN reads a
+---leading `^` as a repository-root URL, even after `--`.
+function M.svn_wc_target(relpath, revision)
+	return M.svn_target(relpath:sub(1, 1) == "^" and ("./" .. relpath) or relpath, revision)
+end
+
 local function relative_normalized_path(root, path, ignorecase)
 	local base, target = root, path
 	if ignorecase then
@@ -942,6 +948,12 @@ function M.system_start(args, opts, on_exit)
 		if preserve_on_shutdown and not forced_result then
 			self:close_timers()
 			runtime.untrack(self)
+			-- Same private SystemObj state as reap_retained_pipes.
+			---@diagnostic disable-next-line: invisible
+			local state = process and process._state
+			if state then
+				runtime.retain_output({ state.stdout or false, state.stderr or false })
+			end
 			return
 		end
 		if not begin_termination("cancelled", 15, "editor shutdown") and not done and not force_sent then
