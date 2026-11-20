@@ -8,6 +8,12 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Work on Neovim 0.13, which removed the `BufModifiedSet` event. Blame,
+  selected-line reports, and Compare now notice unsaved changes through
+  `OptionSet modified` there.
+
 ## [0.13.2] - 2026-11-03
 
 ### Fixed

@@ -250,9 +250,10 @@ function M.open(first, last)
 			{ group = request.group, pattern = context.options, callback = changed }
 		)
 		vim.api.nvim_create_autocmd(
-			{ "BufModifiedSet", "TextChanged", "TextChangedI" },
+			{ "TextChanged", "TextChangedI" },
 			{ group = request.group, buffer = source, callback = changed }
 		)
+		compat.on_modified({ group = request.group, buffer = source, callback = changed })
 	end
 	local check = protect(request, function()
 		if not request.closed and not owns_report(request) then

@@ -724,14 +724,12 @@ local function observe_source(view, bufnr, close, changed)
 			vim.schedule(check)
 		end, close),
 	})
-	vim.api.nvim_create_autocmd(
-		{ "TextChanged", "TextChangedI", "BufWritePost", "BufReadPost", "BufFilePost", "BufModifiedSet" },
-		{
-			group = view.augroup,
-			buffer = bufnr,
-			callback = protect(changed, close),
-		}
-	)
+	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "BufWritePost", "BufReadPost", "BufFilePost" }, {
+		group = view.augroup,
+		buffer = bufnr,
+		callback = protect(changed, close),
+	})
+	compat.on_modified({ group = view.augroup, buffer = bufnr, callback = protect(changed, close) })
 	vim.api.nvim_create_autocmd("OptionSet", {
 		group = view.augroup,
 		pattern = context.options,
@@ -1291,25 +1289,25 @@ function M.setup()
 			end
 		end),
 	})
-	vim.api.nvim_create_autocmd(
-		{ "TextChanged", "TextChangedI", "BufWritePost", "BufReadPost", "BufFilePost", "BufModifiedSet" },
-		{
-			group = augroup,
-			callback = protect(function(args)
-				local hidden_load = (
-					args.event == "BufReadPost"
-					or args.event == "BufModifiedSet"
-					or args.event == "BufWritePost"
-					or args.event == "BufFilePost"
-				)
-					and not inline_views[args.buf]
-					and not shown_in_window(args.buf)
-				if inline_enabled and not hidden_load then
-					invalidate_inline(args.buf)
-				end
-			end),
-		}
-	)
+	-- Loads, writes, renames and 'modified' changes of hidden buffers leave no inline view to invalidate.
+	local function buffer_changed(bufnr, load_like)
+		local hidden_load = load_like and not inline_views[bufnr] and not shown_in_window(bufnr)
+		if inline_enabled and not hidden_load then
+			invalidate_inline(bufnr)
+		end
+	end
+	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "BufWritePost", "BufReadPost", "BufFilePost" }, {
+		group = augroup,
+		callback = protect(function(args)
+			buffer_changed(args.buf, args.event ~= "TextChanged" and args.event ~= "TextChangedI")
+		end),
+	})
+	compat.on_modified({
+		group = augroup,
+		callback = protect(function(args)
+			buffer_changed(args.buf, true)
+		end),
+	})
 	vim.api.nvim_create_autocmd("OptionSet", {
 		group = augroup,
 		pattern = context.options,
