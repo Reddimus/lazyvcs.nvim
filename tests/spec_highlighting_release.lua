@@ -8,14 +8,32 @@ return function(ctx)
 			name,
 			function()
 				local global_ns, hidden = api.nvim_get_hl_ns({}), vim.o.hidden
+				local buffers = {}
+				for _, buf in ipairs(api.nvim_list_bufs()) do
+					buffers[buf] = true
+				end
+				-- Setting a window namespace, even back to -1, changes how Neovim 0.11
+				-- treats that window. Use a tab of its own and close it, so later specs
+				-- never reuse a window this one touched.
+				local home = api.nvim_get_current_tabpage()
+				vim.cmd("tabnew")
 				local ok, err = xpcall(fn, debug.traceback)
 				api.nvim_set_hl_ns(global_ns)
 				vim.o.hidden = true
 				h.cleanup()
+				for _, win in ipairs(api.nvim_list_wins()) do
+					pcall(require("lazyvcs.highlighting").release, win)
+				end
+				if api.nvim_tabpage_is_valid(home) then
+					api.nvim_set_current_tabpage(home)
+				end
 				vim.cmd("silent! tabonly!")
 				vim.cmd("silent! only!")
-				api.nvim_win_set_hl_ns(0, -1)
-				vim.wo.winhighlight = ""
+				for _, buf in ipairs(api.nvim_list_bufs()) do
+					if not buffers[buf] then
+						pcall(api.nvim_buf_delete, buf, { force = true })
+					end
+				end
 				vim.o.hidden = hidden
 				assert(ok, err)
 			end,

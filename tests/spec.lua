@@ -7440,9 +7440,9 @@ vim.list_extend(
 	cases,
 	require("spec_diff_style_saved")({ helpers = helpers, wait_for = wait_for, open_diff = open_diff })
 )
+vim.list_extend(cases, require("spec_highlighting_release")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_highlighting")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_compat_events")({ helpers = helpers, wait_for = wait_for }))
-vim.list_extend(cases, require("spec_highlighting_release")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_bytes")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_reload")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_blame_viewport")({ helpers = helpers, wait_for = wait_for }))
