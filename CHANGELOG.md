@@ -8,25 +8,28 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-11-20
+
 ### Fixed
 
-- Work on Neovim 0.13, which removed the `BufModifiedSet` event. Blame,
-  selected-line reports, and Compare now notice unsaved changes through
-  `OptionSet modified` there.
+- Work on Neovim 0.13. Blame, selected-line reports, and Compare notice unsaved
+  changes through `OptionSet modified`, which replaced `BufModifiedSet`, and
+  helper processes no longer need the removed `-ll` interpreter.
+- Let a push, commit, or other change finish when Neovim exits while it is still
+  running, even if it prints output afterwards.
 - Restore a conflicted file whose name starts with `:` when you Discard it,
   instead of deleting it.
 - Allow SVN Discard again after cancelling one while it checks the file.
 - Discard and revert files under a top-level SVN directory named `^`.
 - Show blame in uncommitted SVN directory copies opened through a symlinked
   path.
+- Restore a window's highlight namespace when a live diff or Compare pane closes
+  after its buffer changed.
+
 ### Security
 
 - Start AI commit-message CLI providers outside the repository, so agent
   settings and hooks supplied by a repository are not loaded.
-- Restore a window's highlight namespace when a live diff or Compare pane closes
-  after its buffer changed.
-- Let a push, commit or other change finish when Neovim exits while it is still
-  running, even if it prints output afterwards.
 
 ## [0.13.2] - 2026-11-03
 
@@ -995,5 +998,6 @@ First tagged release.
 [0.12.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.1...v0.12.2
 [0.13.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.2...v0.13.0
-[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.3...HEAD
+[0.13.3]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.2...v0.13.3
 [0.13.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.1...v0.13.2
