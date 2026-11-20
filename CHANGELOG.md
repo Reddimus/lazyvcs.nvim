@@ -19,6 +19,10 @@ and this project adheres to
 - Discard and revert files under a top-level SVN directory named `^`.
 - Show blame in uncommitted SVN directory copies opened through a symlinked
   path.
+### Security
+
+- Start AI commit-message CLI providers outside the repository, so agent
+  settings and hooks supplied by a repository are not loaded.
 
 ## [0.13.2] - 2026-11-03
 

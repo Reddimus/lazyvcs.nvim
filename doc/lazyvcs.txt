@@ -1487,6 +1487,15 @@ CLI diff context reaches providers over stdin, or as a private 0600 attachment
 that is deleted on completion, so it never appears in process arguments or
 task listings. Codex runs with a read-only sandbox and approval disabled.
 
+CLI providers never start inside the repository. Each one starts in a new,
+empty, private directory under stdpath("cache")/lazyvcs/ai-cwd, so agent
+settings, hooks, and tool servers supplied by a repository are not loaded.
+LazyVCS removes the directory when the provider exits or the request is
+cancelled. If the cache directory is inside the repository, such as a
+repository rooted at your home directory, or cannot be created, the CLI
+provider reports an error instead of starting. CopilotChat.nvim is unaffected.
+Each provider's own user-level settings still apply.
+
 Sidebar generation shows a Generating label. Replacing a nonempty draft asks
 Replace or Keep. Failure notices fit one screen row, and Show Last Error in the
 repository actions displays full diagnostics. Invalid UTF-8 context bytes become
