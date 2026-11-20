@@ -23,6 +23,8 @@ and this project adheres to
 
 - Start AI commit-message CLI providers outside the repository, so agent
   settings and hooks supplied by a repository are not loaded.
+- Restore a window's highlight namespace when a live diff or Compare pane closes
+  after its buffer changed.
 
 ## [0.13.2] - 2026-11-03
 
