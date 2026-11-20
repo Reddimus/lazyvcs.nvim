@@ -108,13 +108,13 @@ return function(ctx)
 			ops.revert_file(f.state, f.node)
 			wait(function()
 				return complete
-			end, "unlink was not submitted")
+			end, "unlink was not submitted", 15000)
 			if mode == "cancel" then
 				assert(jobs.cancel_repo(f.root) == 1, "cancel did not select the discard job")
 			else
 				wait(function()
 					return terminated
-				end, "unlink deadline did not fire")
+				end, "unlink deadline did not fire", 15000)
 			end
 			jobs.command({ root = f.root, vcs = "git" }, "after", { "git", "status" }, {
 				start = function(_, _, done)
@@ -128,7 +128,7 @@ return function(ctx)
 			complete = nil
 			wait(function()
 				return queued
-			end, "unlink completion did not release worker")
+			end, "unlink completion did not release worker", 15000)
 			local discard
 			for _, item in ipairs(jobs.history()) do
 				if item.kind == "delete_untracked" then
