@@ -544,6 +544,49 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_source_control_svn_discard_entries_under_caret_directory",
+			function()
+				setup()
+				local f = h.make_svn_fixture()
+				-- SVN reads a leading "^/" as a repository URL, even after "--".
+				local relpath = "^/f.txt"
+				local path = f.root .. "/" .. relpath
+				vim.fn.mkdir(f.root .. "/^", "p")
+				h.write_file(path, "base\n")
+				h.exec({ "svn", "add", "--", "./^@" }, f.root)
+				h.exec({ "svn", "commit", "-m", "caret", "--", "./^@" }, f.root)
+				local backends = require("lazyvcs.backends")
+				h.write_file(path, "changed\n")
+				local versioned, versioned_err, done
+				backends.is_versioned_async(path, function(value, err)
+					versioned, versioned_err, done = value, err, true
+				end)
+				ctx.wait_for(function()
+					return done
+				end, "versioned check did not finish", 15000)
+				assert(versioned == true, "caret entry was not versioned: " .. tostring(versioned_err))
+				local reverted, revert_err
+				done = false
+				backends.revert_file_async(path, function(value, err)
+					reverted, revert_err, done = value, err, true
+				end)
+				ctx.wait_for(function()
+					return done
+				end, "backend revert did not finish", 15000)
+				assert(
+					reverted and vim.fn.readfile(path)[1] == "base",
+					"backend revert failed: " .. tostring(revert_err)
+				)
+				h.write_file(path, "changed again\n")
+				local state, _, node = node_for(f, "changes", relpath, "svn")
+				ops.revert_file(state, node)
+				ctx.wait_for(function()
+					return vim.fn.readfile(path)[1] == "base"
+				end, "sidebar Discard did not restore the caret entry", 15000)
+				success(f.root)
+			end,
+		},
+		{
 			"test_source_control_stage_allows_saved_file_and_tracked_submodule",
 			function()
 				setup()

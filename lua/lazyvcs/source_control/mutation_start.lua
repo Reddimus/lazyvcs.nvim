@@ -813,7 +813,7 @@ function M.start(repo, args, opts, guards, on_exit)
 			"--depth",
 			plan.recursive and "infinity" or "empty",
 			"--",
-			util.svn_target(plan.relpath),
+			util.svn_wc_target(plan.relpath),
 		}, function(result)
 			local info = require("lazyvcs.backends.xml").parse_info(result.stdout)
 			local recursive = info

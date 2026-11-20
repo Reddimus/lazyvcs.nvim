@@ -1381,7 +1381,7 @@ function M.revert_file(state, node)
 	else
 		action = "svn_revert"
 		prompt = "Discard local SVN changes for " .. relpath .. " in " .. repo.name .. "?"
-		args = { "svn", "revert", "--", util.svn_target(relpath) }
+		args = { "svn", "revert", "--", util.svn_wc_target(relpath) }
 	end
 	local function discard(subtrees, svn_discard)
 		if not buffer_guard.check(repo.root, paths, subtrees) then
@@ -1434,7 +1434,7 @@ function M.revert_file(state, node)
 	start_command(
 		repo,
 		"svn_discard_info",
-		{ "svn", "info", "--xml", "--depth", "empty", "--", util.svn_target(relpath) },
+		{ "svn", "info", "--xml", "--depth", "empty", "--", util.svn_wc_target(relpath) },
 		function(result, err)
 			if err then
 				return util.notify((tostring(err):gsub("[\r\n]+", " ")), vim.log.levels.ERROR)
@@ -1447,7 +1447,7 @@ function M.revert_file(state, node)
 				and (info.schedule == "delete" or info.schedule == "add" or info.schedule == "replace")
 			if recursive then
 				prompt = "Discard SVN directory " .. relpath .. " and its descendants in " .. repo.name .. "?"
-				args = { "svn", "revert", "--depth", "infinity", "--", util.svn_target(relpath) }
+				args = { "svn", "revert", "--depth", "infinity", "--", util.svn_wc_target(relpath) }
 			end
 			discard(
 				recursive and paths or nil,

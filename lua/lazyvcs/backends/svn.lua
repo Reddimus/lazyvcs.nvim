@@ -328,7 +328,7 @@ function M.is_versioned_async(path, on_done, opts)
 		if not relpath then
 			return task:finish(false, path_err)
 		end
-		task:add(process.start({ "svn", "info", "--", literal_target(relpath) }, {
+		task:add(process.start({ "svn", "info", "--", util.svn_wc_target(relpath) }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 		}, function(result, tracked_err, raw)
@@ -529,7 +529,7 @@ function M.revert_file(path)
 	if not relpath then
 		return nil, path_err
 	end
-	return util.system({ "svn", "revert", "--", literal_target(relpath) }, { cwd = root })
+	return util.system({ "svn", "revert", "--", util.svn_wc_target(relpath) }, { cwd = root })
 end
 
 function M.revert_file_async(path, on_done, opts)
@@ -546,7 +546,7 @@ function M.revert_file_async(path, on_done, opts)
 		if not relpath then
 			return task:finish(nil, path_err)
 		end
-		task:add(process.start({ "svn", "info", "--", literal_target(relpath) }, {
+		task:add(process.start({ "svn", "info", "--", util.svn_wc_target(relpath) }, {
 			cwd = info.root,
 			timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 		}, function(_, tracked_err, raw)
@@ -564,7 +564,7 @@ function M.revert_file_async(path, on_done, opts)
 				return task:finish(nil, current_err or "Repository entry changed before discard; retry the action")
 			end
 			local start = opts.start or util.system_start
-			task:add(start({ "svn", "revert", "--", literal_target(relpath) }, {
+			task:add(start({ "svn", "revert", "--", util.svn_wc_target(relpath) }, {
 				cwd = info.root,
 				timeout = opts.timeout_ms or ASYNC_TIMEOUT_MS,
 				preserve_on_shutdown = true,

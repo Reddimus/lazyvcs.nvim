@@ -84,6 +84,12 @@ function M.svn_target(path, revision)
 	return path .. "@" .. (revision and tostring(revision) or "")
 end
 
+---Target a working-copy path relative to the working copy root. SVN reads a
+---leading `^` as a repository-root URL, even after `--`.
+function M.svn_wc_target(relpath, revision)
+	return M.svn_target(relpath:sub(1, 1) == "^" and ("./" .. relpath) or relpath, revision)
+end
+
 local function relative_normalized_path(root, path, ignorecase)
 	local base, target = root, path
 	if ignorecase then
