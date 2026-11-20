@@ -7467,6 +7467,7 @@ vim.list_extend(cases, require("spec_backend_resolution")({ helpers = helpers, w
 vim.list_extend(cases, require("spec_svn_ignores")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_svn_ignore_targets")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_svn_unicode_roots")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_svn_copy_origin")({ helpers = helpers, wait_for = wait_for }))
 
 vim.list_extend(cases, require("spec_commands_config")({ helpers = helpers, wait_for = wait_for }))
 

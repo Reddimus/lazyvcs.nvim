@@ -13,6 +13,12 @@ and this project adheres to
 - Work on Neovim 0.13, which removed the `BufModifiedSet` event. Blame,
   selected-line reports, and Compare now notice unsaved changes through
   `OptionSet modified` there.
+- Restore a conflicted file whose name starts with `:` when you Discard it,
+  instead of deleting it.
+- Allow SVN Discard again after cancelling one while it checks the file.
+- Discard and revert files under a top-level SVN directory named `^`.
+- Show blame in uncommitted SVN directory copies opened through a symlinked
+  path.
 
 ## [0.13.2] - 2026-11-03
 
