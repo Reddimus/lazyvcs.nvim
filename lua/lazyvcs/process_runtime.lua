@@ -7,6 +7,13 @@ local notify
 -- Resolve at load; shutdown can run after the working directory changes.
 local source = debug.getinfo(1, "S").source:sub(2)
 local drain = (vim.uv.fs_realpath(source) or source):gsub("process_runtime%.lua$", "process_drain.lua")
+-- Exit-time pipe readers, in order of preference. On POSIX, cat needs nothing
+-- from the editor's own installation, which may be a self-mounting image such as
+-- an AppImage. Windows has no cat. The Lua helper is the fallback everywhere.
+local readers = { { vim.v.progpath, { require("lazyvcs.compat").lua_flag, drain } } }
+if vim.fn.has("win32") == 0 then
+	table.insert(readers, 1, { "cat", {} })
+end
 
 local function protected(fn, ...)
 	local ok, err = pcall(fn, ...)
@@ -25,19 +32,24 @@ function M.retain_output(pipes)
 			return pipe:is_closing()
 		end)
 		if pipe and ok and not closing then
-			local reader
-			ok, reader = pcall(vim.uv.spawn, vim.v.progpath, {
-				args = { require("lazyvcs.compat").lua_flag, drain },
-				stdio = { pipe },
-				detached = true,
-				hide = true,
-			}, function()
-				if reader then
-					reader:close()
+			for _, candidate in ipairs(readers) do
+				local reader
+				-- Output goes to the null device: stdio entries past stdin are unset.
+				local spawned, handle = pcall(vim.uv.spawn, candidate[1], {
+					args = candidate[2],
+					stdio = { pipe },
+					detached = true,
+					hide = true,
+				}, function()
+					if reader then
+						reader:close()
+					end
+				end)
+				if spawned and handle then
+					reader = handle
+					reader:unref()
+					break
 				end
-			end)
-			if ok and reader then
-				reader:unref()
 			end
 		end
 	end
