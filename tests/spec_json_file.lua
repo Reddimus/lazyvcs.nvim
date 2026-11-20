@@ -76,19 +76,28 @@ vim.opt.runtimepath:prepend(%q)
 local open = vim.uv.fs_open
 local opened, closed, flags_seen = 0, 0, false
 local close = vim.uv.fs_close
+-- Count only the swapped path: Neovim 0.13 vim.system() also closes pipe fds.
+local fifo_fds = {}
 vim.uv.fs_open = function(name, flags, ...)
-	if name == %q then
+	local swapped = name == %q
+	if swapped then
 		assert(vim.uv.fs_unlink(name))
 		assert(vim.system({"mkfifo", name}):wait().code == 0)
 		flags_seen = type(flags) == "number" and bit.band(flags, vim.uv.constants.O_NONBLOCK) ~= 0
 	end
 	local fd, err = open(name, flags, ...)
-	if fd then opened = opened + 1 end
+	if fd and swapped then
+		opened = opened + 1
+		fifo_fds[fd] = true
+	end
 	return fd, err
 end
-vim.uv.fs_close = function(fd)
-	closed = closed + 1
-	return close(fd)
+vim.uv.fs_close = function(fd, ...)
+	if fifo_fds[fd] then
+		closed = closed + 1
+		fifo_fds[fd] = nil
+	end
+	return close(fd, ...)
 end
 assert(vim.deep_equal(require("lazyvcs.json_file").read(%q), {}), "FIFO did not load defaults")
 assert(flags_seen, "FIFO open was not nonblocking")

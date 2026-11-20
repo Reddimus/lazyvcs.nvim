@@ -270,6 +270,9 @@ return function(ctx)
 	end
 	for _, option in ipairs({ "fileformat", "fileencoding", "bomb", "endofline", "fixendofline", "modified" }) do
 		case("final_cancel_" .. option, function()
+			if option == "modified" and not require("lazyvcs.compat").buf_modified_set then
+				error({ lazyvcs_skip = "Neovim 0.13 sends no OptionSet 'modified' for unlisted nofile buffers" })
+			end
 			local f, task, fired, before = fixture(), nil, 0, nil
 			hook("OptionSet", option, function()
 				if task and fired == 0 then

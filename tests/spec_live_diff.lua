@@ -932,7 +932,19 @@ return function(ctx)
 		end
 		local ok, err = xpcall(function()
 			local b = vim.fn.bufadd(f.file2)
-			vim.api.nvim_exec_autocmds("BufReadPre", { buffer = b })
+			-- :edit fires BufReadPre in the reading window. Neovim 0.13 runs
+			-- nvim_exec_autocmds({ buf }) in an autocmd window instead.
+			local match = vim.fn.fnamemodify(f.file2, ":p")
+			for _, au in ipairs(vim.api.nvim_get_autocmds({ group = "lazyvcs_global", event = "BufReadPre" })) do
+				au.callback({
+					id = au.id,
+					event = "BufReadPre",
+					group = au.group,
+					buf = b,
+					file = f.file2,
+					match = match,
+				})
+			end
 			assert(state.peek_pending_transfer(s.editable_win), "guard did not record read")
 			wait(function()
 				return not state.peek_pending_transfer(s.editable_win)

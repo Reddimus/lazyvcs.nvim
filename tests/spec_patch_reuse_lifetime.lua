@@ -159,6 +159,9 @@ return function(ctx)
 		"modified",
 	}) do
 		case("fill_close_" .. option, function()
+			if option == "modified" and not require("lazyvcs.compat").buf_modified_set then
+				error({ lazyvcs_skip = "Neovim 0.13 sends no OptionSet 'modified' for unlisted nofile buffers" })
+			end
 			local f, fired = fixture(), 0
 			api.nvim_create_autocmd("OptionSet", {
 				group = group,
