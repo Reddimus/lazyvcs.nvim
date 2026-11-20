@@ -514,6 +514,36 @@ return function(ctx)
 			end,
 		},
 		{
+			"test_source_control_svn_discard_retries_after_cancelled_preflight",
+			function()
+				setup()
+				local f = h.make_svn_fixture()
+				local jobs = require("lazyvcs.source_control.jobs")
+				local state, repo = state_for(f.root, "svn")
+				-- An earlier mutation gives the repository a mutation generation.
+				action(state, repo, "update")
+				success(f.root)
+				local node
+				state, _, node = node_for(f, "changes", "sample.txt", "svn")
+				jobs.clear_history()
+				ops.revert_file(state, node)
+				assert(ops.cancel(f.root, { owner = f.root }) >= 1, "cancel did not select the Discard preflight")
+				ctx.wait_for(function()
+					for _, item in ipairs(jobs.history()) do
+						if item.kind == "svn_discard_info" and item.status == "cancelled" then
+							return true
+						end
+					end
+				end, "Discard preflight was not cancelled", 15000)
+				state, _, node = node_for(f, "changes", "sample.txt", "svn")
+				ops.revert_file(state, node)
+				ctx.wait_for(function()
+					return table.concat(vim.fn.readfile(f.file), "\n") == "one\ntwo\nthree"
+				end, "Discard after a cancelled preflight did not restore the file", 15000)
+				success(f.root)
+			end,
+		},
+		{
 			"test_source_control_stage_allows_saved_file_and_tracked_submodule",
 			function()
 				setup()

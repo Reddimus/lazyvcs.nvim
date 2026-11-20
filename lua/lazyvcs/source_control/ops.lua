@@ -524,7 +524,8 @@ local function start_command(repo, kind, args, on_done, opts)
 		output_limit_bytes = opts.output_limit_bytes,
 		owner = opts.owner or repo.root,
 		scope = opts.scope or (read_only_commands[kind] and kind or "mutation"),
-		generation = opts.generation or mutation_generations[repo.root],
+		-- `generation = false` keeps a read-only preflight out of mutation generations.
+		generation = opts.generation ~= false and (opts.generation or mutation_generations[repo.root]) or nil,
 		priority = opts.priority or 100,
 		start = process_start,
 	}, function(result, err, raw)
@@ -1452,7 +1453,10 @@ function M.revert_file(state, node)
 				recursive and paths or nil,
 				{ relpath = relpath, recursive = recursive, kind = info.kind, schedule = info.schedule }
 			)
-		end
+		end,
+		-- This preflight runs before start_repo_job advances the generation, so
+		-- cancelling it must not mark later Discard preflights stale.
+		{ generation = false }
 	)
 end
 
