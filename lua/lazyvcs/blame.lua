@@ -1065,7 +1065,11 @@ function M.line_log()
 		return protect(fn, close)
 	end
 	view.augroup = vim.api.nvim_create_augroup("lazyvcs_line_log_" .. source_bufnr, { clear = true })
-	observe_source(view, source_bufnr, close, function()
+	observe_source(view, source_bufnr, close, function(args)
+		-- Neovim 0.13 reports 'modified' on a later tick, even for an edit made before this capture.
+		if args and args.event == "OptionSet" and args.match == "modified" and context.valid(captured, true) then
+			return
+		end
 		close()
 	end)
 	local function valid()

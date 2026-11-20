@@ -19,7 +19,7 @@ return function(ctx)
 				end)
 				return {}
 			end
-			wrapped = args[1] == vim.v.progpath and args[2] == "-ll"
+			wrapped = args[1] == vim.v.progpath and args[2] == require("lazyvcs.windows_process").lua_flag
 			exit = cb
 			local closing = false
 			return {

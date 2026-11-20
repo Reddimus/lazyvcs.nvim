@@ -19,6 +19,10 @@ function M.keymap_set(mode, lhs, rhs, opts)
 	return vim.keymap.set(mode, lhs, rhs, opts)
 end
 
+---Flag that runs a standalone Lua helper script. Neovim 0.13 removed the -ll
+---interpreter; its -l mode likewise skips user config, plugins, shada and swap files.
+M.lua_flag = vim.fn.has("nvim-0.13") == 1 and "-l" or "-ll"
+
 ---Neovim 0.13 removed BufModifiedSet. Its replacement, `OptionSet modified`,
 ---runs on the next event-loop tick with the changed buffer current.
 M.buf_modified_set = vim.fn.exists("##BufModifiedSet") == 1

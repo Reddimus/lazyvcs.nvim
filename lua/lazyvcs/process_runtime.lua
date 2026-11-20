@@ -27,7 +27,7 @@ function M.retain_output(pipes)
 		if pipe and ok and not closing then
 			local reader
 			ok, reader = pcall(vim.uv.spawn, vim.v.progpath, {
-				args = { "-ll", drain },
+				args = { require("lazyvcs.compat").lua_flag, drain },
 				stdio = { pipe },
 				detached = true,
 				hide = true,

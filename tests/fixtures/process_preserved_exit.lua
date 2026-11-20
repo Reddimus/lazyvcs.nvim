@@ -5,7 +5,8 @@ local args, cwd, ready
 if mode == "push" then
 	args, cwd, ready = { "git", "push", "--set-upstream", "origin", "feature" }, dir .. "/work", dir .. "/work/ready"
 else
-	args, cwd, ready = { vim.v.progpath, "-ll", dir .. "/writer.lua", dir }, dir, dir .. "/ready"
+	args, cwd, ready =
+		{ vim.v.progpath, require("lazyvcs.compat").lua_flag, dir .. "/writer.lua", dir }, dir, dir .. "/ready"
 end
 local exited
 local handle = util.system_start(args, {
