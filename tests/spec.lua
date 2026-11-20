@@ -7365,6 +7365,7 @@ vim.list_extend(cases, require("spec_integrations_resession")({ helpers = helper
 vim.list_extend(cases, require("spec_integrations_editor")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_a3_config")())
 vim.list_extend(cases, require("spec_process_shutdown")({ helpers = helpers, wait_for = wait_for }))
+vim.list_extend(cases, require("spec_preserved_mutation_exit")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_process_flows")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_windows_process")({ helpers = helpers, wait_for = wait_for }))
 vim.list_extend(cases, require("spec_harness_regressions")({ helpers = helpers, wait_for = wait_for }))

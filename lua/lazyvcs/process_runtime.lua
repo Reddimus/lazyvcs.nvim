@@ -4,11 +4,42 @@ local preparations = {}
 local closed = false
 local initialized = false
 local notify
+-- Resolve at load; shutdown can run after the working directory changes.
+local source = debug.getinfo(1, "S").source:sub(2)
+local drain = (vim.uv.fs_realpath(source) or source):gsub("process_runtime%.lua$", "process_drain.lua")
 
 local function protected(fn, ...)
 	local ok, err = pcall(fn, ...)
 	if not ok and notify then
 		notify(err, vim.log.levels.ERROR)
+	end
+end
+
+-- The editor holds the only read end of each output pipe. Once it exits, a
+-- preserved command's next write fails with EPIPE, and Git, which restores
+-- the default SIGPIPE action, dies mid-operation. A detached reader inherits
+-- each open pipe and discards its output until every writer closes it.
+function M.retain_output(pipes)
+	for _, pipe in ipairs(pipes) do
+		local ok, closing = pcall(function()
+			return pipe:is_closing()
+		end)
+		if pipe and ok and not closing then
+			local reader
+			ok, reader = pcall(vim.uv.spawn, vim.v.progpath, {
+				args = { "-ll", drain },
+				stdio = { pipe },
+				detached = true,
+				hide = true,
+			}, function()
+				if reader then
+					reader:close()
+				end
+			end)
+			if ok and reader then
+				reader:unref()
+			end
+		end
 	end
 end
 

@@ -948,6 +948,12 @@ function M.system_start(args, opts, on_exit)
 		if preserve_on_shutdown and not forced_result then
 			self:close_timers()
 			runtime.untrack(self)
+			-- Same private SystemObj state as reap_retained_pipes.
+			---@diagnostic disable-next-line: invisible
+			local state = process and process._state
+			if state then
+				runtime.retain_output({ state.stdout or false, state.stderr or false })
+			end
 			return
 		end
 		if not begin_termination("cancelled", 15, "editor shutdown") and not done and not force_sent then

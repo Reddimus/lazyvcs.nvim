@@ -25,6 +25,8 @@ and this project adheres to
   settings and hooks supplied by a repository are not loaded.
 - Restore a window's highlight namespace when a live diff or Compare pane closes
   after its buffer changed.
+- Let a push, commit or other change finish when Neovim exits while it is still
+  running, even if it prints output afterwards.
 
 ## [0.13.2] - 2026-11-03
 

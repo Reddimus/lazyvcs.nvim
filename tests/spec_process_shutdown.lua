@@ -66,17 +66,10 @@ return function(ctx)
 				return p.dead(f.root)
 			end, "commit did not finish after release", 5000)
 			local after = h.exec({ "git", "rev-parse", "HEAD" }, f.root)
-			if output then
-				assert(after == before, "hook writing to closed pipes unexpectedly committed")
-				assert(
-					h.exec({ "git", "diff", "--cached", "--name-only" }, f.root):match("sample.txt"),
-					"aborted commit lost staged change"
-				)
-			else
-				assert(after ~= before, "preserved commit failed after slow hook")
-				local object = h.exec({ "git", "cat-file", "commit", "HEAD" }, f.root)
-				assert(object:match("\n\n(.*)$") == message .. "\n", "preserved commit truncated or changed message")
-			end
+			-- Output written after exit, by the hook or Git itself, must not abort it.
+			assert(after ~= before, "preserved commit failed after slow hook")
+			local object = h.exec({ "git", "cat-file", "commit", "HEAD" }, f.root)
+			assert(object:match("\n\n(.*)$") == message .. "\n", "preserved commit truncated or changed message")
 			assert(vim.fn.filereadable(f.root .. "/.git/index.lock") == 0, "commit left an index lock")
 			assert(vim.fn.filereadable(f.root .. "/queued") == 0, "queued mutation started at exit")
 		end)
@@ -197,7 +190,7 @@ return function(ctx)
 			end,
 		},
 		{
-			"test_source_control_commit_hook_output_after_exit_aborts_cleanly",
+			"test_source_control_commit_hook_output_after_exit_completes",
 			function()
 				message_shutdown(true, true)
 			end,
