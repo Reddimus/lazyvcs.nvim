@@ -809,7 +809,9 @@ vim.cmd("qa!")
 							calls = calls + 1
 						end))
 						if command.fallback then
-							vim.wait(40)
+							ctx.wait_for(function()
+								return taskkill ~= nil
+							end, "Windows descendants did not receive taskkill")
 						else
 							handle:cancel("test")
 						end

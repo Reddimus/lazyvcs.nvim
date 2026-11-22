@@ -244,5 +244,41 @@ return function(ctx)
 			end, "legacy missing scan did not settle", 15000)
 		end),
 	}
+	cases[#cases + 1] = {
+		"test_patch_ownership_marker_stat_errors_fail_closed",
+		guard(function()
+			for _, marker in ipairs({ ".git", ".svn" }) do
+				local f = fixture()
+				local nested = f.root .. "/vendor/inner"
+				h.exec({ "git", "init", nested }, f.root)
+				write(nested .. "/private.txt", "INNER OWNER PRIVATE\n")
+				local original = uv.fs_stat
+				uv.fs_stat = function(path, done)
+					if path == nested .. "/" .. marker and done then
+						vim.schedule(function()
+							done("EACCES: permission denied", nil)
+						end)
+						return {}
+					end
+					return original(path, done)
+				end
+				local text, failure, finished
+				require("lazyvcs").patch({
+					path = f.root,
+					on_done = function(value, err)
+						text, failure, finished = value, err, true
+					end,
+				})
+				ctx.wait_for(function()
+					return finished
+				end, "marker stat error did not settle", 15000)
+				uv.fs_stat = original
+				assert(
+					not text and tostring(failure):find("EACCES", 1, true),
+					"marker stat error on " .. marker .. " failed open"
+				)
+			end
+		end),
+	}
 	return cases
 end

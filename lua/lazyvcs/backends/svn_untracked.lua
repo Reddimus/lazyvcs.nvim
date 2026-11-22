@@ -130,17 +130,26 @@ function M.expand(task, repo, entries, callback, opts)
 						end)
 					end
 					-- Follow administrative markers only; directory entries above stay literal.
-					vim.uv.fs_stat(path .. "/.svn", function(_, svn)
-						vim.uv.fs_stat(path .. "/.git", function(_, git)
-							schedule(task, function()
-								if
-									(svn and svn.type == "directory")
-									or (git and (git.type == "file" or git.type == "directory"))
-								then
-									visit()
-								else
-									scan()
-								end
+					vim.uv.fs_stat(path .. "/.svn", function(svn_err, svn)
+						schedule(task, function()
+							if svn and svn.type == "directory" then
+								visit()
+								return
+							end
+							if svn_err and not tostring(svn_err):match("ENOENT") then
+								callback(nil, svn_err)
+								return
+							end
+							vim.uv.fs_stat(path .. "/.git", function(git_err, git)
+								schedule(task, function()
+									if git and (git.type == "file" or git.type == "directory") then
+										visit()
+									elseif git_err and not tostring(git_err):match("ENOENT") then
+										callback(nil, git_err)
+									else
+										scan()
+									end
+								end)
 							end)
 						end)
 					end)

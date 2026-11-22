@@ -8,6 +8,14 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.13.4] - 2026-11-22
+
+### Fixed
+
+- Fail closed when checking nested `.svn` or `.git` administrative markers
+  during SVN untracked traversal, instead of scanning into a nested repository
+  on non-`ENOENT` stat errors.
+
 ## [0.13.3] - 2026-11-20
 
 ### Fixed
@@ -998,6 +1006,7 @@ First tagged release.
 [0.12.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.1...v0.12.2
 [0.13.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.2...v0.13.0
-[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.3...HEAD
+[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.4...HEAD
+[0.13.4]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.3...v0.13.4
 [0.13.3]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.2...v0.13.3
 [0.13.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.1...v0.13.2
