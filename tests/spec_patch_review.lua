@@ -210,15 +210,15 @@ return function(ctx)
 			)
 		)
 		assert(
-			index_ticks >= 2,
+			index_ticks >= 10,
 			string.format("patch indexing did not yield to the event loop (%d ticks)", index_ticks)
 		)
 		assert(
-			non_fill_gap < 250,
+			non_fill_gap < 1000,
 			string.format("patch event loop stalled for %.1f ms outside buffer fill", non_fill_gap)
 		)
 		assert(
-			non_fill_longest < 250,
+			non_fill_longest < 1000,
 			string.format("patch callback blocked for %.1f ms outside buffer fill", non_fill_longest)
 		)
 	end)

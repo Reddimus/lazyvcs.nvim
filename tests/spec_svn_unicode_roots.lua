@@ -6,9 +6,11 @@ return function(ctx)
 		cases[#cases + 1] = {
 			"test_svn_unicode_roots_" .. name,
 			function()
-				local start, system = util.system_start, util.system_result
+				local start, system, executable, env_path =
+					util.system_start, util.system_result, vim.fn.executable, vim.env.PATH
 				local ok, err = xpcall(fn, debug.traceback)
-				util.system_start, util.system_result = start, system
+				util.system_start, util.system_result, vim.fn.executable, vim.env.PATH =
+					start, system, executable, env_path
 				h.cleanup()
 				assert(ok, err)
 			end,
@@ -114,7 +116,19 @@ return function(ctx)
 		end, "root discovery did not settle", 15000)
 		return out, task
 	end
+	local function mock_svn_available()
+		local original_executable = vim.fn.executable
+		---@diagnostic disable-next-line: duplicate-set-field
+		vim.fn.executable = function(cmd)
+			if cmd == "svn" then
+				return 1
+			end
+			return original_executable(cmd)
+		end
+		vim.env.PATH = (vim.env.PATH or "") .. (vim.fn.has("win32") == 1 and ";" or ":") .. "lazyvcs-mock-svn"
+	end
 	local function mock(bytes, fields)
+		mock_svn_available()
 		---@diagnostic disable-next-line: duplicate-set-field
 		util.system_result = function(args, opts)
 			assert(args[1] == "svn" and args[2] == "info")
@@ -239,6 +253,7 @@ return function(ctx)
 	end)
 	case("cached_root_bypasses_command", function()
 		local root = h.tempdir()
+		mock_svn_available()
 		---@diagnostic disable-next-line: duplicate-set-field
 		util.system_start = function()
 			error("cached root spawned a command")
@@ -248,6 +263,7 @@ return function(ctx)
 	end)
 	case("canceled_probe_ignores_late_xml", function()
 		local root, late, killed, settled = h.tempdir(), nil, false, false
+		mock_svn_available()
 		---@diagnostic disable-next-line: duplicate-set-field
 		util.system_start = function(_, _, done)
 			late = done
@@ -273,6 +289,7 @@ return function(ctx)
 	end)
 	case("native_failure_code_and_deadline_are_preserved", function()
 		local root, calls = h.tempdir(), 0
+		mock_svn_available()
 		---@diagnostic disable-next-line: duplicate-set-field
 		util.system_result = function(_, opts)
 			calls = calls + 1
@@ -305,6 +322,7 @@ return function(ctx)
 	end)
 	case("transport_errors_never_become_roots", function()
 		local root = h.tempdir()
+		mock_svn_available()
 		for _, code in ipairs({ 124, 127 }) do
 			---@diagnostic disable-next-line: duplicate-set-field
 			util.system_result = function()
