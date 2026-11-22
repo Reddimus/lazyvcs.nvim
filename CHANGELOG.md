@@ -8,6 +8,11 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Avoid restarting an obsolete live-diff base read when a debounced refresh
+  fires after a buffer is renamed and before automatic cleanup completes.
+
 ## [0.13.4] - 2026-11-22
 
 ### Fixed

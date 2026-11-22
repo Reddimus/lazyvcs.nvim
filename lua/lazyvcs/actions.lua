@@ -452,17 +452,22 @@ refresh = function(bufnr, reuse)
 			session.hunks = {}
 			return
 		end
+		local path_changed = util.buf_path(session.editable_bufnr) ~= session.source_path
 		if
 			session.base_invalid
 			or not profile
 			or not session.base_text
 			or session.base_text.profile_key ~= profile.key
-			or util.buf_path(session.editable_bufnr) ~= session.source_path
+			or path_changed
 		then
 			session.hunk_cache = nil
 			layout.clear_rail(session)
 			session.hunks, session.base_invalid = {}, true
-			if not session.refresh_job and (not session.reload_retry_at or vim.uv.now() >= session.reload_retry_at) then
+			if
+				not path_changed
+				and not session.refresh_job
+				and (not session.reload_retry_at or vim.uv.now() >= session.reload_retry_at)
+			then
 				reload_session(session)
 			end
 			return
@@ -1653,6 +1658,9 @@ end
 
 reload_session = function(session)
 	if not session or session.closing or session.phase ~= "active" then
+		return
+	end
+	if not session.readonly_comparison and util.buf_path(session.editable_bufnr) ~= session.source_path then
 		return
 	end
 	if session.refresh_job and type(session.refresh_job.kill) == "function" then
