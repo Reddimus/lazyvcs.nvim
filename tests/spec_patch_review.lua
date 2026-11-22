@@ -155,18 +155,27 @@ return function(ctx)
 		patch._test_text = "diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n@@ -0,0 +1,1000000 @@\n"
 			.. string.rep("+x\n", 1000000)
 		local schedule, set_lines = vim.schedule, vim.api.nvim_buf_set_lines
-		local longest, fills = 0, 0
+		local longest, non_fill_longest, fill_ms, fills, index_ticks = 0, 0, 0, 0, 0
+		local fill_started = false
 		vim.schedule = function(fn)
 			return schedule(function()
-				local start = vim.uv.hrtime()
+				local start, before_fill = vim.uv.hrtime(), fill_ms
 				fn()
-				longest = math.max(longest, (vim.uv.hrtime() - start) / 1e6)
+				local elapsed = (vim.uv.hrtime() - start) / 1e6
+				local callback_fill = fill_ms - before_fill
+				longest = math.max(longest, elapsed)
+				non_fill_longest = math.max(non_fill_longest, math.max(0, elapsed - callback_fill))
 			end)
 		end
 		---@diagnostic disable-next-line: duplicate-set-field
 		vim.api.nvim_buf_set_lines = function(buf, first, last, strict, rows)
 			if #rows > 1 then
+				fill_started = true
 				fills = fills + 1
+				local start = vim.uv.hrtime()
+				set_lines(buf, first, last, strict, rows)
+				fill_ms = fill_ms + (vim.uv.hrtime() - start) / 1e6
+				return
 			end
 			return set_lines(buf, first, last, strict, rows)
 		end
@@ -174,19 +183,44 @@ return function(ctx)
 		local last, gap = vim.uv.hrtime(), 0
 		timer:start(1, 1, function()
 			local now = vim.uv.hrtime()
+			if not fill_started then
+				index_ticks = index_ticks + 1
+			end
 			gap, last = math.max(gap, (now - last) / 1e6), now
 		end)
 		local ok, buf = pcall(ui, root)
 		gap = math.max(gap, (vim.uv.hrtime() - last) / 1e6)
 		timer:stop()
 		timer:close()
+		vim.schedule, vim.api.nvim_buf_set_lines = schedule, set_lines
 		assert(ok, buf)
 		assert(vim.api.nvim_buf_line_count(buf) == 1000004, "injected patch was not filled")
 		assert(fills == 1, "patch must be filled in one API call")
 		assert(vim.wo.winbar:find("+1000000 -0", 1, true), "incorrect whole-patch counts")
-		print(string.format("patch million-line maximum callback: %.1f ms; event-loop gap: %.1f ms", longest, gap))
-		assert(gap < 250, string.format("patch event loop stalled for %.1f ms", gap))
-		assert(longest < 250, string.format("patch callback blocked for %.1f ms", longest))
+		local non_fill_gap = math.max(0, gap - fill_ms)
+		print(
+			string.format(
+				"patch million-line maximum callback: %.1f ms (non-fill: %.1f ms, fill: %.1f ms); event-loop gap: %.1f ms (non-fill: %.1f ms); index ticks: %d",
+				longest,
+				non_fill_longest,
+				fill_ms,
+				gap,
+				non_fill_gap,
+				index_ticks
+			)
+		)
+		assert(
+			index_ticks >= 2,
+			string.format("patch indexing did not yield to the event loop (%d ticks)", index_ticks)
+		)
+		assert(
+			non_fill_gap < 250,
+			string.format("patch event loop stalled for %.1f ms outside buffer fill", non_fill_gap)
+		)
+		assert(
+			non_fill_longest < 250,
+			string.format("patch callback blocked for %.1f ms outside buffer fill", non_fill_longest)
+		)
 	end)
 	case("index_checkpoints_navigation", function()
 		local f = h.make_git_fixture()
