@@ -8,6 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop the untracked Discard timeout test from failing on a heavily loaded host.
+  A pause of more than 25 ms before the test's first file check let the deadline
+  expire before that check started
+  ([#189](https://github.com/Reddimus/lazyvcs.nvim/issues/189)).
+
 ## [0.13.5] - 2026-11-23
 
 ### Fixed
