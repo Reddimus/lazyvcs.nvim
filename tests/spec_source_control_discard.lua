@@ -167,8 +167,8 @@ return function(ctx)
 			function()
 				local config = require("lazyvcs.config")
 				local saved_config = vim.deepcopy(config.get())
-				local open, unlink, lstat, notify, start =
-					confirm.open, vim.uv.fs_unlink, vim.uv.fs_lstat, util.notify, util.system_start
+				local open, unlink, lstat, notify, start, hrtime =
+					confirm.open, vim.uv.fs_unlink, vim.uv.fs_lstat, util.notify, util.system_start, vim.uv.hrtime
 				---@diagnostic disable-next-line: duplicate-set-field
 				util.notify = function() end
 				local ok, err = xpcall(function()
@@ -330,7 +330,16 @@ return function(ctx)
 									== "timeout"
 								and 25
 							or 15000
+						-- revert_file submits the preflight synchronously. Hold the clock
+						-- until it returns so a stalled host cannot expire the 25 ms
+						-- deadline before the preflight it is meant to interrupt.
+						local now = hrtime()
+						---@diagnostic disable-next-line: duplicate-set-field
+						vim.uv.hrtime = function()
+							return now
+						end
 						ops.revert_file(f.state, f.node)
+						vim.uv.hrtime = hrtime
 						assert(pending, "native preflight was not submitted")
 						if mode == "cancel" then
 							jobs.cancel_repo(f.root)
@@ -347,14 +356,14 @@ return function(ctx)
 						pending(nil, lstat(f.path))
 						wait(function()
 							return queued
-						end, "native completion did not release worker")
+						end, "native completion did not release worker", 15000)
 						assert(lstat(f.path), mode .. " submitted unlink after termination")
 						vim.uv.fs_lstat = lstat
 						h.cleanup()
 					end
 				end, debug.traceback)
-				confirm.open, vim.uv.fs_unlink, vim.uv.fs_lstat, util.notify, util.system_start =
-					open, unlink, lstat, notify, start
+				confirm.open, vim.uv.fs_unlink, vim.uv.fs_lstat, util.notify, util.system_start, vim.uv.hrtime =
+					open, unlink, lstat, notify, start, hrtime
 				config.setup(saved_config)
 				assert(ok, err)
 			end,

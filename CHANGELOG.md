@@ -8,6 +8,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.13.6] - 2026-11-25
+
+### Fixed
+
+- Stop the untracked Discard timeout test from failing on a heavily loaded host.
+  A pause of more than 25 ms before the test's first file check let the deadline
+  expire before that check started
+  ([#189](https://github.com/Reddimus/lazyvcs.nvim/issues/189)).
+
 ## [0.13.5] - 2026-11-23
 
 ### Fixed
@@ -1013,7 +1022,8 @@ First tagged release.
 [0.12.2]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.1...v0.12.2
 [0.13.1]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.12.2...v0.13.0
-[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.5...HEAD
+[Unreleased]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.6...HEAD
+[0.13.6]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.5...v0.13.6
 [0.13.5]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.4...v0.13.5
 [0.13.4]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.3...v0.13.4
 [0.13.3]: https://github.com/Reddimus/lazyvcs.nvim/compare/v0.13.2...v0.13.3
